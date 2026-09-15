@@ -1,0 +1,6 @@
+{
+  "name": "HFM Trading Platform",
+  "description": "The complete HFM (HF Markets) trading app and client portal replica with real-time markets, live charts, execution terminal, HFcopy copy trading, and multi-account wallet management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
