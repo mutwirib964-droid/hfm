@@ -20,6 +20,7 @@ import {
 } from '../services/forexFactoryService';
 
 interface NewsTabProps {
+  marketAnalyses?: any;
   isDarkMode?: boolean;
 }
 
@@ -121,7 +122,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
 
   return (
     <div
-      id="forexfactory-news-screen"
+      id="market-news-screen"
       className={`min-h-[calc(100vh-120px)] flex flex-col pb-16 transition-colors duration-200 ${
         isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
@@ -135,23 +136,14 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
         <div className="flex items-center justify-between mb-2">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-black tracking-tight">Market Intelligence</h1>
+              <h1 className="text-xl font-black tracking-tight">Market News & Insights</h1>
               <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                 Live Wire
               </span>
             </div>
-            <p className="text-xs text-neutral-400 flex items-center gap-1.5 mt-0.5">
-              <span>Direct Real-Time Feed from</span>
-              <a
-                href="https://www.forexfactory.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-500 hover:underline font-semibold flex items-center gap-0.5"
-              >
-                ForexFactory.com
-                <ExternalLink className="w-2.5 h-2.5" />
-              </a>
+            <p className="text-xs text-neutral-400 mt-0.5">
+              Institutional real-time financial news, central bank statements & macroeconomic analysis
             </p>
           </div>
 
@@ -163,7 +155,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
                 ? 'border-neutral-700 bg-neutral-800/80 hover:bg-neutral-800 text-neutral-300'
                 : 'border-neutral-200 bg-neutral-50 hover:bg-neutral-100 text-neutral-700'
             } ${isLoading ? 'opacity-60' : ''}`}
-            title="Refresh latest news from ForexFactory"
+            title="Refresh latest news"
           >
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin text-blue-500' : ''}`} />
           </button>
@@ -182,7 +174,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
             }`}
           >
             <Globe className="w-3.5 h-3.5" />
-            <span>ForexFactory News</span>
+            <span>Breaking News</span>
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-white/20">
               {news.length}
             </span>
@@ -275,13 +267,13 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
         {isLoading && news.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
             <RefreshCw className="w-8 h-8 animate-spin mb-3 text-blue-500" />
-            <p className="text-sm font-medium">Connecting to ForexFactory Real-Time Feed...</p>
+            <p className="text-sm font-medium">Connecting to Real-Time Market Feed...</p>
           </div>
         ) : activeTab === 'news' ? (
           /* News Feed */
           <div className="space-y-4">
             <div className="flex items-center justify-between text-xs text-neutral-400 mb-2">
-              <span>Showing {filteredNews.length} articles from ForexFactory</span>
+              <span>Showing {filteredNews.length} market articles</span>
               <span>Updated {lastUpdated.toLocaleTimeString()}</span>
             </div>
 
@@ -321,16 +313,11 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
                   </div>
 
                   <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800/60 flex items-center justify-between text-xs text-neutral-400">
-                    <span className="truncate max-w-[180px]">{article.source}</span>
-                    <a
-                      href={article.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-500 hover:text-blue-400 font-semibold flex items-center gap-1 cursor-pointer"
-                    >
-                      <span>ForexFactory</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                    <span className="truncate max-w-[220px] font-medium">{article.source}</span>
+                    <span className="text-[11px] text-emerald-500 font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      <span>Live Wire</span>
+                    </span>
                   </div>
                 </article>
               ))}
@@ -357,7 +344,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
           /* Economic Calendar Feed */
           <div className="space-y-4">
             <div className="flex items-center justify-between text-xs text-neutral-400 mb-2">
-              <span>ForexFactory High-Impact Economic Releases</span>
+              <span>Global High-Impact Economic Releases</span>
               <span>Updated {lastUpdated.toLocaleTimeString()}</span>
             </div>
 

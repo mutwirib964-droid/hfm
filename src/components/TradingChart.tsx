@@ -44,9 +44,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Use HFM native canvas chart by default
-  const [engineMode, setEngineMode] = useState<'tradingview' | 'hfm'>('hfm');
-
   const [showSMA, setShowSMA] = useState(true);
   const [showEMA, setShowEMA] = useState(true);
   const [showRSI, setShowRSI] = useState(true);
@@ -422,8 +419,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     ctx.lineTo(chartWidth, bidY);
     ctx.stroke();
 
-    // 2. Ask Line (Buy Price - Blue/Green dashed)
-    ctx.strokeStyle = '#3B82F6';
+    // 2. Ask Line (Buy Price - Green dashed)
+    ctx.strokeStyle = '#10B981';
     ctx.beginPath();
     ctx.moveTo(0, askY);
     ctx.lineTo(chartWidth, askY);
@@ -433,11 +430,11 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     // 3. Spread Zone between Bid and Ask
     const spreadTopY = Math.min(bidY, askY);
     const spreadH = Math.max(Math.abs(bidY - askY), 3);
-    ctx.fillStyle = isDarkMode ? 'rgba(239, 68, 68, 0.12)' : 'rgba(239, 68, 68, 0.08)';
+    ctx.fillStyle = isDarkMode ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.06)';
     ctx.fillRect(0, spreadTopY, chartWidth, spreadH);
 
     // 4. Exact Currency Price Pills on Right Y-Axis
-    // Bid Pill (Red)
+    // Bid Pill (Red - SELL)
     ctx.fillStyle = '#EF4444';
     ctx.beginPath();
     ctx.roundRect(chartWidth + 1, bidY - 8, priceScaleWidth - 3, 16, 3);
@@ -447,8 +444,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     ctx.textAlign = 'center';
     ctx.fillText(currentBid.toFixed(decimals), chartWidth + (priceScaleWidth - 3) / 2, bidY + 3.5);
 
-    // Ask Pill (Blue)
-    ctx.fillStyle = '#3B82F6';
+    // Ask Pill (Green - BUY)
+    ctx.fillStyle = '#10B981';
     ctx.beginPath();
     ctx.roundRect(chartWidth + 1, askY - 8, priceScaleWidth - 3, 16, 3);
     ctx.fill();
@@ -462,9 +459,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.beginPath();
       ctx.roundRect(chartWidth + 3, midSpreadY - 6, priceScaleWidth - 7, 12, 2);
       ctx.fill();
-      ctx.fillStyle = '#9CA3AF';
+      ctx.fillStyle = '#10B981';
       ctx.font = '8px monospace';
-      ctx.fillText(`${spreadPoints} pts`, chartWidth + (priceScaleWidth - 3) / 2, midSpreadY + 3);
+      ctx.fillText(`SPR: ${spreadPoints} pts`, chartWidth + (priceScaleWidth - 3) / 2, midSpreadY + 3);
     }
 
     // Draw Open Positions Lines
@@ -593,11 +590,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   };
 
   useEffect(() => {
-    if (engineMode === 'hfm') {
-      renderCanvas();
-    }
+    renderCanvas();
   }, [
-    engineMode,
     candles,
     symbol,
     decimals,
@@ -837,22 +831,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               )}
             </div>
 
-            {/* TradingView vs Pro Canvas Engine Switcher */}
-            <button
-              id="tradingview-engine-switch"
-              onClick={() => setEngineMode(engineMode === 'hfm' ? 'tradingview' : 'hfm')}
-              className={`px-2 py-0.5 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
-                engineMode === 'tradingview'
-                  ? 'bg-blue-600 border-blue-500 text-white'
-                  : isDarkMode
-                  ? 'bg-neutral-800/80 border-neutral-700 text-neutral-300 hover:text-white'
-                  : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
-              }`}
-              title="Switch between Pro Speed Canvas and Native TradingView Embed"
-            >
-              {engineMode === 'tradingview' ? 'TradingView Active' : 'Switch to TV'}
-            </button>
-
             {/* Fullscreen Toggle */}
             <button
               id="fullscreen-chart-toggle"
@@ -908,24 +886,15 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           </div>
         )}
 
-        {/* Chart Viewport: Canvas Mode vs Native TradingView Widget */}
+        {/* Chart Viewport: Real-Time Live Chart */}
         <div className="relative flex-1 w-full h-full overflow-hidden">
-          {engineMode === 'tradingview' ? (
-            <TradingViewWidget
-              symbol={symbol}
-              timeframe={timeframe}
-              onTimeframeChange={onTimeframeChange}
-              isDarkMode={isDarkMode}
-              isFullscreen={isFullscreen}
-            />
-          ) : (
-            <canvas
-              ref={canvasRef}
-              onMouseMove={handleMouseMove}
-              onMouseLeave={handleMouseLeave}
-              className="w-full h-full cursor-crosshair block"
-            />
-          )}
+          <TradingViewWidget
+            symbol={symbol}
+            timeframe={timeframe}
+            onTimeframeChange={onTimeframeChange}
+            isDarkMode={isDarkMode}
+            isFullscreen={isFullscreen}
+          />
         </div>
       </div>
     </div>

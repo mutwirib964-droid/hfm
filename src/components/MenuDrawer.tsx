@@ -24,6 +24,9 @@ import {
   LogOut,
 } from 'lucide-react';
 import { ActiveTab } from '../types';
+import { RiskPipCalculatorModal } from './RiskPipCalculatorModal';
+import { TradersRewardsModal } from './TradersRewardsModal';
+import { Security2FAModal } from './Security2FAModal';
 
 interface MenuDrawerProps {
   isOpen: boolean;
@@ -44,8 +47,12 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 }) => {
   const [copiedAccount, setCopiedAccount] = useState(false);
   const [modalNotice, setModalNotice] = useState<string | null>(null);
+  const [isRiskCalcOpen, setIsRiskCalcOpen] = useState(false);
+  const [isRewardsOpen, setIsRewardsOpen] = useState(false);
+  const [is2FAOpen, setIs2FAOpen] = useState(false);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState(true);
 
-  if (!isOpen) return null;
+  if (!isOpen && !isRiskCalcOpen && !isRewardsOpen && !is2FAOpen) return null;
 
   const handleCopyAccount = () => {
     navigator.clipboard.writeText('8842-9102-LIVE');
@@ -98,9 +105,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5">
                 <h2 className="text-sm font-bold truncate">Josphat Ndungu</h2>
-                <span className="px-1.5 py-0.2 rounded text-[9px] font-black bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                  PRO VIP
-                </span>
               </div>
               <button
                 onClick={handleCopyAccount}
@@ -214,35 +218,37 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               >
                 <div className="flex items-center gap-2.5">
                   <Globe className="w-4 h-4 text-amber-500" />
-                  <span>ForexFactory Wire & Calendar</span>
+                  <span>Market News & Analysis</span>
                 </div>
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               </button>
 
               <button
-                onClick={() =>
-                  setModalNotice('Margin Calculator & Pip Value engine loaded in Trading Tools.')
-                }
+                onClick={() => {
+                  setIsRiskCalcOpen(true);
+                  onClose();
+                }}
                 className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-semibold hover:bg-neutral-800/40 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
               >
                 <div className="flex items-center gap-2.5">
-                  <Sliders className="w-4 h-4 text-neutral-400" />
+                  <Sliders className="w-4 h-4 text-amber-400" />
                   <span>Risk & Pip Size Calculator</span>
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
               </button>
 
               <button
-                onClick={() =>
-                  setModalNotice('Rewards Center: 3,240 Loyalty Points eligible for cash redemption.')
-                }
+                onClick={() => {
+                  setIsRewardsOpen(true);
+                  onClose();
+                }}
                 className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-semibold hover:bg-neutral-800/40 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
               >
                 <div className="flex items-center gap-2.5">
                   <Award className="w-4 h-4 text-purple-400" />
                   <span>Trader Rewards & Cashbacks</span>
                 </div>
-                <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
+                <span className="text-[10px] text-amber-400 font-bold">100 Lots</span>
               </button>
             </div>
           </div>
@@ -261,7 +267,7 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                   <User className="w-4 h-4 text-neutral-400" />
                   <span>Profile & Verification</span>
                 </div>
-                <span className="text-[10px] text-emerald-500 font-bold">Verified</span>
+                <span className="text-[10px] text-amber-400 font-bold">Auto 15m</span>
               </button>
 
               <button
@@ -276,16 +282,19 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
               </button>
 
               <button
-                onClick={() =>
-                  setModalNotice('2FA Authentication and Device Fingerprint Shield are active.')
-                }
+                onClick={() => {
+                  setIs2FAOpen(true);
+                  onClose();
+                }}
                 className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-semibold hover:bg-neutral-800/40 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
               >
                 <div className="flex items-center gap-2.5">
                   <Shield className="w-4 h-4 text-emerald-500" />
                   <span>Security & 2FA Protection</span>
                 </div>
-                <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
+                <span className="text-[10px] text-emerald-500 font-bold">
+                  {twoFactorEnabled ? 'Active' : 'Off'}
+                </span>
               </button>
             </div>
           </div>
@@ -302,9 +311,30 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
             <span className="text-[11px] font-mono">LD4 Gateway: 14ms</span>
           </div>
 
-          <span className="text-[10px] text-neutral-500 font-mono">v4.8.0 PRO</span>
+          <span className="text-[10px] text-neutral-500 font-mono">v4.8.0 (Equinix LD4)</span>
         </div>
       </div>
+
+      {/* Internal Interactive Modals (No external redirection) */}
+      <RiskPipCalculatorModal
+        isOpen={isRiskCalcOpen}
+        onClose={() => setIsRiskCalcOpen(false)}
+        isDarkMode={isDarkMode}
+      />
+
+      <TradersRewardsModal
+        isOpen={isRewardsOpen}
+        onClose={() => setIsRewardsOpen(false)}
+        isDarkMode={isDarkMode}
+      />
+
+      <Security2FAModal
+        isOpen={is2FAOpen}
+        onClose={() => setIs2FAOpen(false)}
+        isDarkMode={isDarkMode}
+        twoFactorEnabled={twoFactorEnabled}
+        onToggle2FA={setTwoFactorEnabled}
+      />
     </div>
   );
 };

@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Timeframe, ChartType } from '../types';
 import { TradingViewPriceService } from '../services/tradingViewService';
-import { Maximize2, Minimize2, ExternalLink, RefreshCw, BarChart2 } from 'lucide-react';
+import { Maximize2, Minimize2, RefreshCw } from 'lucide-react';
 
 interface TradingViewWidgetProps {
   symbol: string;
@@ -11,6 +11,11 @@ interface TradingViewWidgetProps {
   isDarkMode: boolean;
   isFullscreen?: boolean;
   onToggleFullscreen?: () => void;
+  bid?: number;
+  ask?: number;
+  spread?: number;
+  decimals?: number;
+  pipMultiplier?: number;
 }
 
 export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
@@ -20,6 +25,11 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   isDarkMode,
   isFullscreen = false,
   onToggleFullscreen,
+  bid,
+  ask,
+  spread,
+  decimals = 2,
+  pipMultiplier = 10000,
 }) => {
   const [iframeKey, setIframeKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -50,7 +60,8 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
     return TradingViewPriceService.getTVSymbolForEmbed(symbol);
   }, [symbol]);
 
-  // Construct official TradingView Widget Embed URL
+  // Construct official Widget Embed URL with full interactive drawing tools, indicators,
+  // and native Bid/Ask scale labels + lines rendered directly at exact price coordinates
   const widgetUrl = useMemo(() => {
     const params = new URLSearchParams({
       frameElementId: `tv_widget_${symbol}`,
@@ -68,9 +79,16 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
       showintervals: '1',
       enablepublishing: 'false',
       locale: 'en',
-      utm_source: 'www.tradingview.com',
-      utm_medium: 'widget',
-      utm_campaign: 'chart',
+      overrides: JSON.stringify({
+        'mainSeriesProperties.bidAsk.visible': true,
+        'mainSeriesProperties.bidAsk.lineStyle': 2,
+        'mainSeriesProperties.bidAsk.lineWidth': 1,
+        'mainSeriesProperties.bidAsk.bidLineColor': '#2962FF',
+        'mainSeriesProperties.bidAsk.askLineColor': '#F23645',
+        'scalesProperties.showBidAskLabels': true,
+        'scalesProperties.showSymbolLabels': true,
+        'scalesProperties.showCountdown': true,
+      }),
     });
 
     return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
@@ -85,9 +103,9 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
         isDarkMode
           ? 'bg-[#121418] border-neutral-800/90 text-white'
           : 'bg-white border-slate-200 text-slate-900'
-      } ${isFullscreen ? 'fixed inset-0 z-50 rounded-none h-screen' : 'h-[400px] sm:h-[460px]'}`}
+      } ${isFullscreen ? 'fixed inset-0 z-50 rounded-none h-screen' : 'h-full min-h-[380px] sm:min-h-[440px]'}`}
     >
-      {/* Top TradingView Bar with status and controls */}
+      {/* Top Chart Bar with status and controls */}
       <div
         className={`flex items-center justify-between px-3 py-2 border-b text-xs ${
           isDarkMode
@@ -128,32 +146,62 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
+          {/* Real-time Bid / Spread / Ask badges styled exactly as TradingView scale tags in Pic 2 */}
+          {bid !== undefined && ask !== undefined && (
+            <div className="flex items-center gap-1.5 font-mono text-[11px]">
+              {/* Bid Badge (Blue) */}
+              <div
+                title="TradingView Bid Price"
+                className="flex items-center rounded overflow-hidden shadow-sm border border-blue-600/50"
+              >
+                <span className="bg-[#1E40AF] text-blue-200 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                  Bid
+                </span>
+                <span className="bg-[#2962FF] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  {bid.toFixed(decimals)}
+                </span>
+              </div>
+
+              {/* Spread Points Pill */}
+              <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
+                <span>
+                  {spread !== undefined
+                    ? spread > 5
+                      ? Math.round(spread)
+                      : (spread * 10).toFixed(0)
+                    : Math.round(Math.abs(ask - bid) * pipMultiplier)}{' '}
+                  pts
+                </span>
+              </div>
+
+              {/* Ask Badge (Red) */}
+              <div
+                title="TradingView Ask Price"
+                className="flex items-center rounded overflow-hidden shadow-sm border border-red-600/50"
+              >
+                <span className="bg-[#991B1B] text-red-200 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider">
+                  Ask
+                </span>
+                <span className="bg-[#F23645] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  {ask.toFixed(decimals)}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Reload Chart */}
           <button
             onClick={() => {
               setIsLoading(true);
               setIframeKey((prev) => prev + 1);
             }}
-            title="Refresh TradingView Feed"
+            title="Refresh Live Chart"
             className={`p-1 rounded transition-colors ${
               isDarkMode ? 'hover:bg-neutral-800 text-neutral-400 hover:text-white' : 'hover:bg-slate-200 text-slate-500'
             }`}
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
-
-          {/* External TV Link */}
-          <a
-            href={`https://www.tradingview.com/symbols/${symbol}/`}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open on TradingView.com"
-            className={`p-1 rounded transition-colors ${
-              isDarkMode ? 'hover:bg-neutral-800 text-neutral-400 hover:text-white' : 'hover:bg-slate-200 text-slate-500'
-            }`}
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-          </a>
 
           {/* Fullscreen Toggle */}
           {onToggleFullscreen && (
@@ -179,12 +227,12 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
         >
           <div className="w-6 h-6 border-2 border-[#E51937] border-t-transparent rounded-full animate-spin mb-2" />
           <span className="text-xs text-neutral-400 font-mono">
-            Loading TradingView Real-Time Chart...
+            Loading Real-Time Market Chart...
           </span>
         </div>
       )}
 
-      {/* TradingView Widget Iframe */}
+      {/* TradingView Widget Iframe with Native Real-Time Scale Bid/Ask Lines */}
       <iframe
         key={iframeKey}
         src={widgetUrl}

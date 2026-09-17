@@ -224,6 +224,9 @@ export default function App() {
     setCandles(initial);
   }, [selectedSymbol, timeframe]);
 
+  // Reference to latest real TradingView quotes for rock-solid price synchronization
+  const realTVQuotesRef = useRef<Map<string, TVQuote>>(new Map());
+
   // =========================================================================
   // REAL TRADINGVIEW PRICE INTEGRATION & REALISTIC SPREAD TICKING ENGINE
   // =========================================================================
@@ -235,6 +238,10 @@ export default function App() {
       try {
         const quotes = await tvService.fetchRealPrices();
         if (!isMounted || quotes.size === 0) return;
+
+        quotes.forEach((q, sym) => {
+          realTVQuotesRef.current.set(sym, q);
+        });
 
         setInstruments((prevInstruments) => {
           const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
@@ -279,47 +286,42 @@ export default function App() {
     // Initial immediate fetch
     fetchTradingViewFeed();
 
-    // Poll TradingView scanner every 4 seconds
-    const tvInterval = setInterval(fetchTradingViewFeed, 4000);
+    // Poll TradingView scanner every 2.5 seconds for instant price updates
+    const tvInterval = setInterval(fetchTradingViewFeed, 2500);
 
-    // High-frequency realistic micro-ticks (every 900ms) to simulate live market depth and spread movement
+    // Realistic micro-ticks bounded to real TradingView quotes (never drifting away)
     const microTickInterval = setInterval(() => {
       setInstruments((prevInstruments) => {
         const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
 
         const updated = prevInstruments.map((inst) => {
-          // 50% probability of a micro-tick per cycle
-          if (Math.random() > 0.5) return inst;
+          // 40% probability of a micro-tick per cycle
+          if (Math.random() > 0.4) return inst;
 
-          // Realistic organic micro-movement based on asset volatility
+          const baseQuote = realTVQuotesRef.current.get(inst.symbol);
+          const anchorBid = baseQuote ? baseQuote.bid : inst.bid;
+          const anchorAsk = baseQuote ? baseQuote.ask : inst.ask;
+          const anchorSpread = baseQuote ? baseQuote.spread : inst.spread;
+
+          // Micro-movement within a narrow fraction of a pip around the real TradingView anchor
           const baseStep = 1 / inst.pipMultiplier;
-          const pipJitter = (Math.random() - 0.49) * 0.4 * baseStep;
+          const pipJitter = (Math.random() - 0.5) * 0.25 * baseStep;
 
-          const newBid = Number(Math.max(inst.bid * 0.5, inst.bid + pipJitter).toFixed(inst.decimals));
-
-          // Spread breathes dynamically (e.g. 0.1 - 0.4 pip realistic spread variance)
-          const spreadVariance = (Math.random() - 0.5) * 0.2;
-          const dynamicSpread = Math.max(0.1, Number((inst.spread + spreadVariance).toFixed(1)));
-          const newAsk = Number((newBid + dynamicSpread / inst.pipMultiplier).toFixed(inst.decimals));
+          const newBid = Number((anchorBid + pipJitter).toFixed(inst.decimals));
+          const newAsk = Number((anchorAsk + pipJitter).toFixed(inst.decimals));
 
           let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
           if (newAsk > inst.ask) direction = 'UP';
           else if (newAsk < inst.ask) direction = 'DOWN';
           nextTickStates[inst.symbol] = direction;
 
-          const changePercent = Number(
-            (inst.change24h + (pipJitter / inst.bid) * 100).toFixed(2)
-          );
           const sparkline = [...inst.sparkline.slice(1), newBid];
 
           return {
             ...inst,
             bid: newBid,
             ask: newAsk,
-            spread: dynamicSpread,
-            change24h: changePercent,
-            high24h: Math.max(inst.high24h, newAsk),
-            low24h: Math.min(inst.low24h, newBid),
+            spread: anchorSpread,
             sparkline,
           };
         });
@@ -327,7 +329,7 @@ export default function App() {
         setTickStates((prev) => ({ ...prev, ...nextTickStates }));
         return updated;
       });
-    }, 900);
+    }, 1200);
 
     return () => {
       isMounted = false;
@@ -441,11 +443,12 @@ export default function App() {
     }));
   }, [positions, instruments]);
 
-  // Helper to add notification
+  // Helper to add notification with guaranteed unique key
   const addNotification = (title: string) => {
+    const uniqueId = `notif-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     setNotifications((prev) => [
       {
-        id: `notif-${Date.now()}`,
+        id: uniqueId,
         title,
         time: 'Just now',
         read: false,

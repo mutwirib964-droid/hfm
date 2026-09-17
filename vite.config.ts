@@ -19,12 +19,24 @@ function marketPricesPlugin() {
         }
 
         try {
-          const [cfdRes, forexRes, stocksRes, binanceRes] = await Promise.allSettled([
+          const [cfdRes, forexRes, stocksRes, cryptoRes, binanceRes] = await Promise.allSettled([
             fetch('https://scanner.tradingview.com/cfd/scan', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                symbols: { tickers: ['TVC:GOLD', 'TVC:SILVER', 'TVC:USOIL', 'TVC:UKOIL'] },
+                symbols: {
+                  tickers: [
+                    'OANDA:XAUUSD',
+                    'TVC:SILVER',
+                    'FX:USOIL',
+                    'FX:UKOIL',
+                    'OANDA:NATGASUSD',
+                    'OANDA:US30USD',
+                    'OANDA:DE30EUR',
+                    'SP:SPX',
+                    'TVC:IXIC',
+                  ],
+                },
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
               }),
             }).then((r) => r.json()),
@@ -41,6 +53,9 @@ function marketPricesPlugin() {
                     'FX:AUDUSD',
                     'FX:USDCAD',
                     'FX:GBPJPY',
+                    'FX:NZDUSD',
+                    'FX:EURGBP',
+                    'FX:EURJPY',
                   ],
                 },
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
@@ -54,58 +69,90 @@ function marketPricesPlugin() {
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
               }),
             }).then((r) => r.json()),
+            fetch('https://scanner.tradingview.com/crypto/scan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                symbols: { tickers: ['BINANCE:BTCUSDT', 'BINANCE:ETHUSDT', 'BINANCE:SOLUSDT'] },
+                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
+              }),
+            }).then((r) => r.json()),
             fetch(
-              'https://api.binance.com/api/v3/ticker/price?symbols=%5B%22PAXGUSDT%22,%22BTCUSDT%22,%22ETHUSDT%22,%22SOLUSDT%22%5D'
+              'https://api.binance.com/api/v3/ticker/price?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22,%22SOLUSDT%22%5D'
             ).then((r) => r.json()),
           ]);
 
           const results: Record<string, any> = {};
 
-          if (binanceRes.status === 'fulfilled' && Array.isArray(binanceRes.value)) {
-            binanceRes.value.forEach((item: any) => {
-              const price = parseFloat(item.price);
-              if (item.symbol === 'PAXGUSDT' && price > 1000) {
-                results['XAUUSD'] = {
-                  bid: Number((price - 0.25).toFixed(2)),
-                  ask: Number((price + 0.25).toFixed(2)),
-                  close: price,
-                  spread: 0.5,
-                };
-              } else if (item.symbol === 'BTCUSDT') {
-                results['BTCUSD'] = {
-                  bid: Number((price - 3).toFixed(2)),
-                  ask: Number((price + 3).toFixed(2)),
-                  close: price,
-                  spread: 6,
-                };
-              } else if (item.symbol === 'ETHUSDT') {
-                results['ETHUSD'] = {
-                  bid: Number((price - 0.5).toFixed(2)),
-                  ask: Number((price + 0.5).toFixed(2)),
-                  close: price,
-                  spread: 1,
-                };
-              } else if (item.symbol === 'SOLUSDT') {
-                results['SOLUSD'] = {
-                  bid: Number((price - 0.05).toFixed(2)),
-                  ask: Number((price + 0.05).toFixed(2)),
-                  close: price,
-                  spread: 0.1,
+          // Crypto from TradingView scanner
+          if (cryptoRes.status === 'fulfilled' && cryptoRes.value?.data) {
+            const cryptoMap: Record<string, string> = {
+              'BINANCE:BTCUSDT': 'BTCUSD',
+              'BINANCE:ETHUSDT': 'ETHUSD',
+              'BINANCE:SOLUSDT': 'SOLUSD',
+            };
+            cryptoRes.value.data.forEach((row: any) => {
+              const sym = cryptoMap[row.s];
+              if (sym) {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + (sym === 'BTCUSD' ? 2 : sym === 'ETHUSD' ? 0.4 : 0.05);
+                const decimals = sym === 'BTCUSD' ? 2 : sym === 'ETHUSD' ? 2 : 2;
+                results[sym] = {
+                  bid: Number(bid.toFixed(decimals)),
+                  ask: Number(ask.toFixed(decimals)),
+                  close: Number(close.toFixed(decimals)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(decimals)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(decimals)),
+                  spread: Number(Math.abs(ask - bid).toFixed(decimals)),
                 };
               }
             });
           }
 
+          // Binance fallback for crypto
+          if (binanceRes.status === 'fulfilled' && Array.isArray(binanceRes.value)) {
+            binanceRes.value.forEach((item: any) => {
+              const price = parseFloat(item.price);
+              if (item.symbol === 'BTCUSDT' && !results['BTCUSD']) {
+                results['BTCUSD'] = {
+                  bid: Number((price - 1.5).toFixed(2)),
+                  ask: Number((price + 1.5).toFixed(2)),
+                  close: price,
+                  spread: 3,
+                };
+              } else if (item.symbol === 'ETHUSDT' && !results['ETHUSD']) {
+                results['ETHUSD'] = {
+                  bid: Number((price - 0.25).toFixed(2)),
+                  ask: Number((price + 0.25).toFixed(2)),
+                  close: price,
+                  spread: 0.5,
+                };
+              } else if (item.symbol === 'SOLUSDT' && !results['SOLUSD']) {
+                results['SOLUSD'] = {
+                  bid: Number((price - 0.03).toFixed(2)),
+                  ask: Number((price + 0.03).toFixed(2)),
+                  close: price,
+                  spread: 0.06,
+                };
+              }
+            });
+          }
+
+          // CFDs, Metals, Commodities, and Indices
           if (cfdRes.status === 'fulfilled' && cfdRes.value?.data) {
             cfdRes.value.data.forEach((row: any) => {
-              if (row.s === 'TVC:GOLD') {
+              if (row.s === 'OANDA:XAUUSD') {
                 const close = row.d[0];
-                const change = row.d[1] || -0.45;
+                const change = row.d[1] || 0;
                 const bid = row.d[2] || close;
-                const ask = row.d[3] || bid + 0.3;
+                const ask = row.d[3] || bid + 0.39;
                 results['XAUUSD'] = {
                   bid: Number(bid.toFixed(2)),
                   ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
                   low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
@@ -113,16 +160,115 @@ function marketPricesPlugin() {
                 };
               } else if (row.s === 'TVC:SILVER') {
                 const close = row.d[0];
-                const change = row.d[1] || -0.06;
+                const change = row.d[1] || 0;
                 const bid = row.d[2] || close;
-                const ask = row.d[3] || bid + 0.04;
+                const ask = row.d[3] || bid + 0.025;
                 results['XAGUSD'] = {
                   bid: Number(bid.toFixed(2)),
                   ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
                   low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
                   spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'FX:USOIL') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + 0.034;
+                results['USOIL'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'FX:UKOIL') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + 0.06;
+                results['UKOIL'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'OANDA:NATGASUSD') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + 0.006;
+                results['NGAS'] = {
+                  bid: Number(bid.toFixed(3)),
+                  ask: Number(ask.toFixed(3)),
+                  close: Number(close.toFixed(3)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(3)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(3)),
+                  spread: Number((Math.abs(ask - bid) * 1000).toFixed(0)),
+                };
+              } else if (row.s === 'OANDA:US30USD') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + 4;
+                results['US30'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'OANDA:DE30EUR') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close;
+                const ask = row.d[3] || bid + 2;
+                results['GER40'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'SP:SPX') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = row.d[2] || close - 0.25;
+                const ask = row.d[3] || close + 0.25;
+                results['US500'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: Number(Math.abs(ask - bid).toFixed(2)),
+                };
+              } else if (row.s === 'TVC:IXIC') {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const bid = close - 1;
+                const ask = close + 1;
+                results['NAS100'] = {
+                  bid: Number(bid.toFixed(2)),
+                  ask: Number(ask.toFixed(2)),
+                  close: Number(close.toFixed(2)),
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || close * 1.01).toFixed(2)),
+                  low24h: Number((row.d[5] || close * 0.99).toFixed(2)),
+                  spread: 2,
                 };
               }
             });
@@ -137,6 +283,9 @@ function marketPricesPlugin() {
               'FX:AUDUSD': 'AUDUSD',
               'FX:USDCAD': 'USDCAD',
               'FX:GBPJPY': 'GBPJPY',
+              'FX:NZDUSD': 'NZDUSD',
+              'FX:EURGBP': 'EURGBP',
+              'FX:EURJPY': 'EURJPY',
             };
             forexRes.value.data.forEach((row: any) => {
               const sym = symMap[row.s];

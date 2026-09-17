@@ -18,7 +18,6 @@ import {
   Type,
   Square,
   Circle,
-  BarChart2,
   RefreshCw,
 } from 'lucide-react';
 import { Instrument, Candle, Timeframe } from '../types';
@@ -67,9 +66,6 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   const [showPriceAlertModal, setShowPriceAlertModal] = useState(false);
   const [quickOrderSide, setQuickOrderSide] = useState<'BUY' | 'SELL' | null>(null);
   const [selectedSubTab, setSelectedSubTab] = useState<'info'>('info');
-
-  // Chart Engine Mode: 'canvas' (High speed with bid/ask/spread lines & custom drawing) or 'tradingview' (100% exact TradingView with full side tools)
-  const [chartMode, setChartMode] = useState<'canvas' | 'tradingview'>('canvas');
 
   // Interactive Drawing Engine State
   const [drawings, setDrawings] = useState<DrawnObject[]>([]);
@@ -202,7 +198,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   // Render high performance candlestick chart on HTML5 canvas
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || chartMode !== 'canvas') return;
+    if (!canvas) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -516,7 +512,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
       ctx.textAlign = 'center';
       ctx.fillText(`SPR: ${spreadInPoints} pts`, chartWidth + 36, spreadMidY + 3);
     }
-  }, [candles, instrument, isDarkMode, drawings, isDrawing, tempPoints, activeDrawingTool, drawingColor, chartMode]);
+  }, [candles, instrument, isDarkMode, drawings, isDrawing, tempPoints, activeDrawingTool, drawingColor]);
 
   // Market Specs
   const specs = [
@@ -579,49 +575,27 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           </div>
         </div>
 
-        {/* Right Tools & Mode Switcher */}
+        {/* Right Tools */}
         <div className="flex items-center gap-1.5">
-          {/* Chart Engine Switcher: Canvas vs TradingView Live Widget */}
-          <button
-            onClick={() => setChartMode(chartMode === 'canvas' ? 'tradingview' : 'canvas')}
-            className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all cursor-pointer flex items-center gap-1 ${
-              chartMode === 'tradingview'
-                ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
-                : isDarkMode
-                ? 'border-neutral-700 bg-neutral-800/80 text-neutral-300 hover:text-white'
-                : 'border-neutral-300 bg-neutral-100 text-neutral-700 hover:text-black'
-            }`}
-            title="Toggle between Pro Interactive Canvas and Full TradingView Chart"
-          >
-            <BarChart2 className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">
-              {chartMode === 'tradingview' ? 'TradingView Active' : 'Switch to TV'}
-            </span>
-          </button>
-
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 cursor-pointer"
-            title="Fullscreen"
+            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 cursor-pointer"
+            title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
           >
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
 
           <button
-            onClick={() => setShowDrawingModal(true)}
-            className={`p-1.5 rounded-lg border transition-colors cursor-pointer relative ${
-              activeDrawingTool
-                ? 'border-[#E51937] text-[#E51937] bg-red-500/10'
-                : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500'
-            }`}
-            title="Drawing Tools"
+            onClick={() => {
+              setDrawingNotification(
+                'Drawing toolbar is active on the left side of the chart! Click any tool to draw directly on candles.'
+              );
+              setTimeout(() => setDrawingNotification(null), 4000);
+            }}
+            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 cursor-pointer"
+            title="Drawing Tools (Available on left toolbar)"
           >
             <PenTool className="w-4 h-4" />
-            {drawings.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-[#E51937] text-white text-[9px] font-bold flex items-center justify-center">
-                {drawings.length}
-              </span>
-            )}
           </button>
 
           {/* Price Alerts */}
@@ -692,42 +666,27 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         </div>
       )}
 
-      {/* Main Chart Viewport: Canvas Mode vs TradingView Official Widget */}
-      <div className={`relative w-full ${isFullscreen ? 'h-[75vh]' : 'h-[320px] sm:h-[360px]'} bg-transparent`}>
-        {chartMode === 'canvas' ? (
-          <div className="relative w-full h-full">
-            <canvas
-              ref={canvasRef}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              className={`w-full h-full block ${
-                activeDrawingTool ? 'cursor-crosshair' : 'cursor-default'
-              }`}
-            />
-
-            {/* TradingView-style top-left overlay: OHLC & Live Spreads */}
-            <div className="absolute top-2 left-3 pointer-events-none flex flex-wrap items-center gap-2 text-[10px] font-mono opacity-85">
-              <span className="font-bold text-neutral-400">
-                Bid: <span className="text-[#E51937] font-bold">{instrument.bid.toFixed(instrument.decimals)}</span>
-              </span>
-              <span className="font-bold text-neutral-400">
-                Ask: <span className="text-blue-500 font-bold">{instrument.ask.toFixed(instrument.decimals)}</span>
-              </span>
-              <span className="px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-bold">
-                Spread: {spreadDisplay} pts
-              </span>
-            </div>
-          </div>
-        ) : (
-          <TradingViewWidget
-            symbol={instrument.symbol}
-            timeframe={timeframe}
-            onTimeframeChange={onTimeframeChange}
-            isDarkMode={isDarkMode}
-            isFullscreen={false}
-          />
-        )}
+      {/* Main Chart Viewport: Real-Time Live Chart */}
+      <div
+        className={`relative w-full transition-all duration-200 ${
+          isFullscreen
+            ? 'fixed inset-0 z-50 bg-[#111317] h-screen'
+            : 'h-[380px] sm:h-[440px] md:h-[480px]'
+        } bg-transparent`}
+      >
+        <TradingViewWidget
+          symbol={instrument.symbol}
+          timeframe={timeframe}
+          onTimeframeChange={onTimeframeChange}
+          isDarkMode={isDarkMode}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+          bid={instrument.bid}
+          ask={instrument.ask}
+          spread={instrument.spread}
+          decimals={instrument.decimals}
+          pipMultiplier={instrument.pipMultiplier}
+        />
       </div>
 
       {/* Timeframe Chips Bar */}

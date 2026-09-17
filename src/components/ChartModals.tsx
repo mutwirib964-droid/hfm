@@ -90,7 +90,7 @@ export const DrawingModal: React.FC<DrawingModalProps> = ({
         <div className="flex items-center justify-between pb-3 border-b border-neutral-100 dark:border-neutral-800">
           <div>
             <h3 className="text-lg font-bold">Drawing Tools</h3>
-            <p className="text-xs text-neutral-400">Select a TradingView tool to draw directly on canvas</p>
+            <p className="text-xs text-neutral-400">Select an interactive tool to draw directly on chart</p>
           </div>
           <div className="flex items-center gap-2">
             <button

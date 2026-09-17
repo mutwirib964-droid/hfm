@@ -22,6 +22,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
+import { Security2FAModal } from './Security2FAModal';
 
 interface MoreTabProps {
   isDarkMode: boolean;
@@ -41,6 +42,8 @@ export const MoreTab: React.FC<MoreTabProps> = ({
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [showSpreadBrackets, setShowSpreadBrackets] = useState<boolean>(true);
   const [drawdownProtection, setDrawdownProtection] = useState<boolean>(true);
+  const [is2FAModalOpen, setIs2FAModalOpen] = useState<boolean>(false);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState<boolean>(true);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -183,10 +186,10 @@ export const MoreTab: React.FC<MoreTabProps> = ({
           </div>
         </div>
 
-        {/* Section 2: Charting & TradingView Fidelity */}
+        {/* Section 2: Charting Engine Settings */}
         <div>
           <h2 className="text-xs font-bold uppercase tracking-wider text-neutral-400 mb-2.5 px-1">
-            Charting & TradingView Engine
+            Advanced Charting Engine
           </h2>
           <div
             className={`rounded-2xl border divide-y overflow-hidden ${
@@ -290,7 +293,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
 
             {/* 2FA Shield */}
             <div
-              onClick={() => showToast('Two-Factor Authentication is verified & active.')}
+              onClick={() => setIs2FAModalOpen(true)}
               className="p-3.5 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-800/40 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -303,14 +306,14 @@ export const MoreTab: React.FC<MoreTabProps> = ({
                 </div>
               </div>
               <span className="text-xs font-bold text-emerald-500 flex items-center gap-1">
-                Active
+                {twoFactorEnabled ? 'Active' : 'Off'}
                 <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
               </span>
             </div>
 
             {/* 24/7 Dedicated Support */}
             <div
-              onClick={() => showToast('Priority Trading Desk: Live Support Agent connected.')}
+              onClick={() => showToast('Trading Desk: Live Support Agent connected.')}
               className="p-3.5 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-800/40 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -318,7 +321,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
                   <Headphones className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold">VIP Trader Support</h3>
+                  <h3 className="text-sm font-bold">Dedicated Trader Support</h3>
                   <p className="text-xs text-neutral-400">24/7 Priority Execution Desk & Market Queries</p>
                 </div>
               </div>
@@ -329,12 +332,20 @@ export const MoreTab: React.FC<MoreTabProps> = ({
 
         {/* Footer info */}
         <div className="text-center pt-2 pb-6 text-xs text-neutral-400 space-y-1">
-          <p className="font-semibold">Terminal Build: v4.8.0 PRO (Equinix LD4 Edition)</p>
+          <p className="font-semibold">Terminal Build: v4.8.0 (Equinix LD4 Edition)</p>
           <p className="text-[11px] text-neutral-500">
             STP / ECN Direct Market Access • Low Latency Order Execution
           </p>
         </div>
       </div>
+
+      <Security2FAModal
+        isOpen={is2FAModalOpen}
+        onClose={() => setIs2FAModalOpen(false)}
+        isDarkMode={isDarkMode}
+        twoFactorEnabled={twoFactorEnabled}
+        onToggle2FA={setTwoFactorEnabled}
+      />
     </div>
   );
 };
