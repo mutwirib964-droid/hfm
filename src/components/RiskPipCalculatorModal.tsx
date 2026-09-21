@@ -100,21 +100,29 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
         }`}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800/80">
+        <div className={`flex items-center justify-between px-5 py-4 border-b ${
+          isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'
+        }`}>
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-amber-500/15 text-amber-400">
+            <div className="p-2 rounded-xl bg-amber-500/15 text-amber-500">
               <Calculator className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-black tracking-tight">Risk & Pip Size Calculator</h2>
-              <p className="text-xs text-neutral-400">
-                Institutional Position Sizing & Margin Requirement Engine
+              <h2 className={`text-base font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                Risk &amp; Pip Size Calculator
+              </h2>
+              <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                Institutional Position Sizing &amp; Margin Requirement Engine
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isDarkMode
+                ? 'hover:bg-neutral-800 text-neutral-400 hover:text-white'
+                : 'hover:bg-slate-100 text-slate-500 hover:text-slate-900'
+            }`}
           >
             <X className="w-5 h-5" />
           </button>
@@ -125,7 +133,7 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
           {/* Pair & Balance Selector */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="text-xs font-semibold text-neutral-400 block mb-1">
+              <label className={`text-xs font-semibold block mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
                 Instrument / Currency Pair
               </label>
               <div className="grid grid-cols-4 gap-1.5">
@@ -134,12 +142,12 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                     key={p.symbol}
                     type="button"
                     onClick={() => setSelectedSymbol(p.symbol)}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-mono font-bold transition-all ${
+                    className={`py-1.5 px-2 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
                       selectedSymbol === p.symbol
                         ? 'bg-[#E51937] text-white shadow-sm'
                         : isDarkMode
                         ? 'bg-neutral-900 text-neutral-400 hover:text-white'
-                        : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
                     }`}
                   >
                     {p.symbol}
@@ -152,12 +160,12 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                     key={p.symbol}
                     type="button"
                     onClick={() => setSelectedSymbol(p.symbol)}
-                    className={`py-1.5 px-2 rounded-lg text-xs font-mono font-bold transition-all ${
+                    className={`py-1.5 px-2 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
                       selectedSymbol === p.symbol
                         ? 'bg-[#E51937] text-white shadow-sm'
                         : isDarkMode
                         ? 'bg-neutral-900 text-neutral-400 hover:text-white'
-                        : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200'
                     }`}
                   >
                     {p.symbol}
@@ -167,16 +175,18 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-neutral-400 block mb-1">
+              <label className={`text-xs font-semibold block mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
                 Account Equity (USD)
               </label>
               <div className="relative">
-                <span className="absolute left-3 top-2.5 text-neutral-500 font-mono text-xs">$</span>
+                <span className={`absolute left-3 top-2.5 font-mono text-xs ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>$</span>
                 <input
                   type="number"
                   value={accountBalance}
                   onChange={(e) => setAccountBalance(Math.max(1, parseFloat(e.target.value) || 0))}
-                  className="w-full bg-neutral-900/90 border border-neutral-700 rounded-xl pl-7 pr-3 py-2 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#E51937]"
+                  className={`w-full border rounded-xl pl-7 pr-3 py-2 text-sm font-mono font-bold focus:outline-none focus:border-[#E51937] ${
+                    isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                  }`}
                 />
               </div>
               <div className="flex items-center gap-1.5 mt-1.5">
@@ -185,7 +195,11 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                     key={b}
                     type="button"
                     onClick={() => setAccountBalance(b)}
-                    className="text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-semibold'
+                    }`}
                   >
                     ${b >= 1000 ? `${b / 1000}k` : b}
                   </button>
@@ -199,13 +213,15 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
             {/* Risk Mode */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-semibold text-neutral-400">Risk Profile</label>
+                <label className={`text-xs font-semibold ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>Risk Profile</label>
                 <div className="flex items-center gap-1 text-[10px]">
                   <button
                     type="button"
                     onClick={() => setRiskMode('percent')}
-                    className={`px-1.5 py-0.5 rounded font-bold ${
-                      riskMode === 'percent' ? 'bg-amber-500/20 text-amber-400' : 'text-neutral-500'
+                    className={`px-1.5 py-0.5 rounded font-bold cursor-pointer ${
+                      riskMode === 'percent'
+                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+                        : isDarkMode ? 'text-neutral-500' : 'text-slate-500'
                     }`}
                   >
                     %
@@ -213,8 +229,10 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setRiskMode('cash')}
-                    className={`px-1.5 py-0.5 rounded font-bold ${
-                      riskMode === 'cash' ? 'bg-amber-500/20 text-amber-400' : 'text-neutral-500'
+                    className={`px-1.5 py-0.5 rounded font-bold cursor-pointer ${
+                      riskMode === 'cash'
+                        ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400'
+                        : isDarkMode ? 'text-neutral-500' : 'text-slate-500'
                     }`}
                   >
                     $
@@ -232,9 +250,11 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                       max="10"
                       value={riskPercent}
                       onChange={(e) => setRiskPercent(parseFloat(e.target.value) || 0)}
-                      className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-3 py-2 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#E51937]"
+                      className={`w-full border rounded-xl px-3 py-2 text-sm font-mono font-bold focus:outline-none focus:border-[#E51937] ${
+                        isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                      }`}
                     />
-                    <span className="absolute right-3 top-2.5 text-neutral-500 font-mono text-xs">%</span>
+                    <span className={`absolute right-3 top-2.5 font-mono text-xs ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>%</span>
                   </div>
                   <div className="flex items-center gap-1.5 mt-1.5">
                     {[1, 1.5, 2, 3].map((r) => (
@@ -242,8 +262,12 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                         key={r}
                         type="button"
                         onClick={() => setRiskPercent(r)}
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                          riskPercent === r ? 'bg-amber-500 text-black font-bold' : 'bg-neutral-800 text-neutral-300'
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded cursor-pointer ${
+                          riskPercent === r
+                            ? 'bg-amber-500 text-black font-bold'
+                            : isDarkMode
+                            ? 'bg-neutral-800 text-neutral-300'
+                            : 'bg-slate-100 text-slate-800 border border-slate-200'
                         }`}
                       >
                         {r}%
@@ -253,12 +277,14 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                 </div>
               ) : (
                 <div className="relative">
-                  <span className="absolute left-3 top-2.5 text-neutral-500 font-mono text-xs">$</span>
+                  <span className={`absolute left-3 top-2.5 font-mono text-xs ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>$</span>
                   <input
                     type="number"
                     value={riskCash}
                     onChange={(e) => setRiskCash(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-neutral-900 border border-neutral-700 rounded-xl pl-7 pr-3 py-2 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#E51937]"
+                    className={`w-full border rounded-xl pl-7 pr-3 py-2 text-sm font-mono font-bold focus:outline-none focus:border-[#E51937] ${
+                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                    }`}
                   />
                 </div>
               )}
@@ -266,7 +292,7 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
 
             {/* Stop Loss in Pips */}
             <div>
-              <label className="text-xs font-semibold text-neutral-400 block mb-1">
+              <label className={`text-xs font-semibold block mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
                 Stop Loss (Pips / Points)
               </label>
               <input
@@ -274,7 +300,9 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                 min="1"
                 value={stopLossPips}
                 onChange={(e) => setStopLossPips(Math.max(1, parseFloat(e.target.value) || 1))}
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-3 py-2 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#E51937]"
+                className={`w-full border rounded-xl px-3 py-2 text-sm font-mono font-bold focus:outline-none focus:border-[#E51937] ${
+                  isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                }`}
               />
               <div className="flex items-center gap-1.5 mt-1.5">
                 {[15, 20, 30, 50].map((p) => (
@@ -282,7 +310,11 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
                     key={p}
                     type="button"
                     onClick={() => setStopLossPips(p)}
-                    className="text-[10px] font-mono px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300"
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                        : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200'
+                    }`}
                   >
                     {p}p
                   </button>
@@ -292,87 +324,93 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
 
             {/* Leverage Setting */}
             <div>
-              <label className="text-xs font-semibold text-neutral-400 block mb-1">
+              <label className={`text-xs font-semibold block mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
                 Account Leverage
               </label>
               <select
                 value={leverage}
                 onChange={(e) => setLeverage(parseInt(e.target.value, 10))}
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-3 py-2 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#E51937]"
+                className={`w-full border rounded-xl px-3 py-2 text-sm font-mono font-bold focus:outline-none focus:border-[#E51937] ${
+                  isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                }`}
               >
                 <option value={100}>1:100</option>
                 <option value={200}>1:200</option>
                 <option value={500}>1:500 (Standard)</option>
                 <option value={1000}>1:1000</option>
-                <option value={2000}>1:2000 (Max HFM)</option>
+                <option value={2000}>1:2000 (Max VTM)</option>
               </select>
             </div>
           </div>
 
           {/* Real-Time Calculation Results Banner */}
-          <div className="rounded-2xl bg-gradient-to-br from-neutral-900 to-[#191D26] border border-neutral-800 p-4 shadow-xl">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 block mb-3">
+          <div className={`rounded-2xl border p-4 shadow-xl ${
+            isDarkMode
+              ? 'bg-gradient-to-br from-neutral-900 to-[#191D26] border-neutral-800 text-white'
+              : 'bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700 text-white shadow-md'
+          }`}>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300 block mb-3">
               Institutional Mathematical Output
             </span>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
               {/* Position Size */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-800">
-                <span className="text-[10px] text-neutral-400 block">Recommended Lots</span>
-                <span className="text-xl font-black font-mono text-[#E51937]">
+              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
+                <span className="text-[10px] text-neutral-300 block">Recommended Lots</span>
+                <span className="text-xl font-black font-mono text-[#ff4d67]">
                   {roundedLots.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                <span className="text-[9px] text-neutral-400 block mt-0.5">
                   Standard Lots ({roundedLots * 100000 >= 1000 ? `${(roundedLots * 100).toFixed(0)}k units` : 'Units'})
                 </span>
               </div>
 
               {/* Pip Value */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-800">
-                <span className="text-[10px] text-neutral-400 block">Pip Value ($)</span>
+              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
+                <span className="text-[10px] text-neutral-300 block">Pip Value ($)</span>
                 <span className="text-xl font-black font-mono text-emerald-400">
                   ${activePipValue.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-500 block mt-0.5">per pip movement</span>
+                <span className="text-[9px] text-neutral-400 block mt-0.5">per pip movement</span>
               </div>
 
               {/* Total Risk */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-800">
-                <span className="text-[10px] text-neutral-400 block">Capital at Risk</span>
+              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
+                <span className="text-[10px] text-neutral-300 block">Capital at Risk</span>
                 <span className="text-xl font-black font-mono text-rose-400">
                   ${riskAmountUSD.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                <span className="text-[9px] text-neutral-400 block mt-0.5">
                   {((riskAmountUSD / accountBalance) * 100).toFixed(1)}% of balance
                 </span>
               </div>
 
               {/* Required Margin */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-800">
-                <span className="text-[10px] text-neutral-400 block">Required Margin</span>
+              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
+                <span className="text-[10px] text-neutral-300 block">Required Margin</span>
                 <span className="text-xl font-black font-mono text-sky-400">
                   ${requiredMargin.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-500 block mt-0.5">at 1:{leverage}</span>
+                <span className="text-[9px] text-neutral-400 block mt-0.5">at 1:{leverage}</span>
               </div>
             </div>
 
             {/* Risk to Reward Matrix */}
-            <div className="mt-4 pt-3 border-t border-neutral-800/80">
-              <span className="text-[10px] text-neutral-400 font-bold block mb-2">
+            <div className="mt-4 pt-3 border-t border-neutral-700/60">
+              <span className="text-[10px] text-neutral-300 font-bold block mb-2">
                 Risk-To-Reward Target Projections
               </span>
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="p-2 rounded-lg bg-neutral-900/60 border border-neutral-800">
-                  <span className="text-[10px] text-neutral-400 block">1:1 Target ({stopLossPips}p)</span>
+                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
+                  <span className="text-[10px] text-neutral-300 block">1:1 Target ({stopLossPips}p)</span>
                   <span className="font-mono font-bold text-emerald-400">+${reward1to1.toFixed(2)}</span>
                 </div>
-                <div className="p-2 rounded-lg bg-neutral-900/60 border border-neutral-800">
-                  <span className="text-[10px] text-neutral-400 block">1:2 Target ({stopLossPips * 2}p)</span>
+                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
+                  <span className="text-[10px] text-neutral-300 block">1:2 Target ({stopLossPips * 2}p)</span>
                   <span className="font-mono font-bold text-emerald-400">+${reward1to2.toFixed(2)}</span>
                 </div>
-                <div className="p-2 rounded-lg bg-neutral-900/60 border border-neutral-800">
-                  <span className="text-[10px] text-neutral-400 block">1:3 Target ({stopLossPips * 3}p)</span>
+                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
+                  <span className="text-[10px] text-neutral-300 block">1:3 Target ({stopLossPips * 3}p)</span>
                   <span className="font-mono font-bold text-emerald-400">+${reward1to3.toFixed(2)}</span>
                 </div>
               </div>
@@ -381,14 +419,16 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-5 py-3 border-t border-neutral-800 flex items-center justify-between bg-neutral-950/40">
-          <span className="text-[11px] text-neutral-500 flex items-center gap-1.5">
+        <div className={`px-5 py-3 border-t flex items-center justify-between ${
+          isDarkMode ? 'border-neutral-800 bg-neutral-950/40' : 'border-slate-200 bg-slate-50'
+        }`}>
+          <span className={`text-[11px] flex items-center gap-1.5 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
             <Info className="w-3.5 h-3.5 text-neutral-400" />
             <span>Real-time local algorithmic calculations — No external dependencies</span>
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl transition-all shadow-md active:scale-95"
+            className="px-4 py-1.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
           >
             Done
           </button>

@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 
 interface TradesTabProps {
-  account: TradingAccount;
+  account: TradingAccount | null;
   positions: Position[];
   pendingOrders: PendingOrder[];
   closedTrades: ClosedTrade[];
@@ -44,7 +44,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
   return (
     <div
-      id="hfm-trades-screen"
+      id="vtm-trades-screen"
       className={`min-h-[calc(100vh-120px)] flex flex-col pb-16 transition-colors duration-200 ${
         isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
@@ -119,11 +119,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           {/* Account Summary Banner */}
           <div
             className={`px-4 py-3 border-b grid grid-cols-3 gap-2 text-xs ${
-              isDarkMode ? 'border-neutral-800 bg-neutral-900/40' : 'border-neutral-200 bg-neutral-50/60'
+              isDarkMode ? 'border-neutral-800 bg-neutral-900/40' : 'border-neutral-200 bg-slate-50'
             }`}
           >
             <div>
-              <span className="text-neutral-400 block text-[10px] uppercase">Floating P/L</span>
+              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Floating P/L</span>
               <span
                 className={`font-black text-sm ${
                   totalFloatingPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
@@ -134,13 +134,13 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             </div>
 
             <div>
-              <span className="text-neutral-400 block text-[10px] uppercase">Equity</span>
-              <span className="font-bold text-sm">${account.equity.toLocaleString()}</span>
+              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Equity</span>
+              <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.equity ?? 0).toLocaleString()}</span>
             </div>
 
             <div className="text-right">
-              <span className="text-neutral-400 block text-[10px] uppercase">Free Margin</span>
-              <span className="font-bold text-sm">${account.freeMargin.toLocaleString()}</span>
+              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Free Margin</span>
+              <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.freeMargin ?? 0).toLocaleString()}</span>
             </div>
           </div>
 
@@ -193,7 +193,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                           >
                             {pos.side} {pos.lots}
                           </span>
-                          <span className="text-[10px] text-neutral-400">#{pos.ticket}</span>
+                          <span className="text-[10px] text-slate-500 dark:text-neutral-400">#{pos.ticket}</span>
                         </div>
 
                         {/* Profit */}
@@ -206,7 +206,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between text-xs text-neutral-400 pt-1 border-t border-neutral-100 dark:border-neutral-800/80">
+                      <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 pt-1 border-t border-neutral-100 dark:border-neutral-800/80">
                         <div>
                           <span>{pos.openPrice}</span> ➔{' '}
                           <span className={isDarkMode ? 'text-white' : 'text-neutral-800'}>
@@ -313,11 +313,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                     {cl.pnl >= 0 ? '+' : ''}${cl.pnl.toFixed(2)}
                   </span>
                 </div>
-                <div className="flex items-center justify-between text-xs text-neutral-400 mt-2">
+                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 mt-2">
                   <span>
                     {cl.openPrice} ➔ {cl.closePrice}
                   </span>
-                  <span className="text-[10px] bg-neutral-100 dark:bg-neutral-800 px-1.5 py-0.5 rounded">
+                  <span className="text-[10px] bg-slate-100 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300 px-1.5 py-0.5 rounded">
                     Reason: {cl.reason}
                   </span>
                 </div>

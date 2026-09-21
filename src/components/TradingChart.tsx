@@ -894,6 +894,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             onTimeframeChange={onTimeframeChange}
             isDarkMode={isDarkMode}
             isFullscreen={isFullscreen}
+            onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+            bid={currentBid}
+            ask={currentAsk}
+            decimals={decimals}
           />
         </div>
       </div>

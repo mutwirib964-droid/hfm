@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import { VitePWA } from 'vite-plugin-pwa';
 
 function marketPricesPlugin() {
   let cachedData: any = null;
@@ -475,86 +476,86 @@ function marketPricesPlugin() {
         );
       });
 
-      // ForexFactory Latest News API endpoint
-      server.middlewares.use('/api/forexfactory-news', async (_req: any, res: any) => {
+      // Institutional Market News API endpoint (source hidden as requested)
+      const handleNewsRequest = async (_req: any, res: any) => {
         const sampleNews = [
           {
-            id: 'ff-1',
-            title: 'Gold Tests All-Time Highs Above $4,280 as Fed Easing Bets Mount',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Breaking Wire',
+            id: 'vtm-news-1',
+            title: 'Gold Tests All-Time Highs Above $4,350 as Fed Easing Bets Mount',
+            url: '#',
+            source: 'VTM Macro Dispatch',
             country: 'XAU',
             impact: 'High',
-            timestamp: Date.now() - 1000 * 60 * 18,
+            timestamp: Date.now() - 1000 * 60 * 12,
             category: 'Fundamental Analysis',
             summary:
               'Bullion capitalizes on cooling US inflation readings and safe-haven accumulation as institutional treasury yields compress across the curve.',
-            author: 'ForexFactory Market Desk',
+            author: 'Institutional Desk',
           },
           {
-            id: 'ff-2',
-            title: 'EUR/USD Steadies Near 1.0870 Ahead of Critical ECB Rate Decision',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Macro Feed',
+            id: 'vtm-news-2',
+            title: 'EUR/USD Steadies Near 1.1530 Ahead of Critical Central Bank Rate Decision',
+            url: '#',
+            source: 'Global Macro Feed',
             country: 'EUR',
             impact: 'High',
-            timestamp: Date.now() - 1000 * 60 * 45,
+            timestamp: Date.now() - 1000 * 60 * 35,
             category: 'Central Banks',
             summary:
-              'The single currency defended its weekly support floor as traders price in a 25 basis point reduction with Lagarde press conference in focus.',
-            author: 'ForexFactory Research',
+              'The single currency defended its weekly support floor as traders price in monetary policy paths with high liquidity in the European session.',
+            author: 'Senior FX Strategist',
           },
           {
-            id: 'ff-3',
-            title: 'GBP/USD Eyes 1.2950 Handle Post Solid UK Employment and Wage Metrics',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Technicals',
+            id: 'vtm-news-3',
+            title: 'GBP/USD Eyes 1.3420 Handle Post Solid UK Employment and Wage Metrics',
+            url: '#',
+            source: 'VTM Quantitative Research',
             country: 'GBP',
             impact: 'Medium',
-            timestamp: Date.now() - 1000 * 60 * 90,
+            timestamp: Date.now() - 1000 * 60 * 75,
             category: 'Technical Analysis',
             summary:
               'Sterling posted intraday gains following lower-than-anticipated unemployment claims data and sticky core wage inflation in Great Britain.',
-            author: 'ForexFactory Contributor',
+            author: 'Market Analysis Group',
           },
           {
-            id: 'ff-4',
-            title: 'USD/JPY Slips to 152.40 as BOJ Ueda Reiterates Hawkish Tightening Stance',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Asia Desk',
+            id: 'vtm-news-4',
+            title: 'USD/JPY Consolidates Near 148.50 as Asian Central Banks Signal Yield Vigilance',
+            url: '#',
+            source: 'Asia-Pacific Market Desk',
             country: 'JPY',
             impact: 'High',
-            timestamp: Date.now() - 1000 * 60 * 140,
+            timestamp: Date.now() - 1000 * 60 * 110,
             category: 'Central Banks',
             summary:
-              'Bank of Japan Governor Kazuo Ueda remarked in parliamentary testimony that policy normalisation will continue if economic metrics hit targets.',
-            author: 'ForexFactory Market Desk',
+              'Cross-currency flows tightened in Tokyo as sovereign debt volatility subsided, providing steady bid support around major technical pivot zones.',
+            author: 'Macro Strategist',
           },
           {
-            id: 'ff-5',
-            title: 'Crude Oil Bounces to $82.50 Amid Middle East Geopolitical Supply Risks',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Commodities',
+            id: 'vtm-news-5',
+            title: 'Crude Oil Advances to $82.50 Amid Strategic Energy Stockpile Rebalancing',
+            url: '#',
+            source: 'Commodities & Energy Terminal',
             country: 'OIL',
             impact: 'Medium',
-            timestamp: Date.now() - 1000 * 60 * 210,
+            timestamp: Date.now() - 1000 * 60 * 180,
             category: 'Commodities',
             summary:
-              'WTI and Brent crude futures ticked higher following reports of localized tanker disruptions and tight refinery inventory stockpiles.',
-            author: 'ForexFactory Commodities Desk',
+              'WTI and Brent crude futures ticked higher following reports of steady global demand metrics and constrained refinery inventories.',
+            author: 'Energy Research Group',
           },
           {
-            id: 'ff-6',
-            title: 'Bitcoin Holds Robust Ground Above $89,000 as Spot ETF Inflows Accelerate',
-            url: 'https://www.forexfactory.com/news',
-            source: 'ForexFactory Crypto',
+            id: 'vtm-news-6',
+            title: 'Bitcoin Holds Robust Ground Above $89,000 as Spot ETF Accumulation Expands',
+            url: '#',
+            source: 'Digital Asset Intelligence',
             country: 'BTC',
             impact: 'Low',
-            timestamp: Date.now() - 1000 * 60 * 320,
+            timestamp: Date.now() - 1000 * 60 * 240,
             category: 'Crypto Assets',
             summary:
-              'Digital asset markets experienced another net positive inflow day driven by institutional spot ETFs and institutional macro hedge funds.',
-            author: 'ForexFactory Contributor',
+              'Digital asset markets experienced another net positive inflow day driven by institutional spot ETFs and systematic macro funds.',
+            author: 'Quant Analyst',
           },
         ];
 
@@ -562,19 +563,76 @@ function marketPricesPlugin() {
         res.end(
           JSON.stringify({
             success: true,
-            provider: 'ForexFactory (www.forexfactory.com)',
+            provider: 'VTM Institutional Intelligence Terminal',
             updatedAt: new Date().toISOString(),
             articles: sampleNews,
           })
         );
-      });
+      };
+
+      server.middlewares.use('/api/market-news', handleNewsRequest);
+      server.middlewares.use('/api/forexfactory-news', handleNewsRequest);
     },
   };
 }
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss(), marketPricesPlugin()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      marketPricesPlugin(),
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: [
+          'favicon.svg',
+          'favicon.png',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ],
+        manifest: {
+          id: '/',
+          name: 'VTM Markets WebTrader',
+          short_name: 'VTM Markets',
+          description: 'Global Multi-Asset CFD Broker with Raw Spreads from 0.0 Pips, High-Speed STP Execution, and Advanced WebTrader Terminal.',
+          theme_color: '#0B0E14',
+          background_color: '#0B0E14',
+          display: 'standalone',
+          start_url: '/',
+          scope: '/',
+          orientation: 'any',
+          icons: [
+            {
+              src: '/pwa-192x192.png',
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+        },
+        devOptions: {
+          enabled: true,
+          type: 'module',
+        },
+      }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

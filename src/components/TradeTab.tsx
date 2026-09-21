@@ -25,7 +25,9 @@ import {
   Zap,
   Activity,
   Layers,
+  Lock,
 } from 'lucide-react';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 
 interface TradeTabProps {
   instruments: Instrument[];
@@ -36,7 +38,7 @@ interface TradeTabProps {
   onTimeframeChange: (tf: Timeframe) => void;
   chartType: ChartType;
   onChartTypeChange: (type: ChartType) => void;
-  account: TradingAccount;
+  account: TradingAccount | null;
   positions: Position[];
   pendingOrders: PendingOrder[];
   closedTrades: ClosedTrade[];
@@ -109,7 +111,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
 
   // Calculate Pip value and required margin
-  const leverageNum = parseInt(account.leverage.split(':')[1] || '500', 10);
+  const leverageNum = parseInt(account?.leverage ? account.leverage.split(':')[1] || '500' : '500', 10);
   const contractSize = currentInstrument.category === 'Forex' ? 100000 : 100;
   const notionalValue = lots * contractSize * currentInstrument.ask;
   const requiredMargin = notionalValue / leverageNum;
@@ -123,7 +125,20 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   };
 
   const handleExecute = (side: 'BUY' | 'SELL') => {
+    const marketStatus = checkInstrumentMarketHours(
+      currentInstrument.symbol,
+      currentInstrument.category
+    );
+
     if (orderType === 'MARKET') {
+      if (!marketStatus.isOpen) {
+        setFeedbackMsg(
+          `Market Closed for ${currentInstrument.symbol}: ${marketStatus.reason}. Continuous trading active on 24/7 Crypto.`
+        );
+        setTimeout(() => setFeedbackMsg(null), 4500);
+        return;
+      }
+
       const sl = useSL && slPrice ? parseFloat(slPrice) : null;
       const tp = useTP && tpPrice ? parseFloat(tpPrice) : null;
       onExecuteMarketOrder({
@@ -136,6 +151,14 @@ export const TradeTab: React.FC<TradeTabProps> = ({
       setFeedbackMsg(`Executed ${side} ${lots} lots on ${currentInstrument.symbol}`);
       setTimeout(() => setFeedbackMsg(null), 3500);
     } else {
+      if (!marketStatus.isOpen) {
+        setFeedbackMsg(
+          `Market Closed for ${currentInstrument.symbol}: Cannot place pending order while market is closed (${marketStatus.reason}).`
+        );
+        setTimeout(() => setFeedbackMsg(null), 4500);
+        return;
+      }
+
       const target = parseFloat(targetPrice);
       if (isNaN(target) || target <= 0) return;
       const sl = useSL && slPrice ? parseFloat(slPrice) : null;
@@ -156,6 +179,10 @@ export const TradeTab: React.FC<TradeTabProps> = ({
 
   // Open positions total floating PnL
   const totalFloatingPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+  const curMarketStatus = checkInstrumentMarketHours(
+    currentInstrument.symbol,
+    currentInstrument.category
+  );
 
   // Dynamic Highlight Styling for Buy / Sell boxes based on tick direction and user action
   const isPriceUp = tickDirection === 'UP';
@@ -163,7 +190,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
 
   return (
     <div
-      id="hfm-trade-tab"
+      id="vtm-trade-tab"
       className={`flex flex-col w-full pb-20 space-y-3 px-2 sm:px-4 pt-2 transition-colors duration-200 ${
         isDarkMode ? 'text-neutral-100' : 'text-slate-900'
       }`}
@@ -176,73 +203,85 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             : 'bg-white border-slate-200 shadow-sm'
         }`}
       >
-        {/* Symbol Dropdown */}
-        <div className="relative">
-          <button
-            id="trade-symbol-selector"
-            onClick={() => setShowSymbolDropdown(!showSymbolDropdown)}
-            className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg transition-colors text-left ${
-              isDarkMode
-                ? 'bg-[#20242E] hover:bg-[#282E3A] border-neutral-700/70 text-white'
-                : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-900'
-            }`}
-          >
-            <div className="flex flex-col">
-              <span className="font-bold text-sm tracking-wide">
-                {currentInstrument.symbol}
-              </span>
-              {/* On mobile: subtle raw crowded wording */}
-              <span
-                className={`text-[10px] ${
-                  isMobileFrame
-                    ? 'text-neutral-500 font-mono -mt-0.5 tracking-tight'
-                    : 'text-neutral-400'
-                }`}
-              >
-                {currentInstrument.name}
-              </span>
-            </div>
-            <ChevronDown
-              className={`w-4 h-4 text-neutral-400 transition-transform ${
-                showSymbolDropdown ? 'rotate-180' : ''
-              }`}
-            />
-          </button>
-
-          {showSymbolDropdown && (
-            <div
-              className={`absolute left-0 top-full mt-2 w-64 border rounded-xl shadow-2xl p-2 z-50 max-h-72 overflow-y-auto ${
-                isDarkMode ? 'bg-[#1E222A] border-neutral-700' : 'bg-white border-slate-300'
+        {/* Symbol Dropdown & Status */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <button
+              id="trade-symbol-selector"
+              onClick={() => setShowSymbolDropdown(!showSymbolDropdown)}
+              className={`flex items-center gap-2 px-3 py-1.5 border rounded-lg transition-colors text-left ${
+                isDarkMode
+                  ? 'bg-[#20242E] hover:bg-[#282E3A] border-neutral-700/70 text-white'
+                  : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-900'
               }`}
             >
-              {instruments.map((inst) => (
-                <div
-                  key={inst.symbol}
-                  onClick={() => {
-                    onSelectSymbol(inst.symbol);
-                    setShowSymbolDropdown(false);
-                    setTargetPrice(inst.bid.toString());
-                  }}
-                  className={`p-2 rounded-lg flex items-center justify-between cursor-pointer text-xs transition-colors ${
-                    inst.symbol === currentInstrument.symbol
-                      ? isDarkMode
-                        ? 'bg-neutral-800/90 text-[#E51937] font-bold'
-                        : 'bg-red-50 text-[#E51937] font-bold'
-                      : isDarkMode
-                      ? 'text-neutral-300 hover:bg-neutral-800'
-                      : 'text-slate-700 hover:bg-slate-100'
+              <div className="flex flex-col">
+                <span className="font-bold text-sm tracking-wide">
+                  {currentInstrument.symbol}
+                </span>
+                {/* On mobile: subtle raw crowded wording */}
+                <span
+                  className={`text-[10px] ${
+                    isMobileFrame
+                      ? 'text-neutral-500 font-mono -mt-0.5 tracking-tight'
+                      : 'text-neutral-400'
                   }`}
                 >
-                  <div className="flex flex-col">
-                    <span className="font-semibold">{inst.symbol}</span>
-                    <span className="text-[10px] text-neutral-400">{inst.name}</span>
+                  {currentInstrument.name}
+                </span>
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-neutral-400 transition-transform ${
+                  showSymbolDropdown ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {showSymbolDropdown && (
+              <div
+                className={`absolute left-0 top-full mt-2 w-64 border rounded-xl shadow-2xl p-2 z-50 max-h-72 overflow-y-auto ${
+                  isDarkMode ? 'bg-[#1E222A] border-neutral-700' : 'bg-white border-slate-300'
+                }`}
+              >
+                {instruments.map((inst) => (
+                  <div
+                    key={inst.symbol}
+                    onClick={() => {
+                      onSelectSymbol(inst.symbol);
+                      setShowSymbolDropdown(false);
+                      setTargetPrice(inst.bid.toString());
+                    }}
+                    className={`p-2 rounded-lg flex items-center justify-between cursor-pointer text-xs transition-colors ${
+                      inst.symbol === currentInstrument.symbol
+                        ? isDarkMode
+                          ? 'bg-neutral-800/90 text-[#E51937] font-bold'
+                          : 'bg-red-50 text-[#E51937] font-bold'
+                        : isDarkMode
+                        ? 'text-neutral-300 hover:bg-neutral-800'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="flex flex-col">
+                      <span className="font-semibold">{inst.symbol}</span>
+                      <span className="text-[10px] text-neutral-400">{inst.name}</span>
+                    </div>
+                    <span className="font-mono text-[11px]">
+                      {inst.ask.toFixed(inst.decimals)}
+                    </span>
                   </div>
-                  <span className="font-mono text-[11px]">
-                    {inst.ask.toFixed(inst.decimals)}
-                  </span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {!curMarketStatus.isOpen && (
+            <span
+              className="text-[10px] font-bold px-2 py-1 rounded-lg bg-amber-500/15 text-amber-500 border border-amber-500/30 flex items-center gap-1 shadow-2xs"
+              title={`Closed: ${curMarketStatus.reason}. Continuous trading on 24/7 Crypto.`}
+            >
+              <Clock className="w-3 h-3" />
+              <span>Closed ({curMarketStatus.nextSession})</span>
+            </span>
           )}
         </div>
 
@@ -614,6 +653,29 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           </div>
         </div>
 
+        {/* Market Closed Warning Alert */}
+        {!curMarketStatus.isOpen && (
+          <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+              <div>
+                <span className="font-bold text-amber-400">Market is Closed ({currentInstrument.symbol})</span>
+                <span className="text-neutral-400 block sm:inline sm:ml-1.5">• {curMarketStatus.reason}</span>
+                {curMarketStatus.nextOpenTime && (
+                  <span className="text-neutral-300 block text-[11px] mt-0.5">Reopens: {curMarketStatus.nextOpenTime}</span>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onSelectSymbol('BTCUSD')}
+              className="px-2.5 py-1 text-[11px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg border border-amber-500/40 transition-colors whitespace-nowrap cursor-pointer"
+            >
+              Trade 24/7 Crypto (BTCUSD) →
+            </button>
+          </div>
+        )}
+
         {/* Big Dual Execution Buttons with Requested Green / Red Box Highlights */}
         {/* "if its buy to highlight green box and red to price goinng down" */}
         <div className="grid grid-cols-2 gap-3 pt-1">
@@ -622,19 +684,27 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             id="trade-btn-sell"
             onClick={() => handleExecute('SELL')}
             className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-all border ${
-              isPriceDown
-                ? 'bg-gradient-to-b from-[#E51937] to-[#B30F24] border-red-400 ring-4 ring-rose-500/70 shadow-[0_0_25px_rgba(229,25,55,0.7)] animate-pulse'
-                : 'bg-gradient-to-b from-[#C5192D] to-[#990F20] hover:from-[#d61e34] hover:to-[#a91225] border-red-700/50 shadow-lg shadow-red-950/40'
+              !curMarketStatus.isOpen
+                ? 'bg-neutral-800 border-neutral-700 opacity-60 cursor-not-allowed shadow-none'
+                : isPriceDown
+                ? 'bg-gradient-to-b from-[#E51937] to-[#B30F24] border-red-400 ring-4 ring-rose-500/70 shadow-[0_0_25px_rgba(229,25,55,0.7)] animate-pulse cursor-pointer'
+                : 'bg-gradient-to-b from-[#C5192D] to-[#990F20] hover:from-[#d61e34] hover:to-[#a91225] border-red-700/50 shadow-lg shadow-red-950/40 cursor-pointer'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-red-100">
-              {isPriceDown && <TrendingDown className="w-3.5 h-3.5 text-white" />}
-              <span>{orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}</span>
+              {!curMarketStatus.isOpen ? (
+                <span className="flex items-center gap-1 text-neutral-300"><Lock className="w-3 h-3" /> Market Closed</span>
+              ) : (
+                <>
+                  {isPriceDown && <TrendingDown className="w-3.5 h-3.5 text-white" />}
+                  <span>{orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}</span>
+                </>
+              )}
             </div>
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.bid.toFixed(currentInstrument.decimals)}
             </span>
-            {isPriceDown && (
+            {curMarketStatus.isOpen && isPriceDown && (
               <span className="text-[9px] bg-red-950/80 px-1.5 py-0.2 rounded font-mono font-bold text-red-200 mt-0.5 border border-red-400/50">
                 PRICE FALLING ▼
               </span>
@@ -646,19 +716,27 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             id="trade-btn-buy"
             onClick={() => handleExecute('BUY')}
             className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-all border ${
-              isPriceUp
-                ? 'bg-gradient-to-b from-[#00C076] to-[#009E60] border-emerald-300 ring-4 ring-emerald-500/70 shadow-[0_0_25px_rgba(0,192,118,0.7)] animate-pulse'
-                : 'bg-gradient-to-b from-[#009E60] to-[#007A4A] hover:from-[#00b56e] hover:to-[#008d55] border-emerald-600/50 shadow-lg shadow-emerald-950/40'
+              !curMarketStatus.isOpen
+                ? 'bg-neutral-800 border-neutral-700 opacity-60 cursor-not-allowed shadow-none'
+                : isPriceUp
+                ? 'bg-gradient-to-b from-[#00C076] to-[#009E60] border-emerald-300 ring-4 ring-emerald-500/70 shadow-[0_0_25px_rgba(0,192,118,0.7)] animate-pulse cursor-pointer'
+                : 'bg-gradient-to-b from-[#009E60] to-[#007A4A] hover:from-[#00b56e] hover:to-[#008d55] border-emerald-600/50 shadow-lg shadow-emerald-950/40 cursor-pointer'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-emerald-100">
-              {isPriceUp && <TrendingUp className="w-3.5 h-3.5 text-white" />}
-              <span>{orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}</span>
+              {!curMarketStatus.isOpen ? (
+                <span className="flex items-center gap-1 text-neutral-300"><Lock className="w-3 h-3" /> Market Closed</span>
+              ) : (
+                <>
+                  {isPriceUp && <TrendingUp className="w-3.5 h-3.5 text-white" />}
+                  <span>{orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}</span>
+                </>
+              )}
             </div>
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.ask.toFixed(currentInstrument.decimals)}
             </span>
-            {isPriceUp && (
+            {curMarketStatus.isOpen && isPriceUp && (
               <span className="text-[9px] bg-emerald-950/80 px-1.5 py-0.2 rounded font-mono font-bold text-emerald-200 mt-0.5 border border-emerald-400/50">
                 BUY HIGHLIGHT ▲
               </span>
@@ -800,51 +878,39 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                             isBuy ? 'bg-[#00C076]' : 'bg-[#FF334B]'
                           }`}
                         />
-                        <div className="flex flex-col">
-                          <div
-                            className={`flex items-center gap-1.5 ${
-                              isMobileFrame ? '-space-x-1' : ''
-                            }`}
-                          >
-                            <span className="font-bold text-sm">{pos.symbol}</span>
+                        <div className="flex flex-col min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-sm text-slate-900 dark:text-white">{pos.symbol}</span>
                             <span
-                              className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                              className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                                 isBuy
-                                  ? 'bg-emerald-500/20 text-emerald-500'
-                                  : 'bg-rose-500/20 text-rose-500'
-                              } ${isMobileFrame ? 'relative z-10 -ml-1' : ''}`}
+                                  ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-rose-500/20 text-rose-600 dark:text-rose-400'
+                              }`}
                             >
                               {pos.side} {pos.lots}
                             </span>
-                            <span
-                              className={`text-[10px] text-neutral-500 font-mono ${
-                                isMobileFrame ? 'text-[9px] -ml-0.5' : ''
-                              }`}
-                            >
+                            <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-mono">
                               #{pos.ticket}
                             </span>
                           </div>
 
-                          <div
-                            className={`flex items-center gap-2 text-[11px] font-mono mt-0.5 text-neutral-400 ${
-                              isMobileFrame ? 'gap-1 tracking-tighter' : ''
-                            }`}
-                          >
+                          <div className="flex items-center gap-2 text-[11px] font-mono mt-0.5 text-slate-500 dark:text-neutral-400 flex-wrap">
                             <span>Open: {pos.openPrice}</span>
                             <span>→</span>
-                            <span className={isDarkMode ? 'text-white' : 'text-slate-900'}>
+                            <span className={`font-semibold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                               Now: {pos.currentPrice}
                             </span>
-                            {pos.sl && <span>SL: {pos.sl}</span>}
-                            {pos.tp && <span>TP: {pos.tp}</span>}
+                            {pos.sl && <span className="text-rose-500">SL: {pos.sl}</span>}
+                            {pos.tp && <span className="text-emerald-600 dark:text-emerald-400">TP: {pos.tp}</span>}
                           </div>
                         </div>
                       </div>
 
                       {/* Right: Profit & Close Button */}
-                      <div className="flex items-center justify-between sm:justify-end gap-3 pt-1 sm:pt-0 border-t sm:border-t-0 border-neutral-800">
+                      <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200 dark:border-neutral-800">
                         <div className="text-right">
-                          <span className="text-[10px] text-neutral-500 block">Floating Profit</span>
+                          <span className="text-[10px] text-slate-500 dark:text-neutral-400 block font-medium">Floating Profit</span>
                           <span
                             className={`text-sm font-mono font-bold ${
                               pos.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'

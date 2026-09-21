@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { HFMLogo } from './HFMLogo';
+import { VTMLogo } from './VTMLogo';
 import { TradingAccount, ActiveTab } from '../types';
 import {
   ChevronDown,
@@ -15,11 +15,17 @@ import {
   RefreshCw,
   X,
   Radio,
+  LogOut,
+  User,
+  Wallet,
+  Download,
 } from 'lucide-react';
+import { UserAuthProfile } from '../types/botTypes';
 
 interface HeaderProps {
   accounts: TradingAccount[];
-  selectedAccount: TradingAccount;
+  selectedAccount: TradingAccount | null;
+  walletBalance?: number;
   onSelectAccount: (acc: TradingAccount) => void;
   onOpenDeposit: () => void;
   onOpenNewAccount: () => void;
@@ -34,11 +40,16 @@ interface HeaderProps {
   notifications: Array<{ id: string; title: string; time: string; read: boolean }>;
   onMarkNotificationsRead: () => void;
   onOpenMenuDrawer?: () => void;
+  currentUser?: UserAuthProfile | null;
+  onSignOut?: () => void;
+  onOpenInstall?: () => void;
+  isInstalled?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   accounts,
   selectedAccount,
+  walletBalance = 0,
   onSelectAccount,
   onOpenDeposit,
   onOpenNewAccount,
@@ -53,6 +64,10 @@ export const Header: React.FC<HeaderProps> = ({
   notifications,
   onMarkNotificationsRead,
   onOpenMenuDrawer,
+  currentUser,
+  onSignOut,
+  onOpenInstall,
+  isInstalled = false,
 }) => {
   const [showAccountMenu, setShowAccountMenu] = useState(false);
   const [showNotificationDrawer, setShowNotificationDrawer] = useState(false);
@@ -62,19 +77,20 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header
       id="hfm-main-header"
-      className={`sticky top-0 z-40 w-full border-b px-2.5 sm:px-4 py-2 flex items-center justify-between shadow-xs transition-colors duration-200 ${
+      className={`sticky top-0 z-40 w-full border-b px-2 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between shadow-xs transition-colors duration-200 ${
         isDarkMode
           ? 'bg-[#111317] border-neutral-800 text-white'
           : 'bg-white border-neutral-200 text-neutral-900 shadow-xs'
       }`}
     >
-      {/* Left: Hamburger Menu & HFM Logo */}
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      {/* Left: Hamburger Menu & VTM Logo */}
+      <div className="flex items-center gap-1 sm:gap-2 shrink-0">
         {onOpenMenuDrawer && (
           <button
             onClick={onOpenMenuDrawer}
-            className="p-1.5 -ml-1 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer"
+            className="p-1.5 -ml-0.5 rounded-lg text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 cursor-pointer transition-colors"
             title="Open Menu"
+            aria-label="Open navigation menu"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="4" y1="6" x2="20" y2="6" />
@@ -86,76 +102,105 @@ export const Header: React.FC<HeaderProps> = ({
 
         <button
           onClick={() => setActiveTab('markets')}
-          className="flex items-center gap-2 focus:outline-none cursor-pointer"
+          className="flex items-center gap-1.5 focus:outline-none cursor-pointer"
         >
-          <HFMLogo size="sm" showSubtitle={false} />
+          <VTMLogo size="sm" isDarkMode={isDarkMode} />
         </button>
       </div>
 
-      {/* Center: Active Trading Account Dropdown Switcher */}
-      <div className="relative">
-        <button
-          id="account-selector-btn"
-          onClick={() => setShowAccountMenu(!showAccountMenu)}
-          className={`flex items-center gap-2 px-2.5 py-1.5 border rounded-lg text-left transition-colors ${
-            isDarkMode
-              ? 'bg-[#1A1D23] hover:bg-[#22262E] border-neutral-700/70 text-white'
-              : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-900'
-          }`}
-        >
-          <div className="flex flex-col">
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                  selectedAccount.type === 'Live'
-                    ? 'bg-[#E51937] text-white'
-                    : 'bg-amber-500 text-black'
-                }`}
-              >
-                {selectedAccount.type}
-              </span>
-              <span className="text-xs font-semibold">
-                #{selectedAccount.accountNumber}
-              </span>
-              <span className="text-[10px] text-neutral-400 hidden xs:inline">
-                ({selectedAccount.tier})
-              </span>
+      {/* Center: Active Trading Account Dropdown Switcher (Optimized & High-Visibility on Mobile) */}
+      <div className="relative mx-1 sm:mx-2 shrink min-w-0">
+        {!selectedAccount || accounts.length === 0 ? (
+          <div className="flex items-center gap-1 sm:gap-2">
+            <div
+              className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 sm:py-1.5 border rounded-xl text-left transition-colors ${
+                isDarkMode
+                  ? 'bg-[#1A1D23] border-neutral-700/70 text-white'
+                  : 'bg-white border-slate-300 text-slate-900 shadow-xs'
+              }`}
+            >
+              <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-500 shrink-0" />
+              <div className="flex flex-col">
+                <span className="text-[8px] sm:text-[9px] uppercase font-bold text-neutral-400 leading-none">Wallet</span>
+                <span className="text-[11px] sm:text-xs font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  ${(walletBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-[9px] text-neutral-400 font-sans">USD</span>
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <span className="text-xs font-bold tracking-tight">
-                ${selectedAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-              </span>
-              <span className="text-[10px] text-neutral-400 font-mono">
-                {selectedAccount.currency}
-              </span>
-            </div>
+            <button
+              id="header-open-acc-btn"
+              onClick={onOpenNewAccount}
+              className="flex items-center gap-1 px-2 sm:px-2.5 py-1 sm:py-1.5 bg-[#E51937] hover:bg-[#c9142f] active:scale-95 text-white text-[11px] sm:text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
+              title="Open Live or Demo Trading Account"
+            >
+              <PlusCircle className="w-3.5 h-3.5" />
+              <span className="hidden xs:inline">Open Account</span>
+            </button>
           </div>
-          <ChevronDown
-            className={`w-4 h-4 text-neutral-400 transition-transform ${
-              showAccountMenu ? 'rotate-180' : ''
+        ) : (
+          <button
+            id="account-selector-btn"
+            onClick={() => setShowAccountMenu(!showAccountMenu)}
+            className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 sm:py-1.5 border rounded-xl text-left transition-all active:scale-[0.98] ${
+              isDarkMode
+                ? 'bg-[#1A1D23] hover:bg-[#22262E] border-neutral-700/80 text-white'
+                : 'bg-slate-100 hover:bg-slate-200/90 border-slate-300 text-slate-900 shadow-xs'
             }`}
-          />
-        </button>
+          >
+            <div className="flex flex-col min-w-0 leading-tight">
+              <div className="flex items-center gap-1 sm:gap-1.5">
+                <span
+                  className={`text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded leading-none ${
+                    selectedAccount.type === 'Live'
+                      ? 'bg-[#E51937] text-white shadow-xs'
+                      : 'bg-amber-500 text-black font-extrabold'
+                  }`}
+                >
+                  {selectedAccount.type}
+                </span>
+                <span className="text-[11px] sm:text-xs font-bold font-mono tracking-tight truncate">
+                  #{selectedAccount.accountNumber}
+                </span>
+                <span className="text-[10px] text-neutral-400 hidden md:inline">
+                  ({selectedAccount.tier})
+                </span>
+              </div>
+              <div className="flex items-center gap-1 mt-0.5">
+                <span className="text-xs sm:text-sm font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
+                  ${selectedAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className="text-[9px] sm:text-[10px] text-neutral-400 font-sans font-semibold">
+                  {selectedAccount.currency}
+                </span>
+              </div>
+            </div>
+            <ChevronDown
+              className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-neutral-400 shrink-0 transition-transform duration-200 ${
+                showAccountMenu ? 'rotate-180' : ''
+              }`}
+            />
+          </button>
+        )}
 
-        {/* Account Selector Dropdown */}
-        {showAccountMenu && (
+        {/* Account Selector Dropdown - Mobile Responsive Sheet/Dropdown */}
+        {showAccountMenu && selectedAccount && (
           <div
             id="account-dropdown-menu"
-            className={`absolute left-1/2 -translate-x-1/2 top-full mt-2 w-72 border rounded-xl shadow-2xl p-2.5 z-50 text-xs ${
+            className={`fixed sm:absolute left-3 right-3 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 top-13 sm:top-full sm:mt-2 sm:w-72 border rounded-xl shadow-2xl p-2.5 z-50 text-xs ${
               isDarkMode
                 ? 'bg-[#1A1D24] border-neutral-700/80 text-white'
                 : 'bg-white border-slate-300 text-slate-900'
             }`}
           >
-            <div className="flex items-center justify-between pb-2 border-b border-neutral-700/50 mb-2">
-              <span className="font-semibold text-neutral-400">My Trading Accounts</span>
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-700/50 mb-2">
+              <span className="font-semibold text-slate-600 dark:text-neutral-400">My Trading Accounts</span>
               <button
                 id="btn-open-new-acc"
                 onClick={() => {
                   setShowAccountMenu(false);
                   onOpenNewAccount();
                 }}
-                className="flex items-center gap-1 text-[11px] font-bold text-[#E51937] hover:underline"
+                className="flex items-center gap-1 text-[11px] font-bold text-[#E51937] hover:underline cursor-pointer"
               >
                 <PlusCircle className="w-3.5 h-3.5" />
                 <span>Open New</span>
@@ -164,7 +209,7 @@ export const Header: React.FC<HeaderProps> = ({
 
             <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
               {accounts.map((acc) => {
-                const isSelected = acc.id === selectedAccount.id;
+                const isSelected = selectedAccount ? acc.id === selectedAccount.id : false;
                 return (
                   <div
                     key={acc.id}
@@ -179,7 +224,7 @@ export const Header: React.FC<HeaderProps> = ({
                           : 'bg-red-50 border-[#E51937]'
                         : isDarkMode
                         ? 'bg-neutral-900/60 border-neutral-800 hover:border-neutral-700'
-                        : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                        : 'bg-slate-50 border-slate-200 hover:border-slate-300 text-slate-900'
                     }`}
                   >
                     <div className="flex items-center justify-between">
@@ -192,16 +237,16 @@ export const Header: React.FC<HeaderProps> = ({
                           {acc.type}
                         </span>
                         <span className="font-semibold">#{acc.accountNumber}</span>
-                        <span className="text-[10px] text-neutral-400">({acc.tier})</span>
+                        <span className="text-[10px] text-slate-500 dark:text-neutral-400">({acc.tier})</span>
                       </div>
                       {isSelected && <CheckCircle2 className="w-4 h-4 text-[#E51937]" />}
                     </div>
 
                     <div className="flex items-center justify-between mt-1 text-[11px]">
-                      <span className="text-neutral-400">
-                        Lev: <span className="text-neutral-300">{acc.leverage}</span>
+                      <span className="text-slate-500 dark:text-neutral-400">
+                        Lev: <span className="font-semibold text-slate-800 dark:text-neutral-300">{acc.leverage}</span>
                       </span>
-                      <span className="font-bold font-mono">
+                      <span className="font-bold font-mono text-slate-900 dark:text-white">
                         ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                       </span>
                     </div>
@@ -210,7 +255,7 @@ export const Header: React.FC<HeaderProps> = ({
               })}
             </div>
 
-            {selectedAccount.type === 'Demo' && (
+            {selectedAccount?.type === 'Demo' && (
               <div className="mt-2 pt-2 border-t border-neutral-700/50">
                 <button
                   id="reset-demo-balance-btn"
@@ -232,15 +277,16 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Right Controls: Deposit, Light/Dark Theme, View Mode & Notifications */}
-      <div className="flex items-center gap-1.5 sm:gap-2">
-        {/* Quick Deposit Pill Button */}
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        {/* Quick Deposit Pill Button - High Priority on Mobile */}
         <button
           id="header-deposit-btn"
           onClick={onOpenDeposit}
-          className="flex items-center gap-1 px-3 py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer"
+          className="flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
+          title="Deposit Funds"
         >
           <PlusCircle className="w-3.5 h-3.5" />
-          <span>Deposit</span>
+          <span className="text-[11px] sm:text-xs">Deposit</span>
         </button>
 
         {/* Light / Dark Mode Toggle */}
@@ -248,21 +294,34 @@ export const Header: React.FC<HeaderProps> = ({
           id="theme-toggle-btn"
           onClick={onToggleTheme}
           title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          className={`p-1.5 rounded-lg transition-colors border ${
+          className={`p-1.5 sm:p-2 rounded-lg transition-colors border shrink-0 cursor-pointer ${
             isDarkMode
               ? 'bg-neutral-800 hover:bg-neutral-700 text-amber-400 border-neutral-700/60'
               : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
           }`}
         >
-          {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          {isDarkMode ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
         </button>
+
+        {/* PWA Install Button (Responsive: visible on sm+ screens; also inside Drawer for mobile) */}
+        {onOpenInstall && (
+          <button
+            id="pwa-install-header-btn"
+            onClick={onOpenInstall}
+            title={isInstalled ? 'VTM Markets App Installed' : 'Install VTM Markets App'}
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all bg-gradient-to-r from-[#E51937]/15 to-red-500/20 hover:from-[#E51937]/25 hover:to-red-500/30 border-red-500/40 text-red-500 shrink-0 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="text-[11px]">{isInstalled ? 'App Ready' : 'Install App'}</span>
+          </button>
+        )}
 
         {/* 1-Click Trading Toggle */}
         <button
           id="one-click-trading-btn"
           title={`One-Click Trading: ${oneClickTrading ? 'Enabled' : 'Disabled'}`}
           onClick={onToggleOneClick}
-          className={`hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+          className={`hidden md:flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-semibold transition-colors shrink-0 cursor-pointer ${
             oneClickTrading
               ? 'bg-amber-500/15 border-amber-500/40 text-amber-500'
               : isDarkMode
@@ -274,12 +333,12 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="text-[11px]">1-Click</span>
         </button>
 
-        {/* Mobile Mockup vs Desktop Terminal Switcher */}
+        {/* Mobile Mockup vs Desktop Terminal Switcher (Shown only on desktop screens where simulation makes sense) */}
         <button
           id="toggle-view-mode-btn"
           onClick={onToggleMobileFrame}
-          title={isMobileFrame ? 'Switch to Full WebTrader View' : 'Switch to HFM Mobile App View'}
-          className={`p-1.5 rounded-lg transition-colors border ${
+          title={isMobileFrame ? 'Switch to Full WebTrader View' : 'Switch to VTM Mobile App View'}
+          className={`hidden lg:flex p-1.5 rounded-lg transition-colors border shrink-0 cursor-pointer ${
             isDarkMode
               ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border-neutral-700/60'
               : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
@@ -293,20 +352,21 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Notifications Bell */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             id="notifications-bell-btn"
             onClick={() => {
               setShowNotificationDrawer(!showNotificationDrawer);
               if (unreadCount > 0) onMarkNotificationsRead();
             }}
-            className={`p-1.5 rounded-lg transition-colors border relative ${
+            className={`p-1.5 sm:p-2 rounded-lg transition-colors border relative shrink-0 cursor-pointer ${
               isDarkMode
                 ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border-neutral-700/60'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
             }`}
+            title="Notifications"
           >
-            <Bell className="w-4 h-4" />
+            <Bell className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {unreadCount > 0 && (
               <span className="absolute -top-1 -right-1 w-4 h-4 bg-[#E51937] text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-pulse">
                 {unreadCount}
@@ -314,21 +374,21 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </button>
 
-          {/* Notifications Drawer */}
+          {/* Notifications Drawer - Mobile Responsive */}
           {showNotificationDrawer && (
             <div
-              className={`absolute right-0 top-full mt-2 w-80 border rounded-xl shadow-2xl p-3 z-50 text-xs ${
+              className={`fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-13 sm:top-full sm:mt-2 sm:w-80 border rounded-xl shadow-2xl p-3 z-50 text-xs ${
                 isDarkMode ? 'bg-[#1A1D24] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
               }`}
             >
-              <div className="flex items-center justify-between pb-2 border-b border-neutral-700/50">
-                <span className="font-bold flex items-center gap-1.5">
+              <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-700/50">
+                <span className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white">
                   <Bell className="w-3.5 h-3.5 text-[#E51937]" />
-                  Notifications & Alerts
+                  Notifications &amp; Alerts
                 </span>
                 <button
                   onClick={() => setShowNotificationDrawer(false)}
-                  className="text-neutral-400 hover:text-white"
+                  className="text-slate-400 hover:text-slate-900 dark:text-neutral-400 dark:hover:text-white cursor-pointer p-1"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -354,6 +414,44 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           )}
         </div>
+
+        {/* User Profile & Sign Out Button (Visible on sm+ screens; on mobile, available in Menu Drawer) */}
+        {onSignOut && (
+          <div
+            className={`hidden sm:flex items-center gap-1.5 pl-1 sm:pl-2 border-l shrink-0 ${
+              isDarkMode ? 'border-neutral-700/60' : 'border-slate-300'
+            }`}
+          >
+            <div
+              className={`hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-xl border text-xs transition-colors ${
+                isDarkMode
+                  ? 'bg-neutral-800/60 border-neutral-700/60 text-neutral-200'
+                  : 'bg-slate-100 border-slate-300 text-slate-800 shadow-xs'
+              }`}
+              title={`Logged in as ${currentUser?.name || 'Trader'}`}
+            >
+              <div className="w-5 h-5 rounded-full bg-[#E51937] text-white flex items-center justify-center font-bold text-[10px]">
+                {currentUser?.name ? currentUser.name[0].toUpperCase() : 'T'}
+              </div>
+              <span className="font-semibold max-w-[100px] truncate">
+                {currentUser?.name || 'Trader'}
+              </span>
+            </div>
+
+            <button
+              onClick={onSignOut}
+              className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
+                isDarkMode
+                  ? 'border-neutral-700/60 text-neutral-400 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30'
+                  : 'border-slate-300 text-slate-700 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-300 shadow-xs'
+              }`}
+              title="Sign Out to Landing Page"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline text-xs font-semibold">Sign Out</span>
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

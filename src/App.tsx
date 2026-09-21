@@ -26,6 +26,7 @@ import {
   generateCandles,
 } from './data/initialData';
 import { tvService, TVQuote } from './services/tradingViewService';
+import { checkInstrumentMarketHours } from './utils/marketHours';
 import { Header } from './components/Header';
 import { BottomNav } from './components/BottomNav';
 import { MarketsTab } from './components/MarketsTab';
@@ -38,7 +39,27 @@ import { MenuDrawer } from './components/MenuDrawer';
 import { CopyTradingTab } from './components/CopyTradingTab';
 import { WalletTab } from './components/WalletTab';
 import { AccountTab } from './components/AccountTab';
-import { HFMLogo } from './components/HFMLogo';
+import { VTMLogo } from './components/VTMLogo';
+import { BotsTab } from './components/BotsTab';
+import { LandingPage } from './components/LandingPage';
+import { usePWAInstall } from './hooks/usePWAInstall';
+import { PWAInstallModals } from './components/pwa/PWAInstallModals';
+import { ActionPopupManager } from './components/popups/ActionPopupManager';
+import { ActionToastBanner } from './components/popups/ActionToastBanner';
+import { ActionPopup } from './types';
+import { UserRole, BotStrategyConfig, BotRunInstance, BotTrade, UserAuthProfile } from './types/botTypes';
+import {
+  DEFAULT_INBUILT_BOTS,
+  loadStoredBotRuns,
+  saveStoredBotRuns,
+  loadStoredBotTrades,
+  saveStoredBotTrades,
+  loadStoredImportedBots,
+  saveStoredImportedBots,
+  evaluateTargetWinOrLoss,
+  determineBotTradeDirection,
+  calculateBotPnL,
+} from './services/botTradingService';
 import { Wifi, Battery, Signal, Zap, Radio } from 'lucide-react';
 
 // Subtle Web Audio synthesizer for trade execution sound
@@ -93,91 +114,38 @@ export default function App() {
   const [tickStates, setTickStates] = useState<Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>>({});
 
   const [accounts, setAccounts] = useState<TradingAccount[]>(INITIAL_ACCOUNTS);
-  const [selectedAccount, setSelectedAccount] = useState<TradingAccount>(INITIAL_ACCOUNTS[0]);
-  const [walletBalance, setWalletBalance] = useState<number>(14250.80);
+  const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(INITIAL_ACCOUNTS[0]);
+  const [walletBalance, setWalletBalance] = useState<number>(0);
 
-  // Trading Positions, Orders, and History
-  const [positions, setPositions] = useState<Position[]>([
-    {
-      id: 'pos-1',
-      ticket: 7891024,
-      symbol: 'EURUSD',
-      side: 'BUY',
-      lots: 1.0,
-      openPrice: 1.08640,
-      currentPrice: 1.08724,
-      sl: 1.08300,
-      tp: 1.09200,
-      pnl: 84.00,
-      swap: -1.20,
-      commission: 0,
-      openTime: Date.now() - 3600000 * 2,
-    },
-    {
-      id: 'pos-2',
-      ticket: 7891089,
-      symbol: 'XAUUSD',
-      side: 'BUY',
-      lots: 0.5,
-      openPrice: 4272.50,
-      currentPrice: 4280.15,
-      sl: 4250.00,
-      tp: 4320.00,
-      pnl: 382.50,
-      swap: -3.50,
-      commission: 0,
-      openTime: Date.now() - 3600000 * 4,
-    },
-  ]);
+  // Trading Positions, Orders, and History (Clean initial state - no running trades on account open)
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
+  const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
 
-  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([
-    {
-      id: 'ord-1',
-      ticket: 948102,
-      symbol: 'GBPUSD',
-      side: 'BUY',
-      type: 'BUY_LIMIT',
-      targetPrice: 1.29400,
-      lots: 0.5,
-      sl: 1.29000,
-      tp: 1.30200,
-      status: 'PENDING',
-      createdAt: Date.now() - 7200000,
-    },
-  ]);
-
-  const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([
-    {
-      id: 'cl-1',
-      ticket: 7889100,
-      symbol: 'BTCUSD',
-      side: 'BUY',
-      lots: 0.1,
-      openPrice: 67100.00,
-      closePrice: 68450.00,
-      pnl: 135.00,
-      openTime: Date.now() - 86400000 * 2,
-      closeTime: Date.now() - 86400000 * 1,
-      reason: 'TP',
-    },
-    {
-      id: 'cl-2',
-      ticket: 7886420,
-      symbol: 'US500',
-      side: 'BUY',
-      lots: 1.0,
-      openPrice: 5835.00,
-      closePrice: 5864.20,
-      pnl: 292.00,
-      openTime: Date.now() - 86400000 * 3,
-      closeTime: Date.now() - 86400000 * 2,
-      reason: 'MANUAL',
-    },
-  ]);
-
-  // HFcopy Strategies State
+  // HFcopy Strategies State (Clean initial state)
   const [providers, setProviders] = useState<StrategyProvider[]>(STRATEGY_PROVIDERS);
-  const [followedStrategies, setFollowedStrategies] = useState<FollowedStrategy[]>(INITIAL_FOLLOWED);
+  const [followedStrategies, setFollowedStrategies] = useState<FollowedStrategy[]>([]);
+
+  // PWA Install Engine & Action Feedback Popups
+  const pwa = usePWAInstall();
+  const [currentActionPopup, setCurrentActionPopup] = useState<ActionPopup | null>(null);
+  const [actionToasts, setActionToasts] = useState<ActionPopup[]>([]);
+
+  const triggerActionPopup = (popup: Omit<ActionPopup, 'id' | 'timestamp'>) => {
+    const uniqueId = `act-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const fullPopup: ActionPopup = {
+      ...popup,
+      id: uniqueId,
+      timestamp: Date.now(),
+    };
+    setCurrentActionPopup(fullPopup);
+    setActionToasts((prev) => [fullPopup, ...prev.slice(0, 3)]);
+    addNotification(fullPopup.title);
+  };
+
+  const handleDismissToast = (id: string) => {
+    setActionToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   // Transactions Log
   const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
@@ -188,23 +156,114 @@ export default function App() {
   >([
     {
       id: 'notif-1',
-      title: 'Order Filled: BUY 1.00 EURUSD @ 1.08640',
-      time: '2 hours ago',
+      title: 'Welcome to VTM Markets WebTrader. Central VTM One Wallet is $0.00 (deposit required for live funds).',
+      time: 'Just now',
       read: false,
     },
     {
       id: 'notif-2',
-      title: 'Deposit of $5,000.00 via Visa/Mastercard Completed',
-      time: '1 day ago',
-      read: true,
-    },
-    {
-      id: 'notif-3',
-      title: 'HFcopy Strategy Alpha Quant yielded +$340.25 profit',
-      time: '2 days ago',
+      title: 'Real accounts require verification & initial deposit. 24/7 Crypto market is open.',
+      time: 'Just now',
       read: true,
     },
   ]);
+
+  // User Authentication & Session
+  const [currentUser, setCurrentUser] = useState<UserAuthProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('vtm_auth_user');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.isLoggedIn) return parsed;
+      }
+    } catch (e) {
+      console.error('Failed to parse vtm_auth_user', e);
+    }
+    return null;
+  });
+
+  const handleUserSignIn = (profile: UserAuthProfile) => {
+    setCurrentUser(profile);
+    try {
+      localStorage.setItem('vtm_auth_user', JSON.stringify(profile));
+    } catch (e) {
+      console.error('Failed to save vtm_auth_user', e);
+    }
+    if (profile.role) {
+      setUserRole(profile.role);
+      localStorage.setItem('vtm_user_role', profile.role);
+    }
+
+    // Strict requirement: When an account opens or is logged in, no running trades, no active bots
+    setPositions([]);
+    setPendingOrders([]);
+    setClosedTrades([]);
+    setFollowedStrategies([]);
+    const cleanRuns = loadStoredBotRuns();
+    setBotRuns(cleanRuns);
+    const cleanTrades = loadStoredBotTrades();
+    setBotTrades(cleanTrades);
+
+    if (profile.isNewRegistration) {
+      setAccounts([]);
+      setSelectedAccount(null);
+      setWalletBalance(0);
+      addNotification(
+        `Welcome ${profile.name}! Your Central VTM Wallet ($0.00) is ready. Open a Live or Demo account whenever you want.`
+      );
+    } else if (profile.id && profile.id.startsWith('demo-')) {
+      const demoAcc = INITIAL_ACCOUNTS.find((a) => a.type === 'Demo') || INITIAL_ACCOUNTS[1];
+      setAccounts(INITIAL_ACCOUNTS);
+      setSelectedAccount(demoAcc);
+      setWalletBalance(0);
+      addNotification(
+        `Instant Demo Mode: Welcome to VTM Markets. Practice on Demo #${demoAcc.accountNumber} ($100k credit). Central VTM One Wallet is $0.00 until deposited.`
+      );
+    } else {
+      setWalletBalance(0);
+      addNotification(`Welcome back, ${profile.name}! Central VTM One Wallet is ready ($0.00). Deposit funds to trade live.`);
+    }
+
+    triggerActionPopup({
+      type: 'LOGIN_SUCCESS',
+      title: `Welcome, ${profile.name}!`,
+      subtitle: 'Session authenticated. Clean workspace loaded with zero running trades and zero active bots.',
+    });
+  };
+
+  const handleUserSignOut = () => {
+    setCurrentUser(null);
+    localStorage.removeItem('vtm_auth_user');
+    addNotification('You have signed out from the platform.');
+    triggerActionPopup({
+      type: 'LOGOUT_SUCCESS',
+      title: 'Signed Out',
+      subtitle: 'You have been securely logged out. Session closed.',
+    });
+  };
+
+  // Automated Trading Bots & Role Management
+  const [userRole, setUserRole] = useState<UserRole>(() => {
+    return (localStorage.getItem('vtm_user_role') as UserRole) || 'marketer';
+  });
+  const [importedBots, setImportedBots] = useState<BotStrategyConfig[]>(() =>
+    loadStoredImportedBots()
+  );
+  const [botRuns, setBotRuns] = useState<BotRunInstance[]>(() => loadStoredBotRuns());
+  const [botTrades, setBotTrades] = useState<BotTrade[]>(() => loadStoredBotTrades());
+
+  // Real-time synchronization refs to avoid React batching/closure stalls
+  const botRunsRef = useRef<BotRunInstance[]>(botRuns);
+  botRunsRef.current = botRuns;
+
+  const botTradesRef = useRef<BotTrade[]>(botTrades);
+  botTradesRef.current = botTrades;
+
+  const instrumentsRef = useRef<Instrument[]>(instruments);
+  instrumentsRef.current = instruments;
+
+  const userRoleRef = useRef<UserRole>(userRole);
+  userRoleRef.current = userRole;
 
   // Synchronize dark mode class to document element for Tailwind CSS
   useEffect(() => {
@@ -249,6 +308,13 @@ export default function App() {
           const updated = prevInstruments.map((inst) => {
             const quote = quotes.get(inst.symbol);
             if (!quote) return inst;
+
+            // Check if market is closed (e.g. weekend for Forex/Stocks)
+            const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+            if (!marketStatus.isOpen) {
+              nextTickStates[inst.symbol] = 'NEUTRAL';
+              return inst; // Stuck as tradingview.com is stuck when market is closed
+            }
 
             const oldAsk = inst.ask;
             const newBid = quote.bid;
@@ -295,6 +361,13 @@ export default function App() {
         const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
 
         const updated = prevInstruments.map((inst) => {
+          // Check if instrument market is closed (Forex/Stocks/Indices/Metals on weekends or off-hours)
+          const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+          if (!marketStatus.isOpen) {
+            nextTickStates[inst.symbol] = 'NEUTRAL';
+            return inst; // Completely stuck/frozen as tradingview.com is stuck
+          }
+
           // 40% probability of a micro-tick per cycle
           if (Math.random() > 0.4) return inst;
 
@@ -379,6 +452,28 @@ export default function App() {
       })
     );
 
+    // Recalculate floating P&L on bot open trades to match instruments in real-time
+    setBotTrades((prevBotTrades) => {
+      let modified = false;
+      const updated = prevBotTrades.map((bt) => {
+        if (bt.status !== 'OPEN') return bt;
+        const inst = currentInstMap.get(bt.symbol);
+        if (!inst) return bt;
+        const currentPrice = bt.side === 'BUY' ? inst.bid : inst.ask;
+        const profitUsd = calculateBotPnL(bt.symbol, bt.side, bt.openPrice, currentPrice, bt.lotSize);
+        if (bt.currentPrice !== currentPrice || bt.profitUsd !== profitUsd) {
+          modified = true;
+          return {
+            ...bt,
+            currentPrice,
+            profitUsd,
+          };
+        }
+        return bt;
+      });
+      return modified ? updated : prevBotTrades;
+    });
+
     // Update active chart's latest candle smoothly
     const activeInst = currentInstMap.get(selectedSymbol);
     if (activeInst) {
@@ -420,28 +515,82 @@ export default function App() {
     });
   }, [instruments]);
 
-  // Recalculate Account Equity & Margins
+  // Zero-balance safety mechanism: account NEVER goes negative; closes all open trades & bots immediately
+  const handleZeroBalanceStopOut = () => {
+    // 1. Immediately liquidate all manual open positions
+    setPositions([]);
+
+    // 2. Immediately stop all active algorithmic bots
+    setBotRuns((runs) => {
+      const stopped = runs.map((r) => ({ ...r, status: 'STOPPED' as const, stoppedAt: Date.now() }));
+      saveStoredBotRuns(stopped);
+      return stopped;
+    });
+
+    // 3. Mark all open bot trades as closed
+    setBotTrades((trades) => {
+      const closed = trades.map((t) => (t.status === 'OPEN' ? { ...t, status: 'CLOSED' as const, closeTime: Date.now() } : t));
+      saveStoredBotTrades(closed);
+      return closed;
+    });
+
+    // 4. Force clamp account to 0 (never negative)
+    setSelectedAccount((acc) => (!acc ? null : {
+      ...acc,
+      balance: 0,
+      equity: 0,
+      margin: 0,
+      freeMargin: 0,
+      marginLevel: 0,
+    }));
+
+    setAccounts((prev) =>
+      prev.map((a) =>
+        a.id === selectedAccount?.id
+          ? { ...a, balance: 0, equity: 0, margin: 0, freeMargin: 0, marginLevel: 0 }
+          : a
+      )
+    );
+
+    playOrderSound(false);
+    addNotification('Balance reached zero: all open trades and bots closed immediately.');
+    triggerActionPopup({
+      type: 'ERROR',
+      title: 'Account balance reached zero. All open trades and bots closed.',
+    });
+  };
+
+  // Recalculate Account Equity & Margins + Zero Balance Protection
   useEffect(() => {
+    if (!selectedAccount) return;
     const totalPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
     const totalMargin = positions.reduce((acc, p) => {
       const inst = instruments.find((i) => i.symbol === p.symbol);
       const contractSize = inst?.category === 'Forex' ? 100000 : 100;
-      const lev = parseInt(selectedAccount.leverage.split(':')[1] || '500', 10);
+      const lev = parseInt(selectedAccount.leverage?.split(':')[1] || '500', 10);
       return acc + (p.lots * contractSize * (inst?.bid || 1)) / lev;
     }, 0);
 
-    const newEquity = Number((selectedAccount.balance + totalPnl).toFixed(2));
+    const calculatedEquity = Number(((selectedAccount.balance ?? 0) + totalPnl).toFixed(2));
+
+    // Never let balance/equity go negative - immediately close all open trades and bots when reaching zero
+    if (calculatedEquity <= 0 && (positions.length > 0 || botRuns.some((r) => r.status === 'RUNNING'))) {
+      handleZeroBalanceStopOut();
+      return;
+    }
+
+    const newEquity = Math.max(0, calculatedEquity);
     const freeMargin = Number(Math.max(0, newEquity - totalMargin).toFixed(2));
     const marginLevel = totalMargin > 0 ? Number(((newEquity / totalMargin) * 100).toFixed(1)) : 0;
 
-    setSelectedAccount((prev) => ({
+    setSelectedAccount((prev) => (!prev ? null : ({
       ...prev,
       equity: newEquity,
       margin: Number(totalMargin.toFixed(2)),
       freeMargin,
       marginLevel,
-    }));
-  }, [positions, instruments]);
+    })));
+  }, [positions, instruments, selectedAccount?.balance, selectedAccount?.leverage]);
 
   // Helper to add notification with guaranteed unique key
   const addNotification = (title: string) => {
@@ -467,6 +616,24 @@ export default function App() {
     executionPrice?: number;
   }) => {
     const inst = instruments.find((i) => i.symbol === params.symbol) || instruments[0];
+
+    // Enforce market hours: if currency is closed, one cannot open any trade
+    const marketStatus = checkInstrumentMarketHours(params.symbol, inst?.category);
+    if (!marketStatus.isOpen) {
+      playOrderSound(false);
+      addNotification(`Order Rejected: ${params.symbol} market is closed`);
+      triggerActionPopup({
+        type: 'ERROR',
+        title: `${params.symbol} is closed`,
+        details: {
+          symbol: params.symbol,
+          side: params.side,
+          lots: params.lots,
+        },
+      });
+      return;
+    }
+
     const fillPrice =
       params.executionPrice || (params.side === 'BUY' ? inst.ask : inst.bid);
     const ticket = Math.floor(7000000 + Math.random() * 999999);
@@ -492,6 +659,21 @@ export default function App() {
     addNotification(
       `Order Executed: ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`
     );
+
+    triggerActionPopup({
+      type: 'TRADE_OPENED',
+      title: `Trade of ${params.symbol} is open`,
+      details: {
+        symbol: params.symbol,
+        side: params.side,
+        lots: params.lots,
+        price: fillPrice,
+        ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        sl: params.sl,
+        tp: params.tp,
+      },
+    });
   };
 
   // Order Handlers
@@ -514,6 +696,24 @@ export default function App() {
     sl: number | null;
     tp: number | null;
   }) => {
+    const inst = instruments.find((i) => i.symbol === params.symbol);
+    const marketStatus = checkInstrumentMarketHours(params.symbol, inst?.category);
+    if (!marketStatus.isOpen) {
+      playOrderSound(false);
+      addNotification(`Pending Order Rejected: ${params.symbol} market is closed`);
+      triggerActionPopup({
+        type: 'ERROR',
+        title: `${params.symbol} Market Closed`,
+        subtitle: `Pending orders cannot be placed while ${params.symbol} is closed (${marketStatus.sessionText}). ${marketStatus.nextOpenText}.`,
+        details: {
+          symbol: params.symbol,
+          side: params.side,
+          lots: params.lots,
+        },
+      });
+      return;
+    }
+
     const ticket = Math.floor(900000 + Math.random() * 99999);
     const newOrd: PendingOrder = {
       id: `ord-${Date.now()}`,
@@ -533,6 +733,22 @@ export default function App() {
     addNotification(
       `Placed Pending ${params.type}: ${params.lots} ${params.symbol} @ ${params.targetPrice}`
     );
+
+    triggerActionPopup({
+      type: 'TRADE_OPENED',
+      title: `Placed ${params.type}: ${params.lots} ${params.symbol}`,
+      subtitle: `Pending order submitted @ ${params.targetPrice} on Account #${selectedAccount?.accountNumber}.`,
+      details: {
+        symbol: params.symbol,
+        side: params.side,
+        lots: params.lots,
+        price: params.targetPrice,
+        ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        sl: params.sl,
+        tp: params.tp,
+      },
+    });
   };
 
   const closePositionById = (
@@ -567,25 +783,66 @@ export default function App() {
     setClosedTrades((prev) => [closed, ...prev]);
     setPositions((prev) => prev.filter((p) => p.id !== id));
 
-    // Update balance
-    setSelectedAccount((acc) => ({
-      ...acc,
-      balance: Number((acc.balance + pos.pnl).toFixed(2)),
-    }));
+    // Update balance - NEVER let balance go negative!
+    setSelectedAccount((acc) => {
+      if (!acc) return null;
+      const newBal = Math.max(0, Number((acc.balance + pos.pnl).toFixed(2)));
+      if (newBal <= 0) {
+        setTimeout(handleZeroBalanceStopOut, 0);
+      }
+      return {
+        ...acc,
+        balance: newBal,
+      };
+    });
 
     playOrderSound(pos.pnl >= 0);
     addNotification(
       `Closed #${pos.ticket} ${pos.symbol} (${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)})`
     );
+
+    triggerActionPopup({
+      type: 'TRADE_CLOSED',
+      title: `Trade of ${pos.symbol} is closed`,
+      details: {
+        symbol: pos.symbol,
+        side: pos.side,
+        lots: pos.lots,
+        ticket: pos.ticket,
+        price: closePrice,
+        pnl: pos.pnl,
+        accountNumber: selectedAccount?.accountNumber,
+      },
+    });
   };
 
   const handleCloseAllPositions = () => {
+    const count = positions.length;
     positions.forEach((p) => closePositionById(p.id, 'MANUAL'));
+    if (count > 0) {
+      triggerActionPopup({
+        type: 'TRADE_CLOSED',
+        title: `Closed ${count} Open Position${count > 1 ? 's' : ''}`,
+        subtitle: 'All market positions have been successfully liquidated and settled.',
+      });
+    }
   };
 
   const handleCancelPendingOrder = (id: string) => {
+    const ord = pendingOrders.find((o) => o.id === id);
     setPendingOrders((prev) => prev.filter((o) => o.id !== id));
     addNotification('Pending order cancelled');
+    triggerActionPopup({
+      type: 'ORDER_CANCELLED',
+      title: 'Pending Order Cancelled',
+      subtitle: ord
+        ? `Cancelled ${ord.side} ${ord.lots} ${ord.symbol} @ ${ord.targetPrice}.`
+        : 'Order cancelled and removed from market book.',
+      details: {
+        ticket: ord?.ticket,
+        symbol: ord?.symbol,
+      },
+    });
   };
 
   // Favorite toggle
@@ -631,16 +888,49 @@ export default function App() {
 
     setFollowedStrategies((prev) => [newFollowed, ...prev]);
     addNotification(`Started copying strategy: ${provider.name}`);
+
+    triggerActionPopup({
+      type: 'COPY_STARTED',
+      title: `Copy Trading Activated: ${provider.name}`,
+      subtitle: `Allocated $${params.allocatedAmount.toLocaleString()} (${params.volumeAllocation}% volume ratio, ${params.rescueLevel}% stop loss protection).`,
+      details: {
+        amount: params.allocatedAmount,
+        method: provider.name,
+      },
+    });
   };
 
   const handleUnfollowStrategy = (providerId: string) => {
+    const followed = followedStrategies.find((f) => f.providerId === providerId);
     setFollowedStrategies((prev) => prev.filter((f) => f.providerId !== providerId));
     addNotification('Strategy copy stopped and funds settled');
+
+    triggerActionPopup({
+      type: 'COPY_STOPPED',
+      title: 'Strategy Copy Halted',
+      subtitle: followed
+        ? `Detached from ${followed.providerName}. Remaining allocated capital released to your balance.`
+        : 'Copy strategy detached successfully.',
+    });
   };
 
   // Wallet Funding Handlers
   const handleDeposit = (params: { method: string; amount: number; targetAccount: string }) => {
-    const ref = `HFM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    if (params.amount <= 0) {
+      triggerActionPopup({
+        type: 'DEPOSIT_FAILED',
+        title: 'Deposit Unsuccessful',
+        subtitle: 'Please enter a valid deposit amount greater than $0.00.',
+        details: {
+          amount: params.amount,
+          method: params.method,
+          reason: 'Invalid funding amount entered.',
+        },
+      });
+      return;
+    }
+
+    const ref = `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
     const newTx: Transaction = {
       id: `tx-${Date.now()}`,
       type: 'DEPOSIT',
@@ -655,20 +945,46 @@ export default function App() {
 
     setTransactions((prev) => [newTx, ...prev]);
 
-    if (params.targetAccount === 'HF Wallet') {
+    if (params.targetAccount === 'HF Wallet' || params.targetAccount === 'VTM Wallet') {
       setWalletBalance((prev) => prev + params.amount);
     } else {
-      setSelectedAccount((acc) => ({
+      setSelectedAccount((acc) => (!acc ? null : {
         ...acc,
         balance: acc.balance + params.amount,
       }));
     }
 
     addNotification(`Deposit of $${params.amount.toFixed(2)} received successfully!`);
+
+    triggerActionPopup({
+      type: 'DEPOSIT_SUCCESS',
+      title: `Deposit of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
+      subtitle: `Instant payment received via ${params.method} and credited to ${params.targetAccount}. Ref: ${ref}`,
+      details: {
+        amount: params.amount,
+        method: params.method,
+        reference: ref,
+        accountNumber: params.targetAccount,
+      },
+    });
   };
 
   const handleWithdraw = (params: { method: string; amount: number; sourceAccount: string }) => {
-    const ref = `HFM-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    if (params.amount <= 0) {
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Withdrawal Unsuccessful',
+        subtitle: 'Please enter a valid withdrawal amount greater than $0.00.',
+        details: {
+          amount: params.amount,
+          method: params.method,
+          reason: 'Invalid withdrawal sum requested.',
+        },
+      });
+      return;
+    }
+
+    const ref = `VTM-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
     const newTx: Transaction = {
       id: `tx-${Date.now()}`,
       type: 'WITHDRAWAL',
@@ -684,10 +1000,33 @@ export default function App() {
     setTransactions((prev) => [newTx, ...prev]);
     setWalletBalance((prev) => Math.max(0, prev - params.amount));
     addNotification(`Withdrawal request of $${params.amount.toFixed(2)} is pending approval`);
+
+    triggerActionPopup({
+      type: 'WITHDRAWAL_SUCCESS',
+      title: `Withdrawal of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Queued`,
+      subtitle: `STP payout request submitted from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
+      details: {
+        amount: params.amount,
+        method: params.method,
+        reference: ref,
+        accountNumber: params.sourceAccount,
+      },
+    });
   };
 
   const handleTransfer = (params: { fromAccount: string; toAccount: string; amount: number }) => {
-    const ref = `HFM-TRF-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    if (params.amount <= 0 || params.fromAccount === params.toAccount) {
+      triggerActionPopup({
+        type: 'TRANSFER_FAILED',
+        title: 'Transfer Failed',
+        subtitle: params.fromAccount === params.toAccount
+          ? 'Source and destination accounts must be different.'
+          : 'Please enter a valid amount greater than $0.00.',
+      });
+      return;
+    }
+
+    const ref = `VTM-TRF-${Math.floor(10000000 + Math.random() * 90000000)}`;
     const newTx: Transaction = {
       id: `tx-${Date.now()}`,
       type: 'INTERNAL_TRANSFER',
@@ -702,15 +1041,25 @@ export default function App() {
 
     setTransactions((prev) => [newTx, ...prev]);
 
-    if (params.fromAccount === 'HF Wallet') {
+    if (params.fromAccount === 'HF Wallet' || params.fromAccount === 'VTM Wallet') {
       setWalletBalance((w) => w - params.amount);
-      setSelectedAccount((acc) => ({ ...acc, balance: acc.balance + params.amount }));
-    } else if (params.toAccount === 'HF Wallet') {
-      setSelectedAccount((acc) => ({ ...acc, balance: acc.balance - params.amount }));
+      setSelectedAccount((acc) => (acc ? { ...acc, balance: acc.balance + params.amount } : null));
+    } else if (params.toAccount === 'HF Wallet' || params.toAccount === 'VTM Wallet') {
+      setSelectedAccount((acc) => (acc ? { ...acc, balance: acc.balance - params.amount } : null));
       setWalletBalance((w) => w + params.amount);
     }
 
     addNotification(`Transferred $${params.amount.toFixed(2)} between accounts`);
+
+    triggerActionPopup({
+      type: 'TRANSFER_SUCCESS',
+      title: `Internal Transfer Completed: $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+      subtitle: `Instant transfer from ${params.fromAccount} to ${params.toAccount}. Ref: ${ref}`,
+      details: {
+        amount: params.amount,
+        reference: ref,
+      },
+    });
   };
 
   // Open New Account
@@ -724,7 +1073,7 @@ export default function App() {
     const newAcc: TradingAccount = {
       id: `acc-${Date.now()}`,
       accountNumber: num,
-      server: params.type === 'Live' ? 'HFMarkets-LiveServer4' : 'HFMarkets-DemoServer',
+      server: params.type === 'Live' ? 'VTMarkets-LiveServer1' : 'VTMarkets-DemoServer',
       type: params.type,
       tier: params.tier,
       balance: params.type === 'Demo' ? 100000 : 0,
@@ -739,10 +1088,20 @@ export default function App() {
     setAccounts((prev) => [...prev, newAcc]);
     setSelectedAccount(newAcc);
     addNotification(`Opened new ${params.type} #${num} (${params.tier})`);
+
+    triggerActionPopup({
+      type: 'ACCOUNT_CREATED',
+      title: `New ${params.type} Account #${num} Created!`,
+      subtitle: `${params.tier} account (${params.currency}, ${params.leverage}) active on ${newAcc.server}.`,
+      details: {
+        accountNumber: num,
+        method: params.tier,
+      },
+    });
   };
 
   const handleResetDemo = () => {
-    setSelectedAccount((acc) => ({
+    setSelectedAccount((acc) => (!acc ? null : {
       ...acc,
       balance: 100000,
       equity: 100000,
@@ -750,6 +1109,16 @@ export default function App() {
       freeMargin: 100000,
     }));
     addNotification('Demo account reset to $100,000.00');
+
+    triggerActionPopup({
+      type: 'DEMO_RESET',
+      title: 'Demo Balance Reset to $100,000.00',
+      subtitle: 'Virtual test balance, equity, and margin limit refreshed.',
+      details: {
+        amount: 100000,
+        accountNumber: selectedAccount?.accountNumber,
+      },
+    });
   };
 
   // Switch to Instrument Detail view with instrument selected
@@ -765,6 +1134,676 @@ export default function App() {
       setActiveTab(tab);
     }
   };
+
+  // Bot Action Handlers
+  const handleUpdateUserRole = (role: UserRole) => {
+    setUserRole(role);
+    try {
+      localStorage.setItem('vtm_user_role', role);
+    } catch (e) {
+      // ignore
+    }
+    addNotification(`Account role assigned: ${role.toUpperCase()}`);
+  };
+
+  const handleStartBotRun = (config: {
+    botId: string;
+    symbol: string;
+    lotSize: number;
+    tpPips: number;
+    slPips: number;
+  }) => {
+    const allBots = [...DEFAULT_INBUILT_BOTS, ...importedBots];
+    const bot = allBots.find((b) => b.id === config.botId);
+    if (!bot) return;
+
+    const runIdStr = `run-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const inst =
+      instruments.find((i) => i.symbol === config.symbol) ||
+      instruments.find((i) => i.symbol.includes(config.symbol.slice(0, 3))) ||
+      instruments[0];
+
+    // Verify market status for bot deployment
+    const marketStatus = checkInstrumentMarketHours(config.symbol, inst?.category);
+    if (!marketStatus.isOpen) {
+      playOrderSound(false);
+      addNotification(`Bot Alert: ${config.symbol} market is closed`);
+      triggerActionPopup({
+        type: 'ERROR',
+        title: `${config.symbol} Market Closed`,
+        subtitle: `Trading bot cannot be deployed while the market is closed (${marketStatus.sessionText}). ${marketStatus.nextOpenText}. You can deploy bots on 24/7 Crypto pairs (e.g. BTCUSD, ETHUSD, SOLUSD) anytime!`,
+      });
+      return;
+    }
+
+    const isTargetWin = evaluateTargetWinOrLoss(userRole, bot.type);
+    const side = determineBotTradeDirection(inst, isTargetWin, userRole);
+    const pipVal =
+      inst.decimals === 5 || inst.decimals === 3
+        ? 0.0001
+        : inst.decimals === 2
+        ? 0.01
+        : 0.0001;
+
+    const openPrice = side === 'BUY' ? inst.ask : inst.bid;
+    const tpPrice =
+      side === 'BUY'
+        ? openPrice + config.tpPips * pipVal * 10
+        : openPrice - config.tpPips * pipVal * 10;
+    const slPrice =
+      side === 'BUY'
+        ? openPrice - config.slPips * pipVal * 10
+        : openPrice + config.slPips * pipVal * 10;
+
+    const openPriceNum = Number(openPrice.toFixed(inst.decimals));
+    const tpPriceNum = Number(tpPrice.toFixed(inst.decimals));
+    const slPriceNum = Number(slPrice.toFixed(inst.decimals));
+
+    // Immediately open first trade so user is never waiting at zero
+    const initialTrade: BotTrade = {
+      id: `btrade-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      ticket: Math.floor(840000 + Math.random() * 99999),
+      runId: runIdStr,
+      runInstanceId: runIdStr,
+      botId: bot.id,
+      botName: bot.name,
+      symbol: config.symbol,
+      side,
+      lotSize: config.lotSize,
+      openPrice: openPriceNum,
+      currentPrice: openPriceNum,
+      tp: tpPriceNum,
+      sl: slPriceNum,
+      tpPrice: tpPriceNum,
+      slPrice: slPriceNum,
+      openTime: Date.now(),
+      status: 'OPEN',
+      profitUsd: 0,
+      targetOutcome: isTargetWin ? 'WIN' : 'LOSS',
+    };
+
+    const newRun: BotRunInstance = {
+      id: runIdStr,
+      runId: runIdStr,
+      botId: bot.id,
+      botName: bot.name,
+      botType: bot.type,
+      symbol: config.symbol,
+      lotSize: config.lotSize,
+      tpPips: config.tpPips,
+      slPips: config.slPips,
+      status: 'RUNNING',
+      startedAt: Date.now(),
+      totalTrades: 1,
+      totalTradesCount: 1,
+      winningTrades: 0,
+      winCount: 0,
+      losingTrades: 0,
+      totalProfitUsd: 0,
+      lastSignal: `Active Order: ${side} ${config.lotSize} @ ${openPriceNum}`,
+    };
+
+    setBotTrades((prev) => {
+      const updated = [initialTrade, ...prev];
+      saveStoredBotTrades(updated);
+      return updated;
+    });
+
+    setBotRuns((prev) => {
+      const updated = [newRun, ...prev];
+      saveStoredBotRuns(updated);
+      return updated;
+    });
+
+    playOrderSound(true);
+    addNotification(
+      `EA Activated: ${bot.name} on ${config.symbol} (Trade #${initialTrade.ticket} Executed @ ${openPriceNum})`
+    );
+
+    triggerActionPopup({
+      type: 'BOT_STARTED',
+      title: 'Bot started',
+      details: {
+        symbol: config.symbol,
+        method: bot.name,
+        accountNumber: selectedAccount?.accountNumber,
+      },
+    });
+  };
+
+  const handleToggleBotRun = (runId: string) => {
+    const target = botRuns.find((r) => r.runId === runId || r.id === runId);
+    if (!target) return;
+
+    if (target.status !== 'RUNNING') {
+      const inst = instruments.find((i) => i.symbol === target.symbol);
+      const marketStatus = checkInstrumentMarketHours(target.symbol, inst?.category);
+      if (!marketStatus.isOpen) {
+        playOrderSound(false);
+        addNotification(`Cannot run bot: ${target.symbol} market is closed`);
+        triggerActionPopup({
+          type: 'ERROR',
+          title: `${target.symbol} is closed`,
+        });
+        return;
+      }
+    }
+
+    setBotRuns((prev) => {
+      const nextStatus = target.status === 'RUNNING' ? 'PAUSED' : 'RUNNING';
+      const updated = prev.map((r) => {
+        if (r.runId === runId || r.id === runId) {
+          return { ...r, status: nextStatus };
+        }
+        return r;
+      });
+      saveStoredBotRuns(updated);
+
+      triggerActionPopup({
+        type: nextStatus === 'RUNNING' ? 'BOT_STARTED' : 'BOT_STOPPED',
+        title: nextStatus === 'RUNNING' ? 'Bot started' : 'Bot closed',
+      });
+      return updated;
+    });
+  };
+
+  const handleStopBotRun = (runId: string) => {
+    setBotRuns((prev) => {
+      const updated = prev.map((r) => {
+        if (r.runId === runId || r.id === runId) {
+          return { ...r, status: 'STOPPED' as const, stoppedAt: Date.now() };
+        }
+        return r;
+      });
+      saveStoredBotRuns(updated);
+      return updated;
+    });
+    addNotification('EA algorithm stopped');
+
+    triggerActionPopup({
+      type: 'BOT_STOPPED',
+      title: 'Bot closed',
+      details: {
+        accountNumber: selectedAccount?.accountNumber,
+      },
+    });
+  };
+
+  const handleDeleteBotRun = (runId: string) => {
+    // 1. Permanently record in deleted bot IDs to prevent reappearing on logout, login, or refresh
+    try {
+      const deletedRaw = localStorage.getItem('vtm_deleted_bot_ids');
+      const deletedIds: string[] = deletedRaw ? JSON.parse(deletedRaw) : [];
+      if (!deletedIds.includes(runId)) {
+        deletedIds.push(runId);
+        localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(deletedIds));
+      }
+    } catch (e) {
+      // ignore
+    }
+
+    // 2. Remove from botRuns
+    setBotRuns((prev) => {
+      const updated = prev.filter((r) => r.id !== runId && r.runId !== runId);
+      saveStoredBotRuns(updated);
+      return updated;
+    });
+
+    // 3. Settle and close open trades associated with this run
+    setBotTrades((prev) => {
+      const updated = prev.map((t) => {
+        if ((t.runId === runId || t.runInstanceId === runId) && t.status === 'OPEN') {
+          return {
+            ...t,
+            status: 'CLOSED' as const,
+            closeReason: 'MANUAL',
+            exitReason: 'MANUAL',
+            closeTime: Date.now(),
+          };
+        }
+        return t;
+      });
+      saveStoredBotTrades(updated);
+      return updated;
+    });
+
+    playOrderSound(false);
+    addNotification('Deployed bot removed successfully');
+
+    triggerActionPopup({
+      type: 'BOT_STOPPED',
+      title: 'Bot Deleted Successfully',
+      subtitle: 'The bot has been permanently removed and will not appear on login, logout, or refresh.',
+    });
+  };
+
+  const handleUpdateBotRunSettings = (
+    runId: string,
+    updates: {
+      symbol?: string;
+      lotSize?: number;
+      tpPips?: number;
+      slPips?: number;
+      status?: 'RUNNING' | 'PAUSED' | 'STOPPED';
+    }
+  ) => {
+    setBotRuns((prev) => {
+      const updated = prev.map((r) => {
+        if (r.id === runId || r.runId === runId) {
+          const nextStatus = updates.status ?? r.status;
+          return {
+            ...r,
+            ...updates,
+            status: nextStatus,
+            lastSignal: `Settings Updated: ${updates.lotSize ?? r.lotSize} Lots, TP ${updates.tpPips ?? r.tpPips}p, SL ${updates.slPips ?? r.slPips}p`,
+            lastSignalTime: Date.now(),
+          };
+        }
+        return r;
+      });
+      saveStoredBotRuns(updated);
+      return updated;
+    });
+
+    playOrderSound(true);
+    addNotification('Bot settings saved successfully');
+    triggerActionPopup({
+      type: 'BOT_STARTED',
+      title: 'Bot Settings Updated',
+      subtitle: `Parameters saved successfully (${updates.lotSize ? `${updates.lotSize} Lots` : ''}${updates.tpPips ? `, TP ${updates.tpPips}p` : ''}${updates.slPips ? `, SL ${updates.slPips}p` : ''}).`,
+    });
+  };
+
+  const handleImportBot = (newBot: BotStrategyConfig) => {
+    setImportedBots((prev) => {
+      const updated = [newBot, ...prev];
+      saveStoredImportedBots(updated);
+      return updated;
+    });
+    playOrderSound(true);
+    addNotification(`Strategy Imported: ${newBot.name} (${newBot.version || 'v1.0'})`);
+    triggerActionPopup({
+      type: 'BOT_STARTED',
+      title: `Strategy Imported: ${newBot.name}`,
+      subtitle: `Algorithmic bot loaded with default ${newBot.defaultLotSize} Lots. No bot actions will execute without your explicit command.`,
+    });
+  };
+
+  const handleCloseBotTrade = (tradeId: string) => {
+    setBotTrades((prev) => {
+      const trade = prev.find((t) => t.id === tradeId);
+      if (!trade || trade.status !== 'OPEN') return prev;
+
+      const inst = instruments.find((i) => i.symbol === trade.symbol);
+      const exitPrice =
+        trade.side === 'BUY'
+          ? inst?.bid || trade.currentPrice
+          : inst?.ask || trade.currentPrice;
+      const profitUsd = calculateBotPnL(
+        trade.symbol,
+        trade.side,
+        trade.openPrice,
+        exitPrice,
+        trade.lotSize
+      );
+
+      const updatedTrade: BotTrade = {
+        ...trade,
+        status: 'CLOSED',
+        exitPrice,
+        profitUsd,
+        exitReason: 'MANUAL',
+        closeTime: Date.now(),
+      };
+
+      // Credit or debit account - NEVER let balance go negative!
+      setSelectedAccount((acc) => {
+        if (!acc) return null;
+        const newBal = Math.max(0, Number((acc.balance + profitUsd).toFixed(2)));
+        const newEq = Math.max(0, Number((acc.equity + profitUsd).toFixed(2)));
+        if (newBal <= 0) {
+          setTimeout(handleZeroBalanceStopOut, 0);
+        }
+        return {
+          ...acc,
+          balance: newBal,
+          equity: newEq,
+        };
+      });
+
+      // Update run stats
+      setBotRuns((runs) => {
+        const nextRuns = runs.map((r) => {
+          if (r.runId === trade.runId || r.id === trade.runId || r.id === trade.runInstanceId) {
+            const count = (r.totalTrades || r.totalTradesCount || 0) + 1;
+            const wins = (r.winningTrades || r.winCount || 0) + (profitUsd > 0 ? 1 : 0);
+            return {
+              ...r,
+              totalTrades: count,
+              totalTradesCount: count,
+              winningTrades: wins,
+              winCount: wins,
+              totalProfitUsd: Number(((r.totalProfitUsd || 0) + profitUsd).toFixed(2)),
+            };
+          }
+          return r;
+        });
+        saveStoredBotRuns(nextRuns);
+        return nextRuns;
+      });
+
+      playOrderSound(profitUsd >= 0);
+      addNotification(
+        `Bot trade #${trade.ticket} closed (${profitUsd >= 0 ? '+' : ''}$${profitUsd.toFixed(2)})`
+      );
+
+      triggerActionPopup({
+        type: 'TRADE_CLOSED',
+        title: `Trade of ${trade.symbol} is closed`,
+        details: {
+          symbol: trade.symbol,
+          side: trade.side,
+          lots: trade.lotSize,
+          price: exitPrice,
+          pnl: profitUsd,
+          ticket: trade.ticket,
+          accountNumber: selectedAccount?.accountNumber,
+        },
+      });
+
+      const updatedTrades = prev.map((t) => (t.id === tradeId ? updatedTrade : t));
+      saveStoredBotTrades(updatedTrades);
+      return updatedTrades;
+    });
+  };
+
+  const handleTriggerManualSignal = (runId: string) => {
+    const run = botRuns.find((r) => r.runId === runId || r.id === runId);
+    if (!run) return;
+
+    // Enforce market hours: if currency is closed, one cannot open any trade
+    const inst = instruments.find((i) => i.symbol === run.symbol) || instruments[0];
+    const marketStatus = checkInstrumentMarketHours(run.symbol, inst?.category);
+    if (!marketStatus.isOpen) {
+      playOrderSound(false);
+      addNotification(`Signal Rejected: ${run.symbol} market is closed`);
+      triggerActionPopup({
+        type: 'ERROR',
+        title: `${run.symbol} is closed`,
+      });
+      return;
+    }
+
+    const isTargetWin = evaluateTargetWinOrLoss(userRole, run.botType);
+    const side = determineBotTradeDirection(inst, isTargetWin, userRole);
+    const pipVal =
+      inst.decimals === 5 || inst.decimals === 3
+        ? 0.0001
+        : inst.decimals === 2
+        ? 0.01
+        : 0.0001;
+    const openPrice = side === 'BUY' ? inst.ask : inst.bid;
+    const tpPrice =
+      side === 'BUY'
+        ? openPrice + run.tpPips * pipVal * 10
+        : openPrice - run.tpPips * pipVal * 10;
+    const slPrice =
+      side === 'BUY'
+        ? openPrice - run.slPips * pipVal * 10
+        : openPrice + run.slPips * pipVal * 10;
+
+    const openPriceNum = Number(openPrice.toFixed(inst.decimals));
+    const tpPriceNum = Number(tpPrice.toFixed(inst.decimals));
+    const slPriceNum = Number(slPrice.toFixed(inst.decimals));
+
+    const newTrade: BotTrade = {
+      id: `btrade-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      ticket: Math.floor(800000 + Math.random() * 99999),
+      runId: run.runId,
+      runInstanceId: run.id || run.runId,
+      botId: run.botId,
+      botName: run.botName,
+      symbol: run.symbol,
+      side,
+      lotSize: run.lotSize,
+      openPrice: openPriceNum,
+      currentPrice: openPriceNum,
+      tp: tpPriceNum,
+      sl: slPriceNum,
+      tpPrice: tpPriceNum,
+      slPrice: slPriceNum,
+      openTime: Date.now(),
+      status: 'OPEN',
+      profitUsd: 0,
+      targetOutcome: isTargetWin ? 'WIN' : 'LOSS',
+    };
+
+    setBotTrades((prev) => {
+      const updated = [newTrade, ...prev];
+      saveStoredBotTrades(updated);
+      return updated;
+    });
+
+    setBotRuns((runs) => {
+      const nextRuns = runs.map((r) => {
+        if (r.id === run.id || r.runId === run.runId) {
+          return {
+            ...r,
+            lastSignal: `Command Executed: ${side} ${run.lotSize} @ ${openPriceNum}`,
+            lastSignalTime: Date.now(),
+          };
+        }
+        return r;
+      });
+      saveStoredBotRuns(nextRuns);
+      return nextRuns;
+    });
+
+    playOrderSound(true);
+    addNotification(
+      `[${run.botName}] Signal Triggered: ${side} ${run.lotSize} on ${run.symbol}`
+    );
+
+    triggerActionPopup({
+      type: 'TRADE_OPENED',
+      title: `Trade of ${run.symbol} is open`,
+      details: {
+        symbol: run.symbol,
+        side,
+        lots: run.lotSize,
+        price: openPriceNum,
+        ticket: newTrade.ticket,
+        accountNumber: selectedAccount?.accountNumber,
+      },
+    });
+  };
+
+  // Automated Bot Execution Engine Loop
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const currentRuns = botRunsRef.current;
+      const currentTrades = botTradesRef.current;
+      const allInstruments = instrumentsRef.current;
+      const currentRole = userRoleRef.current;
+
+      const runningBots = currentRuns.filter((r) => r.status === 'RUNNING');
+      if (runningBots.length === 0) return;
+
+      let nextTrades = [...currentTrades];
+      let tradesChanged = false;
+
+      let nextRuns = [...currentRuns];
+      let runsChanged = false;
+
+      runningBots.forEach((run) => {
+        const runKey = run.id || run.runId;
+        const activeTrade = nextTrades.find(
+          (t) =>
+            (t.runId === runKey ||
+              t.runInstanceId === runKey ||
+              t.runId === run.runId ||
+              t.runId === run.id ||
+              t.runInstanceId === run.id) &&
+            t.status === 'OPEN'
+        );
+
+        const inst =
+          allInstruments.find((i) => i.symbol === run.symbol) ||
+          allInstruments.find((i) => i.symbol.includes(run.symbol.slice(0, 3))) ||
+          allInstruments[0];
+        if (!inst) return;
+
+        const pipVal =
+          inst.decimals === 5 || inst.decimals === 3
+            ? 0.0001
+            : inst.decimals === 2
+            ? 0.01
+            : 0.0001;
+
+        if (!activeTrade) {
+          // Command-only enforcement: Never auto-open trades without an explicit user command
+          // If a trade was closed, it remains closed. The bot awaits user command.
+          return;
+        } else {
+          // Real-time market execution: current live price directly from the instrument
+          const currentMarketPrice = activeTrade.side === 'BUY' ? inst.bid : inst.ask;
+          const floatingProfit = calculateBotPnL(
+            activeTrade.symbol,
+            activeTrade.side,
+            activeTrade.openPrice,
+            currentMarketPrice,
+            activeTrade.lotSize
+          );
+
+          // Check if TP or SL is reached or profit target reached (>80% win rate target)
+          const hitTp =
+            activeTrade.side === 'BUY'
+              ? currentMarketPrice >= activeTrade.tp
+              : currentMarketPrice <= activeTrade.tp;
+          const hitSl =
+            activeTrade.side === 'BUY'
+              ? currentMarketPrice <= activeTrade.sl
+              : currentMarketPrice >= activeTrade.sl;
+          const durationMs = Date.now() - (activeTrade.openTime || Date.now());
+
+          // Automated closure conditions: TP hit, SL hit, or positive realized institutional gain
+          const shouldTakeProfit =
+            hitTp ||
+            (activeTrade.targetOutcome === 'WIN' && floatingProfit >= 10.0 && durationMs >= 3000) ||
+            (durationMs >= 8000 && floatingProfit > 3.0);
+
+          const shouldCloseLoss =
+            hitSl ||
+            (activeTrade.targetOutcome === 'LOSS' && floatingProfit <= -18.0 && durationMs >= 4000);
+
+          if (shouldTakeProfit || shouldCloseLoss) {
+            const finalExitPrice = currentMarketPrice;
+            const profitUsd = floatingProfit;
+
+            const closedTrade: BotTrade = {
+              ...activeTrade,
+              status: 'CLOSED',
+              currentPrice: finalExitPrice,
+              closePrice: finalExitPrice,
+              exitPrice: finalExitPrice,
+              profitUsd: Number(profitUsd.toFixed(2)),
+              closeReason: shouldTakeProfit ? 'TAKE_PROFIT' : 'STOP_LOSS',
+              exitReason: shouldTakeProfit ? 'TP' : 'SL',
+              closeTime: Date.now(),
+            };
+
+            nextTrades = nextTrades.map((t) =>
+              t.id === activeTrade.id ? closedTrade : t
+            );
+            tradesChanged = true;
+
+            // Sync balance and equity immediately - NEVER let balance go negative!
+            setSelectedAccount((acc) => {
+              if (!acc) return null;
+              const newBal = Math.max(0, Number((acc.balance + profitUsd).toFixed(2)));
+              const newEq = Math.max(0, Number((acc.equity + profitUsd).toFixed(2)));
+              if (newBal <= 0) {
+                setTimeout(handleZeroBalanceStopOut, 0);
+              }
+              return {
+                ...acc,
+                balance: newBal,
+                equity: newEq,
+              };
+            });
+
+            // Update run stats with wins/losses/profit
+            nextRuns = nextRuns.map((r) => {
+              if (r.id === run.id || r.runId === runKey) {
+                const tradesCount = (r.totalTrades || r.totalTradesCount || 0) + 1;
+                const wins = (r.winningTrades || r.winCount || 0) + (profitUsd > 0 ? 1 : 0);
+                const losses = (r.losingTrades || 0) + (profitUsd <= 0 ? 1 : 0);
+                const profitSum = Number(((r.totalProfitUsd || 0) + profitUsd).toFixed(2));
+                return {
+                  ...r,
+                  totalTrades: tradesCount,
+                  totalTradesCount: tradesCount,
+                  winningTrades: wins,
+                  winCount: wins,
+                  losingTrades: losses,
+                  totalProfitUsd: profitSum,
+                  lastSignal:
+                    profitUsd > 0
+                      ? `Take Profit Closed (+$${profitUsd.toFixed(2)})`
+                      : `Stop Loss Closed (-$${Math.abs(profitUsd).toFixed(2)})`,
+                  lastSignalTime: Date.now(),
+                };
+              }
+              return r;
+            });
+            runsChanged = true;
+
+            playOrderSound(profitUsd >= 0);
+            addNotification(
+              `[${run.botName}] Trade Closed: ${profitUsd >= 0 ? '+' : ''}$${profitUsd.toFixed(2)} on ${activeTrade.symbol}`
+            );
+
+            triggerActionPopup({
+              type: 'TRADE_CLOSED',
+              title: `Trade of ${activeTrade.symbol} is closed`,
+              details: {
+                symbol: activeTrade.symbol,
+                side: activeTrade.side,
+                lots: activeTrade.lotSize,
+                price: finalExitPrice,
+                pnl: profitUsd,
+                ticket: activeTrade.ticket,
+                accountNumber: selectedAccount?.accountNumber,
+              },
+            });
+          } else {
+            // Update live floating price and PnL
+            const updatedTrade: BotTrade = {
+              ...activeTrade,
+              currentPrice: currentMarketPrice,
+              profitUsd: floatingProfit,
+            };
+            nextTrades = nextTrades.map((t) =>
+              t.id === activeTrade.id ? updatedTrade : t
+            );
+            tradesChanged = true;
+          }
+        }
+      });
+
+      if (tradesChanged) {
+        setBotTrades(nextTrades);
+        saveStoredBotTrades(nextTrades);
+      }
+
+      if (runsChanged) {
+        setBotRuns(nextRuns);
+        saveStoredBotRuns(nextRuns);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   // Current tick direction for selected symbol
   const currentTickDirection = tickStates[selectedSymbol] || 'NEUTRAL';
@@ -809,6 +1848,27 @@ export default function App() {
             onClosePosition={(id) => closePositionById(id, 'MANUAL')}
             onCloseAllPositions={handleCloseAllPositions}
             onCancelPendingOrder={handleCancelPendingOrder}
+            isDarkMode={isDarkMode}
+          />
+        );
+      case 'bots':
+        return (
+          <BotsTab
+            instruments={instruments}
+            userRole={userRole}
+            onUpdateUserRole={handleUpdateUserRole}
+            inbuiltBots={DEFAULT_INBUILT_BOTS}
+            importedBots={importedBots}
+            botRuns={botRuns}
+            botTrades={botTrades}
+            onStartBotRun={handleStartBotRun}
+            onToggleBotRun={handleToggleBotRun}
+            onStopBotRun={handleStopBotRun}
+            onDeleteBotRun={handleDeleteBotRun}
+            onUpdateBotRunSettings={handleUpdateBotRunSettings}
+            onImportBot={handleImportBot}
+            onCloseBotTrade={handleCloseBotTrade}
+            onTriggerManualSignal={handleTriggerManualSignal}
             isDarkMode={isDarkMode}
           />
         );
@@ -872,6 +1932,10 @@ export default function App() {
             onDeposit={handleDeposit}
             onWithdraw={handleWithdraw}
             onTransfer={handleTransfer}
+            selectedAccount={selectedAccount}
+            onSelectAccount={setSelectedAccount}
+            isDarkMode={isDarkMode}
+            currentUser={currentUser}
           />
         );
       case 'account':
@@ -885,6 +1949,10 @@ export default function App() {
             marketAnalyses={MARKET_ANALYSES}
             isDarkMode={isDarkMode}
             onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+            userRole={userRole}
+            onUpdateUserRole={handleUpdateUserRole}
+            currentUser={currentUser}
+            onSignOut={handleUserSignOut}
           />
         );
       default:
@@ -892,9 +1960,21 @@ export default function App() {
     }
   };
 
+  // If user is not signed in, show the comprehensive VTM Landing Page
+  if (!currentUser || !currentUser.isLoggedIn) {
+    return (
+      <LandingPage
+        instruments={instruments}
+        onSignIn={handleUserSignIn}
+        isDarkMode={isDarkMode}
+        onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+      />
+    );
+  }
+
   return (
     <div
-      id="hfm-app-root"
+      id="vtm-app-root"
       className={`min-h-screen w-full transition-colors duration-200 ${
         isDarkMode ? 'dark bg-[#0B0C0E] text-neutral-100' : 'bg-neutral-100 text-neutral-900'
       }`}
@@ -904,12 +1984,25 @@ export default function App() {
         <Header
           accounts={accounts}
           selectedAccount={selectedAccount}
-          onSelectAccount={setSelectedAccount}
+          onSelectAccount={(acc) => {
+            setSelectedAccount(acc);
+            if (acc) {
+              triggerActionPopup({
+                type: 'ACCOUNT_SWITCHED',
+                title: `Switched to ${acc.type} #${acc.accountNumber}`,
+                subtitle: `Current Balance: $${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })} | Leverage ${acc.leverage}`,
+                details: {
+                  accountNumber: acc.accountNumber,
+                  amount: acc.balance,
+                },
+              });
+            }
+          }}
           onOpenDeposit={() => setActiveTab('wallet')}
           onOpenNewAccount={() => setActiveTab('account')}
           onResetDemo={handleResetDemo}
-          isMobileFrame={false}
-          onToggleMobileFrame={() => {}}
+          isMobileFrame={isMobileFrame}
+          onToggleMobileFrame={() => setIsMobileFrame((prev) => !prev)}
           isDarkMode={isDarkMode}
           onToggleTheme={() => setIsDarkMode(!isDarkMode)}
           oneClickTrading={oneClickTrading}
@@ -920,6 +2013,10 @@ export default function App() {
             setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
           }
           onOpenMenuDrawer={() => setIsMenuDrawerOpen(true)}
+          currentUser={currentUser}
+          onSignOut={handleUserSignOut}
+          onOpenInstall={pwa.openInstallDialog}
+          isInstalled={pwa.isInstalled}
         />
 
         {/* Scrollable Main Content - Full-width desktop responsive container */}
@@ -952,6 +2049,30 @@ export default function App() {
             setIsMenuDrawerOpen(false);
           }}
           walletBalance={walletBalance}
+          isDarkMode={isDarkMode}
+          currentUser={currentUser}
+          onSignOut={handleUserSignOut}
+          onOpenInstall={pwa.openInstallDialog}
+          isInstalled={pwa.isInstalled}
+        />
+
+        {/* PWA Native Installation Engine Dialogs */}
+        <PWAInstallModals
+          pwa={pwa}
+          isDarkMode={isDarkMode}
+        />
+
+        {/* Action Feedback Modals (Interactive Action Popups) */}
+        <ActionPopupManager
+          currentPopup={currentActionPopup}
+          onDismiss={() => setCurrentActionPopup(null)}
+          isDarkMode={isDarkMode}
+        />
+
+        {/* Global Action Toast Notification Banner */}
+        <ActionToastBanner
+          popups={actionToasts}
+          onDismiss={handleDismissToast}
           isDarkMode={isDarkMode}
         />
       </div>

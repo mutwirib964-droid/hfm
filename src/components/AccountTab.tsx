@@ -28,14 +28,17 @@ import {
   CheckCircle2,
   Clock,
   ArrowRight,
+  LogOut,
+  AlertCircle,
 } from 'lucide-react';
 import { ProfileVerificationSection } from './ProfileVerificationSection';
 import { RiskPipCalculatorModal } from './RiskPipCalculatorModal';
 import { TradersRewardsModal } from './TradersRewardsModal';
+import { UserRole, UserAuthProfile } from '../types/botTypes';
 
 interface AccountTabProps {
   accounts: TradingAccount[];
-  selectedAccount: TradingAccount;
+  selectedAccount: TradingAccount | null;
   onSelectAccount: (acc: TradingAccount) => void;
   onOpenNewAccount: (params: {
     type: AccountType;
@@ -47,6 +50,10 @@ interface AccountTabProps {
   marketAnalyses: MarketAnalysis[];
   isDarkMode: boolean;
   onToggleTheme: () => void;
+  userRole?: UserRole;
+  onUpdateUserRole?: (role: UserRole) => void;
+  currentUser?: UserAuthProfile | null;
+  onSignOut?: () => void;
 }
 
 export const AccountTab: React.FC<AccountTabProps> = ({
@@ -58,6 +65,10 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   marketAnalyses,
   isDarkMode,
   onToggleTheme,
+  userRole = 'marketer',
+  onUpdateUserRole,
+  currentUser,
+  onSignOut,
 }) => {
   const [activeSubView, setActiveSubView] = useState<
     'overview' | 'verification' | 'calculators' | 'rewards' | 'calendar' | 'news' | 'support'
@@ -65,6 +76,13 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
   const [isRiskModalOpen, setIsRiskModalOpen] = useState(false);
   const [isRewardsModalOpen, setIsRewardsModalOpen] = useState(false);
+
+  // Hidden Admin Role Assignment state (Only accessible by admin)
+  const [showAdminRoleModal, setShowAdminRoleModal] = useState(false);
+  const [adminPinInput, setAdminPinInput] = useState('');
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState(userRole === 'admin');
+  const [adminPinError, setAdminPinError] = useState('');
+  const [assignedRoleValue, setAssignedRoleValue] = useState<UserRole>(userRole);
 
   // Open Account Modal
   const [showOpenModal, setShowOpenModal] = useState(false);
@@ -83,7 +101,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'agent'; text: string; time: string }>>([
     {
       sender: 'agent',
-      text: 'Hello Josphat! Welcome to HFM 24/7 Multilingual Support. How can our trading desk assist you today?',
+      text: 'Hello Josphat! Welcome to VTM Markets 24/7 Multilingual Support. How can our trading desk assist you today?',
       time: 'Just now',
     },
   ]);
@@ -112,13 +130,13 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
     // Automated intelligent representative reply
     setTimeout(() => {
-      let reply = "Thank you for reaching out to HFM. Our team operates 24/7 to provide institutional grade liquidity and instant order routing. We have flagged your request with our account specialist.";
+      let reply = "Thank you for reaching out to VTM Markets. Our team operates 24/7 to provide institutional grade liquidity and instant order routing. We have flagged your request with our account specialist.";
       if (userMsg.toLowerCase().includes('deposit') || userMsg.toLowerCase().includes('wallet')) {
-        reply = "Deposits into your HF Wallet are processed instantly with 0% fees across Visa/Mastercard, Tether USDT, and local payment rails.";
+        reply = "Deposits into your VTM Wallet are processed instantly with 0% fees across Visa/Mastercard, Tether USDT, and local payment rails.";
       } else if (userMsg.toLowerCase().includes('spread') || userMsg.toLowerCase().includes('leverage')) {
-        reply = "HFM offers competitive leverage up to 1:2000 and ultra-tight raw spreads from 0.0 pips on our Zero Spread and Pro accounts.";
+        reply = "VTM Markets offers competitive leverage up to 1:2000 and ultra-tight raw spreads from 0.0 pips on our Zero Spread and Pro accounts.";
       } else if (userMsg.toLowerCase().includes('copy') || userMsg.toLowerCase().includes('hfcopy')) {
-        reply = "With HFcopy, you can allocate funds with full risk management, customizable volume allocation, and automated rescue levels.";
+        reply = "With VTM Copy, you can allocate funds with full risk management, customizable volume allocation, and automated rescue levels.";
       }
 
       setChatMessages((prev) => [
@@ -140,47 +158,83 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   return (
     <div id="hfm-account-tab" className="flex flex-col w-full pb-20 space-y-4 px-2 sm:px-4 pt-2">
       {/* User KYC Profile Header */}
-      <div className="bg-[#161920] border border-neutral-800 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div
+        className={`border rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+          isDarkMode
+            ? 'bg-[#161920] border-neutral-800 text-white'
+            : 'bg-white border-slate-200 text-slate-900 shadow-xs'
+        }`}
+      >
         <div
           onClick={() => setActiveSubView('verification')}
           className="flex items-center gap-3 cursor-pointer group"
         >
           <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-[#E51937] to-neutral-700 flex items-center justify-center text-white font-bold text-lg border-2 border-neutral-700 shadow-md group-hover:border-[#E51937] transition-colors">
-            JN
+            {currentUser?.name
+              ? currentUser.name
+                  .split(' ')
+                  .map((n) => n[0])
+                  .slice(0, 2)
+                  .join('')
+                  .toUpperCase()
+              : 'JN'}
           </div>
 
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-white group-hover:text-amber-300 transition-colors">
-                Josphat Ndungu
+              <h2 className={`text-sm font-bold transition-colors ${isDarkMode ? 'text-white group-hover:text-amber-300' : 'text-slate-900 group-hover:text-[#E51937]'}`}>
+                {currentUser?.name || 'Josphat Ndungu'}
               </h2>
-              <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-500 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
                 <ShieldCheck className="w-3.5 h-3.5" />
                 <span>KYC Tier 2</span>
               </span>
             </div>
-            <p className="text-[11px] text-neutral-400 mt-0.5">
-              Client ID: <span className="font-mono text-neutral-200">#8842-9102-LIVE</span> • mutwirib964@gmail.com
+            <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+              Client ID:{' '}
+              <span className={`font-mono ${isDarkMode ? 'text-neutral-200' : 'text-slate-800 font-semibold'}`}>
+                #{currentUser?.accountNumber || '8842-9102-LIVE'}
+              </span>{' '}
+              • {currentUser?.email || 'mutwirib964@gmail.com'}
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => setActiveSubView('verification')}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 font-bold text-xs rounded-xl transition-all border border-neutral-700 active:scale-95"
+            className={`flex items-center justify-center gap-1.5 px-3 py-2 font-bold text-xs rounded-xl transition-all border active:scale-95 cursor-pointer ${
+              isDarkMode
+                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300 shadow-xs'
+            }`}
           >
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <ShieldCheck className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
             <span>Profile & KYC</span>
           </button>
 
           <button
             onClick={() => setShowOpenModal(true)}
-            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-red-950/40 active:scale-95"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-red-950/20 active:scale-95 cursor-pointer"
           >
             <PlusCircle className="w-4 h-4" />
             <span>Open New Account</span>
           </button>
+
+          {onSignOut && (
+            <button
+              onClick={onSignOut}
+              className={`flex items-center justify-center gap-1.5 px-3 py-2 font-bold text-xs rounded-xl transition-all border active:scale-95 cursor-pointer ${
+                isDarkMode
+                  ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/30'
+                  : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 shadow-xs'
+              }`}
+              title="Sign Out from Platform"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -188,10 +242,14 @@ export const AccountTab: React.FC<AccountTabProps> = ({
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
         <button
           onClick={() => setActiveSubView('overview')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'overview'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
           <User className="w-4 h-4 text-[#E51937]" />
@@ -200,73 +258,97 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
         <button
           onClick={() => setActiveSubView('verification')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'verification'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <ShieldCheck className="w-4 h-4 text-emerald-400" />
+          <ShieldCheck className="w-4 h-4 text-emerald-500" />
           <span>Verification</span>
         </button>
 
         <button
           onClick={() => setActiveSubView('calculators')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'calculators'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <Calculator className="w-4 h-4 text-amber-400" />
+          <Calculator className="w-4 h-4 text-amber-500" />
           <span>Risk & Pip</span>
         </button>
 
         <button
           onClick={() => setActiveSubView('rewards')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'rewards'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <Award className="w-4 h-4 text-purple-400" />
+          <Award className="w-4 h-4 text-purple-500" />
           <span>Rewards (100L)</span>
         </button>
 
         <button
           onClick={() => setActiveSubView('calendar')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'calendar'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <Calendar className="w-4 h-4 text-sky-400" />
+          <Calendar className="w-4 h-4 text-sky-500" />
           <span>Calendar</span>
         </button>
 
         <button
           onClick={() => setActiveSubView('news')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
             activeSubView === 'news'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <Newspaper className="w-4 h-4 text-emerald-400" />
+          <Newspaper className="w-4 h-4 text-emerald-500" />
           <span>News</span>
         </button>
 
         <button
           onClick={() => setActiveSubView('support')}
-          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all col-span-2 sm:col-span-1 ${
+          className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-all col-span-2 sm:col-span-1 cursor-pointer ${
             activeSubView === 'support'
-              ? 'bg-neutral-800 border-[#E51937] text-white'
-              : 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              ? isDarkMode
+                ? 'bg-neutral-800 border-[#E51937] text-white'
+                : 'bg-red-50 border-[#E51937] text-[#E51937] font-bold shadow-xs'
+              : isDarkMode
+              ? 'bg-[#161920] border-neutral-800 text-neutral-400 hover:text-white'
+              : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-xs'
           }`}
         >
-          <MessageSquare className="w-4 h-4 text-purple-400" />
+          <MessageSquare className="w-4 h-4 text-purple-500" />
           <span>24/7 Chat</span>
         </button>
       </div>
@@ -274,67 +356,160 @@ export const AccountTab: React.FC<AccountTabProps> = ({
       {/* Sub-View 1: Accounts Overview */}
       {activeSubView === 'overview' && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-xs text-neutral-300 font-bold px-1">
-            <span>Trading Accounts ({accounts.length})</span>
-            <span className="text-[11px] text-neutral-500">Servers: London & Cyprus</span>
+          <div className="flex items-center justify-between text-xs font-bold px-1">
+            <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-800'}>
+              Trading Accounts ({accounts.length})
+            </span>
+            <span className={isDarkMode ? 'text-neutral-500' : 'text-slate-500'}>
+              Servers: London & Cyprus
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {accounts.map((acc) => {
-              const isSelected = acc.id === selectedAccount.id;
-              return (
-                <div
-                  key={acc.id}
-                  onClick={() => onSelectAccount(acc)}
-                  className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-[#1A1D26] border-[#E51937] shadow-lg shadow-red-950/20'
-                      : 'bg-[#161920] border-neutral-800 hover:border-neutral-700'
+          {accounts.length === 0 ? (
+            <div
+              className={`p-8 rounded-2xl border text-center space-y-4 transition-colors ${
+                isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
+              }`}
+            >
+              <div className="w-14 h-14 mx-auto rounded-2xl bg-[#E51937]/10 border border-[#E51937]/20 flex items-center justify-center text-[#E51937]">
+                <User className="w-7 h-7" />
+              </div>
+              <div className="max-w-md mx-auto">
+                <h3 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  Central VTM Wallet Active
+                </h3>
+                <p className={`text-xs mt-1.5 leading-relaxed ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                  You have successfully created your account! Your Central Wallet is active with $0.00 balance. To begin trading live instruments or testing strategies, open a Live or Demo trading account below.
+                </p>
+              </div>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                <button
+                  id="btn-open-live-acc"
+                  onClick={() => {
+                    setNewAccType('Live');
+                    setShowOpenModal(true);
+                  }}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  <span>Open Live Trading Account</span>
+                </button>
+                <button
+                  id="btn-open-demo-acc"
+                  onClick={() => {
+                    setNewAccType('Demo');
+                    setShowOpenModal(true);
+                  }}
+                  className={`w-full sm:w-auto px-5 py-2.5 rounded-xl border font-bold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                    isDarkMode
+                      ? 'border-neutral-700 bg-neutral-800 hover:bg-neutral-700 text-amber-400'
+                      : 'border-slate-300 bg-white hover:bg-slate-50 text-slate-800 shadow-xs'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-[10px] font-black px-2 py-0.5 rounded ${
-                          acc.type === 'Live' ? 'bg-[#E51937] text-white' : 'bg-amber-500 text-black'
-                        }`}
-                      >
-                        {acc.type}
-                      </span>
-                      <span className="font-bold text-white text-sm">#{acc.accountNumber}</span>
-                      <span className="text-xs text-neutral-400 font-medium">({acc.tier})</span>
+                  <Sparkles className="w-4 h-4 text-amber-500" />
+                  <span>Open Free Demo ($100,000)</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {accounts.map((acc) => {
+                const isSelected = selectedAccount ? acc.id === selectedAccount.id : false;
+                const isDemo = acc.type === 'Demo';
+                return (
+                  <div
+                    key={acc.id}
+                    onClick={() => onSelectAccount(acc)}
+                    className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
+                      isSelected
+                        ? isDarkMode
+                          ? 'bg-[#1A1D26] border-[#E51937] shadow-lg shadow-red-950/20'
+                          : 'bg-red-50/50 border-[#E51937] shadow-xs'
+                        : isDarkMode
+                        ? 'bg-[#161920] border-neutral-800 hover:border-neutral-700'
+                        : 'bg-white border-slate-200 hover:border-slate-300 shadow-xs'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-[10px] font-black px-2 py-0.5 rounded ${
+                            acc.type === 'Live' ? 'bg-[#E51937] text-white' : 'bg-amber-500 text-black'
+                          }`}
+                        >
+                          {acc.type}
+                        </span>
+                        <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                          #{acc.accountNumber}
+                        </span>
+                        <span className={`text-xs font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          ({acc.tier})
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className={`font-mono font-bold text-base ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                          ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                        <span className={`text-[10px] block font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          Equity: ${acc.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </span>
+                      </div>
                     </div>
 
-                    <div className="text-right">
-                      <span className="font-mono font-bold text-base text-white">
-                        ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </span>
-                      <span className="text-[10px] text-neutral-400 block font-mono">
-                        Equity: ${acc.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </span>
+                    <div className="mt-2 text-[10px]">
+                      {isDemo ? (
+                        <span className="inline-flex items-center gap-1 text-amber-500 dark:text-amber-400 font-medium bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                          <span>Simulated $100k Virtual Credit (Non-Depositable)</span>
+                        </span>
+                      ) : acc.balance === 0 ? (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border ${
+                          isDarkMode
+                            ? 'text-neutral-400 bg-neutral-800 border-neutral-700'
+                            : 'text-slate-600 bg-slate-100 border-slate-300'
+                        }`}>
+                          <span>Real Account • Deposit Required to Trade</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          <span>Active Live Balance • Real Execution</span>
+                        </span>
+                      )}
                     </div>
-                  </div>
 
-                  <div className="grid grid-cols-3 gap-2 mt-3 pt-2.5 border-t border-neutral-800/80 text-[11px]">
-                    <div>
-                      <span className="text-neutral-500 block text-[10px]">Server</span>
-                      <span className="text-neutral-300 font-mono">{acc.server}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px]">Leverage</span>
-                      <span className="text-neutral-300 font-mono font-bold">{acc.leverage}</span>
-                    </div>
-                    <div>
-                      <span className="text-neutral-500 block text-[10px]">Free Margin</span>
-                      <span className="text-emerald-400 font-mono font-bold">
-                        ${acc.freeMargin.toFixed(2)}
-                      </span>
+                    <div className={`grid grid-cols-3 gap-2 mt-2.5 pt-2 border-t text-[11px] ${
+                      isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'
+                    }`}>
+                      <div>
+                        <span className={`block text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+                          Server
+                        </span>
+                        <span className={`font-mono ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+                          {acc.server}
+                        </span>
+                      </div>
+                      <div>
+                        <span className={`block text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+                          Leverage
+                        </span>
+                        <span className={`font-mono font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
+                          {acc.leverage}
+                        </span>
+                      </div>
+                      <div>
+                        <span className={`block text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+                          Free Margin
+                        </span>
+                        <span className="text-emerald-600 dark:text-emerald-400 font-mono font-bold">
+                          ${acc.freeMargin.toFixed(2)}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -578,7 +753,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
           <div className="p-3 bg-[#1A1D24] border-b border-neutral-800 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4 text-sky-400" />
-              <h3 className="text-xs font-bold text-white">HFM Global Economic Calendar</h3>
+              <h3 className="text-xs font-bold text-white">VTM Global Economic Calendar</h3>
             </div>
             <span className="text-[10px] text-neutral-400">Live Auto-Update</span>
           </div>
@@ -669,7 +844,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
               <div>
-                <h4 className="text-xs font-bold text-white">HFM Client Support Desk</h4>
+                <h4 className="text-xs font-bold text-white">VTM Client Support Desk</h4>
                 <span className="text-[10px] text-neutral-400">Average response time: &lt; 1 min</span>
               </div>
             </div>
@@ -726,16 +901,26 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
       {/* Open New Account Modal */}
       {showOpenModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-[#181B22] border border-neutral-700 rounded-2xl p-4 shadow-2xl space-y-4 text-xs">
-            <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
-              <span className="font-bold text-white text-sm flex items-center gap-2">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/70 backdrop-blur-xs">
+          <div
+            className={`w-full max-w-md border rounded-2xl p-5 shadow-2xl space-y-4 text-xs transition-colors ${
+              isDarkMode
+                ? 'bg-[#181B22] border-neutral-700 text-white'
+                : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className={`flex items-center justify-between border-b pb-2 ${
+              isDarkMode ? 'border-neutral-800' : 'border-slate-200'
+            }`}>
+              <span className={`font-bold text-sm flex items-center gap-2 ${
+                isDarkMode ? 'text-white' : 'text-slate-900'
+              }`}>
                 <PlusCircle className="w-4 h-4 text-[#E51937]" />
                 Open New Trading Account
               </span>
               <button
                 onClick={() => setShowOpenModal(false)}
-                className="text-neutral-400 hover:text-white"
+                className={`cursor-pointer ${isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'}`}
               >
                 <X className="w-5 h-5" />
               </button>
@@ -743,13 +928,19 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
             {/* Account Type (Live vs Demo) */}
             <div>
-              <label className="text-neutral-400 font-semibold block mb-1">Account Category</label>
+              <label className={`font-semibold block mb-1.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
+                Account Category
+              </label>
               <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
                   onClick={() => setNewAccType('Live')}
-                  className={`py-2 rounded-lg font-bold transition-all ${
-                    newAccType === 'Live' ? 'bg-[#E51937] text-white' : 'bg-neutral-800 text-neutral-400'
+                  className={`py-2 rounded-lg font-bold transition-all cursor-pointer ${
+                    newAccType === 'Live'
+                      ? 'bg-[#E51937] text-white shadow-xs'
+                      : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                      : 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200'
                   }`}
                 >
                   Live Real Account
@@ -757,38 +948,80 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                 <button
                   type="button"
                   onClick={() => setNewAccType('Demo')}
-                  className={`py-2 rounded-lg font-bold transition-all ${
-                    newAccType === 'Demo' ? 'bg-amber-500 text-black' : 'bg-neutral-800 text-neutral-400'
+                  className={`py-2 rounded-lg font-bold transition-all cursor-pointer ${
+                    newAccType === 'Demo'
+                      ? 'bg-amber-500 text-black shadow-xs font-black'
+                      : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                      : 'bg-slate-100 text-slate-700 border border-slate-300 hover:bg-slate-200'
                   }`}
                 >
                   Risk-Free Demo
                 </button>
               </div>
+
+              {newAccType === 'Live' ? (
+                <div className={`mt-2.5 p-3 rounded-lg border text-[11px] ${
+                  isDarkMode
+                    ? 'bg-neutral-900 border-neutral-700/80 text-neutral-300'
+                    : 'bg-red-50/50 border-red-200 text-slate-700'
+                }`}>
+                  <div className={`font-bold flex items-center gap-1.5 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Real Funds Account • Initial Balance: $0.00</span>
+                  </div>
+                  <p className={`mt-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    Live accounts start with $0.00. You will need to deposit funds via Central Wallet, card, or crypto before placing live orders.
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-2.5 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-800 dark:text-amber-200">
+                  <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                    <span>Demo Virtual Account • Initial Balance: $100,000.00</span>
+                  </div>
+                  <p className="mt-1 opacity-90">
+                    Pre-credited with $100,000 simulated currency for practicing strategies. Non-depositable and non-withdrawable.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Account Tier */}
             <div>
-              <label className="text-neutral-400 font-semibold block mb-1">Account Tier / Type</label>
+              <label className={`font-semibold block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
+                Account Tier / Type
+              </label>
               <select
                 value={newAccTier}
                 onChange={(e) => setNewAccTier(e.target.value as AccountTier)}
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-white"
+                className={`w-full rounded-lg p-2.5 border transition-colors ${
+                  isDarkMode
+                    ? 'bg-neutral-900 border-neutral-700 text-white'
+                    : 'bg-white border-slate-300 text-slate-900'
+                }`}
               >
-                <option value="Premium">HFM Premium (Zero Commission, Spreads from 1.2)</option>
-                <option value="Pro">HFM Pro (Raw Spreads from 0.5, Low Commission)</option>
-                <option value="Zero Spread">HFM Zero Spread (0.0 Spreads for Scalpers & EAs)</option>
-                <option value="Cent">HFM Cent (Micro Lots for Strategy Testing)</option>
-                <option value="HFcopy">HFcopy Follower Account</option>
+                <option value="Premium">VTM Premium (Zero Commission, Spreads from 1.2)</option>
+                <option value="Pro">VTM Pro (Raw Spreads from 0.5, Low Commission)</option>
+                <option value="Zero Spread">VTM Zero Spread (0.0 Spreads for Scalpers & EAs)</option>
+                <option value="Cent">VTM Cent (Micro Lots for Strategy Testing)</option>
+                <option value="HFcopy">VTM Copy Follower Account</option>
               </select>
             </div>
 
             {/* Leverage */}
             <div>
-              <label className="text-neutral-400 font-semibold block mb-1">Maximum Leverage</label>
+              <label className={`font-semibold block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
+                Maximum Leverage
+              </label>
               <select
                 value={newAccLeverage}
                 onChange={(e) => setNewAccLeverage(e.target.value)}
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2.5 text-white font-mono"
+                className={`w-full rounded-lg p-2.5 border font-mono transition-colors ${
+                  isDarkMode
+                    ? 'bg-neutral-900 border-neutral-700 text-white'
+                    : 'bg-white border-slate-300 text-slate-900'
+                }`}
               >
                 <option value="1:100">1:100 (Conservative)</option>
                 <option value="1:500">1:500 (Standard)</option>
@@ -799,10 +1032,180 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
             <button
               onClick={handleCreateAccount}
-              className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all"
+              className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer active:scale-98"
             >
               Confirm & Open Account
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Discreet Admin Portal Entry (Restricted to Admin Only) */}
+      <div className="pt-6 pb-2 flex items-center justify-center">
+        <button
+          onClick={() => {
+            setAdminPinError('');
+            setShowAdminRoleModal(true);
+          }}
+          className="text-[10px] text-neutral-500 hover:text-neutral-400 flex items-center gap-1 transition-colors cursor-pointer"
+          title="Restricted Admin Control"
+        >
+          <Lock className="w-3 h-3" />
+          <span>Admin Role Desk</span>
+        </button>
+      </div>
+
+      {/* Hidden Admin Role Assignment Modal */}
+      {showAdminRoleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
+          <div
+            className={`w-full max-w-md rounded-2xl border p-5 shadow-2xl relative ${
+              isDarkMode ? 'bg-[#181B22] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+            }`}
+          >
+            <button
+              onClick={() => {
+                setShowAdminRoleModal(false);
+                setAdminPinInput('');
+                setAdminPinError('');
+              }}
+              className="absolute top-4 right-4 text-neutral-400 hover:text-white cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-2 rounded-xl bg-red-600/20 text-[#E51937]">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold">Administrator Role Desk</h3>
+                <p className="text-[11px] text-neutral-400">Restricted assignment of client & staff roles</p>
+              </div>
+            </div>
+
+            {!isAdminUnlocked ? (
+              <div className="space-y-3 pt-2">
+                <p className="text-xs text-neutral-400">
+                  Enter Admin Security Passcode to access role assignments. Regular users cannot view or assign roles.
+                </p>
+                <div>
+                  <input
+                    type="password"
+                    placeholder="Enter Admin PIN (Default: 8842)"
+                    value={adminPinInput}
+                    onChange={(e) => {
+                      setAdminPinInput(e.target.value);
+                      setAdminPinError('');
+                    }}
+                    className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold ${
+                      isDarkMode
+                        ? 'bg-neutral-900 border-neutral-700 text-white'
+                        : 'bg-slate-100 border-slate-300 text-slate-900'
+                    }`}
+                  />
+                  {adminPinError && (
+                    <span className="text-[11px] text-rose-400 font-semibold block mt-1">
+                      {adminPinError}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    if (adminPinInput === '8842' || adminPinInput === 'admin' || adminPinInput === 'vtm8842') {
+                      setIsAdminUnlocked(true);
+                      setAdminPinError('');
+                    } else {
+                      setAdminPinError('Invalid Admin Passcode. Access denied.');
+                    }
+                  }}
+                  className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer"
+                >
+                  Authorize Admin Session
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4 pt-2">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  <span>Admin Session Verified: {selectedAccount?.accountNumber || currentUser?.accountNumber || 'Primary Session'}</span>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-neutral-300 mb-1.5">
+                    Select Role to Assign to Client Account:
+                  </label>
+                  <div className="space-y-2">
+                    {[
+                      {
+                        role: 'marketer' as UserRole,
+                        title: 'Institutional Marketer / Affiliate',
+                        desc: 'Unlocks algorithmic high win-rate bots (>80%) for promotion and client demonstrations.',
+                      },
+                      {
+                        role: 'normal' as UserRole,
+                        title: 'Retail Client (Normal)',
+                        desc: 'Standard retail trading environment with default market volatility and standard bot risk.',
+                      },
+                      {
+                        role: 'admin' as UserRole,
+                        title: 'Platform Administrator / Staff',
+                        desc: 'Full administrative control over trade routing, execution rules, and user assignment.',
+                      },
+                    ].map((opt) => (
+                      <label
+                        key={opt.role}
+                        onClick={() => setAssignedRoleValue(opt.role)}
+                        className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-all ${
+                          assignedRoleValue === opt.role
+                            ? 'bg-[#E51937]/10 border-[#E51937]'
+                            : isDarkMode
+                            ? 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
+                            : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="assignedRole"
+                          checked={assignedRoleValue === opt.role}
+                          onChange={() => setAssignedRoleValue(opt.role)}
+                          className="mt-0.5"
+                        />
+                        <div>
+                          <div className="text-xs font-bold text-white dark:text-white flex items-center gap-2">
+                            <span>{opt.title}</span>
+                            {userRole === opt.role && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-600 text-white">Current</span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-neutral-400 mt-0.5">{opt.desc}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      if (onUpdateUserRole) {
+                        onUpdateUserRole(assignedRoleValue);
+                      }
+                      setShowAdminRoleModal(false);
+                    }}
+                    className="flex-1 py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer"
+                  >
+                    Assign & Save Role
+                  </button>
+                  <button
+                    onClick={() => setShowAdminRoleModal(false)}
+                    className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

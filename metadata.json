@@ -1,6 +1,6 @@
 {
-  "name": "HFM Trading Platform",
-  "description": "The complete HFM (HF Markets) trading app and client portal replica with real-time markets, live charts, execution terminal, HFcopy copy trading, and multi-account wallet management.",
+  "name": "VTM Markets",
+  "description": "VTM Markets - Global Multi-Asset CFD Broker with Raw Spreads from 0.0 Pips, High-Speed STP Execution, and Advanced WebTrader Terminal.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

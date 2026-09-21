@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Minus, Plus, ShieldAlert, Check } from 'lucide-react';
+import { X, Minus, Plus, ShieldAlert, Check, Lock } from 'lucide-react';
 import { Instrument } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 
 interface QuickOrderSheetProps {
   isOpen: boolean;
@@ -35,6 +36,7 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
 
   if (!isOpen) return null;
 
+  const marketStatus = checkInstrumentMarketHours(instrument.symbol, instrument.category);
   const currentPrice = side === 'BUY' ? instrument.ask : instrument.bid;
   const priceParts = formatPipPrice(currentPrice, instrument.decimals);
   const contractSize = instrument.category === 'Forex' ? 100000 : 100;
@@ -49,6 +51,9 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   };
 
   const handleSubmit = () => {
+    if (!marketStatus.isOpen) {
+      return;
+    }
     onExecute({
       symbol: instrument.symbol,
       side,
@@ -262,16 +267,40 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
           </div>
         </div>
 
+        {/* Market Closed Alert */}
+        {!marketStatus.isOpen && (
+          <div className="mb-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2.5">
+            <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <span className="font-bold block text-amber-400">Market is Closed ({instrument.symbol})</span>
+              <span className="text-neutral-300 text-[11px] block">
+                {marketStatus.sessionText}. {marketStatus.nextOpenText}. Quotes remain stuck as on TradingView.
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Final Execution Button */}
         <button
           onClick={handleSubmit}
-          className={`w-full py-3.5 px-4 rounded-xl text-white font-bold text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer ${
-            side === 'SELL' ? 'bg-[#E51937] hover:bg-[#c9142f]' : 'bg-[#22C55E] hover:bg-[#16A34A]'
+          disabled={!marketStatus.isOpen}
+          className={`w-full py-3.5 px-4 rounded-xl text-white font-bold text-sm shadow-md active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${
+            !marketStatus.isOpen
+              ? 'bg-neutral-600 text-neutral-300 cursor-not-allowed opacity-60'
+              : side === 'SELL'
+              ? 'bg-[#E51937] hover:bg-[#c9142f] cursor-pointer'
+              : 'bg-[#22C55E] hover:bg-[#16A34A] cursor-pointer'
           }`}
         >
-          <span>
-            {side === 'SELL' ? 'SELL' : 'BUY'} {lots} {instrument.symbol} @ {currentPrice.toFixed(instrument.decimals)}
-          </span>
+          {!marketStatus.isOpen ? (
+            <span className="flex items-center gap-1.5">
+              <Lock className="w-4 h-4" /> Market Closed — Trading Suspended
+            </span>
+          ) : (
+            <span>
+              {side === 'SELL' ? 'SELL' : 'BUY'} {lots} {instrument.symbol} @ {currentPrice.toFixed(instrument.decimals)}
+            </span>
+          )}
         </button>
       </div>
     </div>

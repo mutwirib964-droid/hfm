@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { Instrument, Candle, Timeframe } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 import { DrawingModal, PriceAlertModal } from './ChartModals';
 import { QuickOrderSheet } from './QuickOrderSheet';
 import { TradingViewWidget } from './TradingViewWidget';
@@ -529,6 +530,18 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     { label: '3 Days swaps', value: 'Wednesday' },
   ];
 
+  const marketStatus = checkInstrumentMarketHours(instrument.symbol, instrument.category);
+  const [closedNotice, setClosedNotice] = useState<string | null>(null);
+
+  const handleOpenTrade = (side: 'BUY' | 'SELL') => {
+    if (!marketStatus.isOpen) {
+      setClosedNotice(`Market is CLOSED for ${instrument.symbol}: ${marketStatus.reason}. (Crypto trades 24/7 unbroken).`);
+      setTimeout(() => setClosedNotice(null), 4500);
+      return;
+    }
+    setQuickOrderSide(side);
+  };
+
   return (
     <div
       id="instrument-detail-screen"
@@ -537,6 +550,23 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         isDarkMode ? 'bg-[#111317] text-white' : 'bg-white text-neutral-900'
       }`}
     >
+      {/* Market Closed Banner Notice */}
+      {!marketStatus.isOpen && (
+        <div className="mx-3 mt-2 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+            <span>Market Closed: {marketStatus.reason} {marketStatus.nextOpenTime ? `(Reopens ${marketStatus.nextOpenTime})` : ''}</span>
+          </div>
+          <span className="text-[10px] bg-amber-500/20 px-2 py-0.5 rounded text-amber-200 font-bold">Trading Suspended</span>
+        </div>
+      )}
+
+      {closedNotice && (
+        <div className="mx-3 mt-2 p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-semibold flex items-center gap-2 animate-fade-in shadow-md">
+          <span>⚠️ {closedNotice}</span>
+        </div>
+      )}
+
       {/* Top Navigation Bar */}
       <div
         className={`px-4 py-2.5 flex items-center justify-between border-b ${
@@ -727,11 +757,15 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
           {/* Red Sell Button */}
           <button
-            onClick={() => setQuickOrderSide('SELL')}
-            className="py-2.5 px-2 rounded-2xl bg-[#E51937] hover:bg-[#c9142f] active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm cursor-pointer min-w-0"
+            onClick={() => handleOpenTrade('SELL')}
+            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
+              !marketStatus.isOpen
+                ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
+                : 'bg-[#E51937] hover:bg-[#c9142f] cursor-pointer'
+            }`}
           >
             <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5">
-              Sell
+              {!marketStatus.isOpen ? '🔒 Closed' : 'Sell'}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {bidParts.isForex ? (
@@ -764,11 +798,15 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
 
           {/* Green Buy Button */}
           <button
-            onClick={() => setQuickOrderSide('BUY')}
-            className="py-2.5 px-2 rounded-2xl bg-[#22C55E] hover:bg-[#16A34A] active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm cursor-pointer min-w-0"
+            onClick={() => handleOpenTrade('BUY')}
+            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
+              !marketStatus.isOpen
+                ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
+                : 'bg-[#22C55E] hover:bg-[#16A34A] cursor-pointer'
+            }`}
           >
             <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5">
-              Buy
+              {!marketStatus.isOpen ? '🔒 Closed' : 'Buy'}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {askParts.isForex ? (

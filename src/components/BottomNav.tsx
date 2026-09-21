@@ -4,6 +4,7 @@ import {
   Menu as MenuIcon,
   ArrowUpDown,
   TrendingUp,
+  Bot,
   Newspaper,
   MoreHorizontal,
 } from 'lucide-react';
@@ -41,6 +42,12 @@ export const BottomNav: React.FC<BottomNavProps> = ({
       badge: null,
     },
     {
+      id: 'bots' as ActiveTab,
+      label: 'Bots & EAs',
+      icon: Bot,
+      badge: null,
+    },
+    {
       id: 'news' as ActiveTab,
       label: 'News',
       icon: Newspaper,
@@ -56,8 +63,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({
 
   return (
     <nav
-      id="hfm-bottom-navigation"
-      aria-label="HFM Mobile Platform Navigation"
+      id="vtm-bottom-navigation"
+      aria-label="VTM Markets Mobile Navigation"
       className={`sticky bottom-0 z-40 w-full border-t py-1.5 px-2 flex items-center justify-around select-none transition-colors duration-200 ${
         isDarkMode
           ? 'bg-[#111317] border-neutral-800'

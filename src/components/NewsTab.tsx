@@ -14,9 +14,9 @@ import {
   Search,
 } from 'lucide-react';
 import {
-  ForexFactoryArticle,
-  ForexFactoryCalendarEvent,
-  forexFactoryService,
+  MarketArticle,
+  MarketCalendarEvent,
+  marketNewsService,
 } from '../services/forexFactoryService';
 
 interface NewsTabProps {
@@ -26,8 +26,8 @@ interface NewsTabProps {
 
 export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
   const [activeTab, setActiveTab] = useState<'news' | 'calendar'>('news');
-  const [news, setNews] = useState<ForexFactoryArticle[]>([]);
-  const [calendar, setCalendar] = useState<ForexFactoryCalendarEvent[]>([]);
+  const [news, setNews] = useState<MarketArticle[]>([]);
+  const [calendar, setCalendar] = useState<MarketCalendarEvent[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [selectedImpact, setSelectedImpact] = useState<string>('ALL');
   const [selectedCurrency, setSelectedCurrency] = useState<string>('ALL');
@@ -38,14 +38,14 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
     setIsLoading(true);
     try {
       const [newsData, calData] = await Promise.all([
-        forexFactoryService.getLatestNews(),
-        forexFactoryService.getCalendarEvents(),
+        marketNewsService.getLatestNews(),
+        marketNewsService.getCalendarEvents(),
       ]);
       setNews(newsData);
       setCalendar(calData);
       setLastUpdated(new Date());
     } catch (e) {
-      console.error('Error fetching ForexFactory data:', e);
+      console.error('Error fetching market news feed:', e);
     } finally {
       setIsLoading(false);
     }
@@ -139,7 +139,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
               <h1 className="text-xl font-black tracking-tight">Market News & Insights</h1>
               <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                Live Wire
+                VTM Intelligence
               </span>
             </div>
             <p className="text-xs text-neutral-400 mt-0.5">
@@ -316,7 +316,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
                     <span className="truncate max-w-[220px] font-medium">{article.source}</span>
                     <span className="text-[11px] text-emerald-500 font-semibold flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                      <span>Live Wire</span>
+                      <span>Real-Time Feed</span>
                     </span>
                   </div>
                 </article>

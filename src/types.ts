@@ -28,6 +28,8 @@ export interface Instrument {
 export type Timeframe = '1M' | '5M' | '15M' | '1H' | '4H' | '1D' | '1W';
 export type ChartType = 'candles' | 'line' | 'area' | 'bars';
 
+export type { UserAuthProfile } from './types/botTypes';
+
 export interface Candle {
   time: number;
   open: number;
@@ -171,6 +173,7 @@ export type ActiveTab =
   | 'menu'
   | 'trades'
   | 'markets'
+  | 'bots'
   | 'news'
   | 'more'
   | 'trade'
@@ -178,3 +181,49 @@ export type ActiveTab =
   | 'wallet'
   | 'account'
   | 'instrument-detail';
+
+export interface ActionPopup {
+  id: string;
+  type:
+    | 'TRADE_OPENED'
+    | 'TRADE_CLOSED'
+    | 'ORDER_CANCELLED'
+    | 'DEPOSIT_SUCCESS'
+    | 'DEPOSIT_FAILED'
+    | 'WITHDRAWAL_SUCCESS'
+    | 'WITHDRAWAL_FAILED'
+    | 'TRANSFER_SUCCESS'
+    | 'TRANSFER_FAILED'
+    | 'ACCOUNT_SWITCHED'
+    | 'ACCOUNT_CREATED'
+    | 'DEMO_RESET'
+    | 'BOT_STARTED'
+    | 'BOT_STOPPED'
+    | 'COPY_STARTED'
+    | 'COPY_STOPPED'
+    | 'LOGIN_SUCCESS'
+    | 'LOGOUT_SUCCESS'
+    | 'SUCCESS'
+    | 'ERROR'
+    | 'INFO';
+  title: string;
+  subtitle?: string;
+  timestamp: number;
+  details?: {
+    symbol?: string;
+    side?: 'BUY' | 'SELL';
+    lots?: number;
+    price?: number;
+    ticket?: number | string;
+    pnl?: number;
+    amount?: number;
+    accountNumber?: string;
+    reason?: string;
+    method?: string;
+    reference?: string;
+    sl?: number | null;
+    tp?: number | null;
+    [key: string]: any;
+  };
+  duration?: number;
+}

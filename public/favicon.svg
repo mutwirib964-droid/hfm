@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <rect width="64" height="64" rx="14" fill="#0B0E14" />
+  <defs>
+    <linearGradient id="fav-vtm-red" x1="16" y1="8" x2="48" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stopColor="#FF3352" />
+      <stop offset="50%" stopColor="#E51937" />
+      <stop offset="100%" stopColor="#A80018" />
+    </linearGradient>
+    <linearGradient id="fav-vtm-white" x1="6" y1="8" x2="22" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stopColor="#FFFFFF" />
+      <stop offset="100%" stopColor="#94A3B8" />
+    </linearGradient>
+  </defs>
+
+  <!-- M Outer Pillars -->
+  <path d="M 6.5 13 L 14 8 L 18 17 L 12.5 53 L 5.5 53 L 6.5 13 Z" fill="url(#fav-vtm-white)" />
+  <path d="M 57.5 13 L 50 8 L 46 17 L 51.5 53 L 58.5 53 L 57.5 13 Z" fill="url(#fav-vtm-white)" />
+
+  <!-- V Central Chevron -->
+  <path d="M 16 20.5 L 22.5 20.5 L 32 44 L 32 55.5 L 16 20.5 Z" fill="url(#fav-vtm-red)" />
+  <path d="M 48 20.5 L 41.5 20.5 L 32 44 L 32 55.5 L 48 20.5 Z" fill="#B8071E" />
+
+  <!-- T Keystone (Crossbar + Stem) -->
+  <path d="M 20 8.5 H 44 L 46.5 15.5 H 17.5 L 20 8.5 Z" fill="url(#fav-vtm-red)" />
+  <path d="M 28.5 15.5 H 35.5 V 32.5 L 32 37 L 28.5 32.5 V 15.5 Z" fill="url(#fav-vtm-red)" />
+</svg>

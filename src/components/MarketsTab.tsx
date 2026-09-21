@@ -16,6 +16,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { formatPipPrice } from '../utils/pipFormatter';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 import { EditInstrumentsModal } from './EditInstrumentsModal';
 import { QuickOrderSheet } from './QuickOrderSheet';
 import { TradingViewWidget } from './TradingViewWidget';
@@ -47,6 +48,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   const [previewTimeframe, setPreviewTimeframe] = useState<Timeframe>('15M');
   const [previewLotSize, setPreviewLotSize] = useState<number>(0.1);
   const [showEditModal, setShowEditModal] = useState(false);
+  const [closedNotice, setClosedNotice] = useState<string | null>(null);
   const [orderModalParams, setOrderModalParams] = useState<{
     instrument: Instrument;
     side: 'BUY' | 'SELL';
@@ -58,6 +60,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   >([
     { id: 'Favourites', name: 'Favourites', enabled: true },
     { id: 'Forex', name: 'Forex', enabled: true },
+    { id: 'Crypto', name: 'Crypto (24/7)', enabled: true },
     { id: 'Commodities', name: 'Commodities', enabled: true },
     { id: 'Indices', name: 'Indices', enabled: true },
     { id: 'Stocks', name: 'Stocks', enabled: true },
@@ -131,6 +134,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
           if (selectedCurrency && !inst.symbol.includes(selectedCurrency)) {
             return false;
           }
+        } else if (selectedCategory === 'Crypto') {
+          if (inst.category !== 'Crypto') return false;
         } else if (selectedCategory === 'Commodities') {
           if (inst.category !== 'Commodities') return false;
         } else if (selectedCategory === 'Indices') {
@@ -150,6 +155,15 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
   const handleTradeClick = (e: React.MouseEvent, inst: Instrument, side: 'BUY' | 'SELL') => {
     e.stopPropagation();
+    const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+    if (!marketStatus.isOpen) {
+      setClosedNotice(
+        `Market is currently CLOSED for ${inst.symbol}: ${marketStatus.reason}. (Crypto operates 24/7 unbroken).`
+      );
+      setTimeout(() => setClosedNotice(null), 4000);
+      return;
+    }
+
     if (oneClickTrading) {
       onQuickTrade(inst.symbol, side);
     } else {
@@ -172,11 +186,24 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
   return (
     <div
-      id="hfm-markets-screen"
+      id="vtm-markets-screen"
       className={`min-h-[calc(100vh-120px)] flex flex-col pb-16 transition-colors duration-200 ${
         isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
     >
+      {/* Market Closed Notice Toast Banner */}
+      {closedNotice && (
+        <div className="mx-2 sm:mx-3 mt-1.5 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-between animate-fade-in shadow-md">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{closedNotice}</span>
+          </div>
+          <button onClick={() => setClosedNotice(null)} className="text-amber-400 hover:text-white ml-2 text-xs">
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Top Benchmark Tickers Ribbon (Responsive Grid: 2 cols on mobile, 4 cols on desktop) */}
       <div className="px-2 sm:px-3 pt-1.5 pb-2">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
@@ -404,6 +431,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
             ) : (
               visibleInstruments.map((inst) => {
                 const isCurrentPreview = inst.symbol === activePreviewInst.symbol;
+                const mHours = checkInstrumentMarketHours(inst.symbol, inst.category);
                 const displaySymbol =
                   inst.category === 'Forex' && !inst.symbol.includes('.')
                     ? `${inst.symbol}.Z`
@@ -449,6 +477,14 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         <span className="font-black text-[15px] tracking-tight truncate">
                           {displaySymbol}
                         </span>
+                        {!mHours.isOpen && (
+                          <span
+                            className="text-[9px] px-1.5 py-0.2 rounded font-bold bg-amber-500/15 text-amber-500 border border-amber-500/30 shrink-0"
+                            title={`Market Closed: ${mHours.reason}`}
+                          >
+                            Closed
+                          </span>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -646,9 +682,9 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
             {/* Lot Size Selector */}
             <div className="mb-3">
-              <div className="flex items-center justify-between text-xs text-neutral-400 mb-1 font-semibold">
+              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 mb-1 font-semibold">
                 <span>Execution Volume (Lots)</span>
-                <span className="font-mono text-white font-bold">{previewLotSize} Lot</span>
+                <span className={`font-mono font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{previewLotSize} Lot</span>
               </div>
               <div className="grid grid-cols-5 gap-1.5">
                 {[0.01, 0.05, 0.1, 0.5, 1.0].map((lot) => (
@@ -707,12 +743,12 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800' : 'bg-white border-neutral-200'
             }`}
           >
-            <div className="flex items-center justify-between pb-2 border-b border-neutral-800/60 mb-2.5">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-neutral-800/60 mb-2.5">
               <div className="flex items-center gap-1.5">
                 <Flame className="w-4 h-4 text-[#E51937]" />
-                <h4 className="text-xs font-bold">Top Market Movers</h4>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">Top Market Movers</h4>
               </div>
-              <span className="text-[10px] text-neutral-400">Live 24h Volatility</span>
+              <span className="text-[10px] text-slate-500 dark:text-neutral-400">Live 24h Volatility</span>
             </div>
 
             <div className="space-y-1.5">
@@ -720,15 +756,15 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 <div
                   key={g.symbol}
                   onClick={() => setPreviewSymbol(g.symbol)}
-                  className="p-2 rounded-lg hover:bg-neutral-800/40 flex items-center justify-between text-xs cursor-pointer transition-colors"
+                  className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-neutral-800/40 flex items-center justify-between text-xs cursor-pointer transition-colors"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="font-bold font-mono">{g.symbol}</span>
-                    <span className="text-[10px] text-neutral-400">{g.category}</span>
+                    <span className="font-bold font-mono text-slate-900 dark:text-white">{g.symbol}</span>
+                    <span className="text-[10px] text-slate-500 dark:text-neutral-400">{g.category}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="font-mono font-bold">${g.bid.toFixed(g.decimals > 2 ? 2 : g.decimals)}</span>
-                    <span className="text-[11px] font-bold text-emerald-500 bg-emerald-500/10 px-1.5 py-0.2 rounded">
+                    <span className="font-mono font-bold text-slate-900 dark:text-neutral-200">${g.bid.toFixed(g.decimals > 2 ? 2 : g.decimals)}</span>
+                    <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-500 bg-emerald-500/10 px-1.5 py-0.2 rounded">
                       +{g.change24h.toFixed(2)}%
                     </span>
                   </div>
@@ -743,56 +779,56 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800' : 'bg-white border-neutral-200'
             }`}
           >
-            <div className="flex items-center justify-between pb-2 border-b border-neutral-800/60 mb-2.5">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-neutral-800/60 mb-2.5">
               <div className="flex items-center gap-1.5">
-                <Globe className="w-4 h-4 text-sky-400" />
-                <h4 className="text-xs font-bold">Global Trading Sessions</h4>
+                <Globe className="w-4 h-4 text-sky-500 dark:text-sky-400" />
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">Global Trading Sessions</h4>
               </div>
-              <span className="text-[10px] text-neutral-400">GMT Standard</span>
+              <span className="text-[10px] text-slate-500 dark:text-neutral-400">GMT Standard</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="p-2 rounded-lg bg-neutral-900/40 border border-neutral-800/60 flex items-center justify-between">
+              <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
-                  <span className="font-semibold text-neutral-300 block">London</span>
-                  <span className="text-[10px] text-neutral-500">08:00 - 16:30</span>
+                  <span className="font-semibold text-slate-800 dark:text-neutral-300 block">London</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">08:00 - 16:30</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[10px] font-bold text-emerald-400">Open</span>
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">Open</span>
                 </div>
               </div>
 
-              <div className="p-2 rounded-lg bg-neutral-900/40 border border-neutral-800/60 flex items-center justify-between">
+              <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
-                  <span className="font-semibold text-neutral-300 block">New York</span>
-                  <span className="text-[10px] text-neutral-500">13:00 - 21:00</span>
+                  <span className="font-semibold text-slate-800 dark:text-neutral-300 block">New York</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">13:00 - 21:00</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="text-[10px] font-bold text-emerald-400">Open</span>
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">Open</span>
                 </div>
               </div>
 
-              <div className="p-2 rounded-lg bg-neutral-900/40 border border-neutral-800/60 flex items-center justify-between">
+              <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
-                  <span className="font-semibold text-neutral-300 block">Tokyo</span>
-                  <span className="text-[10px] text-neutral-500">00:00 - 09:00</span>
+                  <span className="font-semibold text-slate-800 dark:text-neutral-300 block">Tokyo</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">00:00 - 09:00</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-neutral-600" />
-                  <span className="text-[10px] text-neutral-500">Closed</span>
+                  <span className="w-2 h-2 rounded-full bg-slate-400 dark:bg-neutral-600" />
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Closed</span>
                 </div>
               </div>
 
-              <div className="p-2 rounded-lg bg-neutral-900/40 border border-neutral-800/60 flex items-center justify-between">
+              <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
-                  <span className="font-semibold text-neutral-300 block">Sydney</span>
-                  <span className="text-[10px] text-neutral-500">21:00 - 06:00</span>
+                  <span className="font-semibold text-slate-800 dark:text-neutral-300 block">Sydney</span>
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">21:00 - 06:00</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-neutral-600" />
-                  <span className="text-[10px] text-neutral-500">Closed</span>
+                  <span className="w-2 h-2 rounded-full bg-slate-400 dark:bg-neutral-600" />
+                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Closed</span>
                 </div>
               </div>
             </div>

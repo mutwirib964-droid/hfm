@@ -49,11 +49,42 @@ export const TV_INSTRUMENT_MAP: Record<
   AAPL: { scanner: 'america', ticker: 'NASDAQ:AAPL', decimals: 2, pipMultiplier: 100 },
   NVDA: { scanner: 'america', ticker: 'NASDAQ:NVDA', decimals: 2, pipMultiplier: 100 },
   TSLA: { scanner: 'america', ticker: 'NASDAQ:TSLA', decimals: 2, pipMultiplier: 100 },
+  MSFT: { scanner: 'america', ticker: 'NASDAQ:MSFT', decimals: 2, pipMultiplier: 100 },
+  AMZN: { scanner: 'america', ticker: 'NASDAQ:AMZN', decimals: 2, pipMultiplier: 100 },
+  GOOGL: { scanner: 'america', ticker: 'NASDAQ:GOOGL', decimals: 2, pipMultiplier: 100 },
+  META: { scanner: 'america', ticker: 'NASDAQ:META', decimals: 2, pipMultiplier: 100 },
+  AMD: { scanner: 'america', ticker: 'NASDAQ:AMD', decimals: 2, pipMultiplier: 100 },
+  NFLX: { scanner: 'america', ticker: 'NASDAQ:NFLX', decimals: 2, pipMultiplier: 100 },
+  COIN: { scanner: 'america', ticker: 'NASDAQ:COIN', decimals: 2, pipMultiplier: 100 },
+  PLTR: { scanner: 'america', ticker: 'NASDAQ:PLTR', decimals: 2, pipMultiplier: 100 },
+  BABA: { scanner: 'america', ticker: 'NYSE:BABA', decimals: 2, pipMultiplier: 100 },
+  MSTR: { scanner: 'america', ticker: 'NASDAQ:MSTR', decimals: 2, pipMultiplier: 100 },
+  DIS: { scanner: 'america', ticker: 'NYSE:DIS', decimals: 2, pipMultiplier: 100 },
+  UBER: { scanner: 'america', ticker: 'NYSE:UBER', decimals: 2, pipMultiplier: 100 },
+  INTC: { scanner: 'america', ticker: 'NASDAQ:INTC', decimals: 2, pipMultiplier: 100 },
+  JPM: { scanner: 'america', ticker: 'NYSE:JPM', decimals: 2, pipMultiplier: 100 },
+  V: { scanner: 'america', ticker: 'NYSE:V', decimals: 2, pipMultiplier: 100 },
+  WMT: { scanner: 'america', ticker: 'NYSE:WMT', decimals: 2, pipMultiplier: 100 },
+
+  // Commodities & Indices
+  COPPER: { scanner: 'cfd', ticker: 'COMEX:HG1!', decimals: 3, pipMultiplier: 1000 },
+  UK100: { scanner: 'cfd', ticker: 'INDEX:FTSE', decimals: 2, pipMultiplier: 1 },
+  JPN225: { scanner: 'cfd', ticker: 'INDEX:NKY', decimals: 2, pipMultiplier: 1 },
+  AUDJPY: { scanner: 'forex', ticker: 'FX:AUDJPY', decimals: 3, pipMultiplier: 100 },
 
   // Crypto
   BTCUSD: { scanner: 'crypto', ticker: 'BINANCE:BTCUSDT', decimals: 2, pipMultiplier: 1 },
   ETHUSD: { scanner: 'crypto', ticker: 'BINANCE:ETHUSDT', decimals: 2, pipMultiplier: 1 },
   SOLUSD: { scanner: 'crypto', ticker: 'BINANCE:SOLUSDT', decimals: 2, pipMultiplier: 10 },
+  XRPUSD: { scanner: 'crypto', ticker: 'BINANCE:XRPUSDT', decimals: 4, pipMultiplier: 10000 },
+  BNBUSD: { scanner: 'crypto', ticker: 'BINANCE:BNBUSDT', decimals: 2, pipMultiplier: 10 },
+  DOGEUSD: { scanner: 'crypto', ticker: 'BINANCE:DOGEUSDT', decimals: 4, pipMultiplier: 10000 },
+  ADAUSD: { scanner: 'crypto', ticker: 'BINANCE:ADAUSDT', decimals: 4, pipMultiplier: 10000 },
+  AVAXUSD: { scanner: 'crypto', ticker: 'BINANCE:AVAXUSDT', decimals: 2, pipMultiplier: 10 },
+  LINKUSD: { scanner: 'crypto', ticker: 'BINANCE:LINKUSDT', decimals: 2, pipMultiplier: 100 },
+  DOTUSD: { scanner: 'crypto', ticker: 'BINANCE:DOTUSDT', decimals: 2, pipMultiplier: 100 },
+  NEARUSD: { scanner: 'crypto', ticker: 'BINANCE:NEARUSDT', decimals: 2, pipMultiplier: 100 },
+  SUIUSD: { scanner: 'crypto', ticker: 'BINANCE:SUIUSDT', decimals: 2, pipMultiplier: 100 },
 };
 
 export class TradingViewPriceService {
@@ -98,10 +129,11 @@ export class TradingViewPriceService {
         // Fall through to client-side direct public feeds
       }
 
-      // 2. Client-side direct public feeds for Crypto only
+      // 2. Client-side direct public feeds for Crypto 24/7
       try {
+        const cryptoSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT', 'SUIUSDT'];
         const binanceRes = await fetch(
-          'https://api.binance.com/api/v3/ticker/price?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22,%22SOLUSDT%22%5D',
+          `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(cryptoSymbols))}`,
           { signal: AbortSignal.timeout(3000) }
         );
         if (binanceRes.ok) {
@@ -109,43 +141,19 @@ export class TradingViewPriceService {
           if (Array.isArray(items)) {
             items.forEach((item) => {
               const price = parseFloat(item.price);
-              if (item.symbol === 'BTCUSDT' && price > 10000 && !this.lastQuotes.has('BTCUSD')) {
-                const conf = TV_INSTRUMENT_MAP['BTCUSD'];
-                this.lastQuotes.set('BTCUSD', {
-                  symbol: 'BTCUSD',
+              const symbolBase = item.symbol.replace('USDT', 'USD');
+              const conf = TV_INSTRUMENT_MAP[symbolBase];
+              if (conf && price > 0 && !this.lastQuotes.has(symbolBase)) {
+                const spreadVal = conf.decimals === 4 ? 0.0004 : conf.decimals === 2 ? 0.05 : 0.5;
+                this.lastQuotes.set(symbolBase, {
+                  symbol: symbolBase,
                   tvTicker: conf.ticker,
-                  bid: Number((price - 1.5).toFixed(2)),
-                  ask: Number((price + 1.5).toFixed(2)),
-                  spread: 3.0,
+                  bid: Number((price - spreadVal / 2).toFixed(conf.decimals)),
+                  ask: Number((price + spreadVal / 2).toFixed(conf.decimals)),
+                  spread: Number((spreadVal * conf.pipMultiplier).toFixed(1)),
                   change24h: 0.5,
-                  high24h: Number((price * 1.015).toFixed(2)),
-                  low24h: Number((price * 0.985).toFixed(2)),
-                  timestamp: now,
-                });
-              } else if (item.symbol === 'ETHUSDT' && price > 500 && !this.lastQuotes.has('ETHUSD')) {
-                const conf = TV_INSTRUMENT_MAP['ETHUSD'];
-                this.lastQuotes.set('ETHUSD', {
-                  symbol: 'ETHUSD',
-                  tvTicker: conf.ticker,
-                  bid: Number((price - 0.25).toFixed(2)),
-                  ask: Number((price + 0.25).toFixed(2)),
-                  spread: 0.5,
-                  change24h: 0.4,
-                  high24h: Number((price * 1.018).toFixed(2)),
-                  low24h: Number((price * 0.982).toFixed(2)),
-                  timestamp: now,
-                });
-              } else if (item.symbol === 'SOLUSDT' && price > 10 && !this.lastQuotes.has('SOLUSD')) {
-                const conf = TV_INSTRUMENT_MAP['SOLUSD'];
-                this.lastQuotes.set('SOLUSD', {
-                  symbol: 'SOLUSD',
-                  tvTicker: conf.ticker,
-                  bid: Number((price - 0.03).toFixed(2)),
-                  ask: Number((price + 0.03).toFixed(2)),
-                  spread: 0.06,
-                  change24h: 0.6,
-                  high24h: Number((price * 1.025).toFixed(2)),
-                  low24h: Number((price * 0.975).toFixed(2)),
+                  high24h: Number((price * 1.015).toFixed(conf.decimals)),
+                  low24h: Number((price * 0.985).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }
@@ -194,6 +202,36 @@ export class TradingViewPriceService {
       AAPL: 'NASDAQ:AAPL',
       NVDA: 'NASDAQ:NVDA',
       TSLA: 'NASDAQ:TSLA',
+      MSFT: 'NASDAQ:MSFT',
+      AMZN: 'NASDAQ:AMZN',
+      GOOGL: 'NASDAQ:GOOGL',
+      META: 'NASDAQ:META',
+      AMD: 'NASDAQ:AMD',
+      NFLX: 'NASDAQ:NFLX',
+      COIN: 'NASDAQ:COIN',
+      PLTR: 'NASDAQ:PLTR',
+      BABA: 'NYSE:BABA',
+      MSTR: 'NASDAQ:MSTR',
+      DIS: 'NYSE:DIS',
+      UBER: 'NYSE:UBER',
+      INTC: 'NASDAQ:INTC',
+      JPM: 'NYSE:JPM',
+      V: 'NYSE:V',
+      WMT: 'NYSE:WMT',
+      COPPER: 'COMEX:HG1!',
+      XPTUSD: 'TVC:PLATINUM',
+      UK100: 'INDEX:FTSE',
+      JPN225: 'INDEX:NKY',
+      AUDJPY: 'FX:AUDJPY',
+      XRPUSD: 'BINANCE:XRPUSDT',
+      BNBUSD: 'BINANCE:BNBUSDT',
+      DOGEUSD: 'BINANCE:DOGEUSDT',
+      ADAUSD: 'BINANCE:ADAUSDT',
+      AVAXUSD: 'BINANCE:AVAXUSDT',
+      LINKUSD: 'BINANCE:LINKUSDT',
+      DOTUSD: 'BINANCE:DOTUSDT',
+      NEARUSD: 'BINANCE:NEARUSDT',
+      SUIUSD: 'BINANCE:SUIUSDT',
     };
 
     if (directMap[clean]) return directMap[clean];
