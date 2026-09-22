@@ -27,6 +27,9 @@ import {
   RefreshCw,
   Server,
   LockKeyhole,
+  UserPlus,
+  LogIn,
+  ShieldCheck,
 } from 'lucide-react';
 import { VTMLogo } from './VTMLogo';
 import { Instrument } from '../types';
@@ -1067,341 +1070,370 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
       {/* 10. AUTH MODAL (CREATE ACCOUNT / CLIENT PORTAL SIGN IN) */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
           <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 transition-all max-h-[92vh] overflow-y-auto ${
+            className={`w-full max-w-lg rounded-3xl border shadow-2xl transition-all max-h-[92vh] flex flex-col overflow-hidden ${
               isDarkMode
-                ? 'bg-[#141822] border-neutral-700 text-white'
-                : 'bg-white border-slate-300 text-slate-900'
+                ? 'bg-[#11141C] border-neutral-700/70 text-white shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)]'
+                : 'bg-white border-slate-200 text-slate-900 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.25)]'
             }`}
           >
-            {/* Modal Header */}
+            {/* Modal Header Banner */}
             <div
-              className={`flex items-center justify-between pb-3 border-b mb-4 ${
-                isDarkMode ? 'border-neutral-700/60' : 'border-slate-200'
+              className={`px-6 py-4 border-b flex items-center justify-between shrink-0 ${
+                isDarkMode ? 'bg-[#161B26]/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
               }`}
             >
-              <VTMLogo size="sm" isDarkMode={isDarkMode} />
+              <div className="flex items-center gap-3">
+                <VTMLogo size="sm" isDarkMode={isDarkMode} />
+                <div className="h-4 w-px bg-neutral-300 dark:bg-neutral-700" />
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>256-Bit SSL Secured Portal</span>
+                </div>
+              </div>
+
               <button
                 onClick={() => {
                   setShowAuthModal(false);
                   setValidationError(null);
                 }}
-                className={`text-lg cursor-pointer p-1 rounded-lg transition-colors ${
-                  isDarkMode ? 'text-neutral-400 hover:text-white hover:bg-neutral-800' : 'text-slate-400 hover:text-slate-800 hover:bg-slate-100'
+                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold cursor-pointer transition-all ${
+                  isDarkMode
+                    ? 'text-neutral-400 hover:text-white hover:bg-neutral-800'
+                    : 'text-slate-400 hover:text-slate-800 hover:bg-slate-200'
                 }`}
+                title="Close"
               >
                 ✕
               </button>
             </div>
 
-            {/* Mode Switch Tabs */}
-            <div
-              className={`flex rounded-xl p-1 mb-4 border ${
-                isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-100 border-slate-200'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('register');
-                  setValidationError(null);
-                }}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  authMode === 'register'
-                    ? 'bg-[#E51937] text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-neutral-400 hover:text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Create Account
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('signin');
-                  setValidationError(null);
-                }}
-                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                  authMode === 'signin'
-                    ? 'bg-[#E51937] text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-neutral-400 hover:text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Client Portal Login
-              </button>
-            </div>
-
-            {/* Validation Error Message */}
-            {validationError && (
-              <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>{validationError}</span>
+            {/* Scrollable Form Body */}
+            <div className="p-6 sm:p-7 overflow-y-auto no-scrollbar space-y-4">
+              {/* Title & Subtitle */}
+              <div className="text-center">
+                <h3 className={`text-xl sm:text-2xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {authMode === 'register' ? 'Open Institutional Trading Account' : 'Client Portal Authentication'}
+                </h3>
+                <p className={`text-xs mt-1.5 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                  {authMode === 'register'
+                    ? 'Instant central wallet setup • 0.0 pip raw interbank spreads • Zero account fees'
+                    : 'Access your Central VTM One Wallet, open accounts, and active positions'}
+                </p>
               </div>
-            )}
 
-            <form onSubmit={handleAuthSubmit} className="space-y-3.5">
-              {/* Full Legal Name (Register only) */}
-              {authMode === 'register' && (
-                <div>
-                  <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                    Full Legal Name
-                  </label>
-                  <div className="relative">
-                    <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Alexander Mercer"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      className={`w-full pl-9 pr-3 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-[#E51937] ${
-                        isDarkMode
-                          ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
-                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                      }`}
-                    />
-                  </div>
-                  <span className={`text-[10px] block mt-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                    Must match your government-issued ID for verification & withdrawals.
-                  </span>
+              {/* Mode Switch Tabs with Icons */}
+              <div
+                className={`grid grid-cols-2 p-1 rounded-2xl border ${
+                  isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-100 border-slate-200'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('register');
+                    setValidationError(null);
+                  }}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                    authMode === 'register'
+                      ? 'bg-[#E51937] text-white shadow-md'
+                      : isDarkMode
+                      ? 'text-neutral-400 hover:text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Create Account</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('signin');
+                    setValidationError(null);
+                  }}
+                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                    authMode === 'signin'
+                      ? 'bg-[#E51937] text-white shadow-md'
+                      : isDarkMode
+                      ? 'text-neutral-400 hover:text-white'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Client Login</span>
+                </button>
+              </div>
+
+              {/* Validation Error Message */}
+              {validationError && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2.5 animate-in slide-in-from-top-1">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>{validationError}</span>
                 </div>
               )}
 
-              {/* Email Address */}
-              <div>
-                <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                  Email Address
-                </label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                  <input
-                    type="email"
-                    required
-                    placeholder="trader@vtmmarket.com"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className={`w-full pl-9 pr-3 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-[#E51937] ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
-                        : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                    }`}
-                  />
-                </div>
-              </div>
-
-              {/* Phone Number with Auto-Detected Country Code & Anti-Fraud Security Rule (Register only) */}
-              {authMode === 'register' && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                      Mobile Phone Number
+              <form onSubmit={handleAuthSubmit} className="space-y-4">
+                {/* Full Legal Name (Register only) */}
+                {authMode === 'register' && (
+                  <div>
+                    <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                      Full Legal Name
                     </label>
-                    <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-0.5">
-                      <LockKeyhole className="w-3 h-3" />
-                      <span>Security Locked</span>
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
-                    {/* Country code selector */}
-                    <div className="relative w-36 shrink-0">
-                      <select
-                        value={selectedCountry.code}
-                        onChange={(e) => {
-                          const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
-                          if (found) setSelectedCountry(found);
-                        }}
-                        className={`w-full py-2.5 pl-2.5 pr-6 rounded-xl border text-xs font-semibold appearance-none focus:outline-none focus:border-[#E51937] cursor-pointer ${
-                          isDarkMode
-                            ? 'bg-neutral-900 border-neutral-700 text-white'
-                            : 'bg-slate-50 border-slate-300 text-slate-900'
-                        }`}
-                      >
-                        {COUNTRY_OPTIONS.map((c) => (
-                          <option key={c.code} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
-                            {c.flag} {c.dialCode} ({c.code})
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400" />
-                    </div>
-
-                    {/* Local number input */}
-                    <div className="relative flex-1">
-                      <Phone className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <div className="relative">
+                      <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                       <input
-                        type="tel"
+                        type="text"
                         required
-                        placeholder="712 345 678"
-                        value={phoneLocal}
-                        onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
-                        className={`w-full pl-8 pr-3 py-2.5 rounded-xl border text-xs font-mono font-medium focus:outline-none focus:border-[#E51937] ${
+                        placeholder="e.g. Alexander Mercer"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
                           isDarkMode
-                            ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
+                            ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                             : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
                         }`}
                       />
                     </div>
+                    <span className={`text-[10px] block mt-1 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                      Must match your official government ID for seamless verification & withdrawals.
+                    </span>
                   </div>
+                )}
 
-                  {/* Anti-fraud withdrawal rule notice */}
-                  <div
-                    className={`mt-1.5 p-2.5 rounded-xl border flex items-start gap-2 text-[11px] leading-tight ${
-                      isDarkMode
-                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                        : 'bg-amber-50 border-amber-300 text-amber-900'
-                    }`}
-                  >
-                    <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-                    <div>
-                      <strong className="font-bold">Withdrawal Security Lock:</strong> This phone number is permanently bound
-                      to your client account. For strict anti-fraud compliance,{' '}
-                      <span className="underline font-black">it cannot be changed when requesting withdrawals</span>.
+                {/* Email Address */}
+                <div>
+                  <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <input
+                      type="email"
+                      required
+                      placeholder="trader@vtmmarket.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
+                        isDarkMode
+                          ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                {/* Phone Number with Auto-Detected Country Code & Anti-Fraud Security Rule (Register only) */}
+                {authMode === 'register' && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                        Mobile Phone Number
+                      </label>
+                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                        <LockKeyhole className="w-3 h-3" />
+                        <span>Security Bound</span>
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {/* Country code selector */}
+                      <div className="relative w-40 shrink-0">
+                        <select
+                          value={selectedCountry.code}
+                          onChange={(e) => {
+                            const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
+                            if (found) setSelectedCountry(found);
+                          }}
+                          className={`w-full py-3 pl-3 pr-7 rounded-xl border text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-neutral-900/90 border-neutral-700 text-white'
+                              : 'bg-slate-50 border-slate-300 text-slate-900'
+                          }`}
+                        >
+                          {COUNTRY_OPTIONS.map((c) => (
+                            <option key={c.code} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
+                              {c.flag} {c.dialCode} ({c.code})
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="w-4 h-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400" />
+                      </div>
+
+                      {/* Local number input */}
+                      <div className="relative flex-1">
+                        <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                        <input
+                          type="tel"
+                          required
+                          placeholder="712 345 678"
+                          value={phoneLocal}
+                          onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
+                          className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                            isDarkMode
+                              ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                              : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Anti-fraud withdrawal rule notice */}
+                    <div
+                      className={`mt-2 p-3 rounded-xl border flex items-start gap-2.5 text-[11px] leading-relaxed ${
+                        isDarkMode
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                          : 'bg-amber-50 border-amber-300 text-amber-900'
+                      }`}
+                    >
+                      <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+                      <div>
+                        <strong className="font-black">Anti-Fraud Binding:</strong> This mobile number will be locked to your
+                        client profile. For your capital protection,{' '}
+                        <span className="font-black underline">it cannot be altered when requesting withdrawals</span>.
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Password with Show/Hide Toggle */}
-              <div>
-                <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    placeholder="••••••••••••"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className={`w-full pl-9 pr-10 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-[#E51937] ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
-                        : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                    }`}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
-                      isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
-                    }`}
-                    title={showPassword ? 'Hide password' : 'Show password'}
-                  >
-                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Confirm Password with Show/Hide Toggle (Register only) */}
-              {authMode === 'register' && (
+                {/* Password with Show/Hide Toggle */}
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                      Confirm Password
-                    </label>
-                    {confirmPassword && (
-                      <span
-                        className={`text-[10px] font-bold ${
-                          password === confirmPassword ? 'text-emerald-500' : 'text-rose-500'
-                        }`}
-                      >
-                        {password === confirmPassword ? '✓ Passwords match' : '✗ Must match password'}
-                      </span>
-                    )}
-                  </div>
+                  <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                    Password
+                  </label>
                   <div className="relative">
-                    <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                     <input
-                      type={showConfirmPassword ? 'text' : 'password'}
+                      type={showPassword ? 'text' : 'password'}
                       required
                       placeholder="••••••••••••"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className={`w-full pl-9 pr-10 py-2.5 rounded-xl border text-xs font-medium focus:outline-none focus:border-[#E51937] ${
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className={`w-full pl-10 pr-10 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
                         isDarkMode
-                          ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
+                          ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                           : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
                       }`}
                     />
                     <button
                       type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                      onClick={() => setShowPassword(!showPassword)}
+                      className={`absolute right-3.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
                         isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
                       }`}
-                      title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      title={showPassword ? 'Hide password' : 'Show password'}
                     >
-                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
-              )}
 
-              {/* Informative Note: Wallet-only initial state */}
-              {authMode === 'register' && (
-                <div
-                  className={`p-3 rounded-xl border text-[11px] leading-relaxed ${
-                    isDarkMode ? 'bg-neutral-900/80 border-neutral-800 text-neutral-300' : 'bg-slate-50 border-slate-200 text-slate-700'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5 font-bold mb-1 text-emerald-600 dark:text-emerald-400">
-                    <Wallet className="w-3.5 h-3.5" />
-                    <span>Central Wallet Activated Upon Registration</span>
+                {/* Confirm Password with Show/Hide Toggle (Register only) */}
+                {authMode === 'register' && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                        Confirm Password
+                      </label>
+                      {confirmPassword && (
+                        <span
+                          className={`text-[10px] font-bold ${
+                            password === confirmPassword ? 'text-emerald-500' : 'text-rose-500'
+                          }`}
+                        >
+                          {password === confirmPassword ? '✓ Passwords match' : '✗ Must match password'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        type={showConfirmPassword ? 'text' : 'password'}
+                        required
+                        placeholder="••••••••••••"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className={`w-full pl-10 pr-10 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                          isDarkMode
+                            ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                            : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        className={`absolute right-3.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                          isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
+                        }`}
+                        title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
-                  <p>
-                    Your account is created with your central VTM Wallet ($0.00). You will choose and open your Live or Demo
-                    trading accounts directly inside the platform.
+                )}
+
+                {/* Informative Note: Wallet-only initial state */}
+                {authMode === 'register' && (
+                  <div
+                    className={`p-3.5 rounded-2xl border text-xs leading-relaxed ${
+                      isDarkMode ? 'bg-neutral-900/80 border-neutral-800 text-neutral-300' : 'bg-slate-50 border-slate-200 text-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 font-bold mb-1 text-emerald-600 dark:text-emerald-400">
+                      <Wallet className="w-4 h-4" />
+                      <span>Zero-Account Clean Onboarding &amp; VTM One Wallet</span>
+                    </div>
+                    <p className="text-[11px]">
+                      Your profile initializes with 0 accounts and your personal VTM One Wallet ($0.00). You can open
+                      a Live or Demo account anytime inside the portal, and your balance persists across devices.
+                    </p>
+                  </div>
+                )}
+
+                {/* Submit Button */}
+                <button
+                  type="submit"
+                  id="submit-auth-btn"
+                  className="w-full mt-3 py-3.5 px-5 rounded-2xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>{authMode === 'register' ? 'Open Account & Access Central Wallet' : 'Log In to Client Portal'}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </form>
+
+              {/* Switch between Register and Login */}
+              <div className="pt-3 border-t border-slate-200 dark:border-neutral-800 text-center">
+                {authMode === 'register' ? (
+                  <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    Already have a registered profile?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('signin');
+                        setValidationError(null);
+                      }}
+                      className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
+                    >
+                      Log In to Client Portal
+                    </button>
                   </p>
-                </div>
-              )}
-
-              {/* Submit Button */}
-              <button
-                type="submit"
-                id="submit-auth-btn"
-                className="w-full mt-2 py-3.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-xs shadow-md transition-all active:scale-95 cursor-pointer"
-              >
-                {authMode === 'register' ? 'Create Real Account & Open Wallet' : 'Log In to Client Portal'}
-              </button>
-            </form>
-
-            {/* Switch between Register and Login */}
-            <div className="mt-4 pt-3 border-t border-slate-200 dark:border-neutral-800 text-center">
-              {authMode === 'register' ? (
-                <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                  Already registered?{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('signin');
-                      setValidationError(null);
-                    }}
-                    className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
-                  >
-                    Log In to Client Portal
-                  </button>
-                </p>
-              ) : (
-                <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                  Don't have an account yet?{' '}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAuthMode('register');
-                      setValidationError(null);
-                    }}
-                    className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
-                  >
-                    Create Free Account
-                  </button>
-                </p>
-              )}
+                ) : (
+                  <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    Need a new VTM Markets trading profile?{' '}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register');
+                        setValidationError(null);
+                      }}
+                      className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
+                    >
+                      Create Free Account
+                    </button>
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         </div>

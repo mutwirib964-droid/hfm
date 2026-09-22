@@ -61,6 +61,13 @@ import {
   calculateBotPnL,
 } from './services/botTradingService';
 import { Wifi, Battery, Signal, Zap, Radio } from 'lucide-react';
+import { AdminAccountManagerModal } from './components/AdminAccountManagerModal';
+import {
+  loadUserFinancials,
+  saveUserFinancials,
+  initializeUserFinancials,
+  executeInternalTransfer,
+} from './utils/financialStorage';
 
 // Subtle Web Audio synthesizer for trade execution sound
 function playOrderSound(isSuccess: boolean = true) {
@@ -113,9 +120,41 @@ export default function App() {
   // Real-time Tick States for Green / Red Highlights: Map of symbol -> 'UP' | 'DOWN' | 'NEUTRAL'
   const [tickStates, setTickStates] = useState<Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>>({});
 
-  const [accounts, setAccounts] = useState<TradingAccount[]>(INITIAL_ACCOUNTS);
-  const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(INITIAL_ACCOUNTS[0]);
-  const [walletBalance, setWalletBalance] = useState<number>(0);
+  // User Authentication & Session
+  const [currentUser, setCurrentUser] = useState<UserAuthProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('vtm_auth_user');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.isLoggedIn) return parsed;
+      }
+    } catch (e) {
+      console.error('Failed to parse vtm_auth_user', e);
+    }
+    return null;
+  });
+
+  // Admin Account & Wallet Management Modal
+  const [isAdminManagerOpen, setIsAdminManagerOpen] = useState<boolean>(false);
+
+  // Load persistent user financials (zero accounts on new signup, exact balances on return)
+  const initialFinancials = useMemo(() => {
+    if (!currentUser) return { walletBalance: 0, accounts: INITIAL_ACCOUNTS, selectedAccountId: INITIAL_ACCOUNTS[0]?.id, transactions: INITIAL_TRANSACTIONS };
+    const loaded = loadUserFinancials(currentUser);
+    if (loaded) return loaded;
+    return initializeUserFinancials(currentUser, currentUser.isNewRegistration ?? false);
+  }, [currentUser?.id]);
+
+  const [accounts, setAccounts] = useState<TradingAccount[]>(() => initialFinancials.accounts);
+  const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(() => {
+    if (initialFinancials.accounts.length === 0) return null;
+    return (
+      initialFinancials.accounts.find((a) => a.id === initialFinancials.selectedAccountId) ||
+      initialFinancials.accounts[0] ||
+      null
+    );
+  });
+  const [walletBalance, setWalletBalance] = useState<number>(() => initialFinancials.walletBalance);
 
   // Trading Positions, Orders, and History (Clean initial state - no running trades on account open)
   const [positions, setPositions] = useState<Position[]>([]);
@@ -148,7 +187,7 @@ export default function App() {
   };
 
   // Transactions Log
-  const [transactions, setTransactions] = useState<Transaction[]>(INITIAL_TRANSACTIONS);
+  const [transactions, setTransactions] = useState<Transaction[]>(() => initialFinancials.transactions || INITIAL_TRANSACTIONS);
 
   // Notifications
   const [notifications, setNotifications] = useState<
@@ -167,20 +206,6 @@ export default function App() {
       read: true,
     },
   ]);
-
-  // User Authentication & Session
-  const [currentUser, setCurrentUser] = useState<UserAuthProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('vtm_auth_user');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.isLoggedIn) return parsed;
-      }
-    } catch (e) {
-      console.error('Failed to parse vtm_auth_user', e);
-    }
-    return null;
-  });
 
   const handleUserSignIn = (profile: UserAuthProfile) => {
     setCurrentUser(profile);
@@ -205,11 +230,14 @@ export default function App() {
     setBotTrades(cleanTrades);
 
     if (profile.isNewRegistration) {
-      setAccounts([]);
+      // Clean zero account initialization
+      const init = initializeUserFinancials(profile, true);
+      setAccounts(init.accounts);
       setSelectedAccount(null);
-      setWalletBalance(0);
+      setWalletBalance(init.walletBalance);
+      setTransactions(init.transactions || []);
       addNotification(
-        `Welcome ${profile.name}! Your Central VTM Wallet ($0.00) is ready. Open a Live or Demo account whenever you want.`
+        `Welcome ${profile.name}! Your account has zero trading accounts. Open a Live or Demo account in the Accounts tab.`
       );
     } else if (profile.id && profile.id.startsWith('demo-')) {
       const demoAcc = INITIAL_ACCOUNTS.find((a) => a.type === 'Demo') || INITIAL_ACCOUNTS[1];
@@ -220,8 +248,24 @@ export default function App() {
         `Instant Demo Mode: Welcome to VTM Markets. Practice on Demo #${demoAcc.accountNumber} ($100k credit). Central VTM One Wallet is $0.00 until deposited.`
       );
     } else {
-      setWalletBalance(0);
-      addNotification(`Welcome back, ${profile.name}! Central VTM One Wallet is ready ($0.00). Deposit funds to trade live.`);
+      // Returning user - restore persisted balances from database
+      const userFin = loadUserFinancials(profile);
+      if (userFin) {
+        setAccounts(userFin.accounts);
+        setWalletBalance(userFin.walletBalance);
+        setTransactions(userFin.transactions || []);
+        const activeAcc = userFin.accounts.length > 0
+          ? (userFin.accounts.find((a) => a.id === userFin.selectedAccountId) || userFin.accounts[0])
+          : null;
+        setSelectedAccount(activeAcc);
+        addNotification(`Welcome back, ${profile.name}! Account balances loaded from database.`);
+      } else {
+        const init = initializeUserFinancials(profile, false);
+        setAccounts(init.accounts);
+        setSelectedAccount(init.accounts.length > 0 ? init.accounts[0] : null);
+        setWalletBalance(init.walletBalance);
+        setTransactions(init.transactions || []);
+      }
     }
 
     triggerActionPopup({
@@ -232,13 +276,22 @@ export default function App() {
   };
 
   const handleUserSignOut = () => {
+    // Save current user financials before logging out
+    if (currentUser) {
+      saveUserFinancials(currentUser, {
+        walletBalance,
+        accounts,
+        selectedAccountId: selectedAccount?.id,
+        transactions,
+      });
+    }
     setCurrentUser(null);
     localStorage.removeItem('vtm_auth_user');
     addNotification('You have signed out from the platform.');
     triggerActionPopup({
       type: 'LOGOUT_SUCCESS',
       title: 'Signed Out',
-      subtitle: 'You have been securely logged out. Session closed.',
+      subtitle: 'All financial balances & account configurations saved securely.',
     });
   };
 
@@ -287,10 +340,11 @@ export default function App() {
   const realTVQuotesRef = useRef<Map<string, TVQuote>>(new Map());
 
   // =========================================================================
-  // REAL TRADINGVIEW PRICE INTEGRATION & REALISTIC SPREAD TICKING ENGINE
+  // REAL TRADINGVIEW PRICE INTEGRATION - EXACT PARITY WITH TRADINGVIEW
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
+    let highlightTimeout: any = null;
 
     // Fetch real prices from TradingView Scanner API
     const fetchTradingViewFeed = async () => {
@@ -304,30 +358,31 @@ export default function App() {
 
         setInstruments((prevInstruments) => {
           const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
+          let hasPriceChanged = false;
 
           const updated = prevInstruments.map((inst) => {
             const quote = quotes.get(inst.symbol);
             if (!quote) return inst;
 
-            // Check if market is closed (e.g. weekend for Forex/Stocks)
-            const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-            if (!marketStatus.isOpen) {
-              nextTickStates[inst.symbol] = 'NEUTRAL';
-              return inst; // Stuck as tradingview.com is stuck when market is closed
-            }
-
-            const oldAsk = inst.ask;
+            const oldBid = inst.bid;
             const newBid = quote.bid;
             const newAsk = quote.ask;
 
-            // Compute tick direction for green/red highlight boxes
+            // Compute tick direction for green/red highlight indicators
             let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-            if (newAsk > oldAsk) direction = 'UP';
-            else if (newAsk < oldAsk) direction = 'DOWN';
+            if (newBid > oldBid) {
+              direction = 'UP';
+              hasPriceChanged = true;
+            } else if (newBid < oldBid) {
+              direction = 'DOWN';
+              hasPriceChanged = true;
+            }
             nextTickStates[inst.symbol] = direction;
 
-            // Update sparkline
-            const sparkline = [...inst.sparkline.slice(1), newBid];
+            // Update sparkline with real price
+            const sparkline = newBid !== oldBid
+              ? [...inst.sparkline.slice(1), newBid]
+              : inst.sparkline;
 
             return {
               ...inst,
@@ -335,13 +390,22 @@ export default function App() {
               ask: newAsk,
               spread: quote.spread,
               change24h: quote.change24h,
-              high24h: Math.max(inst.high24h, quote.high24h),
-              low24h: Math.min(inst.low24h, quote.low24h),
+              high24h: quote.high24h,
+              low24h: quote.low24h,
               sparkline,
             };
           });
 
-          setTickStates((prev) => ({ ...prev, ...nextTickStates }));
+          if (hasPriceChanged) {
+            setTickStates((prev) => ({ ...prev, ...nextTickStates }));
+            if (highlightTimeout) clearTimeout(highlightTimeout);
+            highlightTimeout = setTimeout(() => {
+              if (isMounted) {
+                setTickStates({});
+              }
+            }, 1000);
+          }
+
           return updated;
         });
       } catch (err) {
@@ -352,62 +416,13 @@ export default function App() {
     // Initial immediate fetch
     fetchTradingViewFeed();
 
-    // Poll TradingView scanner every 2.5 seconds for instant price updates
-    const tvInterval = setInterval(fetchTradingViewFeed, 2500);
-
-    // Realistic micro-ticks bounded to real TradingView quotes (never drifting away)
-    const microTickInterval = setInterval(() => {
-      setInstruments((prevInstruments) => {
-        const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
-
-        const updated = prevInstruments.map((inst) => {
-          // Check if instrument market is closed (Forex/Stocks/Indices/Metals on weekends or off-hours)
-          const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-          if (!marketStatus.isOpen) {
-            nextTickStates[inst.symbol] = 'NEUTRAL';
-            return inst; // Completely stuck/frozen as tradingview.com is stuck
-          }
-
-          // 40% probability of a micro-tick per cycle
-          if (Math.random() > 0.4) return inst;
-
-          const baseQuote = realTVQuotesRef.current.get(inst.symbol);
-          const anchorBid = baseQuote ? baseQuote.bid : inst.bid;
-          const anchorAsk = baseQuote ? baseQuote.ask : inst.ask;
-          const anchorSpread = baseQuote ? baseQuote.spread : inst.spread;
-
-          // Micro-movement within a narrow fraction of a pip around the real TradingView anchor
-          const baseStep = 1 / inst.pipMultiplier;
-          const pipJitter = (Math.random() - 0.5) * 0.25 * baseStep;
-
-          const newBid = Number((anchorBid + pipJitter).toFixed(inst.decimals));
-          const newAsk = Number((anchorAsk + pipJitter).toFixed(inst.decimals));
-
-          let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-          if (newAsk > inst.ask) direction = 'UP';
-          else if (newAsk < inst.ask) direction = 'DOWN';
-          nextTickStates[inst.symbol] = direction;
-
-          const sparkline = [...inst.sparkline.slice(1), newBid];
-
-          return {
-            ...inst,
-            bid: newBid,
-            ask: newAsk,
-            spread: anchorSpread,
-            sparkline,
-          };
-        });
-
-        setTickStates((prev) => ({ ...prev, ...nextTickStates }));
-        return updated;
-      });
-    }, 1200);
+    // Poll TradingView scanner every 1.5 seconds for instant, exact price updates
+    const tvInterval = setInterval(fetchTradingViewFeed, 1500);
 
     return () => {
       isMounted = false;
       clearInterval(tvInterval);
-      clearInterval(microTickInterval);
+      if (highlightTimeout) clearTimeout(highlightTimeout);
     };
   }, []);
 
@@ -474,15 +489,17 @@ export default function App() {
       return modified ? updated : prevBotTrades;
     });
 
-    // Update active chart's latest candle smoothly
+    // Update active chart's latest candle smoothly in perfect sync with Buy/Sell buttons
     const activeInst = currentInstMap.get(selectedSymbol);
     if (activeInst) {
+      const dir = tickStates[selectedSymbol] || 'NEUTRAL';
+      const executionPrice = dir === 'UP' ? activeInst.ask : activeInst.bid;
       setCandles((prevCandles) => {
         if (prevCandles.length === 0) return prevCandles;
         const last = { ...prevCandles[prevCandles.length - 1] };
-        last.close = activeInst.bid;
-        last.high = Math.max(last.high, activeInst.bid);
-        last.low = Math.min(last.low, activeInst.bid);
+        last.close = executionPrice;
+        last.high = Math.max(last.high, executionPrice);
+        last.low = Math.min(last.low, executionPrice);
         return [...prevCandles.slice(0, prevCandles.length - 1), last];
       });
     }
@@ -945,13 +962,44 @@ export default function App() {
 
     setTransactions((prev) => [newTx, ...prev]);
 
-    if (params.targetAccount === 'HF Wallet' || params.targetAccount === 'VTM Wallet') {
-      setWalletBalance((prev) => prev + params.amount);
+    if (
+      params.targetAccount === 'HF Wallet' ||
+      params.targetAccount === 'VTM Wallet' ||
+      params.targetAccount.toLowerCase().includes('wallet')
+    ) {
+      const nextWallet = walletBalance + params.amount;
+      setWalletBalance(nextWallet);
+      if (currentUser) {
+        saveUserFinancials(currentUser, {
+          walletBalance: nextWallet,
+          accounts,
+          selectedAccountId: selectedAccount?.id,
+          transactions: [newTx, ...transactions],
+        });
+      }
     } else {
-      setSelectedAccount((acc) => (!acc ? null : {
-        ...acc,
-        balance: acc.balance + params.amount,
-      }));
+      const nextAccounts = accounts.map((acc) =>
+        acc.accountNumber === params.targetAccount || acc.id === params.targetAccount
+          ? {
+              ...acc,
+              balance: acc.balance + params.amount,
+              equity: acc.equity + params.amount,
+              freeMargin: acc.freeMargin + params.amount,
+            }
+          : acc
+      );
+      setAccounts(nextAccounts);
+      setSelectedAccount((acc) =>
+        !acc ? null : nextAccounts.find((a) => a.id === acc.id) || acc
+      );
+      if (currentUser) {
+        saveUserFinancials(currentUser, {
+          walletBalance,
+          accounts: nextAccounts,
+          selectedAccountId: selectedAccount?.id,
+          transactions: [newTx, ...transactions],
+        });
+      }
     }
 
     addNotification(`Deposit of $${params.amount.toFixed(2)} received successfully!`);
@@ -998,7 +1046,16 @@ export default function App() {
     };
 
     setTransactions((prev) => [newTx, ...prev]);
-    setWalletBalance((prev) => Math.max(0, prev - params.amount));
+    const nextWallet = Math.max(0, walletBalance - params.amount);
+    setWalletBalance(nextWallet);
+    if (currentUser) {
+      saveUserFinancials(currentUser, {
+        walletBalance: nextWallet,
+        accounts,
+        selectedAccountId: selectedAccount?.id,
+        transactions: [newTx, ...transactions],
+      });
+    }
     addNotification(`Withdrawal request of $${params.amount.toFixed(2)} is pending approval`);
 
     triggerActionPopup({
@@ -1019,38 +1076,50 @@ export default function App() {
       triggerActionPopup({
         type: 'TRANSFER_FAILED',
         title: 'Transfer Failed',
-        subtitle: params.fromAccount === params.toAccount
-          ? 'Source and destination accounts must be different.'
-          : 'Please enter a valid amount greater than $0.00.',
+        subtitle:
+          params.fromAccount === params.toAccount
+            ? 'Source and destination accounts must be different.'
+            : 'Please enter a valid amount greater than $0.00.',
       });
       return;
     }
 
-    const ref = `VTM-TRF-${Math.floor(10000000 + Math.random() * 90000000)}`;
-    const newTx: Transaction = {
-      id: `tx-${Date.now()}`,
-      type: 'INTERNAL_TRANSFER',
-      method: 'Internal Transfer',
+    const result = executeInternalTransfer(currentUser, {
+      fromAccount: params.fromAccount,
+      toAccount: params.toAccount,
       amount: params.amount,
-      currency: 'USD',
-      status: 'COMPLETED',
-      timestamp: Date.now(),
-      reference: ref,
-      details: `${params.fromAccount} ➔ ${params.toAccount}`,
-    };
+      currentState: {
+        walletBalance,
+        accounts,
+        transactions,
+      },
+    });
 
-    setTransactions((prev) => [newTx, ...prev]);
+    if (!result.success) {
+      triggerActionPopup({
+        type: 'TRANSFER_FAILED',
+        title: 'Transfer Failed',
+        subtitle: result.message || 'Unable to execute transfer.',
+      });
+      return;
+    }
 
-    if (params.fromAccount === 'HF Wallet' || params.fromAccount === 'VTM Wallet') {
-      setWalletBalance((w) => w - params.amount);
-      setSelectedAccount((acc) => (acc ? { ...acc, balance: acc.balance + params.amount } : null));
-    } else if (params.toAccount === 'HF Wallet' || params.toAccount === 'VTM Wallet') {
-      setSelectedAccount((acc) => (acc ? { ...acc, balance: acc.balance - params.amount } : null));
-      setWalletBalance((w) => w + params.amount);
+    setWalletBalance(result.newWalletBalance);
+    setAccounts(result.newAccounts);
+    setTransactions(result.newTransactions);
+
+    if (selectedAccount) {
+      const refreshed = result.newAccounts.find(
+        (a) => a.id === selectedAccount.id || a.accountNumber === selectedAccount.accountNumber
+      );
+      if (refreshed) {
+        setSelectedAccount(refreshed);
+      }
     }
 
     addNotification(`Transferred $${params.amount.toFixed(2)} between accounts`);
 
+    const ref = result.newTransactions[0]?.reference || 'COMPLETED';
     triggerActionPopup({
       type: 'TRANSFER_SUCCESS',
       title: `Internal Transfer Completed: $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
@@ -1085,8 +1154,17 @@ export default function App() {
       leverage: params.leverage,
     };
 
-    setAccounts((prev) => [...prev, newAcc]);
+    const nextAccounts = [...accounts, newAcc];
+    setAccounts(nextAccounts);
     setSelectedAccount(newAcc);
+    if (currentUser) {
+      saveUserFinancials(currentUser, {
+        walletBalance,
+        accounts: nextAccounts,
+        selectedAccountId: newAcc.id,
+        transactions,
+      });
+    }
     addNotification(`Opened new ${params.type} #${num} (${params.tier})`);
 
     triggerActionPopup({
@@ -1101,13 +1179,22 @@ export default function App() {
   };
 
   const handleResetDemo = () => {
-    setSelectedAccount((acc) => (!acc ? null : {
-      ...acc,
-      balance: 100000,
-      equity: 100000,
-      margin: 0,
-      freeMargin: 100000,
-    }));
+    if (!selectedAccount) return;
+    const nextAccounts = accounts.map((acc) =>
+      acc.id === selectedAccount.id
+        ? { ...acc, balance: 100000, equity: 100000, margin: 0, freeMargin: 100000 }
+        : acc
+    );
+    setAccounts(nextAccounts);
+    setSelectedAccount((acc) => (!acc ? null : nextAccounts.find((a) => a.id === acc.id) || null));
+    if (currentUser) {
+      saveUserFinancials(currentUser, {
+        walletBalance,
+        accounts: nextAccounts,
+        selectedAccountId: selectedAccount.id,
+        transactions,
+      });
+    }
     addNotification('Demo account reset to $100,000.00');
 
     triggerActionPopup({
@@ -1984,6 +2071,7 @@ export default function App() {
         <Header
           accounts={accounts}
           selectedAccount={selectedAccount}
+          walletBalance={walletBalance}
           onSelectAccount={(acc) => {
             setSelectedAccount(acc);
             if (acc) {
@@ -2017,6 +2105,7 @@ export default function App() {
           onSignOut={handleUserSignOut}
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
+          onOpenAdminManager={() => setIsAdminManagerOpen(true)}
         />
 
         {/* Scrollable Main Content - Full-width desktop responsive container */}
@@ -2054,6 +2143,39 @@ export default function App() {
           onSignOut={handleUserSignOut}
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
+        />
+
+        {/* Master Admin Financial & Account Manager Modal */}
+        <AdminAccountManagerModal
+          isOpen={isAdminManagerOpen}
+          onClose={() => setIsAdminManagerOpen(false)}
+          currentUser={currentUser}
+          currentAccounts={accounts}
+          currentWalletBalance={walletBalance}
+          onApplyChanges={(updatedWallet, updatedAccounts) => {
+            setWalletBalance(updatedWallet);
+            setAccounts(updatedAccounts);
+            if (updatedAccounts.length > 0) {
+              if (!selectedAccount || !updatedAccounts.some((a) => a.id === selectedAccount.id)) {
+                setSelectedAccount(updatedAccounts[0]);
+              } else {
+                const refreshed = updatedAccounts.find((a) => a.id === selectedAccount.id);
+                if (refreshed) setSelectedAccount(refreshed);
+              }
+            } else {
+              setSelectedAccount(null);
+            }
+            if (currentUser) {
+              saveUserFinancials(currentUser, {
+                walletBalance: updatedWallet,
+                accounts: updatedAccounts,
+                selectedAccountId: selectedAccount?.id,
+                transactions,
+              });
+            }
+            addNotification('Admin financial updates saved and applied successfully');
+          }}
+          isDarkMode={isDarkMode}
         />
 
         {/* PWA Native Installation Engine Dialogs */}

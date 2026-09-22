@@ -50,6 +50,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const [showVolume, setShowVolume] = useState(true);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [chartEngine, setChartEngine] = useState<'vtm-pro' | 'tradingview'>('vtm-pro');
 
   // Smooth Price Line Interpolation
   const animatedBidRef = useRef(currentBid);
@@ -831,6 +832,42 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               )}
             </div>
 
+            {/* Chart Engine Switcher */}
+            <div
+              className={`flex rounded p-0.5 border ${
+                isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-100 border-slate-200'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setChartEngine('vtm-pro')}
+                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                  chartEngine === 'vtm-pro'
+                    ? 'bg-[#E51937] text-white shadow-xs'
+                    : isDarkMode
+                    ? 'text-neutral-400 hover:text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="VTM Pro Real-Time Canvas - 100% price synchronized with Buy/Sell buttons"
+              >
+                VTM Pro Live
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartEngine('tradingview')}
+                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                  chartEngine === 'tradingview'
+                    ? 'bg-[#E51937] text-white shadow-xs'
+                    : isDarkMode
+                    ? 'text-neutral-400 hover:text-white'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                title="TradingView Technical Chart"
+              >
+                TradingView
+              </button>
+            </div>
+
             {/* Fullscreen Toggle */}
             <button
               id="fullscreen-chart-toggle"
@@ -845,10 +882,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           </div>
         </div>
 
-        {/* OHLCV Metric Bar */}
+        {/* OHLCV Metric Bar with Live Execution Sync */}
         {activeCandle && (
           <div
-            className={`flex flex-wrap items-center gap-3 px-3 py-1.5 text-[11px] font-mono border-b ${
+            className={`flex flex-wrap items-center gap-2.5 px-3 py-1.5 text-[11px] font-mono border-b ${
               isDarkMode
                 ? 'bg-[#14171C] text-neutral-400 border-neutral-800/40'
                 : 'bg-slate-100 text-slate-600 border-slate-200'
@@ -869,36 +906,69 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             <span>
               C: <span className={isDarkMode ? 'text-white' : 'text-slate-900'}>{activeCandle.close.toFixed(decimals)}</span>
             </span>
-            <span className="hidden sm:inline">
-              Bid: <span className="text-rose-400 font-bold">{currentBid.toFixed(decimals)}</span>
-            </span>
-            <span className="hidden sm:inline">
-              Ask: <span className="text-blue-400 font-bold">{currentAsk.toFixed(decimals)}</span>
-            </span>
-            <span className="px-1.5 py-0.2 rounded bg-neutral-800/60 text-emerald-400 font-bold text-[10px]">
+
+            {/* Synchronized SELL (Bid) badge */}
+            <div
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
+                tickDirection === 'DOWN'
+                  ? 'bg-rose-500/25 text-rose-300 border-rose-400 ring-2 ring-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.5)] animate-pulse'
+                  : 'bg-rose-950/30 text-rose-400 border-rose-800/40'
+              }`}
+            >
+              <span className="text-[9px] uppercase tracking-wider font-extrabold text-rose-300">SELL</span>
+              <span>{currentBid.toFixed(decimals)}</span>
+              {tickDirection === 'DOWN' && <span>▼</span>}
+            </div>
+
+            {/* Synchronized BUY (Ask) badge */}
+            <div
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
+                tickDirection === 'UP'
+                  ? 'bg-emerald-500/25 text-emerald-300 border-emerald-400 ring-2 ring-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse'
+                  : 'bg-emerald-950/30 text-emerald-400 border-emerald-800/40'
+              }`}
+            >
+              <span className="text-[9px] uppercase tracking-wider font-extrabold text-emerald-300">BUY</span>
+              <span>{currentAsk.toFixed(decimals)}</span>
+              {tickDirection === 'UP' && <span>▲</span>}
+            </div>
+
+            <span className="px-1.5 py-0.5 rounded bg-neutral-800/60 text-amber-400 font-bold text-[10px]">
               Spr: {Math.round(Math.abs(currentAsk - currentBid) * Math.pow(10, decimals <= 3 ? 2 : 4))} pts
             </span>
             {showVolume && (
-              <span>
+              <span className="hidden md:inline">
                 Vol: <span>{activeCandle.volume}</span>
               </span>
             )}
           </div>
         )}
 
-        {/* Chart Viewport: Real-Time Live Chart */}
+        {/* Chart Viewport: Real-Time Live Chart (Canvas or TradingView) */}
         <div className="relative flex-1 w-full h-full overflow-hidden">
-          <TradingViewWidget
-            symbol={symbol}
-            timeframe={timeframe}
-            onTimeframeChange={onTimeframeChange}
-            isDarkMode={isDarkMode}
-            isFullscreen={isFullscreen}
-            onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
-            bid={currentBid}
-            ask={currentAsk}
-            decimals={decimals}
-          />
+          {chartEngine === 'vtm-pro' ? (
+            <div className="relative w-full h-full">
+              <canvas
+                ref={canvasRef}
+                onMouseMove={handleMouseMove}
+                onMouseLeave={handleMouseLeave}
+                className="w-full h-full cursor-crosshair block"
+              />
+            </div>
+          ) : (
+            <TradingViewWidget
+              symbol={symbol}
+              timeframe={timeframe}
+              onTimeframeChange={onTimeframeChange}
+              isDarkMode={isDarkMode}
+              isFullscreen={isFullscreen}
+              onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
+              bid={currentBid}
+              ask={currentAsk}
+              decimals={decimals}
+              tickDirection={tickDirection}
+            />
+          )}
         </div>
       </div>
     </div>

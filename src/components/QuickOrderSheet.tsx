@@ -37,9 +37,12 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   if (!isOpen) return null;
 
   const marketStatus = checkInstrumentMarketHours(instrument.symbol, instrument.category);
+  const isForex = instrument.category === 'Forex';
+  const bidParts = formatPipPrice(instrument.bid, instrument.decimals, isForex);
+  const askParts = formatPipPrice(instrument.ask, instrument.decimals, isForex);
   const currentPrice = side === 'BUY' ? instrument.ask : instrument.bid;
-  const priceParts = formatPipPrice(currentPrice, instrument.decimals);
-  const contractSize = instrument.category === 'Forex' ? 100000 : 100;
+  const priceParts = formatPipPrice(currentPrice, instrument.decimals, isForex);
+  const contractSize = isForex ? 100000 : 100;
   const pipValue = ((1 / instrument.pipMultiplier) * lots * contractSize).toFixed(2);
 
   const handleAdjustLots = (delta: number) => {
@@ -119,15 +122,15 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
               Sell
             </span>
             <div className="flex items-baseline">
-              <span className="text-sm font-medium">
-                {formatPipPrice(instrument.bid, instrument.decimals).base}
-              </span>
-              <span className="text-xl font-black text-red-600 dark:text-red-400">
-                {formatPipPrice(instrument.bid, instrument.decimals).bigPips}
-              </span>
-              <span className="text-xs font-medium align-super">
-                {formatPipPrice(instrument.bid, instrument.decimals).fractional}
-              </span>
+              {bidParts.isForex ? (
+                <>
+                  <span className="text-sm font-medium">{bidParts.base}</span>
+                  <span className="text-xl font-black text-red-600 dark:text-red-400">{bidParts.bigPips}</span>
+                  <span className="text-xs font-medium align-super">{bidParts.fractional}</span>
+                </>
+              ) : (
+                <span className="text-base font-bold font-mono text-red-600 dark:text-red-400">{bidParts.fullFormatted}</span>
+              )}
             </div>
           </button>
 
@@ -145,15 +148,15 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
               Buy
             </span>
             <div className="flex items-baseline">
-              <span className="text-sm font-medium">
-                {formatPipPrice(instrument.ask, instrument.decimals).base}
-              </span>
-              <span className="text-xl font-black text-emerald-600 dark:text-emerald-400">
-                {formatPipPrice(instrument.ask, instrument.decimals).bigPips}
-              </span>
-              <span className="text-xs font-medium align-super">
-                {formatPipPrice(instrument.ask, instrument.decimals).fractional}
-              </span>
+              {askParts.isForex ? (
+                <>
+                  <span className="text-sm font-medium">{askParts.base}</span>
+                  <span className="text-xl font-black text-emerald-600 dark:text-emerald-400">{askParts.bigPips}</span>
+                  <span className="text-xs font-medium align-super">{askParts.fractional}</span>
+                </>
+              ) : (
+                <span className="text-base font-bold font-mono text-emerald-600 dark:text-emerald-400">{askParts.fullFormatted}</span>
+              )}
             </div>
           </button>
         </div>

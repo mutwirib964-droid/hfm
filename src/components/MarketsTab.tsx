@@ -180,8 +180,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   };
 
   // Preview prices
-  const previewBidParts = formatPipPrice(activePreviewInst.bid, activePreviewInst.decimals);
-  const previewAskParts = formatPipPrice(activePreviewInst.ask, activePreviewInst.decimals);
+  const previewBidParts = formatPipPrice(activePreviewInst.bid, activePreviewInst.decimals, activePreviewInst.category === 'Forex');
+  const previewAskParts = formatPipPrice(activePreviewInst.ask, activePreviewInst.decimals, activePreviewInst.category === 'Forex');
   const previewTick = tickStates[activePreviewInst.symbol] || 'NEUTRAL';
 
   return (
@@ -437,9 +437,9 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                     ? `${inst.symbol}.Z`
                     : inst.symbol;
 
-                const bidParts = formatPipPrice(inst.bid, inst.decimals);
-                const askParts = formatPipPrice(inst.ask, inst.decimals);
-                const spreadInt = Math.round(inst.spread * 10) || Math.round(inst.spread) || 20;
+                const bidParts = formatPipPrice(inst.bid, inst.decimals, inst.category === 'Forex');
+                const askParts = formatPipPrice(inst.ask, inst.decimals, inst.category === 'Forex');
+                const spreadInt = inst.spread > 0 ? (Math.round(inst.spread * 10) || Math.round(inst.spread)) : 0;
                 const tick = tickStates[inst.symbol] || 'NEUTRAL';
 
                 // Sparkline path

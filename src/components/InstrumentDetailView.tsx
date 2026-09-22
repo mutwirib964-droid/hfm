@@ -82,9 +82,12 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   // Timeframe chips matching HFM video: 1D, 5D, 2W, 3M, 6M, M30
   const timeframes = ['1D', '5D', '2W', '3M', '6M'];
 
-  const bidParts = formatPipPrice(instrument.bid, instrument.decimals);
-  const askParts = formatPipPrice(instrument.ask, instrument.decimals);
-  const spreadDisplay = Math.round(instrument.spread * 10) || Math.round(instrument.spread) || 21;
+  const isForex = instrument.category === 'Forex';
+  const bidParts = formatPipPrice(instrument.bid, instrument.decimals, isForex);
+  const askParts = formatPipPrice(instrument.ask, instrument.decimals, isForex);
+  const spreadDisplay = instrument.spread > 0
+    ? (Math.round(instrument.spread * 10) || instrument.spread.toFixed(1))
+    : '0.0';
 
   // Handle pointer coordinate extraction
   const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {

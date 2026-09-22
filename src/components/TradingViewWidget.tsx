@@ -16,6 +16,7 @@ interface TradingViewWidgetProps {
   spread?: number;
   decimals?: number;
   pipMultiplier?: number;
+  tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
 }
 
 export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
@@ -30,6 +31,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   spread,
   decimals = 2,
   pipMultiplier = 10000,
+  tickDirection = 'NEUTRAL',
 }) => {
   const [iframeKey, setIframeKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -83,8 +85,8 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
         'mainSeriesProperties.bidAsk.visible': true,
         'mainSeriesProperties.bidAsk.lineStyle': 2,
         'mainSeriesProperties.bidAsk.lineWidth': 1,
-        'mainSeriesProperties.bidAsk.bidLineColor': '#2962FF',
-        'mainSeriesProperties.bidAsk.askLineColor': '#F23645',
+        'mainSeriesProperties.bidAsk.bidLineColor': '#E51937', // Red for Sell/Bid
+        'mainSeriesProperties.bidAsk.askLineColor': '#00C076', // Green for Buy/Ask
         'scalesProperties.showBidAskLabels': true,
         'scalesProperties.showSymbolLabels': true,
         'scalesProperties.showCountdown': true,
@@ -146,19 +148,23 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
-          {/* Real-time Bid / Spread / Ask badges styled exactly as TradingView scale tags in Pic 2 */}
+          {/* Real-time SELL (Bid) and BUY (Ask) badges synchronized with execution buttons */}
           {bid !== undefined && ask !== undefined && (
             <div className="flex items-center gap-1.5 font-mono text-[11px]">
-              {/* Bid Badge (Blue) */}
+              {/* SELL / Bid Badge (Red) - Perfectly matching SELL button */}
               <div
-                title="TradingView Bid Price"
-                className="flex items-center rounded overflow-hidden shadow-sm border border-blue-600/50"
+                title="SELL (Bid) Price - Synchronized with SELL button"
+                className={`flex items-center rounded overflow-hidden shadow-sm border transition-all ${
+                  tickDirection === 'DOWN'
+                    ? 'border-red-400 ring-2 ring-rose-500/70 shadow-[0_0_12px_rgba(229,25,55,0.7)] animate-pulse'
+                    : 'border-red-800/60'
+                }`}
               >
-                <span className="bg-[#1E40AF] text-blue-200 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                  Bid
+                <span className="bg-[#990F20] text-red-100 px-1 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                  SELL
                 </span>
-                <span className="bg-[#2962FF] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {bid.toFixed(decimals)}
+                <span className="bg-[#E51937] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  {bid.toFixed(decimals)} {tickDirection === 'DOWN' && '▼'}
                 </span>
               </div>
 
@@ -166,24 +172,29 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
               <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
                 <span>
                   {spread !== undefined
-                    ? spread > 5
-                      ? Math.round(spread)
-                      : (spread * 10).toFixed(0)
-                    : Math.round(Math.abs(ask - bid) * pipMultiplier)}{' '}
-                  pts
+                    ? spread <= 0
+                      ? '0.0 pts'
+                      : spread > 5
+                      ? `${Math.round(spread)} pts`
+                      : `${(spread * 10).toFixed(0)} pts`
+                    : `${Math.round(Math.abs(ask - bid) * pipMultiplier)} pts`}
                 </span>
               </div>
 
-              {/* Ask Badge (Red) */}
+              {/* BUY / Ask Badge (Green) - Perfectly matching BUY button */}
               <div
-                title="TradingView Ask Price"
-                className="flex items-center rounded overflow-hidden shadow-sm border border-red-600/50"
+                title="BUY (Ask) Price - Synchronized with BUY button"
+                className={`flex items-center rounded overflow-hidden shadow-sm border transition-all ${
+                  tickDirection === 'UP'
+                    ? 'border-emerald-300 ring-2 ring-emerald-500/70 shadow-[0_0_12px_rgba(0,192,118,0.7)] animate-pulse'
+                    : 'border-emerald-800/60'
+                }`}
               >
-                <span className="bg-[#991B1B] text-red-200 px-1 py-0.5 text-[9px] font-bold uppercase tracking-wider">
-                  Ask
+                <span className="bg-[#007A4A] text-emerald-100 px-1 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                  BUY
                 </span>
-                <span className="bg-[#F23645] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {ask.toFixed(decimals)}
+                <span className="bg-[#00C076] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  {ask.toFixed(decimals)} {tickDirection === 'UP' && '▲'}
                 </span>
               </div>
             </div>

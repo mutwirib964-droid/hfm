@@ -30,7 +30,7 @@ export const TV_INSTRUMENT_MAP: Record<
   EURJPY: { scanner: 'forex', ticker: 'FX:EURJPY', decimals: 3, pipMultiplier: 100 },
 
   // Metals & Commodities
-  XAUUSD: { scanner: 'cfd', ticker: 'OANDA:XAUUSD', decimals: 2, pipMultiplier: 10 },
+  XAUUSD: { scanner: 'cfd', ticker: 'OANDA:XAUUSD', decimals: 3, pipMultiplier: 10 },
   XAGUSD: { scanner: 'cfd', ticker: 'TVC:SILVER', decimals: 2, pipMultiplier: 100 },
   XPTUSD: { scanner: 'cfd', ticker: 'TVC:PLATINUM', decimals: 2, pipMultiplier: 10 },
 
@@ -92,7 +92,7 @@ export class TradingViewPriceService {
   private isFetching = false;
   private lastFetchTime = 0;
 
-  // Fetch quotes from proxy API, Binance public API, and direct scanners
+  // Fetch quotes from proxy API, TradingView public scanners, and Binance API
   public async fetchRealPrices(): Promise<Map<string, TVQuote>> {
     if (this.isFetching) return this.lastQuotes;
     this.isFetching = true;
@@ -100,15 +100,17 @@ export class TradingViewPriceService {
     const now = Date.now();
 
     try {
+      let gotProxyQuotes = false;
       // 1. Try our internal server endpoint first (has exact real TradingView quotes)
       try {
-        const proxyRes = await fetch('/api/market-prices', { signal: AbortSignal.timeout(3500) });
+        const proxyRes = await fetch('/api/market-prices', { signal: AbortSignal.timeout(2500) });
         if (proxyRes.ok) {
           const json = await proxyRes.json();
           if (json.quotes && Object.keys(json.quotes).length > 0) {
+            gotProxyQuotes = true;
             Object.entries(json.quotes).forEach(([symbol, data]: [string, any]) => {
               const conf = TV_INSTRUMENT_MAP[symbol];
-              if (conf && data.bid && data.ask) {
+              if (conf && data.bid !== undefined && data.ask !== undefined) {
                 const spreadPips = Math.abs(data.ask - data.bid) * conf.pipMultiplier;
                 this.lastQuotes.set(symbol, {
                   symbol,
@@ -116,7 +118,7 @@ export class TradingViewPriceService {
                   bid: Number(data.bid.toFixed(conf.decimals)),
                   ask: Number(data.ask.toFixed(conf.decimals)),
                   spread: data.spread !== undefined ? data.spread : Number(spreadPips.toFixed(1)),
-                  change24h: data.change24h !== undefined ? data.change24h : 0.1,
+                  change24h: data.change24h !== undefined ? data.change24h : 0,
                   high24h: data.high24h || Number((data.ask * 1.008).toFixed(conf.decimals)),
                   low24h: data.low24h || Number((data.bid * 0.992).toFixed(conf.decimals)),
                   timestamp: now,
@@ -129,7 +131,131 @@ export class TradingViewPriceService {
         // Fall through to client-side direct public feeds
       }
 
-      // 2. Client-side direct public feeds for Crypto 24/7
+      // 2. Direct client-side fetch to TradingView Scanners if proxy failed or missing key symbols
+      if (!gotProxyQuotes || this.lastQuotes.size < 10) {
+        try {
+          const [cfdData, forexData] = await Promise.allSettled([
+            fetch('https://scanner.tradingview.com/cfd/scan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(3000),
+              body: JSON.stringify({
+                symbols: {
+                  tickers: [
+                    'OANDA:XAUUSD',
+                    'TVC:SILVER',
+                    'FX:USOIL',
+                    'FX:UKOIL',
+                    'OANDA:NATGASUSD',
+                    'OANDA:US30USD',
+                    'OANDA:DE30EUR',
+                    'SP:SPX',
+                    'TVC:IXIC',
+                  ],
+                },
+                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
+              }),
+            }).then((r) => r.json()),
+            fetch('https://scanner.tradingview.com/forex/scan', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(3000),
+              body: JSON.stringify({
+                symbols: {
+                  tickers: [
+                    'FX:EURUSD',
+                    'FX:GBPUSD',
+                    'FX:USDJPY',
+                    'FX:USDCHF',
+                    'FX:AUDUSD',
+                    'FX:USDCAD',
+                    'FX:GBPJPY',
+                    'FX:NZDUSD',
+                    'FX:EURGBP',
+                    'FX:EURJPY',
+                    'FX:AUDJPY',
+                  ],
+                },
+                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
+              }),
+            }).then((r) => r.json()),
+          ]);
+
+          if (cfdData.status === 'fulfilled' && cfdData.value?.data) {
+            const cfdMap: Record<string, string> = {
+              'OANDA:XAUUSD': 'XAUUSD',
+              'TVC:SILVER': 'XAGUSD',
+              'FX:USOIL': 'USOIL',
+              'FX:UKOIL': 'UKOIL',
+              'OANDA:NATGASUSD': 'NGAS',
+              'OANDA:US30USD': 'US30',
+              'OANDA:DE30EUR': 'GER40',
+              'SP:SPX': 'US500',
+              'TVC:IXIC': 'NAS100',
+            };
+            cfdData.value.data.forEach((row: any) => {
+              const sym = cfdMap[row.s];
+              const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
+              if (conf) {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const realPrice = close;
+                this.lastQuotes.set(sym, {
+                  symbol: sym,
+                  tvTicker: conf.ticker,
+                  bid: Number(realPrice.toFixed(conf.decimals)),
+                  ask: Number(realPrice.toFixed(conf.decimals)),
+                  spread: 0,
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || realPrice).toFixed(conf.decimals)),
+                  low24h: Number((row.d[5] || realPrice).toFixed(conf.decimals)),
+                  timestamp: now,
+                });
+              }
+            });
+          }
+
+          if (forexData.status === 'fulfilled' && forexData.value?.data) {
+            const forexMap: Record<string, string> = {
+              'FX:EURUSD': 'EURUSD',
+              'FX:GBPUSD': 'GBPUSD',
+              'FX:USDJPY': 'USDJPY',
+              'FX:USDCHF': 'USDCHF',
+              'FX:AUDUSD': 'AUDUSD',
+              'FX:USDCAD': 'USDCAD',
+              'FX:GBPJPY': 'GBPJPY',
+              'FX:NZDUSD': 'NZDUSD',
+              'FX:EURGBP': 'EURGBP',
+              'FX:EURJPY': 'EURJPY',
+              'FX:AUDJPY': 'AUDJPY',
+            };
+            forexData.value.data.forEach((row: any) => {
+              const sym = forexMap[row.s];
+              const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
+              if (conf) {
+                const close = row.d[0];
+                const change = row.d[1] || 0;
+                const realPrice = close;
+                this.lastQuotes.set(sym, {
+                  symbol: sym,
+                  tvTicker: conf.ticker,
+                  bid: Number(realPrice.toFixed(conf.decimals)),
+                  ask: Number(realPrice.toFixed(conf.decimals)),
+                  spread: 0,
+                  change24h: Number(change.toFixed(2)),
+                  high24h: Number((row.d[4] || realPrice).toFixed(conf.decimals)),
+                  low24h: Number((row.d[5] || realPrice).toFixed(conf.decimals)),
+                  timestamp: now,
+                });
+              }
+            });
+          }
+        } catch (e) {
+          // Direct fallback failed
+        }
+      }
+
+      // 3. Client-side direct public feeds for Crypto 24/7
       try {
         const cryptoSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT', 'SUIUSDT'];
         const binanceRes = await fetch(
@@ -144,16 +270,15 @@ export class TradingViewPriceService {
               const symbolBase = item.symbol.replace('USDT', 'USD');
               const conf = TV_INSTRUMENT_MAP[symbolBase];
               if (conf && price > 0 && !this.lastQuotes.has(symbolBase)) {
-                const spreadVal = conf.decimals === 4 ? 0.0004 : conf.decimals === 2 ? 0.05 : 0.5;
                 this.lastQuotes.set(symbolBase, {
                   symbol: symbolBase,
                   tvTicker: conf.ticker,
-                  bid: Number((price - spreadVal / 2).toFixed(conf.decimals)),
-                  ask: Number((price + spreadVal / 2).toFixed(conf.decimals)),
-                  spread: Number((spreadVal * conf.pipMultiplier).toFixed(1)),
-                  change24h: 0.5,
-                  high24h: Number((price * 1.015).toFixed(conf.decimals)),
-                  low24h: Number((price * 0.985).toFixed(conf.decimals)),
+                  bid: Number(price.toFixed(conf.decimals)),
+                  ask: Number(price.toFixed(conf.decimals)),
+                  spread: 0,
+                  change24h: 0,
+                  high24h: Number((price * 1.01).toFixed(conf.decimals)),
+                  low24h: Number((price * 0.99).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }
@@ -188,7 +313,7 @@ export class TradingViewPriceService {
       EURGBP: 'FX:EURGBP',
       EURJPY: 'FX:EURJPY',
       XAUUSD: 'OANDA:XAUUSD',
-      XAGUSD: 'OANDA:XAGUSD',
+      XAGUSD: 'TVC:SILVER',
       USOIL: 'FX:USOIL',
       UKOIL: 'FX:UKOIL',
       NGAS: 'OANDA:NATGASUSD',
