@@ -413,7 +413,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
       </div>
 
       {/* Main Tab Content */}
-      <div className="flex-1 p-3 sm:p-4 max-w-7xl mx-auto w-full">
+      <div className="flex-1 p-3 sm:p-4 w-full">
         {/* SUBTAB 1: All Bots Catalog (Unified, no Inbuilt/Imported split) */}
         {activeSubTab === 'bots' && (
           <div className="space-y-4">

@@ -30,6 +30,9 @@ import {
   UserPlus,
   LogIn,
   ShieldCheck,
+  Database,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { VTMLogo } from './VTMLogo';
 import { Instrument } from '../types';
@@ -127,10 +130,55 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Automatically detect user location on mount
+  // Cloud Database Modal & Status State
+  const [isDbModalOpen, setIsDbModalOpen] = useState(false);
+  const [inputDbUrl, setInputDbUrl] = useState('');
+  const [inputDbKey, setInputDbKey] = useState('');
+  const [isDbConfigured, setIsDbConfigured] = useState(supabaseService.isConfigured());
+  const [isTestingDb, setIsTestingDb] = useState(false);
+  const [dbNotice, setDbNotice] = useState<string | null>(null);
+
+  // Native Full Screen state and handler for Desktop PC
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  };
+
+  // Automatically detect user location and fetch server Supabase config on mount
   useEffect(() => {
     const detected = detectUserCountry();
     setSelectedCountry(detected);
+
+    // Load server-backed Supabase configuration so phones/tablets connect automatically
+    supabaseService.initServerConfig().then((cfg) => {
+      if (cfg && cfg.url && cfg.anonKey) {
+        setIsDbConfigured(true);
+        setInputDbUrl(cfg.url);
+        setInputDbKey(cfg.anonKey);
+      } else {
+        setIsDbConfigured(supabaseService.isConfigured());
+        const current = supabaseService.getConfig();
+        if (current) {
+          setInputDbUrl(current.url);
+          setInputDbKey(current.anonKey);
+        }
+      }
+    });
   }, []);
 
   const filteredInstruments = instruments.filter((inst) => {
@@ -252,7 +300,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       setIsSubmitting(false);
       onSignIn(regResult.user);
     } else {
-      // SIGN IN MODE - STRICT: REJECT IF ACCOUNT WAS NEVER OPENED
+      // SIGN IN MODE - SUPABASE CLOUD & MULTI-DEVICE AUTHENTICATION
       if (!email.trim()) {
         setValidationError('Please enter your email.');
         return;
@@ -265,68 +313,150 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       const cleanEmail = email.trim().toLowerCase();
       setIsSubmitting(true);
 
-      // 1. If database is configured, test against Supabase Auth & Supabase Users
+      // Ensure server-persisted Supabase config is loaded on this mobile device/browser
+      if (!supabaseService.isConfigured()) {
+        await supabaseService.initServerConfig();
+        setIsDbConfigured(supabaseService.isConfigured());
+      }
+
+      // 1. If database is configured, test against Supabase Auth & Supabase Database
       if (supabaseService.isConfigured()) {
-        const remoteUser = await supabaseService.findUserInDatabase(cleanEmail);
-        const sbAuth = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
+        try {
+          const remoteUser = await supabaseService.findUserInDatabase(cleanEmail);
+          const sbAuth = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
 
-        // If neither Auth nor database row has this user, reject immediately
-        if (!remoteUser && !sbAuth.success && sbAuth.error?.includes('No account found')) {
-          setIsSubmitting(false);
-          setValidationError(
-            'No account found with this email. You cannot log in without opening an account first. Please register.'
-          );
-          return;
-        }
+          // SUCCESS CASE A: Remote user found in database table (vtm_registered_users)
+          if (remoteUser) {
+            if (remoteUser.password && remoteUser.password !== password) {
+              setIsSubmitting(false);
+              setValidationError('Incorrect password. Please verify your credentials and try again.');
+              return;
+            }
 
-        if (remoteUser) {
-          if (remoteUser.password && remoteUser.password !== password) {
+            // Restore user profile & finances locally on this device
+            registerNewUser(remoteUser.profile, remoteUser.password || password);
+            const remoteFinances = await supabaseService.fetchUserFinancials(remoteUser.profile);
+            if (remoteFinances) {
+              saveUserFinancials(remoteUser.profile, remoteFinances);
+            } else {
+              initializeUserFinancials(remoteUser.profile, false);
+            }
+
             setIsSubmitting(false);
-            setValidationError('Incorrect password. Please verify your credentials and try again.');
+            await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+            await supabaseService.syncActivity(remoteUser.profile, {
+              type: 'LOGIN',
+              description: `User ${remoteUser.profile.email} logged in successfully`,
+            });
+            await supabaseService.syncDevice(remoteUser.profile);
+            onSignIn(remoteUser.profile);
             return;
           }
-          // Restore user profile & finances locally
-          registerNewUser(remoteUser.profile, remoteUser.password || password);
-          const remoteFinances = await supabaseService.fetchUserFinancials(remoteUser.profile);
-          if (remoteFinances) {
-            saveUserFinancials(remoteUser.profile, remoteFinances);
-          } else {
-            initializeUserFinancials(remoteUser.profile, false);
+
+          // SUCCESS CASE B: Authenticated via Supabase Auth service directly
+          if (sbAuth.success && sbAuth.data?.user) {
+            const authUser = sbAuth.data.user;
+            const meta = authUser.user_metadata || {};
+            const profile: UserAuthProfile = {
+              id: `usr-${meta.account_number || authUser.id.slice(0, 8) || Date.now()}`,
+              name: meta.display_name || meta.name || 'Trader',
+              email: cleanEmail,
+              phoneNumber: meta.phone || '',
+              phone: meta.phone || '',
+              countryCode: meta.country_code || '+1',
+              countryName: meta.country_name || 'Kenya',
+              accountNumber: meta.account_number || String(Math.floor(1000000 + Math.random() * 9000000)),
+              role: meta.role || 'normal',
+              isLoggedIn: true,
+              createdAt: authUser.created_at ? new Date(authUser.created_at).getTime() : Date.now(),
+            };
+
+            registerNewUser(profile, password);
+            const remoteFinances = await supabaseService.fetchUserFinancials(profile);
+            if (remoteFinances) {
+              saveUserFinancials(profile, remoteFinances);
+            } else {
+              initializeUserFinancials(profile, false);
+            }
+
+            setIsSubmitting(false);
+            await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+            await supabaseService.syncActivity(profile, {
+              type: 'LOGIN',
+              description: `User ${profile.email} logged in via Supabase Auth`,
+            });
+            await supabaseService.syncDevice(profile);
+            onSignIn(profile);
+            return;
           }
-          setIsSubmitting(false);
-          await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
-          await supabaseService.syncActivity(remoteUser.profile, {
-            type: 'LOGIN',
-            description: `User ${remoteUser.profile.email} logged in successfully`,
-          });
-          await supabaseService.syncDevice(remoteUser.profile);
-          onSignIn(remoteUser.profile);
-          return;
+
+          // If Supabase returned an explicit credential error
+          if (
+            !remoteUser &&
+            !sbAuth.success &&
+            (sbAuth.error?.includes('credentials') ||
+              sbAuth.error?.includes('Invalid') ||
+              sbAuth.error?.includes('No account found'))
+          ) {
+            setIsSubmitting(false);
+            setValidationError(
+              'No account found with these credentials in Supabase. Please verify your email & password or register a new account.'
+            );
+            return;
+          }
+        } catch (err) {
+          console.warn('Supabase remote auth check error, falling back to local registry', err);
         }
       }
 
-      // 2. Verify against local credentials & user registry
+      // 2. Fallback check against local credentials & user registry on this device
       const verified = verifyUserCredentials(cleanEmail, password);
       setIsSubmitting(false);
 
-      // STRICT PROTECTION: If account was NEVER opened, NEVER allow login!
-      if (!verified.success || !verified.user) {
+      if (verified.success && verified.user) {
+        await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+        await supabaseService.syncActivity(verified.user, {
+          type: 'LOGIN',
+          description: `User ${verified.user.email} logged in successfully`,
+        });
+        await supabaseService.syncDevice(verified.user);
+        onSignIn(verified.user);
+        return;
+      }
+
+      // If database is not configured on this device/server yet, explain clearly to the user
+      if (!supabaseService.isConfigured()) {
         setValidationError(
-          verified.error ||
-            'No account found with this email. You cannot log in without opening an account first. Please register.'
+          'Cloud database is not connected on this device yet. If you created your account on another device, click "Connect Cloud DB" above to link your Supabase project so you can sign in anywhere.'
         );
         return;
       }
 
-      // Record login activity & device in database
-      await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
-      await supabaseService.syncActivity(verified.user, {
-        type: 'LOGIN',
-        description: `User ${verified.user.email} logged in successfully`,
-      });
-      await supabaseService.syncDevice(verified.user);
+      setValidationError(
+        'No account found with this email. You cannot log in without opening an account first. Please register.'
+      );
+    }
+  };
 
-      onSignIn(verified.user);
+  const handleSaveDbCredentials = async () => {
+    if (!inputDbUrl.trim() || !inputDbKey.trim()) {
+      setDbNotice('Please enter both Supabase Project URL and Anon Public Key.');
+      return;
+    }
+    setIsTestingDb(true);
+    setDbNotice(null);
+    supabaseService.setCredentials(inputDbUrl.trim(), inputDbKey.trim());
+    const res = await supabaseService.testConnection();
+    setIsTestingDb(false);
+    if (res.success) {
+      setIsDbConfigured(true);
+      setDbNotice('Connected to Supabase successfully! Synced across all devices.');
+      setTimeout(() => {
+        setIsDbModalOpen(false);
+        setDbNotice(null);
+      }, 1500);
+    } else {
+      setDbNotice(`Connection notice: ${res.message}. Credentials saved.`);
     }
   };
 
@@ -390,7 +520,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </nav>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Native Fullscreen Button for Desktop PC */}
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            className={`p-2.5 rounded-xl border transition-all cursor-pointer hidden md:flex items-center justify-center ${
+              isDarkMode
+                ? 'border-neutral-800 text-neutral-300 hover:text-white hover:bg-neutral-800/80'
+                : 'border-slate-300 text-slate-700 hover:bg-slate-100'
+            }`}
+            title={isFullscreen ? 'Exit Full Screen' : 'Toggle Full Screen WebTrader'}
+          >
+            {isFullscreen ? (
+              <Minimize2 className="w-4 h-4 text-emerald-400" />
+            ) : (
+              <Maximize2 className="w-4 h-4" />
+            )}
+          </button>
+
           {onToggleTheme && (
             <button
               onClick={onToggleTheme}
@@ -404,6 +552,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
           )}
+
+          {/* Cloud Database Connection Status */}
+          <button
+            type="button"
+            onClick={() => setIsDbModalOpen(true)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+              isDbConfigured
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
+                : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
+            }`}
+            title="Configure Cloud Database for Cross-Device Synchronization"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{isDbConfigured ? 'Cloud DB Active' : 'Connect Cloud DB'}</span>
+            <span className="sm:hidden">{isDbConfigured ? 'DB' : 'Connect'}</span>
+          </button>
 
           {/* Client Portal Login & Register CTA */}
           <button
@@ -439,11 +603,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
       {/* 3. LIVE TICKER STRIP */}
       <div
-        className={`border-b py-2.5 px-4 overflow-x-auto no-scrollbar font-mono text-xs transition-colors ${
+        className={`border-b py-2.5 px-4 sm:px-8 overflow-x-auto no-scrollbar font-mono text-xs transition-colors ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="flex items-center gap-8 min-w-max mx-auto max-w-7xl justify-between">
+        <div className="flex items-center gap-8 min-w-max mx-auto w-full max-w-[1600px] 2xl:max-w-[1720px] justify-between">
           <div className="flex items-center gap-2 text-[11px] font-bold font-sans">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className={`uppercase tracking-wider ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
@@ -469,7 +633,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       </div>
 
       {/* 4. HERO SECTION */}
-      <section className="relative px-4 sm:px-8 pt-14 pb-20 max-w-7xl mx-auto w-full text-center flex flex-col items-center">
+      <section className="relative px-4 sm:px-8 lg:px-12 pt-14 pb-20 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto text-center flex flex-col items-center">
         {/* Glow effect */}
         <div className="absolute top-10 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-[#E51937]/10 rounded-full blur-[140px] pointer-events-none" />
 
@@ -596,11 +760,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 5. LIVE MARKETS TABLE */}
       <section
         id="markets"
-        className={`py-16 px-4 sm:px-8 border-t transition-colors ${
+        className={`py-16 px-4 sm:px-8 lg:px-12 border-t transition-colors ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="max-w-7xl mx-auto w-full">
+        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto">
           <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
             <div>
               <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-1.5">
@@ -737,7 +901,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 6. WHY TRADE WITH VTM (Bento Grid) */}
       <section
         id="why-vtm"
-        className={`py-16 px-4 sm:px-8 max-w-7xl mx-auto w-full transition-colors`}
+        className={`py-16 px-4 sm:px-8 lg:px-12 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto transition-colors`}
       >
         <div className="text-center max-w-2xl mx-auto mb-12">
           <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
@@ -825,11 +989,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 7. WEBTRADER PLATFORM TERMINAL SHOWCASE */}
       <section
         id="platform"
-        className={`py-16 px-4 sm:px-8 border-y transition-colors ${
+        className={`py-16 px-4 sm:px-8 lg:px-12 border-y transition-colors ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
           <div>
             <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
               Next-Generation Browser Terminal
@@ -1007,7 +1171,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 8. HOW TO START TRADING IN 3 STEPS */}
       <section
         id="how-it-works"
-        className={`py-16 px-4 sm:px-8 max-w-7xl mx-auto w-full`}
+        className={`py-16 px-4 sm:px-8 lg:px-12 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto`}
       >
         <div className="text-center max-w-2xl mx-auto mb-12">
           <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
@@ -1088,11 +1252,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 9. REGULATORY & RISK WARNING FOOTER */}
       <footer
         id="company"
-        className={`mt-auto border-t py-12 px-4 sm:px-8 text-xs transition-colors ${
+        className={`mt-auto border-t py-12 px-4 sm:px-8 lg:px-12 text-xs transition-colors ${
           isDarkMode ? 'bg-[#08090D] border-neutral-800 text-neutral-400' : 'bg-white border-slate-200 text-slate-600'
         }`}
       >
-        <div className="max-w-7xl mx-auto space-y-8">
+        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto space-y-8">
           {/* Top footer row */}
           <div
             className={`flex flex-col md:flex-row items-start md:items-center justify-between gap-6 pb-8 border-b ${
@@ -1180,201 +1344,209 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
       {/* 10. AUTH MODAL (CREATE ACCOUNT / CLIENT PORTAL SIGN IN) */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
           <div
-            className={`w-full max-w-lg rounded-3xl border shadow-2xl transition-all max-h-[92vh] flex flex-col overflow-hidden ${
+            className={`w-full max-w-md sm:max-w-lg lg:max-w-4xl rounded-2xl sm:rounded-3xl border shadow-2xl transition-all max-h-[96dvh] sm:max-h-[92dvh] flex flex-col lg:flex-row overflow-hidden ${
               isDarkMode
                 ? 'bg-[#11141C] border-neutral-700/70 text-white shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)]'
                 : 'bg-white border-slate-200 text-slate-900 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.25)]'
             }`}
           >
-            {/* Modal Header Banner */}
+            {/* Desktop Institutional Information Sidebar (Hidden on mobile for maximum form clarity) */}
             <div
-              className={`px-6 py-4 border-b flex items-center justify-between shrink-0 ${
-                isDarkMode ? 'bg-[#161B26]/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+              className={`w-[40%] shrink-0 hidden lg:flex flex-col justify-between p-7 border-r ${
+                isDarkMode
+                  ? 'bg-gradient-to-b from-[#141822] via-[#0E1118] to-[#0A0C10] border-neutral-800'
+                  : 'bg-gradient-to-b from-slate-900 via-slate-800 to-slate-950 border-slate-200 text-white'
               }`}
             >
-              <div className="flex items-center gap-3">
-                <VTMLogo size="sm" isDarkMode={isDarkMode} />
+              <div>
+                <VTMLogo size="md" isDarkMode={true} />
+                <div className="mt-6 space-y-3">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-[#E51937]/15 border border-[#E51937]/30 text-rose-400">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>Institutional CFD Brokerage</span>
+                  </div>
+                  <h3 className="text-xl font-black text-white tracking-tight leading-snug">
+                    {authMode === 'register'
+                      ? 'Direct Interbank Liquidity & Ultra-Low Spreads'
+                      : 'Welcome Back to Your Central VTM Terminal'}
+                  </h3>
+                  <p className="text-xs text-neutral-300 leading-relaxed">
+                    {authMode === 'register'
+                      ? 'Create your multi-asset profile in 60 seconds. Instant central wallet setup with zero fees.'
+                      : 'Access your unified balances, active positions, copy trading, and institutional analytical tools.'}
+                  </p>
+                </div>
+
+                <div className="mt-8 space-y-3">
+                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 font-mono font-bold text-xs">
+                      0.0
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Raw Interbank Spreads</div>
+                      <div className="text-[11px] text-neutral-400">From 0.0 pips on EURUSD &amp; Gold</div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                      <Zap className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Equinix Ultra-Low Latency</div>
+                      <div className="text-[11px] text-neutral-400">&lt; 9.8ms execution via NY4 &amp; LD4</div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+                      <Wallet className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white">Instant Kenyan &amp; Global Rail</div>
+                      <div className="text-[11px] text-neutral-400">Safaricom M-PESA B2C &amp; Web3 Crypto</div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              <button
-                onClick={() => {
-                  setShowAuthModal(false);
-                  setValidationError(null);
-                }}
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold cursor-pointer transition-all ${
-                  isDarkMode
-                    ? 'text-neutral-400 hover:text-white hover:bg-neutral-800'
-                    : 'text-slate-400 hover:text-slate-800 hover:bg-slate-200'
-                }`}
-                title="Close"
-              >
-                ✕
-              </button>
+              <div className="pt-4 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400 font-medium">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>London LD4 Online</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <Lock className="w-3 h-3 text-neutral-400" />
+                  <span>256-Bit SSL</span>
+                </span>
+              </div>
             </div>
 
-            {/* Scrollable Form Body */}
-            <div className="p-6 sm:p-7 overflow-y-auto no-scrollbar space-y-4">
-              {/* Title & Subtitle */}
-              <div className="text-center">
-                <h3 className={`text-xl sm:text-2xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                  {authMode === 'register' ? 'Open Institutional Trading Account' : 'Client Portal Authentication'}
-                </h3>
-                <p className={`text-xs mt-1.5 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                  {authMode === 'register'
-                    ? 'Instant central wallet setup • 0.0 pip raw interbank spreads • Zero account fees'
-                    : 'Access your Central VTM One Wallet, open accounts, and active positions'}
-                </p>
-              </div>
-
-              {/* Mode Switch Tabs with Icons */}
+            {/* Modal Right Column / Mobile Main Container */}
+            <div className="flex-1 flex flex-col min-w-0 max-h-[96dvh] sm:max-h-[92dvh] overflow-hidden">
+              {/* Header */}
               <div
-                className={`grid grid-cols-2 p-1 rounded-2xl border ${
-                  isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-100 border-slate-200'
+                className={`px-4 sm:px-6 py-2.5 sm:py-3.5 border-b flex items-center justify-between shrink-0 ${
+                  isDarkMode ? 'bg-[#161B26]/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
+                <div className="flex items-center gap-2">
+                  <VTMLogo size="sm" isDarkMode={isDarkMode} />
+                  <span className="lg:hidden text-xs font-black tracking-tight text-neutral-400">
+                    {authMode === 'register' ? '• Registration' : '• Portal Sign In'}
+                  </span>
+                </div>
+
                 <button
-                  type="button"
                   onClick={() => {
-                    setAuthMode('register');
+                    setShowAuthModal(false);
                     setValidationError(null);
                   }}
-                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                    authMode === 'register'
-                      ? 'bg-[#E51937] text-white shadow-md'
-                      : isDarkMode
-                      ? 'text-neutral-400 hover:text-white'
-                      : 'text-slate-600 hover:text-slate-900'
+                  className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold cursor-pointer transition-all ${
+                    isDarkMode
+                      ? 'text-neutral-400 hover:text-white hover:bg-neutral-800'
+                      : 'text-slate-400 hover:text-slate-800 hover:bg-slate-200'
                   }`}
+                  title="Close"
                 >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Create Account</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAuthMode('signin');
-                    setValidationError(null);
-                  }}
-                  className={`flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
-                    authMode === 'signin'
-                      ? 'bg-[#E51937] text-white shadow-md'
-                      : isDarkMode
-                      ? 'text-neutral-400 hover:text-white'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <LogIn className="w-3.5 h-3.5" />
-                  <span>Client Login</span>
+                  ✕
                 </button>
               </div>
 
-              {/* Validation Error Message */}
-              {validationError && (
-                <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex items-center gap-2.5 animate-in slide-in-from-top-1">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>{validationError}</span>
+              {/* Scrollable Form Body - Compact, streamlined spacing for mobile viewports */}
+              <div className="p-3.5 sm:p-5 overflow-y-auto no-scrollbar space-y-2.5 sm:space-y-3.5 overscroll-contain">
+                {/* Title & Subtitle */}
+                <div className="text-center sm:text-left">
+                  <h3 className={`text-base sm:text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    {authMode === 'register' ? 'Open Institutional Trading Account' : 'Client Portal Authentication'}
+                  </h3>
+                  <p className={`text-[11px] sm:text-xs mt-0.5 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                    {authMode === 'register'
+                      ? 'Instant VTM One central wallet • 0.0 pip raw interbank spreads'
+                      : 'Access your Central VTM One Wallet, open accounts, and active positions'}
+                  </p>
                 </div>
-              )}
 
-              <form onSubmit={handleAuthSubmit} className="space-y-4">
-                {/* Full Legal Name (Register only) */}
-                {authMode === 'register' && (
-                  <div>
-                    <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
-                      Full Legal Name
-                    </label>
-                    <div className="relative">
-                      <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Alexander Mercer"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
-                          isDarkMode
-                            ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
-                            : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                        }`}
-                      />
+                {/* Mode Switch Tabs with Icons */}
+                <div
+                  className={`grid grid-cols-2 p-1 rounded-xl border ${
+                    isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-100 border-slate-200'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('register');
+                      setValidationError(null);
+                    }}
+                    className={`flex items-center justify-center gap-1.5 py-1.5 sm:py-2 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                      authMode === 'register'
+                        ? 'bg-[#E51937] text-white shadow-xs'
+                        : isDarkMode
+                        ? 'text-neutral-400 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Create Account</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode('signin');
+                      setValidationError(null);
+                    }}
+                    className={`flex items-center justify-center gap-1.5 py-1.5 sm:py-2 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                      authMode === 'signin'
+                        ? 'bg-[#E51937] text-white shadow-xs'
+                        : isDarkMode
+                        ? 'text-neutral-400 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Client Login</span>
+                  </button>
+                </div>
+
+                {/* Validation Error Message */}
+                {validationError && (
+                  <div className="p-2.5 sm:p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex flex-col gap-1.5 animate-in slide-in-from-top-1">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span className="leading-snug">{validationError}</span>
                     </div>
-                    <span className={`text-[10px] block mt-1 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                      Must match your official government ID for seamless verification & withdrawals.
-                    </span>
+                    {!isDbConfigured && (
+                      <button
+                        type="button"
+                        onClick={() => setIsDbModalOpen(true)}
+                        className="self-start text-[11px] font-bold text-blue-500 dark:text-blue-400 hover:underline flex items-center gap-1.5 cursor-pointer ml-6"
+                      >
+                        <Database className="w-3.5 h-3.5" />
+                        <span>Click here to connect Supabase Cloud Database</span>
+                      </button>
+                    )}
                   </div>
                 )}
 
-                {/* Email Address */}
-                <div>
-                  <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
-                    Email Address
-                  </label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                    <input
-                      type="email"
-                      required
-                      placeholder="trader@vtmmarket.com"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
-                        isDarkMode
-                          ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
-                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                      }`}
-                    />
-                  </div>
-                </div>
-
-                {/* Phone Number with Auto-Detected Country Code & Anti-Fraud Security Rule (Register only) */}
-                {authMode === 'register' && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
-                        Mobile Phone Number
+                <form onSubmit={handleAuthSubmit} className="space-y-2.5 sm:space-y-3">
+                  {/* Full Legal Name (Register only) */}
+                  {authMode === 'register' && (
+                    <div>
+                      <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                        Full Legal Name
                       </label>
-                      <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                        <LockKeyhole className="w-3 h-3" />
-                        <span>Security Bound</span>
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      {/* Country code selector */}
-                      <div className="relative w-40 shrink-0">
-                        <select
-                          value={selectedCountry.code}
-                          onChange={(e) => {
-                            const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
-                            if (found) setSelectedCountry(found);
-                          }}
-                          className={`w-full py-3 pl-3 pr-7 rounded-xl border text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer ${
-                            isDarkMode
-                              ? 'bg-neutral-900/90 border-neutral-700 text-white'
-                              : 'bg-slate-50 border-slate-300 text-slate-900'
-                          }`}
-                        >
-                          {COUNTRY_OPTIONS.map((c) => (
-                            <option key={c.code} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
-                              {c.flag} {c.dialCode} ({c.code})
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown className="w-4 h-4 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400" />
-                      </div>
-
-                      {/* Local number input */}
-                      <div className="relative flex-1">
-                        <Phone className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <div className="relative">
+                        <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                         <input
-                          type="tel"
+                          type="text"
                           required
-                          placeholder="712 345 678"
-                          value={phoneLocal}
-                          onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
-                          className={`w-full pl-10 pr-3.5 py-3 rounded-xl border text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                          placeholder="e.g. Alexander Mercer"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          className={`w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
                             isDarkMode
                               ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                               : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1382,83 +1554,107 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         />
                       </div>
                     </div>
+                  )}
 
-                    {/* Anti-fraud withdrawal rule notice */}
-                    <div
-                      className={`mt-2 p-3 rounded-xl border flex items-start gap-2.5 text-[11px] leading-relaxed ${
-                        isDarkMode
-                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                          : 'bg-amber-50 border-amber-300 text-amber-900'
-                      }`}
-                    >
-                      <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-                      <div>
-                        <strong className="font-black">Anti-Fraud Binding:</strong> This mobile number will be locked to your
-                        client profile. For your capital protection,{' '}
-                        <span className="font-black underline">it cannot be altered when requesting withdrawals</span>.
+                  {/* Email Address */}
+                  <div>
+                    <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                      Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        type="email"
+                        required
+                        placeholder="trader@vtmmarket.com"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className={`w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
+                          isDarkMode
+                            ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                            : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Phone Number with Auto-Detected Country Code (Register only) */}
+                  {authMode === 'register' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                          Mobile Phone Number
+                        </label>
+                        <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                          <LockKeyhole className="w-3 h-3" />
+                          <span>Security Bound</span>
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        {/* Country code selector - neatly proportioned so phone input has ample room */}
+                        <div className="relative w-28 xs:w-32 shrink-0">
+                          <select
+                            value={selectedCountry.code}
+                            onChange={(e) => {
+                              const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
+                              if (found) setSelectedCountry(found);
+                            }}
+                            className={`w-full py-2 sm:py-2.5 pl-2.5 pr-6 rounded-xl border text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-neutral-900/90 border-neutral-700 text-white'
+                                : 'bg-slate-50 border-slate-300 text-slate-900'
+                            }`}
+                          >
+                            {COUNTRY_OPTIONS.map((c) => (
+                              <option key={c.code} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
+                                {c.flag} {c.dialCode}
+                              </option>
+                            ))}
+                          </select>
+                          <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400" />
+                        </div>
+
+                        {/* Local number input */}
+                        <div className="relative flex-1 min-w-0">
+                          <Phone className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                          <input
+                            type="tel"
+                            required
+                            placeholder="712 345 678"
+                            value={phoneLocal}
+                            onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
+                            className={`w-full pl-8 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                              isDarkMode
+                                ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                                : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                            }`}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Anti-fraud withdrawal rule notice: compact 1-line security badge */}
+                      <div className="mt-1 text-[10.5px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
+                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                        <span>Locked to profile for withdrawal safety (cannot be altered)</span>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Password with Show/Hide Toggle */}
-                <div>
-                  <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
-                    Password
-                  </label>
-                  <div className="relative">
-                    <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                    <input
-                      type={showPassword ? 'text' : 'password'}
-                      required
-                      placeholder="••••••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className={`w-full pl-10 pr-10 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
-                        isDarkMode
-                          ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
-                          : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      className={`absolute right-3.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
-                        isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
-                      }`}
-                      title={showPassword ? 'Hide password' : 'Show password'}
-                    >
-                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Confirm Password with Show/Hide Toggle (Register only) */}
-                {authMode === 'register' && (
+                  {/* Password with Show/Hide Toggle */}
                   <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
-                        Confirm Password
-                      </label>
-                      {confirmPassword && (
-                        <span
-                          className={`text-[10px] font-bold ${
-                            password === confirmPassword ? 'text-emerald-500' : 'text-rose-500'
-                          }`}
-                        >
-                          {password === confirmPassword ? '✓ Passwords match' : '✗ Must match password'}
-                        </span>
-                      )}
-                    </div>
+                    <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                      Password
+                    </label>
                     <div className="relative">
-                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                       <input
-                        type={showConfirmPassword ? 'text' : 'password'}
+                        type={showPassword ? 'text' : 'password'}
                         required
                         placeholder="••••••••••••"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        className={`w-full pl-10 pr-10 py-3 rounded-xl border text-xs font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className={`w-full pl-9 pr-9 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
                           isDarkMode
                             ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                             : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1466,91 +1662,222 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       />
                       <button
                         type="button"
-                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                        className={`absolute right-3.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                        onClick={() => setShowPassword(!showPassword)}
+                        className={`absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
                           isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
                         }`}
-                        title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                        title={showPassword ? 'Hide password' : 'Show password'}
                       >
-                        {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
                     </div>
                   </div>
-                )}
 
-                {/* Informative Note: Wallet-only initial state */}
-                {authMode === 'register' && (
-                  <div
-                    className={`p-3.5 rounded-2xl border text-xs leading-relaxed ${
-                      isDarkMode ? 'bg-neutral-900/80 border-neutral-800 text-neutral-300' : 'bg-slate-50 border-slate-200 text-slate-700'
+                  {/* Confirm Password with Show/Hide Toggle (Register only) */}
+                  {authMode === 'register' && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                          Confirm Password
+                        </label>
+                        {confirmPassword && (
+                          <span
+                            className={`text-[10px] font-bold ${
+                              password === confirmPassword ? 'text-emerald-500' : 'text-rose-500'
+                            }`}
+                          >
+                            {password === confirmPassword ? '✓ Passwords match' : '✗ Must match'}
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                        <input
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          required
+                          placeholder="••••••••••••"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          className={`w-full pl-9 pr-9 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                            isDarkMode
+                              ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                              : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          className={`absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                            isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
+                          }`}
+                          title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                        >
+                          {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Informative Note: Compact clean onboarding note */}
+                  {authMode === 'register' && (
+                    <div className="text-[10.5px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                      <Wallet className="w-3.5 h-3.5 shrink-0" />
+                      <span>Initializes with Central Wallet ($0.00). Open Live/Demo accounts inside anytime.</span>
+                    </div>
+                  )}
+
+                  {/* Submit Button */}
+                  <button
+                    type="submit"
+                    id="submit-auth-btn"
+                    disabled={isSubmitting}
+                    className={`w-full mt-2 py-2.5 sm:py-3 px-4 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-xs sm:text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${
+                      isSubmitting ? 'opacity-70 cursor-wait' : 'cursor-pointer'
                     }`}
                   >
-                    <div className="flex items-center gap-2 font-bold mb-1 text-emerald-600 dark:text-emerald-400">
-                      <Wallet className="w-4 h-4" />
-                      <span>Zero-Account Clean Onboarding &amp; VTM One Wallet</span>
-                    </div>
-                    <p className="text-[11px]">
-                      Your profile initializes with 0 accounts and your personal VTM One Wallet ($0.00). You can open
-                      a Live or Demo account anytime inside the portal, and your balance persists across devices.
+                    {isSubmitting ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>{authMode === 'register' ? 'Opening Account...' : 'Authenticating...'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{authMode === 'register' ? 'Open Account & Access Central Wallet' : 'Log In to Client Portal'}</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </>
+                    )}
+                  </button>
+                </form>
+
+                {/* Switch between Register and Login */}
+                <div className="pt-2 border-t border-slate-200 dark:border-neutral-800 text-center">
+                  {authMode === 'register' ? (
+                    <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                      Already have an account?{' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMode('signin');
+                          setValidationError(null);
+                        }}
+                        className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
+                      >
+                        Log In to Client Portal
+                      </button>
                     </p>
-                  </div>
-                )}
-
-                {/* Submit Button */}
-                <button
-                  type="submit"
-                  id="submit-auth-btn"
-                  disabled={isSubmitting}
-                  className={`w-full mt-3 py-3.5 px-5 rounded-2xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${
-                    isSubmitting ? 'opacity-70 cursor-wait' : 'cursor-pointer'
-                  }`}
-                >
-                  {isSubmitting ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>{authMode === 'register' ? 'Opening Account...' : 'Authenticating...'}</span>
-                    </>
                   ) : (
-                    <>
-                      <span>{authMode === 'register' ? 'Open Account & Access Central Wallet' : 'Log In to Client Portal'}</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
+                    <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                      Need a new VTM Markets trading profile?{' '}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAuthMode('register');
+                          setValidationError(null);
+                        }}
+                        className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
+                      >
+                        Create Free Account
+                      </button>
+                    </p>
                   )}
-                </button>
-              </form>
-
-              {/* Switch between Register and Login */}
-              <div className="pt-3 border-t border-slate-200 dark:border-neutral-800 text-center">
-                {authMode === 'register' ? (
-                  <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                    Already have a registered profile?{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('signin');
-                        setValidationError(null);
-                      }}
-                      className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
-                    >
-                      Log In to Client Portal
-                    </button>
-                  </p>
-                ) : (
-                  <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                    Need a new VTM Markets trading profile?{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode('register');
-                        setValidationError(null);
-                      }}
-                      className="font-bold text-[#E51937] hover:underline cursor-pointer ml-1"
-                    >
-                      Create Free Account
-                    </button>
-                  </p>
-                )}
+                </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUPABASE CLOUD DATABASE CONFIGURATION MODAL */}
+      {isDbModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl relative ${
+              isDarkMode ? 'bg-[#14171E] border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-blue-500" />
+                <h3 className="font-bold text-base">Supabase Cloud Database</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDbModalOpen(false);
+                  setDbNotice(null);
+                }}
+                className="text-neutral-400 hover:text-white p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-neutral-400 mb-4 leading-relaxed">
+              Connect your Supabase project to enable persistent cross-device authentication and real-time syncing for accounts, trades, settings, deposits, and withdrawals across all phones and computers.
+            </p>
+
+            {dbNotice && (
+              <div className="mb-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/25 text-blue-500 dark:text-blue-400 text-xs font-semibold">
+                {dbNotice}
+              </div>
+            )}
+
+            <div className="space-y-3.5 mb-6">
+              <div>
+                <label className="block text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-1">
+                  Project URL
+                </label>
+                <input
+                  type="text"
+                  value={inputDbUrl}
+                  onChange={(e) => setInputDbUrl(e.target.value)}
+                  placeholder="https://xyzcompany.supabase.co"
+                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-hidden font-mono ${
+                    isDarkMode
+                      ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
+                      : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
+                  }`}
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-1">
+                  Anon Public Key
+                </label>
+                <textarea
+                  rows={3}
+                  value={inputDbKey}
+                  onChange={(e) => setInputDbKey(e.target.value)}
+                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-hidden font-mono ${
+                    isDarkMode
+                      ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
+                      : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
+                  }`}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDbModalOpen(false);
+                  setDbNotice(null);
+                }}
+                className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-400 hover:text-white cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveDbCredentials}
+                disabled={isTestingDb}
+                className="px-5 py-2 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                {isTestingDb ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                <span>{isTestingDb ? 'Connecting...' : 'Save & Connect All Devices'}</span>
+              </button>
             </div>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
+import fs from 'fs';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -878,13 +879,179 @@ function hashbackStkPlugin() {
   };
 }
 
+function supabaseConfigPlugin() {
+  const configFile = path.resolve(__dirname, '.supabase-config.json');
+
+  const getConfig = () => {
+    // 1. Process environment
+    if (
+      process.env.VITE_SUPABASE_URL &&
+      process.env.VITE_SUPABASE_ANON_KEY &&
+      !process.env.VITE_SUPABASE_URL.includes('your-project.supabase.co')
+    ) {
+      return {
+        configured: true,
+        url: process.env.VITE_SUPABASE_URL,
+        anonKey: process.env.VITE_SUPABASE_ANON_KEY,
+      };
+    }
+    // 2. Persistent file .supabase-config.json
+    try {
+      if (fs.existsSync(configFile)) {
+        const raw = fs.readFileSync(configFile, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed.url && parsed.anonKey) {
+          process.env.VITE_SUPABASE_URL = parsed.url;
+          process.env.VITE_SUPABASE_ANON_KEY = parsed.anonKey;
+          return { configured: true, url: parsed.url, anonKey: parsed.anonKey };
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return { configured: false };
+  };
+
+  const handleGetConfig = (_req: any, res: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const cfg = getConfig();
+    res.end(JSON.stringify(cfg));
+  };
+
+  const handleSaveConfig = (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let bodyStr = '';
+    req.on('data', (chunk: any) => {
+      bodyStr += chunk;
+    });
+
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(bodyStr || '{}');
+        const url = (parsed.url || '').trim().replace(/\/+$/, '');
+        const anonKey = (parsed.anonKey || '').trim();
+
+        if (!url || !anonKey) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: 'url and anonKey are required' }));
+          return;
+        }
+
+        fs.writeFileSync(
+          configFile,
+          JSON.stringify({ url, anonKey, updatedAt: new Date().toISOString() }, null, 2),
+          'utf-8'
+        );
+        process.env.VITE_SUPABASE_URL = url;
+        process.env.VITE_SUPABASE_ANON_KEY = anonKey;
+
+        // Also update .env file if present
+        try {
+          const envFile = path.resolve(__dirname, '.env');
+          let envContent = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf-8') : '';
+          if (envContent.includes('VITE_SUPABASE_URL=')) {
+            envContent = envContent.replace(/VITE_SUPABASE_URL=.*/g, `VITE_SUPABASE_URL="${url}"`);
+          } else {
+            envContent += `\nVITE_SUPABASE_URL="${url}"\n`;
+          }
+          if (envContent.includes('VITE_SUPABASE_ANON_KEY=')) {
+            envContent = envContent.replace(/VITE_SUPABASE_ANON_KEY=.*/g, `VITE_SUPABASE_ANON_KEY="${anonKey}"`);
+          } else {
+            envContent += `VITE_SUPABASE_ANON_KEY="${anonKey}"\n`;
+          }
+          fs.writeFileSync(envFile, envContent, 'utf-8');
+        } catch {
+          // ignore env write error
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: true,
+            message: 'Supabase configuration saved on server for all devices',
+            url,
+            anonKey,
+          })
+        );
+      } catch (err: any) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: err.message || 'Failed to save config' }));
+      }
+    });
+  };
+
+  return {
+    name: 'supabase-config-api',
+    configureServer(server: any) {
+      server.middlewares.use('/api/supabase-config', (req: any, res: any) => {
+        if (req.method === 'POST') {
+          handleSaveConfig(req, res);
+        } else {
+          handleGetConfig(req, res);
+        }
+      });
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use('/api/supabase-config', (req: any, res: any) => {
+        if (req.method === 'POST') {
+          handleSaveConfig(req, res);
+        } else {
+          handleGetConfig(req, res);
+        }
+      });
+    },
+  };
+}
+
+function safeWsPlugin() {
+  return {
+    name: 'safe-ws-shim',
+    enforce: 'pre' as const,
+    configureServer(server: any) {
+      if (!server.ws) {
+        server.ws = {
+          send: () => {},
+          on: () => {},
+          off: () => {},
+          close: () => {},
+          clients: new Set(),
+        };
+      } else if (!server.ws.send) {
+        server.ws.send = () => {};
+      }
+    },
+  };
+}
+
 export default defineConfig(() => {
   return {
     plugins: [
+      safeWsPlugin(),
       react(),
       tailwindcss(),
       marketPricesPlugin(),
       hashbackStkPlugin(),
+      supabaseConfigPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
@@ -931,8 +1098,7 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],

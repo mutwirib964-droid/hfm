@@ -19,6 +19,8 @@ import {
   User,
   Wallet,
   Download,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types/botTypes';
 

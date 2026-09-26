@@ -62,9 +62,46 @@ const STORAGE_SUPABASE_ANON_KEY = 'vtm_supabase_anon_key';
 
 class SupabaseService {
   private config: SupabaseConfig | null = null;
+  private initPromise: Promise<SupabaseConfig | null> | null = null;
 
   constructor() {
     this.loadConfig();
+    this.initServerConfig().catch(() => {});
+  }
+
+  public async initServerConfig(): Promise<SupabaseConfig | null> {
+    if (this.initPromise) return this.initPromise;
+
+    this.initPromise = (async () => {
+      try {
+        const res = await fetch('/api/supabase-config', {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(4000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.configured && data.url && data.anonKey) {
+            const cleanUrl = data.url.trim().replace(/\/+$/, '');
+            const cleanKey = data.anonKey.trim();
+            this.config = { url: cleanUrl, anonKey: cleanKey };
+            try {
+              localStorage.setItem(STORAGE_SUPABASE_URL_KEY, cleanUrl);
+              localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, cleanKey);
+            } catch {
+              // ignore
+            }
+            return this.config;
+          }
+        }
+      } catch {
+        // ignore
+      } finally {
+        this.initPromise = null;
+      }
+      return this.config;
+    })();
+
+    return this.initPromise;
   }
 
   public loadConfig(): SupabaseConfig | null {
@@ -83,14 +120,19 @@ class SupabaseService {
       const storedKey = localStorage.getItem(STORAGE_SUPABASE_ANON_KEY);
       if (storedUrl && storedKey) {
         this.config = { url: storedUrl.trim().replace(/\/+$/, ''), anonKey: storedKey.trim() };
+        // Sync to server so other devices (e.g. mobile phones) get the credentials
+        fetch('/api/supabase-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: storedUrl, anonKey: storedKey }),
+        }).catch(() => {});
         return this.config;
       }
     } catch (e) {
       // ignore
     }
 
-    this.config = null;
-    return null;
+    return this.config;
   }
 
   public isConfigured(): boolean {
@@ -111,6 +153,13 @@ class SupabaseService {
     } catch (e) {
       console.error('Failed to store Supabase credentials', e);
     }
+
+    // Persist to server so ALL devices (mobile phones, laptops, other browsers) get the config
+    fetch('/api/supabase-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey }),
+    }).catch(() => {});
   }
 
   public clearCredentials(): void {

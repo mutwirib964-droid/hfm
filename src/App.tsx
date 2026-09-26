@@ -167,14 +167,22 @@ export default function App() {
 
   // Verify session and load complete synchronized data from Supabase database on mount
   useEffect(() => {
+    // Also ensure server Supabase configuration is loaded on mount
+    supabaseService.initServerConfig().catch(() => {});
+
     if (!currentUser) return;
     if (supabaseService.isConfigured()) {
       supabaseService.findUserInDatabase(currentUser.email).then((remote) => {
         if (!remote) {
-          console.warn('[Security] User does not exist in Supabase database. Signing out immediately.');
-          localStorage.removeItem('vtm_auth_user');
-          setCurrentUser(null);
-          return;
+          const locallyRegistered = findRegisteredUser(currentUser.email);
+          if (!locallyRegistered) {
+            console.warn('[Security] User does not exist in Supabase database. Signing out immediately.');
+            localStorage.removeItem('vtm_auth_user');
+            setCurrentUser(null);
+            return;
+          }
+          // Self-heal: sync registered user to database
+          supabaseService.registerUserInDatabase(currentUser);
         }
 
         // 1. Fetch Remote Financials
@@ -2637,7 +2645,7 @@ export default function App() {
         />
 
         {/* Scrollable Main Content - Full-width desktop responsive container */}
-        <main className="flex-1 overflow-y-auto no-scrollbar relative w-full max-w-7xl mx-auto px-2 sm:px-4 lg:px-6">
+        <main className="flex-1 overflow-y-auto no-scrollbar relative w-full px-2 sm:px-4 lg:px-6">
           {renderTabContent()}
         </main>
 
