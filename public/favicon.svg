@@ -1,113 +1,228 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <!-- Background Gradient -->
-    <linearGradient id="bg-grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#0F1420" />
-      <stop offset="50%" stop-color="#090C13" />
-      <stop offset="100%" stop-color="#040609" />
+    <!-- Background Gradient: Deep obsidian space navy -->
+    <radialGradient id="bg-radial" cx="50%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#141E33" />
+      <stop offset="45%" stop-color="#0A101D" />
+      <stop offset="100%" stop-color="#04060A" />
+    </radialGradient>
+
+    <!-- Outer Rim Stroke Gradient (Cyan to Crimson) -->
+    <linearGradient id="rim-stroke" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.9" />
+      <stop offset="40%" stop-color="#6366F1" stop-opacity="0.6" />
+      <stop offset="70%" stop-color="#FF1744" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#F43F5E" stop-opacity="0.7" />
     </linearGradient>
 
-    <!-- Outer Rim Stroke Gradient -->
-    <linearGradient id="rim-grad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.6" />
-      <stop offset="35%" stop-color="#E51937" stop-opacity="0.8" />
-      <stop offset="100%" stop-color="#1E293B" stop-opacity="0.3" />
-    </linearGradient>
-
-    <!-- Ambient Radial Glow behind the emblem -->
-    <radialGradient id="center-glow" cx="256" cy="256" r="220" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#E51937" stop-opacity="0.32" />
-      <stop offset="55%" stop-color="#3B82F6" stop-opacity="0.12" />
+    <!-- Multi-Color Core Glow: Scarlet Center & Cyan Wings -->
+    <radialGradient id="core-glow-red" cx="256" cy="220" r="170" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF1744" stop-opacity="0.5" />
+      <stop offset="50%" stop-color="#E51937" stop-opacity="0.2" />
       <stop offset="100%" stop-color="#000000" stop-opacity="0" />
     </radialGradient>
 
-    <!-- Crimson VTM Red Gradient -->
-    <linearGradient id="vtm-crimson" x1="120" y1="90" x2="380" y2="440" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FF4D6A" />
-      <stop offset="35%" stop-color="#E51937" />
-      <stop offset="100%" stop-color="#9B0017" />
-    </linearGradient>
+    <radialGradient id="wings-glow-cyan" cx="256" cy="200" r="220" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00E5FF" stop-opacity="0.28" />
+      <stop offset="60%" stop-color="#0284C7" stop-opacity="0.1" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
 
-    <linearGradient id="vtm-crimson-dark" x1="256" y1="120" x2="420" y2="440" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#E51937" />
-      <stop offset="100%" stop-color="#730010" />
-    </linearGradient>
-
-    <!-- Silver Platinum Metallic Gradient for Outer Pillars -->
-    <linearGradient id="vtm-silver-left" x1="40" y1="80" x2="160" y2="440" gradientUnits="userSpaceOnUse">
+    <!-- Left M Pillar Metallic Gradient -->
+    <linearGradient id="m-pillar-left" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FFFFFF" />
-      <stop offset="40%" stop-color="#E2E8F0" />
-      <stop offset="100%" stop-color="#94A3B8" />
+      <stop offset="25%" stop-color="#F0F9FF" />
+      <stop offset="60%" stop-color="#BAE6FD" />
+      <stop offset="100%" stop-color="#38BDF8" />
     </linearGradient>
 
-    <linearGradient id="vtm-silver-right" x1="470" y1="80" x2="350" y2="440" gradientUnits="userSpaceOnUse">
+    <!-- Right M Pillar Metallic Gradient -->
+    <linearGradient id="m-pillar-right" x1="100%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" stop-color="#FFFFFF" />
-      <stop offset="40%" stop-color="#E2E8F0" />
-      <stop offset="100%" stop-color="#94A3B8" />
+      <stop offset="25%" stop-color="#F0F9FF" />
+      <stop offset="60%" stop-color="#BAE6FD" />
+      <stop offset="100%" stop-color="#38BDF8" />
     </linearGradient>
 
-    <!-- Subtle Drop Shadow Filter -->
-    <filter id="emblem-shadow" x="-15%" y="-15%" width="130%" height="130%">
-      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#000000" flood-opacity="0.75" />
-      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#E51937" flood-opacity="0.35" />
+    <!-- Center V Left Blade (Fiery Neon Scarlet) -->
+    <linearGradient id="v-blade-left" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF5277" />
+      <stop offset="40%" stop-color="#FF1744" />
+      <stop offset="100%" stop-color="#D50000" />
+    </linearGradient>
+
+    <!-- Center V Right Blade (3D Beveled Ruby) -->
+    <linearGradient id="v-blade-right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF1744" />
+      <stop offset="50%" stop-color="#C62828" />
+      <stop offset="100%" stop-color="#8E0000" />
+    </linearGradient>
+
+    <!-- T Crossbar Royal Gold to Crimson Crown -->
+    <linearGradient id="t-crossbar-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF176" />
+      <stop offset="25%" stop-color="#FFB300" />
+      <stop offset="70%" stop-color="#FF1744" />
+      <stop offset="100%" stop-color="#C62828" />
+    </linearGradient>
+
+    <!-- T Stem Gradient -->
+    <linearGradient id="t-stem-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FF1744" />
+      <stop offset="65%" stop-color="#D50000" />
+      <stop offset="100%" stop-color="#FF8A80" />
+    </linearGradient>
+
+    <!-- Underline Gradient -->
+    <linearGradient id="brand-line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#FF1744" />
+    </linearGradient>
+
+    <!-- Drop Shadow Filters -->
+    <filter id="neon-bloom" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.85" />
+      <feDropShadow dx="0" dy="0" stdDeviation="6" flood-color="#FF1744" flood-opacity="0.5" />
+    </filter>
+
+    <filter id="cyan-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="3" stdDeviation="8" flood-color="#0284C7" flood-opacity="0.6" />
     </filter>
   </defs>
 
-  <!-- Base Rounded Container -->
-  <rect width="504" height="504" x="4" y="4" rx="112" fill="url(#bg-grad)" stroke="url(#rim-grad)" stroke-width="6" />
+  <!-- Base Container -->
+  <rect width="502" height="502" x="5" y="5" rx="116" fill="url(#bg-radial)" stroke="url(#rim-stroke)" stroke-width="6" />
 
-  <!-- Ambient Backlight -->
-  <circle cx="256" cy="256" r="220" fill="url(#center-glow)" />
+  <!-- Ambient Light Orbs -->
+  <circle cx="256" cy="200" r="220" fill="url(#wings-glow-cyan)" />
+  <circle cx="256" cy="220" r="170" fill="url(#core-glow-red)" />
 
-  <!-- Grid lines subtle financial texture -->
-  <g opacity="0.08" stroke="#FFFFFF" stroke-width="1.5">
-    <line x1="80" y1="160" x2="432" y2="160" />
-    <line x1="80" y1="256" x2="432" y2="256" />
-    <line x1="80" y1="352" x2="432" y2="352" />
-    <line x1="160" y1="80" x2="160" y2="432" />
-    <line x1="256" y1="80" x2="256" y2="432" />
-    <line x1="352" y1="80" x2="352" y2="432" />
+  <!-- Subtle Financial Grid & Radar Lines -->
+  <g opacity="0.08" stroke="#FFFFFF" stroke-width="1.2">
+    <circle cx="256" cy="256" r="160" fill="none" stroke-dasharray="4 6" />
+    <circle cx="256" cy="256" r="110" fill="none" />
+    <line x1="96" y1="256" x2="416" y2="256" />
+    <line x1="256" y1="96" x2="256" y2="416" />
   </g>
 
-  <!-- Scaled & Centered VTM Emblem -->
-  <g transform="translate(31, 31) scale(0.88)" filter="url(#emblem-shadow)">
-    <!-- Outer "M" Left Wing / Pillar -->
+  <!-- ========================================================================= -->
+  <!-- MAIN VTM MONOGRAM EMBLEM - 100% IN SAFE ZONE, ALL LINES VISIBLE AND LIT   -->
+  <!-- ========================================================================= -->
+  <g id="vtm-monogram" filter="url(#neon-bloom)">
+    <!-- 1. LEFT "M" PILLAR (Ice Platinum with Electric Cyan Stroke) -->
     <path
-      d="M 52 104 L 112 64 L 144 136 L 100 424 L 44 424 L 52 104 Z"
-      fill="url(#vtm-silver-left)"
+      d="M 140 286 L 156 136 L 180 126 L 194 168 L 168 286 Z"
+      fill="url(#m-pillar-left)"
+      stroke="#38BDF8"
+      stroke-width="3"
+      stroke-linejoin="round"
+      filter="url(#cyan-glow)"
     />
-    <!-- Outer "M" Right Wing / Pillar -->
+    <!-- Left M Highlight Blade -->
     <path
-      d="M 460 104 L 400 64 L 368 136 L 412 424 L 468 424 L 460 104 Z"
-      fill="url(#vtm-silver-right)"
-    />
-
-    <!-- Center "V" Chevron Left Arm -->
-    <path
-      d="M 128 164 L 180 164 L 256 352 L 256 444 L 128 164 Z"
-      fill="url(#vtm-crimson)"
-    />
-    <!-- Center "V" Chevron Right Arm (Darker Facet for 3D depth) -->
-    <path
-      d="M 384 164 L 332 164 L 256 352 L 256 444 L 384 164 Z"
-      fill="url(#vtm-crimson-dark)"
+      d="M 156 138 L 178 128 L 188 158 L 168 158 Z"
+      fill="#FFFFFF"
+      opacity="0.9"
     />
 
-    <!-- "T" Keystone Crossbar & Cap -->
+    <!-- 2. RIGHT "M" PILLAR (Ice Platinum with Electric Cyan Stroke) -->
     <path
-      d="M 160 68 H 352 L 372 124 H 140 L 160 68 Z"
-      fill="url(#vtm-crimson)"
+      d="M 372 286 L 356 136 L 332 126 L 318 168 L 344 286 Z"
+      fill="url(#m-pillar-right)"
+      stroke="#38BDF8"
+      stroke-width="3"
+      stroke-linejoin="round"
+      filter="url(#cyan-glow)"
     />
-    <!-- "T" Center Stem -->
+    <!-- Right M Highlight Blade -->
     <path
-      d="M 228 124 H 284 V 260 L 256 296 L 228 260 V 124 Z"
-      fill="url(#vtm-crimson)"
+      d="M 356 138 L 334 128 L 324 158 L 344 158 Z"
+      fill="#FFFFFF"
+      opacity="0.9"
     />
 
-    <!-- Specular Highlight Sheen on Keystone -->
-    <polygon points="172,74 340,74 332,86 180,86" fill="#FFFFFF" opacity="0.35" />
+    <!-- 3. CENTER "V" LEFT CHEVRON WING (Radiant Scarlet Blade) -->
+    <path
+      d="M 184 178 L 210 178 L 256 278 L 256 314 L 184 178 Z"
+      fill="url(#v-blade-left)"
+      stroke="#FF6B8B"
+      stroke-width="3"
+      stroke-linejoin="round"
+    />
+    <!-- Left V Sheen Streak -->
+    <polygon points="188,180 208,180 252,274 246,274" fill="#FFFFFF" opacity="0.35" />
 
-    <!-- Center Pivot Diamond Accents -->
-    <polygon points="256,336 268,352 256,368 244,352" fill="#FFFFFF" opacity="0.9" />
+    <!-- 4. CENTER "V" RIGHT CHEVRON WING (3D Shaded Ruby Facet) -->
+    <path
+      d="M 328 178 L 302 178 L 256 278 L 256 314 L 328 178 Z"
+      fill="url(#v-blade-right)"
+      stroke="#FF1744"
+      stroke-width="2.5"
+      stroke-linejoin="round"
+    />
+
+    <!-- 5. "T" KEYSTONE CROWN CROSSBAR (Royal Gold & Crimson Cap) -->
+    <path
+      d="M 198 124 H 314 L 322 154 H 190 L 198 124 Z"
+      fill="url(#t-crossbar-grad)"
+      stroke="#FFD54F"
+      stroke-width="3"
+      stroke-linejoin="round"
+    />
+    <!-- T Crown Pure White Specular Sheen -->
+    <polygon points="204,127 308,127 304,136 208,136" fill="#FFFFFF" opacity="0.8" />
+
+    <!-- 6. "T" CENTER VERTICAL STEM (Dropping into the V pocket) -->
+    <path
+      d="M 242 154 H 270 V 224 L 256 246 L 242 224 V 154 Z"
+      fill="url(#t-stem-grad)"
+      stroke="#FF5252"
+      stroke-width="2.5"
+      stroke-linejoin="round"
+    />
+    <!-- T Diamond Star Accent at the Pivot Vertex -->
+    <polygon points="256,238 263,246 256,254 249,246" fill="#FFFFFF" opacity="0.95" />
+  </g>
+
+  <!-- ========================================================================= -->
+  <!-- BRAND TYPOGRAPHY: CRISP, RADIANT, UNMISTAKABLE VTM INSTITUTIONAL IDENTITY -->
+  <!-- ========================================================================= -->
+  <g id="brand-labels" text-anchor="middle">
+    <!-- "VTM" Acronym in Heavyweight White -->
+    <text
+      x="256"
+      y="364"
+      fill="#FFFFFF"
+      font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+      font-size="34"
+      font-weight="900"
+      letter-spacing="5"
+    >VTM</text>
+    <!-- Glowing Scarlet Accent Dot next to VTM -->
+    <circle cx="304" cy="354" r="3.5" fill="#FF1744" filter="url(#cyan-glow)" />
+
+    <!-- "MARKETS" Subtitle in Electric Cyan -->
+    <text
+      x="256"
+      y="388"
+      fill="#38BDF8"
+      font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
+      font-size="12"
+      font-weight="800"
+      letter-spacing="4"
+    >MARKETS</text>
+
+    <!-- Elegant High-Tech Separator Ray -->
+    <line
+      x1="202"
+      y1="400"
+      x2="310"
+      y2="400"
+      stroke="url(#brand-line-grad)"
+      stroke-width="2"
+      stroke-linecap="round"
+      opacity="0.85"
+    />
   </g>
 </svg>

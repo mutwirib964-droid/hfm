@@ -1,8 +1,33 @@
 -- ============================================================================
 -- VTM MARKETS - COMPLETE SUPABASE PRODUCTION DATABASE SCHEMA
--- Multi-Asset Trading, Central Wallet, Bot Automation, Copy Trading & Settings
+-- Multi-Asset Trading, Central Wallet, Device Tracking, User Activities & Financials
 -- Compatible with Supabase PostgreSQL (run in Supabase Dashboard -> SQL Editor)
 -- ============================================================================
+
+-- ============================================================================
+-- 0. ZERO-USER PLATFORM RESET & PURGE SCRIPT
+-- Run this section whenever you need to wipe all users and reset the platform
+-- to 0 users across all devices and tables:
+-- ============================================================================
+/*
+TRUNCATE TABLE public.user_activities CASCADE;
+TRUNCATE TABLE public.user_devices CASCADE;
+TRUNCATE TABLE public.vtm_registered_users CASCADE;
+TRUNCATE TABLE public.vtm_user_finances CASCADE;
+TRUNCATE TABLE public.transactions CASCADE;
+TRUNCATE TABLE public.positions CASCADE;
+TRUNCATE TABLE public.pending_orders CASCADE;
+TRUNCATE TABLE public.closed_trades CASCADE;
+TRUNCATE TABLE public.bot_trades CASCADE;
+TRUNCATE TABLE public.bot_run_instances CASCADE;
+TRUNCATE TABLE public.followed_strategies CASCADE;
+TRUNCATE TABLE public.support_messages CASCADE;
+TRUNCATE TABLE public.trading_accounts CASCADE;
+TRUNCATE TABLE public.user_settings CASCADE;
+TRUNCATE TABLE public.profiles CASCADE;
+-- Delete all registered auth accounts:
+DELETE FROM auth.users;
+*/
 
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -181,6 +206,107 @@ CREATE TABLE IF NOT EXISTS public.transactions (
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON public.transactions(user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_reference ON public.transactions(reference);
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON public.transactions(created_at DESC);
+
+-- ============================================================================
+-- 7B. USER DEVICES & CROSS-DEVICE SESSIONS
+-- Tracks all devices logged in per user, browser, OS, and active timestamps
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.user_devices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email VARCHAR(255) NOT NULL,
+  device_id VARCHAR(128) NOT NULL,
+  device_type VARCHAR(64) DEFAULT 'desktop',
+  browser VARCHAR(128),
+  os VARCHAR(128),
+  ip_address VARCHAR(64),
+  last_active_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(user_email, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_devices_email ON public.user_devices(user_email);
+CREATE INDEX IF NOT EXISTS idx_user_devices_last_active ON public.user_devices(last_active_at DESC);
+
+-- ============================================================================
+-- 7C. USER ACTIVITIES AUDIT LOG
+-- Comprehensive log of every user action (signups, logins, deposits, trades)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.user_activities (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_email VARCHAR(255) NOT NULL,
+  activity_type VARCHAR(64) NOT NULL,
+  description TEXT NOT NULL,
+  device_id VARCHAR(128),
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activities_email ON public.user_activities(user_email);
+CREATE INDEX IF NOT EXISTS idx_user_activities_type ON public.user_activities(activity_type);
+CREATE INDEX IF NOT EXISTS idx_user_activities_created_at ON public.user_activities(created_at DESC);
+
+-- ============================================================================
+-- 7D. UNIFIED CROSS-DEVICE USER FINANCIALS (CENTRAL SYNC TABLE)
+-- Stores real-time wallet balances, accounts, and transactions across devices
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.vtm_user_finances (
+  user_key VARCHAR(255) PRIMARY KEY,
+  user_email VARCHAR(255),
+  user_name VARCHAR(255),
+  wallet_balance NUMERIC(16, 2) NOT NULL DEFAULT 0.00,
+  accounts JSONB NOT NULL DEFAULT '[]'::jsonb,
+  selected_account_id VARCHAR(128),
+  transactions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_updated TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_email ON public.vtm_user_finances(user_email);
+
+-- ============================================================================
+-- 7C. REGISTERED USER CREDENTIALS & IDENTITY
+-- Strictly enforces: A user cannot log in unless they have registered / opened an account!
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
+  email VARCHAR(255) PRIMARY KEY,
+  password_hash TEXT NOT NULL,
+  name VARCHAR(255) NOT NULL,
+  phone_number VARCHAR(64),
+  country_code VARCHAR(16) DEFAULT '+1',
+  country_name VARCHAR(128) DEFAULT 'United States',
+  account_number VARCHAR(32) UNIQUE NOT NULL,
+  role VARCHAR(32) DEFAULT 'normal',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  last_login_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vtm_registered_users_account_no ON public.vtm_registered_users(account_number);
+
+-- Trigger for vtm_registered_users updated_at
+DROP TRIGGER IF EXISTS trg_vtm_registered_users_updated_at ON public.vtm_registered_users;
+CREATE TRIGGER trg_vtm_registered_users_updated_at
+  BEFORE UPDATE ON public.vtm_registered_users
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- RLS for vtm_registered_users
+ALTER TABLE public.vtm_registered_users ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow anon read vtm_registered_users"
+  ON public.vtm_registered_users FOR SELECT
+  USING (true);
+
+CREATE POLICY "Allow anon insert vtm_registered_users"
+  ON public.vtm_registered_users FOR INSERT
+  WITH CHECK (true);
+
+CREATE POLICY "Allow anon update vtm_registered_users"
+  ON public.vtm_registered_users FOR UPDATE
+  USING (true)
+  WITH CHECK (true);
+
+CREATE POLICY "Allow anon delete vtm_registered_users"
+  ON public.vtm_registered_users FOR DELETE
+  USING (true);
 
 -- ============================================================================
 -- 8. OPEN POSITIONS (ACTIVE TRADES)
@@ -470,54 +596,34 @@ BEGIN
   INSERT INTO public.user_settings (user_id)
   VALUES (NEW.id);
 
-  -- 3. Create Default Zero Spread Live Account
-  INSERT INTO public.trading_accounts (
-    user_id,
-    account_number,
-    server,
-    type,
-    tier,
-    balance,
-    equity,
-    free_margin,
-    leverage,
-    is_default
+  -- 3. Initialize central finances (starts with 0 trading accounts & $0.00 wallet)
+  INSERT INTO public.vtm_user_finances (
+    user_key,
+    user_email,
+    user_name,
+    wallet_balance,
+    accounts,
+    transactions
   ) VALUES (
-    NEW.id,
-    '7' || FLOOR(100000 + RANDOM() * 900000)::TEXT,
-    'VTMarkets-LiveServer1',
-    'Live'::account_type,
-    'Zero Spread'::account_tier,
+    NEW.id::TEXT,
+    NEW.email,
+    v_name,
     0.00,
-    0.00,
-    0.00,
-    '1:500',
-    TRUE
-  );
+    '[]'::jsonb,
+    '[]'::jsonb
+  ) ON CONFLICT (user_key) DO NOTHING;
 
-  -- 4. Create Default Practice Demo Account ($100,000)
-  INSERT INTO public.trading_accounts (
-    user_id,
-    account_number,
-    server,
-    type,
-    tier,
-    balance,
-    equity,
-    free_margin,
-    leverage,
-    is_default
+  -- 4. Log User Registration Activity
+  INSERT INTO public.user_activities (
+    user_email,
+    activity_type,
+    description,
+    metadata
   ) VALUES (
-    NEW.id,
-    '3' || FLOOR(100000 + RANDOM() * 900000)::TEXT,
-    'VTMarkets-DemoServer',
-    'Demo'::account_type,
-    'Pro'::account_tier,
-    100000.00,
-    100000.00,
-    100000.00,
-    '1:500',
-    FALSE
+    NEW.email,
+    'SIGNUP',
+    'New trader account registered on platform',
+    jsonb_build_object('account_number', new_acc_no, 'country', v_country_name)
   );
 
   RETURN NEW;
@@ -610,6 +716,21 @@ CREATE POLICY "Users manage own bot trades" ON public.bot_trades
 CREATE POLICY "Users manage own support messages" ON public.support_messages
   FOR ALL USING (auth.uid() = user_id);
 
+-- USER DEVICES
+ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow device tracking" ON public.user_devices
+  FOR ALL USING (true);
+
+-- USER ACTIVITIES
+ALTER TABLE public.user_activities ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow activity logging" ON public.user_activities
+  FOR ALL USING (true);
+
+-- CENTRAL USER FINANCES
+ALTER TABLE public.vtm_user_finances ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow finances synchronization" ON public.vtm_user_finances
+  FOR ALL USING (true);
+
 -- ============================================================================
 -- 19. REALTIME REPLICATION (Instant Live Updates in UI)
 -- ============================================================================
@@ -626,7 +747,11 @@ BEGIN;
     public.followed_strategies,
     public.bot_run_instances,
     public.bot_trades,
-    public.support_messages;
+    public.support_messages,
+    public.user_devices,
+    public.user_activities,
+    public.vtm_registered_users,
+    public.vtm_user_finances;
 COMMIT;
 
 -- ============================================================================

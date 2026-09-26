@@ -258,7 +258,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div className="mt-2 pt-2 border-t border-neutral-200 dark:border-neutral-700/50 space-y-1.5">
-              {onOpenAdminManager && (
+              {onOpenAdminManager && currentUser?.role === 'admin' && (
                 <button
                   id="btn-admin-manage-accounts"
                   onClick={() => {

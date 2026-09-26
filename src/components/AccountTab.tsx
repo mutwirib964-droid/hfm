@@ -516,7 +516,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
       {/* Sub-View: Profile & Verification (KYC) */}
       {activeSubView === 'verification' && (
         <div className="space-y-4">
-          <ProfileVerificationSection isDarkMode={isDarkMode} />
+          <ProfileVerificationSection isDarkMode={isDarkMode} currentUser={currentUser} />
         </div>
       )}
 

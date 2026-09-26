@@ -13,7 +13,7 @@ function marketPricesPlugin() {
     configureServer(server: any) {
       server.middlewares.use('/api/market-prices', async (_req: any, res: any) => {
         const now = Date.now();
-        if (cachedData && now - lastFetch < 1500) {
+        if (cachedData && now - lastFetch < 800) {
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(cachedData));
           return;
@@ -21,11 +21,12 @@ function marketPricesPlugin() {
 
         try {
           const timeoutSignal = (ms: number) => AbortSignal.timeout(ms);
+          const t = Date.now();
 
           const [cfdRes, forexRes, stocksRes, cryptoRes, binanceRes] = await Promise.allSettled([
-            fetch('https://scanner.tradingview.com/cfd/scan', {
+            fetch(`https://scanner.tradingview.com/cfd/scan?t=${t}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
               signal: timeoutSignal(2500),
               body: JSON.stringify({
                 symbols: {
@@ -48,9 +49,9 @@ function marketPricesPlugin() {
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
               }),
             }).then((r) => r.json()),
-            fetch('https://scanner.tradingview.com/forex/scan', {
+            fetch(`https://scanner.tradingview.com/forex/scan?t=${t}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
               signal: timeoutSignal(2500),
               body: JSON.stringify({
                 symbols: {
@@ -71,9 +72,9 @@ function marketPricesPlugin() {
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
               }),
             }).then((r) => r.json()),
-            fetch('https://scanner.tradingview.com/america/scan', {
+            fetch(`https://scanner.tradingview.com/america/scan?t=${t}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
               signal: timeoutSignal(2500),
               body: JSON.stringify({
                 symbols: {
@@ -102,9 +103,9 @@ function marketPricesPlugin() {
                 columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
               }),
             }).then((r) => r.json()),
-            fetch('https://scanner.tradingview.com/crypto/scan', {
+            fetch(`https://scanner.tradingview.com/crypto/scan?t=${t}`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
               signal: timeoutSignal(2500),
               body: JSON.stringify({
                 symbols: {
@@ -150,21 +151,39 @@ function marketPricesPlugin() {
               'BINANCE:NEARUSDT': { sym: 'NEARUSD', dec: 2 },
               'BINANCE:SUIUSDT': { sym: 'SUIUSD', dec: 2 },
             };
+            const cryptoSpreads: Record<string, number> = {
+              'BTCUSD': 2.50,
+              'ETHUSD': 0.40,
+              'SOLUSD': 0.04,
+              'XRPUSD': 0.0004,
+              'BNBUSD': 0.20,
+              'DOGEUSD': 0.0002,
+              'ADAUSD': 0.0003,
+              'AVAXUSD': 0.03,
+              'LINKUSD': 0.02,
+              'DOTUSD': 0.01,
+              'NEARUSD': 0.01,
+              'SUIUSD': 0.002,
+            };
             cryptoRes.value.data.forEach((row: any) => {
               const conf = cryptoMap[row.s];
               if (conf) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const realPrice = close;
                 const decimals = conf.dec;
+                const spread = cryptoSpreads[conf.sym] || (decimals === 4 ? 0.0004 : 0.20);
+                const halfSpread = spread / 2;
+                const bid = Number((close - halfSpread).toFixed(decimals));
+                const ask = Number((close + halfSpread).toFixed(decimals));
+                const finalSpread = Number((ask - bid).toFixed(decimals));
                 results[conf.sym] = {
-                  bid: Number(realPrice.toFixed(decimals)),
-                  ask: Number(realPrice.toFixed(decimals)),
-                  close: Number(realPrice.toFixed(decimals)),
+                  bid,
+                  ask,
+                  close: Number(close.toFixed(decimals)),
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(decimals)),
-                  spread: 0,
+                  high24h: Number((row.d[4] || close).toFixed(decimals)),
+                  low24h: Number((row.d[5] || close).toFixed(decimals)),
+                  spread: finalSpread,
                 };
               }
             });
@@ -177,14 +196,18 @@ function marketPricesPlugin() {
               const sym = item.symbol.replace('USDT', 'USD');
               if (price > 0 && !results[sym]) {
                 const dec = sym.includes('XRP') || sym.includes('DOGE') || sym.includes('ADA') ? 4 : 2;
+                const spread = dec === 4 ? 0.0004 : 1.5;
+                const halfSpread = spread / 2;
+                const bid = Number((price - halfSpread).toFixed(dec));
+                const ask = Number((price + halfSpread).toFixed(dec));
                 results[sym] = {
-                  bid: Number(price.toFixed(dec)),
-                  ask: Number(price.toFixed(dec)),
+                  bid,
+                  ask,
                   close: Number(price.toFixed(dec)),
                   change24h: 0,
                   high24h: Number((price * 1.01).toFixed(dec)),
                   low24h: Number((price * 0.99).toFixed(dec)),
-                  spread: 0,
+                  spread: Number((ask - bid).toFixed(dec)),
                 };
               }
             });
@@ -194,7 +217,7 @@ function marketPricesPlugin() {
           if (cfdRes.status === 'fulfilled' && cfdRes.value?.data) {
             const cfdMap: Record<string, { sym: string; dec: number }> = {
               'OANDA:XAUUSD': { sym: 'XAUUSD', dec: 3 },
-              'TVC:SILVER': { sym: 'XAGUSD', dec: 2 },
+              'TVC:SILVER': { sym: 'XAGUSD', dec: 3 },
               'FX:USOIL': { sym: 'USOIL', dec: 2 },
               'FX:UKOIL': { sym: 'UKOIL', dec: 2 },
               'OANDA:NATGASUSD': { sym: 'NGAS', dec: 3 },
@@ -208,22 +231,61 @@ function marketPricesPlugin() {
               'INDEX:NKY': { sym: 'JPN225', dec: 2 },
             };
 
+            const cfdSpreads: Record<string, number> = {
+              'XAUUSD': 0.490, // Gold 49.0 points spread matching TradingView Pic 2
+              'XAGUSD': 0.025, // Silver 25.0 points spread
+              'USOIL': 0.03,
+              'UKOIL': 0.03,
+              'NGAS': 0.005,
+              'US30': 2.40,
+              'GER40': 1.40,
+              'US500': 0.45,
+              'NAS100': 1.20,
+              'COPPER': 0.003,
+              'XPTUSD': 0.80,
+              'UK100': 1.50,
+              'JPN225': 5.0,
+            };
+
             cfdRes.value.data.forEach((row: any) => {
               const conf = cfdMap[row.s];
               if (conf) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                // Buttons match real TradingView chart price exactly
-                const realPrice = close;
                 const decimals = conf.dec;
+                const rawBid = row.d[2];
+                const rawAsk = row.d[3];
+                
+                let bid: number;
+                let ask: number;
+                let finalSpread: number;
+
+                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) <= 0.3) {
+                  bid = Number(rawBid.toFixed(decimals));
+                  ask = Number(rawAsk.toFixed(decimals));
+                  finalSpread = Number((ask - bid).toFixed(decimals));
+                } else {
+                  let spread = cfdSpreads[conf.sym] || 0.1;
+                  if (rawBid && rawAsk && rawAsk > rawBid) {
+                    const tvSpread = rawAsk - rawBid;
+                    if (tvSpread > 0 && tvSpread < close * 0.05) {
+                      spread = tvSpread;
+                    }
+                  }
+                  const halfSpread = spread / 2;
+                  bid = Number((close - halfSpread).toFixed(decimals));
+                  ask = Number((close + halfSpread).toFixed(decimals));
+                  finalSpread = Number((ask - bid).toFixed(decimals));
+                }
+
                 results[conf.sym] = {
-                  bid: Number(realPrice.toFixed(decimals)),
-                  ask: Number(realPrice.toFixed(decimals)),
-                  close: Number(realPrice.toFixed(decimals)),
+                  bid,
+                  ask,
+                  close: Number(close.toFixed(decimals)),
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(decimals)),
-                  spread: 0,
+                  high24h: Number((row.d[4] || close).toFixed(decimals)),
+                  low24h: Number((row.d[5] || close).toFixed(decimals)),
+                  spread: finalSpread,
                 };
               }
             });
@@ -244,6 +306,21 @@ function marketPricesPlugin() {
               'FX:EURJPY': 'EURJPY',
               'FX:AUDJPY': 'AUDJPY',
             };
+
+            const forexSpreads: Record<string, number> = {
+              'EURUSD': 0.00003, // 0.3 pips (3 points)
+              'GBPUSD': 0.00004, // 0.4 pips
+              'USDJPY': 0.005,   // 0.5 pips
+              'USDCHF': 0.00004,
+              'AUDUSD': 0.00003,
+              'USDCAD': 0.00004,
+              'GBPJPY': 0.008,
+              'NZDUSD': 0.00004,
+              'EURGBP': 0.00004,
+              'EURJPY': 0.006,
+              'AUDJPY': 0.006,
+            };
+
             forexRes.value.data.forEach((row: any) => {
               const sym = symMap[row.s];
               if (sym) {
@@ -251,16 +328,39 @@ function marketPricesPlugin() {
                 const decimals = isJpy ? 3 : 5;
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                // Buttons match real TradingView chart price exactly
-                const realPrice = close;
+                const rawBid = row.d[2];
+                const rawAsk = row.d[3];
+                
+                let bid: number;
+                let ask: number;
+                let finalSpread: number;
+
+                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) / close < 0.005) {
+                  bid = Number(rawBid.toFixed(decimals));
+                  ask = Number(rawAsk.toFixed(decimals));
+                  finalSpread = Number((ask - bid).toFixed(decimals));
+                } else {
+                  let spread = forexSpreads[sym] || (isJpy ? 0.006 : 0.00004);
+                  if (rawBid && rawAsk && rawAsk > rawBid) {
+                    const tvSpread = rawAsk - rawBid;
+                    if (tvSpread > 0 && tvSpread < close * 0.005) {
+                      spread = tvSpread;
+                    }
+                  }
+                  const halfSpread = spread / 2;
+                  bid = Number((close - halfSpread).toFixed(decimals));
+                  ask = Number((close + halfSpread).toFixed(decimals));
+                  finalSpread = Number((ask - bid).toFixed(decimals));
+                }
+
                 results[sym] = {
-                  bid: Number(realPrice.toFixed(decimals)),
-                  ask: Number(realPrice.toFixed(decimals)),
-                  close: Number(realPrice.toFixed(decimals)),
+                  bid,
+                  ask,
+                  close: Number(close.toFixed(decimals)),
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(decimals)),
-                  spread: 0,
+                  high24h: Number((row.d[4] || close).toFixed(decimals)),
+                  low24h: Number((row.d[5] || close).toFixed(decimals)),
+                  spread: finalSpread,
                 };
               }
             });
@@ -294,16 +394,19 @@ function marketPricesPlugin() {
               if (sym) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const realPrice = close;
                 const decimals = 2;
+                const spread = 0.04;
+                const halfSpread = 0.02;
+                const bid = Number((close - halfSpread).toFixed(decimals));
+                const ask = Number((close + halfSpread).toFixed(decimals));
                 results[sym] = {
-                  bid: Number(realPrice.toFixed(decimals)),
-                  ask: Number(realPrice.toFixed(decimals)),
-                  close: Number(realPrice.toFixed(decimals)),
+                  bid,
+                  ask,
+                  close: Number(close.toFixed(decimals)),
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(decimals)),
-                  spread: 0,
+                  high24h: Number((row.d[4] || close).toFixed(decimals)),
+                  low24h: Number((row.d[5] || close).toFixed(decimals)),
+                  spread: 0.04,
                 };
               }
             });
@@ -550,12 +653,238 @@ function marketPricesPlugin() {
   };
 }
 
+function hashbackStkPlugin() {
+  const HASHBACK_ACCOUNT_ID = process.env.HASHBACK_ACCOUNT_ID || 'HP068635';
+  const HASHBACK_API_KEY =
+    process.env.HASHBACK_API_KEY || '09a166c7e99ef7751c92f675076e73f8deb6f980c33d92f6321f180116d42f5a';
+
+  // In-memory store for webhook callbacks received from Hashback
+  const webhookStore = new Map<string, any>();
+
+  const handleStkRequest = async (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let bodyStr = '';
+    req.on('data', (chunk: any) => {
+      bodyStr += chunk;
+    });
+
+    req.on('end', async () => {
+      try {
+        const parsed = JSON.parse(bodyStr || '{}');
+        const payload = {
+          account_id: parsed.account_id || HASHBACK_ACCOUNT_ID,
+          api_key: parsed.api_key || HASHBACK_API_KEY,
+          amount: Number(parsed.amount),
+          msisdn: String(parsed.msisdn || parsed.phone || ''),
+          reference: parsed.reference || `VTM-${Date.now()}`,
+        };
+
+        const response = await fetch('https://api.hashback.co.ke/initiatestk', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': HASHBACK_API_KEY,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(15000),
+        });
+
+        const data = await response.json();
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = response.status;
+        res.end(JSON.stringify(data));
+      } catch (err: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Internal proxy error' }));
+      }
+    });
+  };
+
+  const handleStatusRequest = async (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let bodyStr = '';
+    req.on('data', (chunk: any) => {
+      bodyStr += chunk;
+    });
+
+    req.on('end', async () => {
+      try {
+        const parsed = JSON.parse(bodyStr || '{}');
+        const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID;
+        if (!checkoutId) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: 'checkout_id is required' }));
+          return;
+        }
+
+        // 1. Check if we already received a webhook for this checkoutId
+        if (webhookStore.has(checkoutId)) {
+          const cached = webhookStore.get(checkoutId);
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              confirmed: true,
+              pending: false,
+              failed: false,
+              source: 'webhook',
+              resultCode: '0',
+              mpesaReceiptNumber: cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id,
+              resultDesc: cached.ResultDesc || 'Payment confirmed by Hashback webhook.',
+              data: cached,
+            })
+          );
+          return;
+        }
+
+        // 2. Query Hashback transactionstatus endpoint directly
+        const payload = {
+          account_id: parsed.account_id || HASHBACK_ACCOUNT_ID,
+          api_key: parsed.api_key || HASHBACK_API_KEY,
+          checkoutid: checkoutId,
+          checkout_id: checkoutId,
+        };
+
+        const response = await fetch('https://api.hashback.co.ke/transactionstatus', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': HASHBACK_API_KEY,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(15000),
+        });
+
+        const data = await response.json();
+
+        // Safaricom Daraja & Hashback ResultCode interpretation:
+        // ResultCode 0 = Success
+        // ResultCode 1032 = Cancelled by user
+        // ResultCode 1037 = Timeout (user phone off or no PIN entered)
+        // ResultCode 1 = Insufficient funds
+        // Undefined / empty ResultCode = Still pending customer PIN entry
+        const rawCode = data.ResultCode !== undefined ? String(data.ResultCode) : undefined;
+        const isSuccess = rawCode === '0' || data.status === 'completed' || data.status === 'success';
+        const isFailed = rawCode === '1032' || rawCode === '1037' || rawCode === '1' || (rawCode !== undefined && rawCode !== '0');
+        const isPending = !isSuccess && !isFailed;
+
+        let receiptNo = data.MpesaReceiptNumber || data.mpesa_receipt;
+        if (!receiptNo && data.CallbackMetadata?.Item) {
+          const item = data.CallbackMetadata.Item.find((i: any) => i.Name === 'MpesaReceiptNumber');
+          if (item) receiptNo = item.Value;
+        }
+
+        if (isSuccess) {
+          webhookStore.set(checkoutId, { ...data, MpesaReceiptNumber: receiptNo });
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: true,
+            confirmed: isSuccess,
+            pending: isPending,
+            failed: isFailed,
+            resultCode: rawCode,
+            resultDesc: data.ResultDesc || data.ResponseDescription || (isPending ? 'Waiting for M-Pesa PIN entry on phone...' : ''),
+            mpesaReceiptNumber: receiptNo,
+            data,
+          })
+        );
+      } catch (err: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Internal proxy error' }));
+      }
+    });
+  };
+
+  const handleWebhookCallback = async (req: any, res: any) => {
+    let bodyStr = '';
+    req.on('data', (chunk: any) => {
+      bodyStr += chunk;
+    });
+
+    req.on('end', () => {
+      try {
+        const body = JSON.parse(bodyStr || '{}');
+        const checkoutId = body.checkout_id || body.CheckoutRequestID || body.checkoutid;
+        if (checkoutId) {
+          webhookStore.set(checkoutId, body);
+        }
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: true, message: 'Callback received' }));
+      } catch {
+        res.statusCode = 400;
+        res.end('Invalid JSON');
+      }
+    });
+  };
+
+  return {
+    name: 'hashback-stk-api',
+    configureServer(server: any) {
+      server.middlewares.use('/api/hashback-stk', handleStkRequest);
+      server.middlewares.use('/api/hashback-status', handleStatusRequest);
+      server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
+      server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use('/api/hashback-stk', handleStkRequest);
+      server.middlewares.use('/api/hashback-status', handleStatusRequest);
+      server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
+      server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+    },
+  };
+}
+
 export default defineConfig(() => {
   return {
     plugins: [
       react(),
       tailwindcss(),
       marketPricesPlugin(),
+      hashbackStkPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [

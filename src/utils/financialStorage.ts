@@ -31,6 +31,120 @@ export function getUserStorageKey(user?: UserAuthProfile | null): string {
 const STORAGE_PREFIX = 'vtm_finances_';
 const ACTIVE_FINANCES_KEY = 'vtm_active_finances';
 const USER_REGISTRY_KEY = 'vtm_user_registry';
+const USER_CREDENTIALS_KEY = 'vtm_user_credentials';
+
+/**
+ * Look up a registered user by email in the local registry
+ */
+export function findRegisteredUser(email: string): UserAuthProfile | null {
+  if (!email || !email.trim()) return null;
+  const cleanEmail = email.trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(USER_REGISTRY_KEY);
+    if (!raw) return null;
+    const registry: Record<string, UserAuthProfile> = JSON.parse(raw);
+    return registry[cleanEmail] || null;
+  } catch (e) {
+    console.error('Failed to look up user in registry', e);
+    return null;
+  }
+}
+
+/**
+ * Verify credentials for sign in.
+ * STRICT SECURITY: Rejects login immediately if account does not exist!
+ */
+export function verifyUserCredentials(
+  email: string,
+  passwordAttempt: string
+): { success: boolean; user?: UserAuthProfile; error?: string } {
+  if (!email || !email.trim()) {
+    return { success: false, error: 'Please enter your email.' };
+  }
+  if (!passwordAttempt) {
+    return { success: false, error: 'Please enter your password.' };
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const existingUser = findRegisteredUser(cleanEmail);
+
+  if (!existingUser) {
+    return {
+      success: false,
+      error: 'No account found with this email. You cannot log in without opening an account first. Please register to get started.',
+    };
+  }
+
+  try {
+    const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
+    const creds: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
+    const storedPassword = creds[cleanEmail];
+
+    // If password was stored, verify match
+    if (storedPassword && storedPassword !== passwordAttempt) {
+      return {
+        success: false,
+        error: 'Incorrect password. Please verify your credentials and try again.',
+      };
+    }
+
+    // Update logged in flag
+    const updatedUser: UserAuthProfile = {
+      ...existingUser,
+      isLoggedIn: true,
+    };
+    getOrCreateUserProfile(updatedUser);
+
+    return { success: true, user: updatedUser };
+  } catch (e) {
+    return { success: false, error: 'Authentication service error. Please try again.' };
+  }
+}
+
+/**
+ * Register a new user profile with password in credentials storage.
+ * Fails if user is already registered.
+ */
+export function registerNewUser(
+  profile: UserAuthProfile,
+  password: string
+): { success: boolean; user?: UserAuthProfile; error?: string } {
+  if (!profile.email) {
+    return { success: false, error: 'Valid email is required.' };
+  }
+  const cleanEmail = profile.email.trim().toLowerCase();
+  const existing = findRegisteredUser(cleanEmail);
+  if (existing) {
+    return {
+      success: false,
+      error: 'An account with this email already exists. Please sign in instead.',
+    };
+  }
+
+  try {
+    // Save to registry
+    const raw = localStorage.getItem(USER_REGISTRY_KEY);
+    const registry: Record<string, UserAuthProfile> = raw ? JSON.parse(raw) : {};
+    const completeProfile: UserAuthProfile = {
+      ...profile,
+      email: cleanEmail,
+      isLoggedIn: true,
+      createdAt: profile.createdAt || Date.now(),
+    };
+    registry[cleanEmail] = completeProfile;
+    localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(registry));
+
+    // Save credentials
+    const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
+    const creds: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
+    creds[cleanEmail] = password;
+    localStorage.setItem(USER_CREDENTIALS_KEY, JSON.stringify(creds));
+
+    return { success: true, user: completeProfile };
+  } catch (e) {
+    return { success: false, error: 'Failed to save registration profile.' };
+  }
+}
 
 /**
  * Get all registered user profiles (for Admin / Account Management)
@@ -411,5 +525,68 @@ export function adminUpdateUserAccount(
     console.error('Failed to admin update user account', e);
     return false;
   }
+}
+
+/**
+ * Platforms preserve registered user accounts permanently.
+ */
+export function wipeAllPlatformUsersAndData(): void {
+  // Disabled: accounts are preserved permanently as on live institutional platforms
+  console.log('[VTM Platform] Platform wipe disabled - user registry is persistent.');
+}
+
+export function ensureZeroUsersStateOnStartup(): void {
+  // Disabled: accounts are preserved permanently
+}
+
+export interface UserActivityLog {
+  id: string;
+  userEmail: string;
+  userName: string;
+  type: 'SIGNUP' | 'LOGIN' | 'LOGOUT' | 'OPEN_ACCOUNT' | 'DEPOSIT' | 'WITHDRAWAL' | 'TRANSFER' | 'TRADE_OPEN' | 'TRADE_CLOSE' | 'ADMIN_EDIT';
+  description: string;
+  timestamp: number;
+  device?: string;
+  metadata?: any;
+}
+
+export function logUserActivity(
+  user: UserAuthProfile | null | undefined,
+  type: UserActivityLog['type'],
+  description: string,
+  metadata?: any
+): void {
+  if (!user) return;
+  const userKey = getUserStorageKey(user);
+  const log: UserActivityLog = {
+    id: `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    userEmail: user.email || userKey,
+    userName: user.name || 'Trader',
+    type,
+    description,
+    timestamp: Date.now(),
+    device: typeof navigator !== 'undefined' ? `${navigator.platform || 'Web'} - ${navigator.userAgent.slice(0, 45)}` : 'Web Terminal',
+    metadata: metadata || {},
+  };
+
+  try {
+    const raw = localStorage.getItem('vtm_user_activities');
+    const logs: UserActivityLog[] = raw ? JSON.parse(raw) : [];
+    logs.unshift(log);
+    localStorage.setItem('vtm_user_activities', JSON.stringify(logs.slice(0, 200)));
+  } catch (e) {
+    // ignore
+  }
+
+  // Also sync activity to Supabase / Database in background
+  supabaseService.syncActivity(user, log).catch(() => {});
+}
+
+export function getAllUserActivities(): UserActivityLog[] {
+  try {
+    const raw = localStorage.getItem('vtm_user_activities');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [];
 }
 

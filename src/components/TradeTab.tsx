@@ -704,10 +704,17 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.bid.toFixed(currentInstrument.decimals)}
             </span>
-            {curMarketStatus.isOpen && isPriceDown && (
-              <span className="text-[9px] bg-red-950/80 px-1.5 py-0.2 rounded font-mono font-bold text-red-200 mt-0.5 border border-red-400/50">
-                PRICE FALLING ▼
-              </span>
+            {curMarketStatus.isOpen && (
+              isPriceDown ? (
+                <span className="text-[9px] bg-red-950/90 px-1.5 py-0.5 rounded font-mono font-black text-white mt-0.5 border border-red-400 flex items-center gap-0.5">
+                  <span>EXACT CHART PRICE</span>
+                  <span>▼</span>
+                </span>
+              ) : (
+                <span className="text-[9px] text-red-200/90 font-mono mt-0.5">
+                  Spread: -{currentInstrument.spread.toFixed(1)} pips
+                </span>
+              )
             )}
           </button>
 
@@ -736,10 +743,17 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.ask.toFixed(currentInstrument.decimals)}
             </span>
-            {curMarketStatus.isOpen && isPriceUp && (
-              <span className="text-[9px] bg-emerald-950/80 px-1.5 py-0.2 rounded font-mono font-bold text-emerald-200 mt-0.5 border border-emerald-400/50">
-                BUY HIGHLIGHT ▲
-              </span>
+            {curMarketStatus.isOpen && (
+              isPriceUp ? (
+                <span className="text-[9px] bg-emerald-950/90 px-1.5 py-0.5 rounded font-mono font-black text-white mt-0.5 border border-emerald-400 flex items-center gap-0.5">
+                  <span>EXACT CHART PRICE</span>
+                  <span>▲</span>
+                </span>
+              ) : (
+                <span className="text-[9px] text-emerald-200/90 font-mono mt-0.5">
+                  Spread: +{currentInstrument.spread.toFixed(1)} pips
+                </span>
+              )
             )}
           </button>
         </div>

@@ -911,11 +911,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             <div
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
                 tickDirection === 'DOWN'
-                  ? 'bg-rose-500/25 text-rose-300 border-rose-400 ring-2 ring-rose-500/50 shadow-[0_0_10px_rgba(244,63,94,0.5)] animate-pulse'
+                  ? 'bg-rose-500/30 text-rose-200 border-rose-400 ring-2 ring-rose-500/60 shadow-[0_0_12px_rgba(244,63,94,0.6)] animate-pulse'
                   : 'bg-rose-950/30 text-rose-400 border-rose-800/40'
               }`}
             >
-              <span className="text-[9px] uppercase tracking-wider font-extrabold text-rose-300">SELL</span>
+              <span className="text-[9px] uppercase tracking-wider font-black text-rose-300">
+                {tickDirection === 'DOWN' ? 'SELL (EXACT)' : 'SELL (SPREAD)'}
+              </span>
               <span>{currentBid.toFixed(decimals)}</span>
               {tickDirection === 'DOWN' && <span>▼</span>}
             </div>
@@ -924,11 +926,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             <div
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
                 tickDirection === 'UP'
-                  ? 'bg-emerald-500/25 text-emerald-300 border-emerald-400 ring-2 ring-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse'
+                  ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400 ring-2 ring-emerald-500/60 shadow-[0_0_12px_rgba(16,185,129,0.6)] animate-pulse'
                   : 'bg-emerald-950/30 text-emerald-400 border-emerald-800/40'
               }`}
             >
-              <span className="text-[9px] uppercase tracking-wider font-extrabold text-emerald-300">BUY</span>
+              <span className="text-[9px] uppercase tracking-wider font-black text-emerald-300">
+                {tickDirection === 'UP' ? 'BUY (EXACT)' : 'BUY (SPREAD)'}
+              </span>
               <span>{currentAsk.toFixed(decimals)}</span>
               {tickDirection === 'UP' && <span>▲</span>}
             </div>

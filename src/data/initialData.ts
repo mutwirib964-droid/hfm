@@ -183,9 +183,9 @@ export const INITIAL_INSTRUMENTS: Instrument[] = [
     symbol: 'XAUUSD',
     name: 'Gold vs US Dollar (Spot)',
     category: 'Commodities',
-    bid: 4304.185,
-    ask: 4304.185,
-    spread: 0,
+    bid: 4314.380,
+    ask: 4314.870,
+    spread: 0.490,
     decimals: 3,
     pipMultiplier: 10,
     change24h: -0.78,
@@ -1363,7 +1363,7 @@ export const MARKET_ANALYSES: MarketAnalysis[] = [
 
 // Helper to generate realistic candles for a symbol
 export function generateCandles(basePrice: number, timeframe: Timeframe, count: number = 80): Candle[] {
-  const candles: Candle[] = [];
+  const rawCandles: Candle[] = [];
   const now = Date.now();
   let intervalMs = 60 * 1000;
   if (timeframe === '5M') intervalMs = 5 * 60 * 1000;
@@ -1373,13 +1373,13 @@ export function generateCandles(basePrice: number, timeframe: Timeframe, count: 
   if (timeframe === '1D') intervalMs = 24 * 60 * 60 * 1000;
   if (timeframe === '1W') intervalMs = 7 * 24 * 60 * 60 * 1000;
 
-  let currentClose = basePrice * 0.985;
+  let currentClose = basePrice;
   const volatility = basePrice * 0.0018;
 
   for (let i = count; i >= 0; i--) {
     const time = now - i * intervalMs;
     const open = currentClose;
-    const change = (Math.random() - 0.485) * volatility;
+    const change = (Math.random() - 0.495) * volatility;
     const close = Math.max(open * 0.5, open + change);
     const wick1 = Math.random() * volatility * 0.8;
     const wick2 = Math.random() * volatility * 0.8;
@@ -1387,15 +1387,39 @@ export function generateCandles(basePrice: number, timeframe: Timeframe, count: 
     const low = Math.min(open, close) - wick2;
     const volume = Math.floor(Math.random() * 850 + 150);
 
-    candles.push({
+    rawCandles.push({
       time,
-      open: Number(open.toFixed(5)),
-      high: Number(high.toFixed(5)),
-      low: Number(low.toFixed(5)),
-      close: Number(close.toFixed(5)),
+      open,
+      high,
+      low,
+      close,
       volume,
     });
     currentClose = close;
   }
-  return candles;
+
+  // Anchor the final candle close to EXACT basePrice so the chart matches the order box perfectly
+  if (rawCandles.length > 0) {
+    const finalClose = rawCandles[rawCandles.length - 1].close;
+    const offset = basePrice - finalClose;
+
+    return rawCandles.map((c, idx) => {
+      const weight = (idx + 1) / rawCandles.length;
+      const shift = offset * weight;
+      const o = c.open + shift;
+      const cl = idx === rawCandles.length - 1 ? basePrice : c.close + shift;
+      const h = Math.max(c.high + shift, Math.max(o, cl));
+      const l = Math.min(c.low + shift, Math.min(o, cl));
+      return {
+        time: c.time,
+        open: Number(o.toFixed(5)),
+        high: Number(h.toFixed(5)),
+        low: Number(l.toFixed(5)),
+        close: Number(cl.toFixed(5)),
+        volume: c.volume,
+      };
+    });
+  }
+
+  return rawCandles;
 }

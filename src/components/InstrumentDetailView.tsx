@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ArrowLeft,
   Star,
@@ -50,6 +50,7 @@ interface InstrumentDetailViewProps {
     tp: number | null;
   }) => void;
   isDarkMode?: boolean;
+  tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
 }
 
 export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
@@ -61,6 +62,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   onToggleFavorite,
   onExecuteTrade,
   isDarkMode = false,
+  tickDirection = 'NEUTRAL',
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showDrawingModal, setShowDrawingModal] = useState(false);
@@ -85,9 +87,25 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   const isForex = instrument.category === 'Forex';
   const bidParts = formatPipPrice(instrument.bid, instrument.decimals, isForex);
   const askParts = formatPipPrice(instrument.ask, instrument.decimals, isForex);
-  const spreadDisplay = instrument.spread > 0
-    ? (Math.round(instrument.spread * 10) || instrument.spread.toFixed(1))
-    : '0.0';
+  const spreadDisplay = useMemo(() => {
+    const diff = Math.abs(instrument.ask - instrument.bid);
+    if (diff === 0) return '0.0';
+    if (instrument.symbol === 'XAUUSD') {
+      return diff < 1 ? diff.toFixed(2) : (diff * 10).toFixed(1);
+    }
+    if (instrument.symbol === 'XAGUSD') {
+      return (diff * 100).toFixed(1);
+    }
+    if (instrument.decimals >= 4) {
+      const points = diff * 100000;
+      return (points / 10).toFixed(1);
+    }
+    if (instrument.decimals === 3) {
+      const points = diff * 1000;
+      return (points / 10).toFixed(1);
+    }
+    return diff.toFixed(1);
+  }, [instrument.ask, instrument.bid, instrument.symbol, instrument.decimals]);
 
   // Handle pointer coordinate extraction
   const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -719,6 +737,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           spread={instrument.spread}
           decimals={instrument.decimals}
           pipMultiplier={instrument.pipMultiplier}
+          tickDirection={tickDirection}
         />
       </div>
 
@@ -764,11 +783,14 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
             className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
               !marketStatus.isOpen
                 ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
+                : tickDirection === 'DOWN'
+                ? 'bg-[#FF0F3B] ring-2 ring-red-400 shadow-[0_0_18px_rgba(255,15,59,0.75)] scale-[1.02]'
                 : 'bg-[#E51937] hover:bg-[#c9142f] cursor-pointer'
             }`}
           >
-            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5 flex items-center gap-1">
               {!marketStatus.isOpen ? '🔒 Closed' : 'Sell'}
+              {tickDirection === 'DOWN' && <span className="text-white text-[10px] animate-bounce">▼</span>}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {bidParts.isForex ? (
@@ -805,11 +827,14 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
             className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
               !marketStatus.isOpen
                 ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
+                : tickDirection === 'UP'
+                ? 'bg-[#00D084] ring-2 ring-emerald-400 shadow-[0_0_18px_rgba(0,208,132,0.75)] scale-[1.02]'
                 : 'bg-[#22C55E] hover:bg-[#16A34A] cursor-pointer'
             }`}
           >
-            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5">
+            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5 flex items-center gap-1">
               {!marketStatus.isOpen ? '🔒 Closed' : 'Buy'}
+              {tickDirection === 'UP' && <span className="text-white text-[10px] animate-bounce">▲</span>}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {askParts.isForex ? (

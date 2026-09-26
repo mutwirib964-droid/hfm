@@ -82,6 +82,7 @@ export interface UserAuthProfile {
   name: string; // Full legal name
   email: string;
   phoneNumber?: string; // Phone number locked for withdrawal security
+  phone?: string; // Alias for seamless backward/forward compatibility
   countryCode?: string; // e.g. "+254" or "+1"
   countryName?: string; // e.g. "Kenya"
   accountNumber: string;

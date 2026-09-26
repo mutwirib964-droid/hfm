@@ -18,9 +18,11 @@ import {
   Phone,
   CreditCard,
 } from 'lucide-react';
+import { UserAuthProfile } from '../types/botTypes';
 
 interface ProfileVerificationSectionProps {
   isDarkMode: boolean;
+  currentUser?: UserAuthProfile | null;
 }
 
 interface KycRecord {
@@ -40,14 +42,28 @@ const STORAGE_KEY = 'hfm_kyc_verification_record';
 
 export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProps> = ({
   isDarkMode,
+  currentUser,
 }) => {
-  // Personal Details
-  const [fullName, setFullName] = useState('Josphat Ndungu');
-  const [email] = useState('mutwirib964@gmail.com');
-  const [phone, setPhone] = useState('+254 712 345 678');
-  const [country] = useState('Kenya 🇰🇪');
+  // Personal Details dynamically sourced from user account profile
+  const [fullName, setFullName] = useState(() => currentUser?.name || 'Trader');
+  const [email] = useState(() => currentUser?.email || '');
+  const [phone, setPhone] = useState(() => currentUser?.phoneNumber || (currentUser as any)?.phone || '');
+  const [country] = useState(() =>
+    currentUser?.countryName
+      ? `${currentUser.countryName} ${currentUser.countryCode ? `(${currentUser.countryCode})` : ''}`
+      : 'Kenya 🇰🇪'
+  );
   const [address, setAddress] = useState('Kimathi Street, Nairobi Central, Kenya');
   const [dob] = useState('14 August 1993');
+
+  useEffect(() => {
+    if (currentUser) {
+      if (currentUser.name) setFullName(currentUser.name);
+      if (currentUser.phoneNumber || (currentUser as any)?.phone) {
+        setPhone(currentUser.phoneNumber || (currentUser as any)?.phone || '');
+      }
+    }
+  }, [currentUser]);
 
   // Document upload selections
   const [idType, setIdType] = useState<'ID' | 'DRIVING_LICENCE'>('ID');

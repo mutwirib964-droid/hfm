@@ -34,7 +34,15 @@ import {
 import { VTMLogo } from './VTMLogo';
 import { Instrument } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
-import { getOrCreateUserProfile } from '../utils/financialStorage';
+import {
+  getOrCreateUserProfile,
+  findRegisteredUser,
+  verifyUserCredentials,
+  registerNewUser,
+  initializeUserFinancials,
+  saveUserFinancials,
+} from '../utils/financialStorage';
+import { supabaseService } from '../services/supabaseService';
 
 interface LandingPageProps {
   instruments: Instrument[];
@@ -117,6 +125,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Automatically detect user location on mount
   useEffect(() => {
@@ -133,7 +142,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     return true;
   });
 
-  const handleAuthSubmit = (e: React.FormEvent) => {
+  const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setValidationError(null);
 
@@ -159,14 +168,39 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         return;
       }
 
-      const fullPhoneNumber = `${selectedCountry.dialCode} ${phoneLocal.trim()}`;
+      const cleanEmail = email.trim().toLowerCase();
 
-      // User registered: Wallet-only state, no active trading account opened yet
+      // Check if user already registered locally
+      const existingLocal = findRegisteredUser(cleanEmail);
+      if (existingLocal) {
+        setValidationError('An account with this email already exists. Please sign in instead.');
+        return;
+      }
+
+      setIsSubmitting(true);
+
+      // Check if user already registered in Supabase database
+      const existingDb = await supabaseService.findUserInDatabase(cleanEmail);
+      if (existingDb) {
+        setIsSubmitting(false);
+        setValidationError('An account with this email is already registered. Please sign in instead.');
+        return;
+      }
+
+      // Clean up local phone number (strip leading 0 if Kenyan / international format)
+      let cleanLocal = phoneLocal.trim();
+      if (selectedCountry.dialCode === '+254' && cleanLocal.startsWith('0')) {
+        cleanLocal = cleanLocal.substring(1);
+      }
+      const fullPhoneNumber = `${selectedCountry.dialCode} ${cleanLocal}`;
+
+      // User registered: Starts with Central Wallet ($0.00) and ZERO open trading accounts
       const newUserProfile: UserAuthProfile = {
         id: `usr-${Date.now()}`,
         name: name.trim(),
-        email: email.trim().toLowerCase(),
+        email: cleanEmail,
         phoneNumber: fullPhoneNumber,
+        phone: fullPhoneNumber,
         countryCode: selectedCountry.dialCode,
         countryName: selectedCountry.name,
         accountNumber: `${Math.floor(10000000 + Math.random() * 90000000)}`,
@@ -176,10 +210,49 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         createdAt: Date.now(),
       };
 
-      const finalProfile = getOrCreateUserProfile(newUserProfile);
-      onSignIn(finalProfile);
+      const regResult = registerNewUser(newUserProfile, password);
+      if (!regResult.success || !regResult.user) {
+        setIsSubmitting(false);
+        setValidationError(regResult.error || 'Failed to complete registration.');
+        return;
+      }
+
+      // Initialize financials with 0 accounts and 0.00 wallet
+      initializeUserFinancials(regResult.user, true);
+
+      // Save to Supabase database & Supabase Auth service
+      if (supabaseService.isConfigured()) {
+        const authRes = await supabaseService.signUpWithSupabaseAuth(newUserProfile, password);
+        if (!authRes.success) {
+          const errLower = (authRes.error || '').toLowerCase();
+          if (
+            errLower.includes('already registered') ||
+            errLower.includes('already exists') ||
+            errLower.includes('unique') ||
+            errLower.includes('duplicate')
+          ) {
+            setIsSubmitting(false);
+            setValidationError('An account with this email already exists. Please sign in instead.');
+            return;
+          }
+        }
+        await supabaseService.registerUserInDatabase(regResult.user, password);
+        await supabaseService.syncUserFinancials(regResult.user, {
+          walletBalance: 0.0,
+          accounts: [],
+          lastUpdated: Date.now(),
+        });
+      }
+      await supabaseService.syncActivity(regResult.user, {
+        type: 'REGISTRATION',
+        description: `New user registration for ${regResult.user.email} (${regResult.user.name})`,
+      });
+      await supabaseService.syncDevice(regResult.user);
+
+      setIsSubmitting(false);
+      onSignIn(regResult.user);
     } else {
-      // Sign in mode
+      // SIGN IN MODE - STRICT: REJECT IF ACCOUNT WAS NEVER OPENED
       if (!email.trim()) {
         setValidationError('Please enter your email.');
         return;
@@ -189,23 +262,71 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         return;
       }
 
-      const fullPhoneNumber = `${selectedCountry.dialCode} 712 345678`;
+      const cleanEmail = email.trim().toLowerCase();
+      setIsSubmitting(true);
 
-      const existingProfile: UserAuthProfile = {
-        id: `usr-${Date.now()}`,
-        name: name.trim() || 'Institutional Trader',
-        email: email.trim().toLowerCase(),
-        phoneNumber: fullPhoneNumber,
-        countryCode: selectedCountry.dialCode,
-        countryName: selectedCountry.name,
-        accountNumber: `${Math.floor(10000000 + Math.random() * 90000000)}`,
-        role: 'normal',
-        isLoggedIn: true,
-        createdAt: Date.now(),
-      };
+      // 1. If database is configured, test against Supabase Auth & Supabase Users
+      if (supabaseService.isConfigured()) {
+        const remoteUser = await supabaseService.findUserInDatabase(cleanEmail);
+        const sbAuth = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
 
-      const finalProfile = getOrCreateUserProfile(existingProfile);
-      onSignIn(finalProfile);
+        // If neither Auth nor database row has this user, reject immediately
+        if (!remoteUser && !sbAuth.success && sbAuth.error?.includes('No account found')) {
+          setIsSubmitting(false);
+          setValidationError(
+            'No account found with this email. You cannot log in without opening an account first. Please register.'
+          );
+          return;
+        }
+
+        if (remoteUser) {
+          if (remoteUser.password && remoteUser.password !== password) {
+            setIsSubmitting(false);
+            setValidationError('Incorrect password. Please verify your credentials and try again.');
+            return;
+          }
+          // Restore user profile & finances locally
+          registerNewUser(remoteUser.profile, remoteUser.password || password);
+          const remoteFinances = await supabaseService.fetchUserFinancials(remoteUser.profile);
+          if (remoteFinances) {
+            saveUserFinancials(remoteUser.profile, remoteFinances);
+          } else {
+            initializeUserFinancials(remoteUser.profile, false);
+          }
+          setIsSubmitting(false);
+          await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+          await supabaseService.syncActivity(remoteUser.profile, {
+            type: 'LOGIN',
+            description: `User ${remoteUser.profile.email} logged in successfully`,
+          });
+          await supabaseService.syncDevice(remoteUser.profile);
+          onSignIn(remoteUser.profile);
+          return;
+        }
+      }
+
+      // 2. Verify against local credentials & user registry
+      const verified = verifyUserCredentials(cleanEmail, password);
+      setIsSubmitting(false);
+
+      // STRICT PROTECTION: If account was NEVER opened, NEVER allow login!
+      if (!verified.success || !verified.user) {
+        setValidationError(
+          verified.error ||
+            'No account found with this email. You cannot log in without opening an account first. Please register.'
+        );
+        return;
+      }
+
+      // Record login activity & device in database
+      await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+      await supabaseService.syncActivity(verified.user, {
+        type: 'LOGIN',
+        description: `User ${verified.user.email} logged in successfully`,
+      });
+      await supabaseService.syncDevice(verified.user);
+
+      onSignIn(verified.user);
     }
   };
 
@@ -351,17 +472,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       <section className="relative px-4 sm:px-8 pt-14 pb-20 max-w-7xl mx-auto w-full text-center flex flex-col items-center">
         {/* Glow effect */}
         <div className="absolute top-10 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-[#E51937]/10 rounded-full blur-[140px] pointer-events-none" />
-
-        <div
-          className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full border mb-6 text-xs font-bold tracking-wide uppercase shadow-xs transition-colors ${
-            isDarkMode
-              ? 'bg-neutral-900/80 border-neutral-700 text-neutral-300'
-              : 'bg-white border-slate-300 text-slate-700 shadow-xs'
-          }`}
-        >
-          <Award className="w-4 h-4 text-[#E51937]" />
-          <span>Award-Winning Global Multi-Asset CFD Brokerage</span>
-        </div>
 
         <h1
           className={`text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight max-w-4xl leading-[1.12] ${
@@ -1086,11 +1196,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             >
               <div className="flex items-center gap-3">
                 <VTMLogo size="sm" isDarkMode={isDarkMode} />
-                <div className="h-4 w-px bg-neutral-300 dark:bg-neutral-700" />
-                <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>256-Bit SSL Secured Portal</span>
-                </div>
               </div>
 
               <button
@@ -1395,10 +1500,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <button
                   type="submit"
                   id="submit-auth-btn"
-                  className="w-full mt-3 py-3.5 px-5 rounded-2xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  disabled={isSubmitting}
+                  className={`w-full mt-3 py-3.5 px-5 rounded-2xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${
+                    isSubmitting ? 'opacity-70 cursor-wait' : 'cursor-pointer'
+                  }`}
                 >
-                  <span>{authMode === 'register' ? 'Open Account & Access Central Wallet' : 'Log In to Client Portal'}</span>
-                  <ArrowRight className="w-4 h-4" />
+                  {isSubmitting ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>{authMode === 'register' ? 'Opening Account...' : 'Authenticating...'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{authMode === 'register' ? 'Open Account & Access Central Wallet' : 'Log In to Client Portal'}</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
                 </button>
               </form>
 

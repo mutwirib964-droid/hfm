@@ -5,12 +5,7 @@ import {
   Wallet,
   Building,
   Save,
-  RefreshCw,
-  Database,
   CheckCircle2,
-  AlertCircle,
-  Plus,
-  KeyRound,
   DollarSign,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
@@ -19,10 +14,8 @@ import {
   getAllRegisteredUsers,
   loadUserFinancials,
   saveUserFinancials,
-  adminUpdateUserAccount,
   getUserStorageKey,
 } from '../utils/financialStorage';
-import { supabaseService } from '../services/supabaseService';
 
 interface AdminAccountManagerModalProps {
   isOpen: boolean;
@@ -50,13 +43,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const [editableWallet, setEditableWallet] = useState<number>(currentWalletBalance);
   const [editableAccounts, setEditableAccounts] = useState<TradingAccount[]>(currentAccounts);
   const [selectedAccIndex, setSelectedAccIndex] = useState<number>(0);
-
-  // Supabase connection state
-  const [supabaseUrl, setSupabaseUrl] = useState('');
-  const [supabaseKey, setSupabaseKey] = useState('');
-  const [dbStatusMessage, setDbStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [isTestingDb, setIsTestingDb] = useState(false);
-  const [activeSubTab, setActiveSubTab] = useState<'accounts' | 'database'>('accounts');
+  const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -68,12 +55,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     setEditableWallet(currentWalletBalance);
     setEditableAccounts(currentAccounts);
     setSelectedAccIndex(0);
-
-    const cfg = supabaseService.getConfig();
-    if (cfg) {
-      setSupabaseUrl(cfg.url);
-      setSupabaseKey(cfg.anonKey);
-    }
+    setStatusMessage(null);
   }, [isOpen, currentUser, currentAccounts, currentWalletBalance]);
 
   // When switching user in admin view
@@ -99,80 +81,28 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     });
   };
 
-  const handleAddNewAccount = (type: 'Live' | 'Demo') => {
-    const num = Math.floor(7000000 + Math.random() * 999999).toString();
-    const newAcc: TradingAccount = {
-      id: `acc-admin-${Date.now()}`,
-      accountNumber: num,
-      server: type === 'Live' ? 'VTMarkets-LiveServer1' : 'VTMarkets-DemoServer',
-      type,
-      tier: 'Premium',
-      balance: type === 'Demo' ? 100000 : 0,
-      equity: type === 'Demo' ? 100000 : 0,
-      margin: 0,
-      freeMargin: type === 'Demo' ? 100000 : 0,
-      marginLevel: 0,
-      currency: 'USD',
-      leverage: '1:500',
-    };
-    setEditableAccounts((prev) => [...prev, newAcc]);
-    setSelectedAccIndex(editableAccounts.length);
-  };
-
   const handleSaveAll = () => {
-    // 1. Update persistent storage
-    const targetKey = selectedUserKey;
-    adminUpdateUserAccount(targetKey, {
-      walletBalance: editableWallet,
-    });
+    const targetKey = selectedUserKey || getUserStorageKey(currentUser);
 
-    // Save full state for target user
+    // Save to user storage
     saveUserFinancials({ id: targetKey, email: targetKey } as any, {
       walletBalance: editableWallet,
       accounts: editableAccounts,
     });
 
-    // 2. If this is the current active session user, apply back to App.tsx state
+    // If this is the current active session user, apply back to app state
     if (targetKey === getUserStorageKey(currentUser)) {
       onApplyChanges(editableWallet, editableAccounts);
     }
 
-    setDbStatusMessage({
-      text: `Changes saved permanently to local storage & queued for Supabase!`,
+    setStatusMessage({
+      text: `Account balances updated successfully!`,
       type: 'success',
     });
 
     setTimeout(() => {
       onClose();
-    }, 1200);
-  };
-
-  const handleTestDatabase = async () => {
-    if (!supabaseUrl || !supabaseKey) {
-      setDbStatusMessage({ text: 'Please enter both Supabase Project URL and Anon Key.', type: 'error' });
-      return;
-    }
-    setIsTestingDb(true);
-    setDbStatusMessage(null);
-    try {
-      supabaseService.setCredentials(supabaseUrl, supabaseKey);
-      const res = await supabaseService.testConnection();
-      if (res.success) {
-        setDbStatusMessage({ text: '✓ Supabase database connection verified!', type: 'success' });
-        // Trigger sync
-        await supabaseService.syncUserFinancials(currentUser, {
-          walletBalance: editableWallet,
-          accounts: editableAccounts,
-          lastUpdated: Date.now(),
-        });
-      } else {
-        setDbStatusMessage({ text: `Connection note: ${res.message}`, type: 'error' });
-      }
-    } catch (e: any) {
-      setDbStatusMessage({ text: e.message || 'Error connecting to database', type: 'error' });
-    } finally {
-      setIsTestingDb(false);
-    }
+    }, 1000);
   };
 
   if (!isOpen) return null;
@@ -192,13 +122,13 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             </div>
             <div>
               <h2 className="text-sm sm:text-base font-black flex items-center gap-2">
-                <span>Account &amp; Wallet Permissions Manager</span>
+                <span>Account &amp; Wallet Balances Manager</span>
                 <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-amber-500/20 text-amber-500 border border-amber-500/30">
                   Manager Mode
                 </span>
               </h2>
               <p className="text-xs text-neutral-400">
-                Authorized control to adjust user wallet balances, live accounts &amp; Supabase persistence.
+                Adjust user wallet balances and trading account details.
               </p>
             </div>
           </div>
@@ -210,268 +140,189 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           </button>
         </div>
 
-        {/* Sub-tabs: Accounts vs Supabase Config */}
-        <div className="flex border-b border-neutral-200 dark:border-neutral-800 bg-neutral-100 dark:bg-neutral-900/50 px-4 pt-2">
-          <button
-            onClick={() => setActiveSubTab('accounts')}
-            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              activeSubTab === 'accounts'
-                ? 'border-[#E51937] text-[#E51937]'
-                : 'border-transparent text-neutral-400 hover:text-white'
-            }`}
-          >
-            <Wallet className="w-3.5 h-3.5" />
-            <span>User Accounts &amp; Balances</span>
-          </button>
-          <button
-            onClick={() => setActiveSubTab('database')}
-            className={`flex items-center gap-1.5 px-4 py-2 text-xs font-bold border-b-2 transition-colors cursor-pointer ${
-              activeSubTab === 'database'
-                ? 'border-[#E51937] text-[#E51937]'
-                : 'border-transparent text-neutral-400 hover:text-white'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span>Supabase Cloud Database</span>
-          </button>
-        </div>
-
         {/* Status Toast / Banner */}
-        {dbStatusMessage && (
+        {statusMessage && (
           <div
             className={`mx-5 mt-3 p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
-              dbStatusMessage.type === 'success'
+              statusMessage.type === 'success'
                 ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-400'
                 : 'bg-rose-500/15 border-rose-500/40 text-rose-400'
             }`}
           >
-            {dbStatusMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-            ) : (
-              <AlertCircle className="w-4 h-4 shrink-0" />
-            )}
-            <span>{dbStatusMessage.text}</span>
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{statusMessage.text}</span>
           </div>
         )}
 
-        {/* Tab 1: User Accounts & Balances */}
-        {activeSubTab === 'accounts' && (
-          <div className="p-5 space-y-4 overflow-y-auto flex-1">
-            {/* User Selection */}
-            <div>
-              <label className="block text-xs font-bold mb-1 text-neutral-300">Target User Account</label>
-              <div className="flex items-center gap-2">
-                <select
-                  value={selectedUserKey}
-                  onChange={(e) => handleSelectUser(e.target.value)}
-                  className="flex-1 px-3 py-2 rounded-xl border border-neutral-700 bg-neutral-900 text-xs font-semibold focus:outline-none focus:border-[#E51937]"
-                >
+        {/* User Selection & Account Editor */}
+        <div className="p-5 space-y-4 overflow-y-auto flex-1">
+          {/* User Selector */}
+          <div>
+            <label className="block text-xs font-bold mb-1.5 text-neutral-400 uppercase tracking-wider">
+              Select User Account
+            </label>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedUserKey}
+                onChange={(e) => handleSelectUser(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-neutral-700 bg-neutral-900 text-xs font-semibold focus:outline-none focus:border-[#E51937]"
+              >
+                {allUsers.length === 0 && (
                   <option value={getUserStorageKey(currentUser)}>
-                    {currentUser?.name || 'Active Session'} ({currentUser?.email || 'Current'})
+                    {currentUser?.name || 'Active Trader'} ({currentUser?.email || 'Current'})
                   </option>
-                  {allUsers
-                    .filter((u) => getUserStorageKey(u) !== getUserStorageKey(currentUser))
-                    .map((u) => (
-                      <option key={u.id} value={getUserStorageKey(u)}>
-                        {u.name} ({u.email || u.accountNumber || u.id})
-                      </option>
-                    ))}
-                </select>
+                )}
+                {allUsers.map((u) => (
+                  <option key={u.email || u.id} value={getUserStorageKey(u)}>
+                    {u.name} — {u.email} (Acc #{u.accountNumber})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Central VTM One Wallet Balance */}
+          <div className="p-4 rounded-xl border border-neutral-700/80 bg-neutral-900/60 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-[#E51937] font-bold text-xs uppercase tracking-wider">
+                <Wallet className="w-4 h-4" />
+                <span>Central VTM One Wallet Balance (USD)</span>
               </div>
+              <span className="text-[11px] font-mono text-emerald-400 font-bold">
+                Live: ${editableWallet.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 font-bold">$</span>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={editableWallet}
+                onChange={(e) => setEditableWallet(parseFloat(e.target.value) || 0)}
+                className="w-full pl-7 pr-3 py-2 rounded-xl border border-neutral-700 bg-neutral-950 font-mono text-sm font-bold focus:outline-none focus:border-[#E51937]"
+              />
+            </div>
+          </div>
+
+          {/* Open Trading Accounts */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs font-bold text-neutral-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Building className="w-3.5 h-3.5" />
+                <span>Trading Accounts ({editableAccounts.length})</span>
+              </label>
             </div>
 
-            {/* Central VTM Wallet Balance Editor */}
-            <div className="p-4 rounded-xl border border-neutral-700/80 bg-neutral-900/60">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Wallet className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs font-bold">VTM One Central Wallet Balance (USD)</span>
-                </div>
-                <span className="text-[10px] font-mono text-neutral-400">Survives Logout/Login</span>
+            {editableAccounts.length === 0 ? (
+              <div className="p-4 rounded-xl border border-dashed border-neutral-700 text-center text-neutral-400 text-xs">
+                No active trading accounts for this user yet. User has $0.00 wallet balance.
               </div>
-              <div className="relative">
-                <DollarSign className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={editableWallet}
-                  onChange={(e) => setEditableWallet(parseFloat(e.target.value) || 0)}
-                  className="w-full pl-8 pr-3 py-2 rounded-xl border border-neutral-700 bg-neutral-950 font-mono font-bold text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
-                />
-              </div>
-            </div>
-
-            {/* Trading Accounts List & Editor */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Building className="w-4 h-4 text-[#E51937]" />
-                  <span className="text-xs font-bold">Trading Accounts ({editableAccounts.length})</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <button
-                    onClick={() => handleAddNewAccount('Live')}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#E51937] hover:bg-[#c9142f] text-white text-[11px] font-bold cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Add Live</span>
-                  </button>
-                  <button
-                    onClick={() => handleAddNewAccount('Demo')}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 text-[11px] font-bold cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>Add Demo</span>
-                  </button>
-                </div>
-              </div>
-
-              {editableAccounts.length === 0 ? (
-                <div className="p-4 rounded-xl border border-dashed border-neutral-700 text-center text-xs text-neutral-400">
-                  User currently has 0 live or demo accounts (Clean sign-up state). Click "Add Live" or "Add Demo" to grant one.
-                </div>
-              ) : (
-                <div className="space-y-2">
+            ) : (
+              <div className="space-y-3">
+                {/* Account Tabs */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                   {editableAccounts.map((acc, idx) => (
-                    <div
+                    <button
                       key={acc.id}
-                      className="p-3 rounded-xl border border-neutral-700/80 bg-neutral-900/60 space-y-2.5"
+                      onClick={() => setSelectedAccIndex(idx)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition-colors cursor-pointer border ${
+                        selectedAccIndex === idx
+                          ? 'bg-[#E51937] text-white border-[#E51937]'
+                          : 'bg-neutral-800 text-neutral-400 hover:text-white border-neutral-700'
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`text-[9px] font-black px-2 py-0.5 rounded leading-none ${
-                              acc.type === 'Live' ? 'bg-[#E51937] text-white' : 'bg-amber-500 text-black'
-                            }`}
-                          >
-                            {acc.type}
-                          </span>
-                          <span className="text-xs font-mono font-bold">#{acc.accountNumber}</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">({acc.server})</span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setEditableAccounts((prev) => prev.filter((_, i) => i !== idx));
-                          }}
-                          className="text-[11px] text-rose-400 hover:text-rose-300 font-semibold cursor-pointer"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {acc.type} #{acc.accountNumber}
+                    </button>
+                  ))}
+                </div>
 
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
-                        <div>
-                          <label className="block text-[10px] font-semibold text-neutral-400 mb-0.5">
-                            Balance ($)
-                          </label>
+                {/* Selected Account Fields */}
+                {editableAccounts[selectedAccIndex] && (
+                  <div className="p-4 rounded-xl border border-neutral-700 bg-neutral-900/40 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold mb-1 text-neutral-400">Account Type</label>
+                        <input
+                          type="text"
+                          readOnly
+                          value={editableAccounts[selectedAccIndex].type}
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-800 bg-neutral-950 text-xs font-semibold text-neutral-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold mb-1 text-neutral-400">Tier</label>
+                        <input
+                          type="text"
+                          readOnly
+                          value={editableAccounts[selectedAccIndex].tier}
+                          className="w-full px-3 py-1.5 rounded-lg border border-neutral-800 bg-neutral-950 text-xs font-semibold text-neutral-300"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold mb-1 text-neutral-300">Balance ($ USD)</label>
+                        <div className="relative">
+                          <DollarSign className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                           <input
                             type="number"
                             step="0.01"
-                            value={acc.balance}
+                            value={editableAccounts[selectedAccIndex].balance}
                             onChange={(e) => {
-                              const b = parseFloat(e.target.value) || 0;
-                              handleUpdateAccountField(idx, 'balance', b);
-                              handleUpdateAccountField(idx, 'equity', b);
-                              handleUpdateAccountField(idx, 'freeMargin', b);
+                              const val = parseFloat(e.target.value) || 0;
+                              handleUpdateAccountField(selectedAccIndex, 'balance', val);
+                              handleUpdateAccountField(selectedAccIndex, 'equity', val);
                             }}
-                            className="w-full px-2 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 font-mono font-bold text-xs focus:outline-none focus:border-[#E51937]"
+                            className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 font-mono text-xs font-bold focus:outline-none focus:border-[#E51937]"
                           />
                         </div>
-                        <div>
-                          <label className="block text-[10px] font-semibold text-neutral-400 mb-0.5">
-                            Leverage
-                          </label>
-                          <select
-                            value={acc.leverage}
-                            onChange={(e) => handleUpdateAccountField(idx, 'leverage', e.target.value)}
-                            className="w-full px-2 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 font-mono text-xs focus:outline-none focus:border-[#E51937]"
-                          >
-                            <option value="1:100">1:100</option>
-                            <option value="1:200">1:200</option>
-                            <option value="1:500">1:500</option>
-                            <option value="1:1000">1:1000</option>
-                            <option value="1:2000">1:2000</option>
-                          </select>
-                        </div>
-                        <div className="col-span-2 sm:col-span-1">
-                          <label className="block text-[10px] font-semibold text-neutral-400 mb-0.5">
-                            Tier
-                          </label>
-                          <select
-                            value={acc.tier}
-                            onChange={(e) => handleUpdateAccountField(idx, 'tier', e.target.value as any)}
-                            className="w-full px-2 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 text-xs focus:outline-none focus:border-[#E51937]"
-                          >
-                            <option value="Standard">Standard</option>
-                            <option value="Premium">Premium</option>
-                            <option value="Pro">Pro</option>
-                            <option value="Zero Spread">Zero Spread</option>
-                            <option value="Cent">Cent</option>
-                          </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold mb-1 text-neutral-300">Equity ($ USD)</label>
+                        <div className="relative">
+                          <DollarSign className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                          <input
+                            type="number"
+                            step="0.01"
+                            value={editableAccounts[selectedAccIndex].equity}
+                            onChange={(e) =>
+                              handleUpdateAccountField(selectedAccIndex, 'equity', parseFloat(e.target.value) || 0)
+                            }
+                            className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 font-mono text-xs font-bold focus:outline-none focus:border-[#E51937]"
+                          />
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
-        {/* Tab 2: Supabase Cloud Database Configuration */}
-        {activeSubTab === 'database' && (
-          <div className="p-5 space-y-4 overflow-y-auto flex-1 text-xs">
-            <div className="p-4 rounded-xl border border-neutral-700/80 bg-neutral-900/60 space-y-2">
-              <div className="flex items-center gap-2 text-emerald-400 font-bold">
-                <Database className="w-4 h-4" />
-                <span>Supabase Real-Time Cross-Device Synchronization</span>
+                    <div>
+                      <label className="block text-[11px] font-bold mb-1 text-neutral-300">Leverage</label>
+                      <select
+                        value={editableAccounts[selectedAccIndex].leverage}
+                        onChange={(e) => handleUpdateAccountField(selectedAccIndex, 'leverage', e.target.value)}
+                        className="w-full px-3 py-1.5 rounded-lg border border-neutral-700 bg-neutral-950 text-xs font-bold focus:outline-none focus:border-[#E51937]"
+                      >
+                        <option value="1:100">1:100</option>
+                        <option value="1:200">1:200</option>
+                        <option value="1:400">1:400</option>
+                        <option value="1:500">1:500</option>
+                        <option value="1:1000">1:1000</option>
+                        <option value="1:2000">1:2000</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
-              <p className="text-neutral-400 leading-relaxed">
-                Connect your Supabase project so account balances, VTM One Wallet transfers, and trade records stay identical across mobile and desktop devices.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold mb-1 text-neutral-300">Supabase Project URL</label>
-              <input
-                type="text"
-                placeholder="https://xyzcompany.supabase.co"
-                value={supabaseUrl}
-                onChange={(e) => setSupabaseUrl(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-neutral-700 bg-neutral-950 font-mono text-xs focus:outline-none focus:border-[#E51937]"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold mb-1 text-neutral-300">Supabase Anon Key</label>
-              <input
-                type="password"
-                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                value={supabaseKey}
-                onChange={(e) => setSupabaseKey(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-neutral-700 bg-neutral-950 font-mono text-xs focus:outline-none focus:border-[#E51937]"
-              />
-            </div>
-
-            <div className="flex items-center gap-2 pt-2">
-              <button
-                type="button"
-                onClick={handleTestDatabase}
-                disabled={isTestingDb}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold cursor-pointer transition-colors"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isTestingDb ? 'animate-spin' : ''}`} />
-                <span>{isTestingDb ? 'Testing...' : 'Test & Save Supabase'}</span>
-              </button>
-            </div>
+            )}
           </div>
-        )}
+        </div>
 
         {/* Modal Footer */}
         <div className="flex items-center justify-between px-5 py-3 border-t border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/80">
           <span className="text-[11px] text-neutral-400">
-            Changes update immediate state &amp; durable database storage.
+            Account adjustments apply to active balances.
           </span>
           <div className="flex items-center gap-2">
             <button

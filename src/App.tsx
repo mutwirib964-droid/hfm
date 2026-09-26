@@ -67,10 +67,17 @@ import {
   saveUserFinancials,
   initializeUserFinancials,
   executeInternalTransfer,
+  logUserActivity,
+  wipeAllPlatformUsersAndData,
+  findRegisteredUser,
 } from './utils/financialStorage';
+import { supabaseService, UserPlatformSettings } from './services/supabaseService';
+
+let isAudioMuted = false;
 
 // Subtle Web Audio synthesizer for trade execution sound
 function playOrderSound(isSuccess: boolean = true) {
+  if (isAudioMuted) return;
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) return;
@@ -109,10 +116,22 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState<boolean>(false);
   const [oneClickTrading, setOneClickTrading] = useState<boolean>(true);
+  const [slippage, setSlippage] = useState<number>(0.5);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  useEffect(() => {
+    isAudioMuted = !soundEnabled;
+  }, [soundEnabled]);
+  const [showSpreadBrackets, setShowSpreadBrackets] = useState<boolean>(true);
+  const [drawdownProtection, setDrawdownProtection] = useState<boolean>(true);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState<boolean>(false);
 
   // Market & Accounts State
   const [instruments, setInstruments] = useState<Instrument[]>(INITIAL_INSTRUMENTS);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EURUSD');
+  const selectedSymbolRef = useRef<string>(selectedSymbol);
+  useEffect(() => {
+    selectedSymbolRef.current = selectedSymbol;
+  }, [selectedSymbol]);
   const [timeframe, setTimeframe] = useState<Timeframe>('15M');
   const [chartType, setChartType] = useState<ChartType>('candles');
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -120,19 +139,100 @@ export default function App() {
   // Real-time Tick States for Green / Red Highlights: Map of symbol -> 'UP' | 'DOWN' | 'NEUTRAL'
   const [tickStates, setTickStates] = useState<Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>>({});
 
-  // User Authentication & Session
+  // User Authentication & Session - STRICT SECURITY: NEVER log in if account was never opened
   const [currentUser, setCurrentUser] = useState<UserAuthProfile | null>(() => {
     try {
       const saved = localStorage.getItem('vtm_auth_user');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.isLoggedIn) return parsed;
+      if (!saved) return null;
+      const parsed = JSON.parse(saved);
+      if (!parsed || !parsed.email || !parsed.isLoggedIn) {
+        localStorage.removeItem('vtm_auth_user');
+        return null;
       }
+      // Verify account actually exists in registered users registry
+      const registered = findRegisteredUser(parsed.email);
+      if (!registered) {
+        // User was never registered or platform was wiped to zero users - NEVER log in!
+        console.warn('[Security] Refused auto-login: user not found in registered accounts:', parsed.email);
+        localStorage.removeItem('vtm_auth_user');
+        return null;
+      }
+      return registered;
     } catch (e) {
-      console.error('Failed to parse vtm_auth_user', e);
+      console.error('Failed to verify vtm_auth_user', e);
+      localStorage.removeItem('vtm_auth_user');
+      return null;
     }
-    return null;
   });
+
+  // Verify session and load complete synchronized data from Supabase database on mount
+  useEffect(() => {
+    if (!currentUser) return;
+    if (supabaseService.isConfigured()) {
+      supabaseService.findUserInDatabase(currentUser.email).then((remote) => {
+        if (!remote) {
+          console.warn('[Security] User does not exist in Supabase database. Signing out immediately.');
+          localStorage.removeItem('vtm_auth_user');
+          setCurrentUser(null);
+          return;
+        }
+
+        // 1. Fetch Remote Financials
+        supabaseService.fetchUserFinancials(currentUser).then((remoteFin) => {
+          if (remoteFin) {
+            setWalletBalance(remoteFin.walletBalance);
+            if (remoteFin.accounts && remoteFin.accounts.length > 0) {
+              setAccounts(remoteFin.accounts);
+              const sel =
+                remoteFin.accounts.find((a) => a.id === remoteFin.selectedAccountId) ||
+                remoteFin.accounts[0];
+              setSelectedAccount(sel);
+            }
+            if (remoteFin.transactions && remoteFin.transactions.length > 0) {
+              setTransactions(remoteFin.transactions);
+            }
+          }
+        });
+
+        // 2. Fetch Remote Trading Accounts
+        supabaseService.fetchTradingAccounts(currentUser).then((remoteAccs) => {
+          if (remoteAccs && remoteAccs.length > 0) {
+            setAccounts(remoteAccs);
+            setSelectedAccount((curr) => {
+              if (!curr) return remoteAccs[0];
+              return remoteAccs.find((a) => a.id === curr.id) || remoteAccs[0];
+            });
+          }
+        });
+
+        // 3. Fetch Remote Trades (Positions, Pending Orders, Closed Trades)
+        supabaseService.fetchUserTrades(currentUser).then((remoteTrades) => {
+          if (remoteTrades) {
+            if (remoteTrades.positions.length > 0) setPositions(remoteTrades.positions);
+            if (remoteTrades.pendingOrders.length > 0) setPendingOrders(remoteTrades.pendingOrders);
+            if (remoteTrades.closedTrades.length > 0) setClosedTrades(remoteTrades.closedTrades);
+          }
+        });
+
+        // 4. Fetch Remote User Settings & Preferences
+        supabaseService.fetchUserSettings(currentUser).then((settings) => {
+          if (settings) {
+            setIsDarkMode(settings.isDarkMode);
+            setOneClickTrading(settings.oneClickTrading);
+            setSlippage(settings.slippage);
+            setSoundEnabled(settings.soundEnabled);
+            setShowSpreadBrackets(settings.showSpreadBrackets);
+            setDrawdownProtection(settings.drawdownProtection);
+            setTwoFactorEnabled(settings.twoFactorEnabled);
+          }
+        });
+
+        // 5. Update last login & active device in Supabase
+        supabaseService.updateUserLastLoginInDatabase(currentUser.email);
+        supabaseService.syncDevice(currentUser);
+      });
+    }
+  }, [currentUser?.email]);
 
   // Admin Account & Wallet Management Modal
   const [isAdminManagerOpen, setIsAdminManagerOpen] = useState<boolean>(false);
@@ -230,6 +330,8 @@ export default function App() {
     setBotTrades(cleanTrades);
 
     if (profile.isNewRegistration) {
+      logUserActivity(profile, 'SIGNUP', `Trader registered: ${profile.email || profile.name}`);
+      supabaseService.syncDevice(profile);
       // Clean zero account initialization
       const init = initializeUserFinancials(profile, true);
       setAccounts(init.accounts);
@@ -248,6 +350,8 @@ export default function App() {
         `Instant Demo Mode: Welcome to VTM Markets. Practice on Demo #${demoAcc.accountNumber} ($100k credit). Central VTM One Wallet is $0.00 until deposited.`
       );
     } else {
+      logUserActivity(profile, 'LOGIN', `Trader signed in from terminal`);
+      supabaseService.syncDevice(profile);
       // Returning user - restore persisted balances from database
       const userFin = loadUserFinancials(profile);
       if (userFin) {
@@ -258,7 +362,7 @@ export default function App() {
           ? (userFin.accounts.find((a) => a.id === userFin.selectedAccountId) || userFin.accounts[0])
           : null;
         setSelectedAccount(activeAcc);
-        addNotification(`Welcome back, ${profile.name}! Account balances loaded from database.`);
+        addNotification(`Welcome back, ${profile.name}!`);
       } else {
         const init = initializeUserFinancials(profile, false);
         setAccounts(init.accounts);
@@ -278,6 +382,7 @@ export default function App() {
   const handleUserSignOut = () => {
     // Save current user financials before logging out
     if (currentUser) {
+      logUserActivity(currentUser, 'LOGOUT', 'Trader signed out');
       saveUserFinancials(currentUser, {
         walletBalance,
         accounts,
@@ -340,13 +445,13 @@ export default function App() {
   const realTVQuotesRef = useRef<Map<string, TVQuote>>(new Map());
 
   // =========================================================================
-  // REAL TRADINGVIEW PRICE INTEGRATION - EXACT PARITY WITH TRADINGVIEW
+  // REAL TRADINGVIEW PRICE INTEGRATION & HIGH-FREQUENCY REAL-TIME ENGINE
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
     let highlightTimeout: any = null;
 
-    // Fetch real prices from TradingView Scanner API
+    // 1. Master sync: Fetch exact real prices from TradingView Scanner API
     const fetchTradingViewFeed = async () => {
       try {
         const quotes = await tvService.fetchRealPrices();
@@ -368,7 +473,6 @@ export default function App() {
             const newBid = quote.bid;
             const newAsk = quote.ask;
 
-            // Compute tick direction for green/red highlight indicators
             let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
             if (newBid > oldBid) {
               direction = 'UP';
@@ -377,9 +481,10 @@ export default function App() {
               direction = 'DOWN';
               hasPriceChanged = true;
             }
-            nextTickStates[inst.symbol] = direction;
+            if (direction !== 'NEUTRAL') {
+              nextTickStates[inst.symbol] = direction;
+            }
 
-            // Update sparkline with real price
             const sparkline = newBid !== oldBid
               ? [...inst.sparkline.slice(1), newBid]
               : inst.sparkline;
@@ -400,10 +505,8 @@ export default function App() {
             setTickStates((prev) => ({ ...prev, ...nextTickStates }));
             if (highlightTimeout) clearTimeout(highlightTimeout);
             highlightTimeout = setTimeout(() => {
-              if (isMounted) {
-                setTickStates({});
-              }
-            }, 1000);
+              if (isMounted) setTickStates({});
+            }, 700);
           }
 
           return updated;
@@ -413,15 +516,136 @@ export default function App() {
       }
     };
 
+    // 2. Continuous High-Frequency Micro-Tick Stream (Auction Flutter)
+    // Ensures buy/sell buttons, charts, and market lists tick dynamically like an institutional terminal
+    const runLiveMicroTicks = () => {
+      if (!isMounted) return;
+
+      setInstruments((prevInstruments) => {
+        const activeSym = selectedSymbolRef.current;
+        const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
+        let changed = false;
+
+        // Choose 2 to 4 other random instruments to tick along with the active symbol
+        const candidates = prevInstruments.filter((i) => i.symbol !== activeSym);
+        const randomPicks = new Set<string>();
+        if (candidates.length > 0) {
+          for (let i = 0; i < Math.min(3, candidates.length); i++) {
+            const idx = Math.floor(Math.random() * candidates.length);
+            randomPicks.add(candidates[idx].symbol);
+          }
+        }
+
+        const updated = prevInstruments.map((inst) => {
+          const isTarget = inst.symbol === activeSym || randomPicks.has(inst.symbol);
+          if (!isTarget) return inst;
+
+          // Anchor to master TradingView quote to prevent drift
+          const anchor = realTVQuotesRef.current.get(inst.symbol);
+          const anchorBid = anchor ? anchor.bid : inst.bid;
+          const anchorAsk = anchor ? anchor.ask : inst.ask;
+          const anchorMid = (anchorBid + anchorAsk) / 2;
+          const currentMid = (inst.bid + inst.ask) / 2;
+          const drift = currentMid - anchorMid;
+
+          // Sub-pip micro tick size based on asset class
+          let step = 0.00001;
+          let maxDrift = 0.00004;
+
+          if (inst.decimals >= 5) {
+            step = 0.00001;
+            maxDrift = 0.00003;
+          } else if (inst.decimals === 3) {
+            step = 0.001;
+            maxDrift = 0.003;
+          } else if (inst.decimals === 2) {
+            if (inst.symbol === 'XAUUSD') {
+              step = 0.03;
+              maxDrift = 0.12;
+            } else if (inst.symbol.includes('OIL')) {
+              step = 0.01;
+              maxDrift = 0.04;
+            } else {
+              step = 0.02;
+              maxDrift = 0.08;
+            }
+          } else {
+            step = 0.1;
+            maxDrift = 0.5;
+          }
+
+          // Bound price tightly to TradingView anchor
+          let dir: 'UP' | 'DOWN';
+          if (drift > maxDrift) {
+            dir = 'DOWN';
+          } else if (drift < -maxDrift) {
+            dir = 'UP';
+          } else {
+            dir = Math.random() > 0.48 ? 'UP' : 'DOWN';
+          }
+
+          const spread = inst.spread > 0 ? inst.spread : Math.max(anchor ? anchor.spread : 0.00002, 0.00002);
+          const halfSpread = spread / 2;
+
+          const newMid = dir === 'UP' ? currentMid + step : currentMid - step;
+          const newBid = Number((newMid - halfSpread).toFixed(inst.decimals));
+          const newAsk = Number((newMid + halfSpread).toFixed(inst.decimals));
+
+          if (newBid !== inst.bid) {
+            changed = true;
+            nextTickStates[inst.symbol] = dir;
+
+            // When active trading symbol ticks, immediately update chart candle
+            // Going up -> exact Ask price (matches BUY button)
+            // Going down -> exact Bid price (matches SELL button)
+            if (inst.symbol === activeSym) {
+              const exactChartPrice = dir === 'UP' ? newAsk : newBid;
+              setCandles((prev) => {
+                if (prev.length === 0) return prev;
+                const last = { ...prev[prev.length - 1] };
+                last.close = exactChartPrice;
+                last.high = Math.max(last.high, exactChartPrice);
+                last.low = Math.min(last.low, exactChartPrice);
+                return [...prev.slice(0, prev.length - 1), last];
+              });
+            }
+          }
+
+          const sparkline = [...inst.sparkline.slice(1), newBid];
+
+          return {
+            ...inst,
+            bid: newBid,
+            ask: newAsk,
+            sparkline,
+          };
+        });
+
+        if (changed) {
+          setTickStates((prev) => ({ ...prev, ...nextTickStates }));
+          if (highlightTimeout) clearTimeout(highlightTimeout);
+          highlightTimeout = setTimeout(() => {
+            if (isMounted) setTickStates({});
+          }, 600);
+        }
+
+        return updated;
+      });
+    };
+
     // Initial immediate fetch
     fetchTradingViewFeed();
 
-    // Poll TradingView scanner every 1.5 seconds for instant, exact price updates
-    const tvInterval = setInterval(fetchTradingViewFeed, 1500);
+    // Fast master anchor poll every 1200ms
+    const tvInterval = setInterval(fetchTradingViewFeed, 1200);
+
+    // High-frequency micro-ticks every 420ms for smooth live movement
+    const tickInterval = setInterval(runLiveMicroTicks, 420);
 
     return () => {
       isMounted = false;
       clearInterval(tvInterval);
+      clearInterval(tickInterval);
       if (highlightTimeout) clearTimeout(highlightTimeout);
     };
   }, []);
@@ -493,10 +717,23 @@ export default function App() {
     const activeInst = currentInstMap.get(selectedSymbol);
     if (activeInst) {
       const dir = tickStates[selectedSymbol] || 'NEUTRAL';
-      const executionPrice = dir === 'UP' ? activeInst.ask : activeInst.bid;
       setCandles((prevCandles) => {
         if (prevCandles.length === 0) return prevCandles;
         const last = { ...prevCandles[prevCandles.length - 1] };
+        
+        // Exact User Rule:
+        // If market is going up on chart: show exact price on BUY, SELL shows with spread difference
+        // If market is going down on chart: show exact price on SELL, BUY shows with spread difference
+        let executionPrice: number;
+        if (dir === 'UP') {
+          executionPrice = activeInst.ask; // Matches BUY button price exactly
+        } else if (dir === 'DOWN') {
+          executionPrice = activeInst.bid; // Matches SELL button price exactly
+        } else {
+          // If neutral/steady, keep aligned with current candle color
+          executionPrice = last.close >= last.open ? activeInst.ask : activeInst.bid;
+        }
+
         last.close = executionPrice;
         last.high = Math.max(last.high, executionPrice);
         last.low = Math.min(last.low, executionPrice);
@@ -677,6 +914,31 @@ export default function App() {
       `Order Executed: ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`
     );
 
+    // Save open trade to Supabase cloud database
+    if (currentUser) {
+      supabaseService.saveTrade(currentUser, {
+        id: newPos.id,
+        ticket: newPos.ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        symbol: newPos.symbol,
+        side: newPos.side,
+        orderType: 'MARKET',
+        lots: newPos.lots,
+        openPrice: newPos.openPrice,
+        currentPrice: newPos.currentPrice,
+        sl: newPos.sl,
+        tp: newPos.tp,
+        pnl: 0,
+        status: 'OPEN',
+        openTime: newPos.openTime,
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'TRADE_OPENED',
+        description: `Market ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`,
+        metadata: { ticket, symbol: params.symbol, lots: params.lots, price: fillPrice },
+      });
+    }
+
     triggerActionPopup({
       type: 'TRADE_OPENED',
       title: `Trade of ${params.symbol} is open`,
@@ -751,6 +1013,29 @@ export default function App() {
       `Placed Pending ${params.type}: ${params.lots} ${params.symbol} @ ${params.targetPrice}`
     );
 
+    // Save pending order to Supabase
+    if (currentUser) {
+      supabaseService.saveTrade(currentUser, {
+        id: newOrd.id,
+        ticket: newOrd.ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        symbol: newOrd.symbol,
+        side: newOrd.side,
+        orderType: newOrd.type,
+        lots: newOrd.lots,
+        openPrice: newOrd.targetPrice,
+        sl: newOrd.sl,
+        tp: newOrd.tp,
+        status: 'PENDING',
+        openTime: newOrd.createdAt,
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'ORDER_PENDING',
+        description: `Placed ${newOrd.type} ${newOrd.lots} ${newOrd.symbol} @ ${newOrd.targetPrice}`,
+        metadata: { ticket, symbol: newOrd.symbol, targetPrice: newOrd.targetPrice },
+      });
+    }
+
     triggerActionPopup({
       type: 'TRADE_OPENED',
       title: `Placed ${params.type}: ${params.lots} ${params.symbol}`,
@@ -799,6 +1084,34 @@ export default function App() {
 
     setClosedTrades((prev) => [closed, ...prev]);
     setPositions((prev) => prev.filter((p) => p.id !== id));
+
+    // Save closed trade to Supabase cloud database
+    if (currentUser) {
+      supabaseService.saveTrade(currentUser, {
+        id: closed.id,
+        ticket: closed.ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        symbol: closed.symbol,
+        side: closed.side,
+        orderType: 'MARKET',
+        lots: closed.lots,
+        openPrice: closed.openPrice,
+        currentPrice: closePrice,
+        closePrice: closePrice,
+        sl: null,
+        tp: null,
+        pnl: closed.pnl,
+        status: 'CLOSED',
+        openTime: closed.openTime,
+        closeTime: closed.closeTime,
+        closeReason: closed.reason,
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'TRADE_CLOSED',
+        description: `Closed #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)})`,
+        metadata: { ticket: closed.ticket, symbol: closed.symbol, pnl: closed.pnl },
+      });
+    }
 
     // Update balance - NEVER let balance go negative!
     setSelectedAccount((acc) => {
@@ -849,6 +1162,31 @@ export default function App() {
     const ord = pendingOrders.find((o) => o.id === id);
     setPendingOrders((prev) => prev.filter((o) => o.id !== id));
     addNotification('Pending order cancelled');
+
+    if (currentUser && ord) {
+      supabaseService.saveTrade(currentUser, {
+        id: ord.id,
+        ticket: ord.ticket,
+        accountNumber: selectedAccount?.accountNumber,
+        symbol: ord.symbol,
+        side: ord.side,
+        orderType: ord.type,
+        lots: ord.lots,
+        openPrice: ord.targetPrice,
+        sl: ord.sl,
+        tp: ord.tp,
+        status: 'CANCELLED',
+        openTime: ord.createdAt,
+        closeTime: Date.now(),
+        closeReason: 'CANCELLED_BY_USER',
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'ORDER_CANCELLED',
+        description: `Cancelled pending ${ord.type} #${ord.ticket} for ${ord.lots} ${ord.symbol}`,
+        metadata: { ticket: ord.ticket, symbol: ord.symbol },
+      });
+    }
+
     triggerActionPopup({
       type: 'ORDER_CANCELLED',
       title: 'Pending Order Cancelled',
@@ -931,23 +1269,23 @@ export default function App() {
     });
   };
 
-  // Wallet Funding Handlers
-  const handleDeposit = (params: { method: string; amount: number; targetAccount: string }) => {
-    if (params.amount <= 0) {
+  // Wallet Funding Handlers - Minimum deposit is strictly $16
+  const handleDeposit = (params: { method: string; amount: number; targetAccount: string; reference?: string }) => {
+    if (params.amount < 16) {
       triggerActionPopup({
         type: 'DEPOSIT_FAILED',
         title: 'Deposit Unsuccessful',
-        subtitle: 'Please enter a valid deposit amount greater than $0.00.',
+        subtitle: 'Minimum deposit requirement is $16.00 USD.',
         details: {
           amount: params.amount,
           method: params.method,
-          reason: 'Invalid funding amount entered.',
+          reason: 'Minimum funding amount is $16.00 USD.',
         },
       });
       return;
     }
 
-    const ref = `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    const ref = params.reference || `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
     const newTx: Transaction = {
       id: `tx-${Date.now()}`,
       type: 'DEPOSIT',
@@ -965,6 +1303,7 @@ export default function App() {
     if (
       params.targetAccount === 'HF Wallet' ||
       params.targetAccount === 'VTM Wallet' ||
+      params.targetAccount === 'VTM One Wallet' ||
       params.targetAccount.toLowerCase().includes('wallet')
     ) {
       const nextWallet = walletBalance + params.amount;
@@ -979,7 +1318,9 @@ export default function App() {
       }
     } else {
       const nextAccounts = accounts.map((acc) =>
-        acc.accountNumber === params.targetAccount || acc.id === params.targetAccount
+        acc.accountNumber === params.targetAccount ||
+        `Account #${acc.accountNumber}` === params.targetAccount ||
+        acc.id === params.targetAccount
           ? {
               ...acc,
               balance: acc.balance + params.amount,
@@ -1004,6 +1345,24 @@ export default function App() {
 
     addNotification(`Deposit of $${params.amount.toFixed(2)} received successfully!`);
 
+    // Save deposit to Supabase cloud database
+    if (currentUser) {
+      supabaseService.saveDeposit(currentUser, {
+        id: newTx.id,
+        targetAccount: params.targetAccount,
+        amountUsd: params.amount,
+        method: params.method,
+        reference: ref,
+        status: 'COMPLETED',
+      });
+      supabaseService.syncTransactions(currentUser, [newTx, ...transactions]);
+      supabaseService.syncActivity(currentUser, {
+        type: 'DEPOSIT',
+        description: `Funded $${params.amount.toFixed(2)} to ${params.targetAccount} via ${params.method}`,
+        metadata: { amount: params.amount, targetAccount: params.targetAccount, reference: ref },
+      });
+    }
+
     triggerActionPopup({
       type: 'DEPOSIT_SUCCESS',
       title: `Deposit of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
@@ -1017,51 +1376,111 @@ export default function App() {
     });
   };
 
-  const handleWithdraw = (params: { method: string; amount: number; sourceAccount: string }) => {
-    if (params.amount <= 0) {
+  // Withdrawal Handlers - Minimum withdrawal is strictly $35
+  const handleWithdraw = (params: {
+    method: string;
+    amount: number;
+    sourceAccount: string;
+    reference?: string;
+    status?: 'COMPLETED' | 'PENDING';
+  }) => {
+    if (params.amount < 35) {
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
         title: 'Withdrawal Unsuccessful',
-        subtitle: 'Please enter a valid withdrawal amount greater than $0.00.',
+        subtitle: 'Minimum withdrawal requirement is $35.00 USD.',
         details: {
           amount: params.amount,
           method: params.method,
-          reason: 'Invalid withdrawal sum requested.',
+          reason: 'Minimum withdrawal amount is $35.00 USD.',
         },
       });
       return;
     }
 
-    const ref = `VTM-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
+    const txStatus = params.status || 'COMPLETED';
     const newTx: Transaction = {
       id: `tx-${Date.now()}`,
       type: 'WITHDRAWAL',
       method: params.method,
       amount: params.amount,
       currency: 'USD',
-      status: 'PENDING',
+      status: txStatus,
       timestamp: Date.now(),
       reference: ref,
       details: `Withdrawal from ${params.sourceAccount}`,
     };
 
     setTransactions((prev) => [newTx, ...prev]);
-    const nextWallet = Math.max(0, walletBalance - params.amount);
-    setWalletBalance(nextWallet);
+
+    let nextWallet = walletBalance;
+    let nextAccounts = accounts;
+
+    if (
+      params.sourceAccount === 'VTM Wallet' ||
+      params.sourceAccount === 'VTM One Wallet' ||
+      params.sourceAccount === 'HF Wallet' ||
+      params.sourceAccount.toLowerCase().includes('wallet')
+    ) {
+      nextWallet = Math.max(0, walletBalance - params.amount);
+      setWalletBalance(nextWallet);
+    } else {
+      nextAccounts = accounts.map((acc) =>
+        acc.accountNumber === params.sourceAccount ||
+        `Account #${acc.accountNumber}` === params.sourceAccount ||
+        acc.id === params.sourceAccount
+          ? {
+              ...acc,
+              balance: Math.max(0, acc.balance - params.amount),
+              equity: Math.max(0, acc.equity - params.amount),
+              freeMargin: Math.max(0, acc.freeMargin - params.amount),
+            }
+          : acc
+      );
+      setAccounts(nextAccounts);
+      setSelectedAccount((acc) =>
+        !acc ? null : nextAccounts.find((a) => a.id === acc.id) || acc
+      );
+    }
+
     if (currentUser) {
       saveUserFinancials(currentUser, {
         walletBalance: nextWallet,
-        accounts,
+        accounts: nextAccounts,
         selectedAccountId: selectedAccount?.id,
         transactions: [newTx, ...transactions],
       });
     }
-    addNotification(`Withdrawal request of $${params.amount.toFixed(2)} is pending approval`);
+
+    addNotification(
+      txStatus === 'COMPLETED'
+        ? `Safaricom B2C payout of $${params.amount.toFixed(2)} completed successfully!`
+        : `Withdrawal request of $${params.amount.toFixed(2)} is pending approval`
+    );
+
+    // Save withdrawal to Supabase cloud database
+    if (currentUser) {
+      supabaseService.saveWithdrawal(currentUser, {
+        id: newTx.id,
+        sourceAccount: params.sourceAccount,
+        amountUsd: params.amount,
+        method: params.method,
+        reference: ref,
+        status: txStatus,
+      });
+      supabaseService.syncTransactions(currentUser, [newTx, ...transactions]);
+      supabaseService.syncActivity(currentUser, {
+        type: txStatus === 'COMPLETED' ? 'WITHDRAWAL_COMPLETED' : 'WITHDRAWAL_REQUESTED',
+        description: `Safaricom B2C payout of $${params.amount.toFixed(2)} from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
+        metadata: { amount: params.amount, sourceAccount: params.sourceAccount, reference: ref, status: txStatus },
+      });
+    }
 
     triggerActionPopup({
       type: 'WITHDRAWAL_SUCCESS',
-      title: `Withdrawal of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Queued`,
-      subtitle: `STP payout request submitted from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
+      title: `Withdrawal of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
+      subtitle: `Safaricom B2C instant payout disbursed from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
       details: {
         amount: params.amount,
         method: params.method,
@@ -1119,6 +1538,27 @@ export default function App() {
 
     addNotification(`Transferred $${params.amount.toFixed(2)} between accounts`);
 
+    // Record internal transfer in Supabase
+    if (currentUser) {
+      supabaseService.saveTransfer(currentUser, {
+        fromAccount: params.fromAccount,
+        toAccount: params.toAccount,
+        amountUsd: params.amount,
+      });
+      supabaseService.syncUserFinancials(currentUser, {
+        walletBalance: result.newWalletBalance,
+        accounts: result.newAccounts,
+        selectedAccountId: selectedAccount?.id,
+        transactions: result.newTransactions,
+        lastUpdated: Date.now(),
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'INTERNAL_TRANSFER',
+        description: `Transferred $${params.amount.toFixed(2)} from ${params.fromAccount} to ${params.toAccount}`,
+        metadata: { from: params.fromAccount, to: params.toAccount, amount: params.amount },
+      });
+    }
+
     const ref = result.newTransactions[0]?.reference || 'COMPLETED';
     triggerActionPopup({
       type: 'TRANSFER_SUCCESS',
@@ -1166,6 +1606,17 @@ export default function App() {
       });
     }
     addNotification(`Opened new ${params.type} #${num} (${params.tier})`);
+
+    // Save newly opened trading account to Supabase
+    if (currentUser) {
+      supabaseService.syncTradingAccount(currentUser, newAcc);
+      supabaseService.syncTradingAccounts(currentUser, nextAccounts);
+      supabaseService.syncActivity(currentUser, {
+        type: 'ACCOUNT_CREATED',
+        description: `Created new ${params.type} Account #${num} (${params.tier})`,
+        metadata: { accountNumber: num, type: params.type, tier: params.tier, leverage: params.leverage },
+      });
+    }
 
     triggerActionPopup({
       type: 'ACCOUNT_CREATED',
@@ -1897,6 +2348,70 @@ export default function App() {
   const currentInstrument =
     instruments.find((i) => i.symbol === selectedSymbol) || instruments[0];
 
+  const handleUpdatePlatformSetting = (partial: Partial<UserPlatformSettings>) => {
+    if (partial.isDarkMode !== undefined) setIsDarkMode(partial.isDarkMode);
+    if (partial.oneClickTrading !== undefined) setOneClickTrading(partial.oneClickTrading);
+    if (partial.slippage !== undefined) setSlippage(partial.slippage);
+    if (partial.soundEnabled !== undefined) setSoundEnabled(partial.soundEnabled);
+    if (partial.showSpreadBrackets !== undefined) setShowSpreadBrackets(partial.showSpreadBrackets);
+    if (partial.drawdownProtection !== undefined) setDrawdownProtection(partial.drawdownProtection);
+    if (partial.twoFactorEnabled !== undefined) setTwoFactorEnabled(partial.twoFactorEnabled);
+
+    if (currentUser) {
+      supabaseService.saveUserSettings(currentUser, {
+        isDarkMode: partial.isDarkMode ?? isDarkMode,
+        oneClickTrading: partial.oneClickTrading ?? oneClickTrading,
+        slippage: partial.slippage ?? slippage,
+        soundEnabled: partial.soundEnabled ?? soundEnabled,
+        showSpreadBrackets: partial.showSpreadBrackets ?? showSpreadBrackets,
+        drawdownProtection: partial.drawdownProtection ?? drawdownProtection,
+        twoFactorEnabled: partial.twoFactorEnabled ?? twoFactorEnabled,
+        activeAccountId: selectedAccount?.id,
+      });
+      supabaseService.syncActivity(currentUser, {
+        type: 'SETTINGS_UPDATED',
+        description: 'Updated platform preferences in Supabase',
+        metadata: partial,
+      });
+    }
+  };
+
+  const handleSyncAllToSupabase = async () => {
+    if (!currentUser) return;
+    try {
+      await Promise.all([
+        supabaseService.syncUserFinancials(currentUser, {
+          walletBalance,
+          accounts,
+          selectedAccountId: selectedAccount?.id,
+          transactions,
+          lastUpdated: Date.now(),
+        }),
+        supabaseService.syncTradingAccounts(currentUser, accounts),
+        supabaseService.syncTrades(currentUser, {
+          positions,
+          pendingOrders,
+          closedTrades,
+          accountNumber: selectedAccount?.accountNumber,
+        }),
+        supabaseService.saveUserSettings(currentUser, {
+          isDarkMode,
+          oneClickTrading,
+          slippage,
+          soundEnabled,
+          showSpreadBrackets,
+          drawdownProtection,
+          twoFactorEnabled,
+          activeAccountId: selectedAccount?.id,
+        }),
+        supabaseService.syncTransactions(currentUser, transactions),
+        supabaseService.syncDevice(currentUser),
+      ]);
+    } catch (e) {
+      console.warn('Sync all to Supabase encounter notice:', e);
+    }
+  };
+
   // Render Inner Content
   const renderTabContent = () => {
     switch (activeTab) {
@@ -1923,6 +2438,7 @@ export default function App() {
             onToggleFavorite={handleToggleFavorite}
             onExecuteTrade={handleExecuteMarketOrder}
             isDarkMode={isDarkMode}
+            tickDirection={currentTickDirection}
           />
         );
       case 'trades':
@@ -1970,9 +2486,21 @@ export default function App() {
         return (
           <MoreTab
             isDarkMode={isDarkMode}
-            onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+            onToggleTheme={() => handleUpdatePlatformSetting({ isDarkMode: !isDarkMode })}
             oneClickTrading={oneClickTrading}
-            onToggleOneClick={() => setOneClickTrading(!oneClickTrading)}
+            onToggleOneClick={() => handleUpdatePlatformSetting({ oneClickTrading: !oneClickTrading })}
+            slippage={slippage}
+            onSlippageChange={(val) => handleUpdatePlatformSetting({ slippage: val })}
+            soundEnabled={soundEnabled}
+            onToggleSound={() => handleUpdatePlatformSetting({ soundEnabled: !soundEnabled })}
+            showSpreadBrackets={showSpreadBrackets}
+            onToggleSpreadBrackets={() => handleUpdatePlatformSetting({ showSpreadBrackets: !showSpreadBrackets })}
+            drawdownProtection={drawdownProtection}
+            onToggleDrawdownProtection={() => handleUpdatePlatformSetting({ drawdownProtection: !drawdownProtection })}
+            twoFactorEnabled={twoFactorEnabled}
+            onToggle2FA={(val) => handleUpdatePlatformSetting({ twoFactorEnabled: val })}
+            currentUser={currentUser}
+            onSyncAllToSupabase={handleSyncAllToSupabase}
           />
         );
       case 'trade':
