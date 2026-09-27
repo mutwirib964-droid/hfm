@@ -68,6 +68,8 @@ export const ActionPopupManager: React.FC<ActionPopupManagerProps> = ({
         return 'Logged in';
       case 'LOGOUT_SUCCESS':
         return 'Logged out';
+      case 'PRICE_ALERT':
+        return popup.title || 'Price Alert Triggered';
       case 'ERROR':
         return popup.title || 'Action error';
       default:

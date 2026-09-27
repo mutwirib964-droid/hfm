@@ -60,6 +60,11 @@ export interface TransferRecord {
 const STORAGE_SUPABASE_URL_KEY = 'vtm_supabase_url';
 const STORAGE_SUPABASE_ANON_KEY = 'vtm_supabase_anon_key';
 
+// Default Production Supabase Configuration - Ensures all devices (mobile phones, tablets, PCs, deployed URLs) connect directly
+const DEFAULT_SUPABASE_URL = 'https://seycwqpozegjwpxuewbf.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+
 class SupabaseService {
   private config: SupabaseConfig | null = null;
   private initPromise: Promise<SupabaseConfig | null> | null = null;
@@ -130,6 +135,12 @@ class SupabaseService {
       }
     } catch (e) {
       // ignore
+    }
+
+    // 3. Built-in Production Supabase Project (ensures deployed URLs, mobile phones, and all devices always connect)
+    if (DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_ANON_KEY) {
+      this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
+      return this.config;
     }
 
     return this.config;

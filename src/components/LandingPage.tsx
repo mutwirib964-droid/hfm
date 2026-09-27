@@ -30,7 +30,6 @@ import {
   UserPlus,
   LogIn,
   ShieldCheck,
-  Database,
   Maximize2,
   Minimize2,
 } from 'lucide-react';
@@ -129,14 +128,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Cloud Database Modal & Status State
-  const [isDbModalOpen, setIsDbModalOpen] = useState(false);
-  const [inputDbUrl, setInputDbUrl] = useState('');
-  const [inputDbKey, setInputDbKey] = useState('');
-  const [isDbConfigured, setIsDbConfigured] = useState(supabaseService.isConfigured());
-  const [isTestingDb, setIsTestingDb] = useState(false);
-  const [dbNotice, setDbNotice] = useState<string | null>(null);
 
   // Native Full Screen state and handler for Desktop PC
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -258,47 +249,51 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         createdAt: Date.now(),
       };
 
-      const regResult = registerNewUser(newUserProfile, password);
-      if (!regResult.success || !regResult.user) {
+      // 1. STRICT DATABASE-FIRST: Persist directly to Supabase cloud database
+      const saveDbResult = await supabaseService.registerUserInDatabase(newUserProfile, password);
+      if (!saveDbResult) {
         setIsSubmitting(false);
-        setValidationError(regResult.error || 'Failed to complete registration.');
+        setValidationError(
+          'Failed to record account in the database. All user accounts must be persisted to the cloud database before access is granted. Please verify your connection and try again.'
+        );
         return;
       }
 
-      // Initialize financials with 0 accounts and 0.00 wallet
-      initializeUserFinancials(regResult.user, true);
-
-      // Save to Supabase database & Supabase Auth service
-      if (supabaseService.isConfigured()) {
-        const authRes = await supabaseService.signUpWithSupabaseAuth(newUserProfile, password);
-        if (!authRes.success) {
-          const errLower = (authRes.error || '').toLowerCase();
-          if (
-            errLower.includes('already registered') ||
-            errLower.includes('already exists') ||
-            errLower.includes('unique') ||
-            errLower.includes('duplicate')
-          ) {
-            setIsSubmitting(false);
-            setValidationError('An account with this email already exists. Please sign in instead.');
-            return;
-          }
+      // 2. Also register in Supabase Auth service
+      const authRes = await supabaseService.signUpWithSupabaseAuth(newUserProfile, password);
+      if (!authRes.success) {
+        const errLower = (authRes.error || '').toLowerCase();
+        if (
+          errLower.includes('already registered') ||
+          errLower.includes('already exists') ||
+          errLower.includes('unique') ||
+          errLower.includes('duplicate')
+        ) {
+          setIsSubmitting(false);
+          setValidationError('An account with this email already exists in the database. Please sign in instead.');
+          return;
         }
-        await supabaseService.registerUserInDatabase(regResult.user, password);
-        await supabaseService.syncUserFinancials(regResult.user, {
-          walletBalance: 0.0,
-          accounts: [],
-          lastUpdated: Date.now(),
-        });
       }
-      await supabaseService.syncActivity(regResult.user, {
-        type: 'REGISTRATION',
-        description: `New user registration for ${regResult.user.email} (${regResult.user.name})`,
+
+      // 3. Initialize financials in Supabase database
+      await supabaseService.syncUserFinancials(newUserProfile, {
+        walletBalance: 0.0,
+        accounts: [],
+        lastUpdated: Date.now(),
       });
-      await supabaseService.syncDevice(regResult.user);
+
+      // 4. Save to local device cache only AFTER cloud DB confirmation
+      const regResult = registerNewUser(newUserProfile, password);
+      initializeUserFinancials(newUserProfile, true);
+
+      await supabaseService.syncActivity(newUserProfile, {
+        type: 'REGISTRATION',
+        description: `New user registration for ${newUserProfile.email} (${newUserProfile.name}) stored in cloud database`,
+      });
+      await supabaseService.syncDevice(newUserProfile);
 
       setIsSubmitting(false);
-      onSignIn(regResult.user);
+      onSignIn(newUserProfile);
     } else {
       // SIGN IN MODE - SUPABASE CLOUD & MULTI-DEVICE AUTHENTICATION
       if (!email.trim()) {
@@ -390,91 +385,44 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             return;
           }
 
-          // If Supabase returned an explicit credential error
-          if (
-            !remoteUser &&
-            !sbAuth.success &&
-            (sbAuth.error?.includes('credentials') ||
-              sbAuth.error?.includes('Invalid') ||
-              sbAuth.error?.includes('No account found'))
-          ) {
-            setIsSubmitting(false);
-            setValidationError(
-              'No account found with these credentials in Supabase. Please verify your email & password or register a new account.'
-            );
-            return;
-          }
-        } catch (err) {
-          console.warn('Supabase remote auth check error, falling back to local registry', err);
+          // If verification checked and user does not exist or credentials failed:
+          setIsSubmitting(false);
+          setValidationError(
+            sbAuth.error || 'No trading account found with this email. Please check your credentials or create a new account.'
+          );
+          return;
+        } catch (err: any) {
+          setIsSubmitting(false);
+          setValidationError(
+            'Unable to connect to authentication server. Please check your internet connection and try again.'
+          );
+          return;
         }
       }
 
-      // 2. Fallback check against local credentials & user registry on this device
-      const verified = verifyUserCredentials(cleanEmail, password);
       setIsSubmitting(false);
-
-      if (verified.success && verified.user) {
-        await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
-        await supabaseService.syncActivity(verified.user, {
-          type: 'LOGIN',
-          description: `User ${verified.user.email} logged in successfully`,
-        });
-        await supabaseService.syncDevice(verified.user);
-        onSignIn(verified.user);
-        return;
-      }
-
-      // If database is not configured on this device/server yet, explain clearly to the user
-      if (!supabaseService.isConfigured()) {
-        setValidationError(
-          'Cloud database is not connected on this device yet. If you created your account on another device, click "Connect Cloud DB" above to link your Supabase project so you can sign in anywhere.'
-        );
-        return;
-      }
-
       setValidationError(
-        'No account found with this email. You cannot log in without opening an account first. Please register.'
+        'No trading account found with this email. Please register an account first.'
       );
-    }
-  };
-
-  const handleSaveDbCredentials = async () => {
-    if (!inputDbUrl.trim() || !inputDbKey.trim()) {
-      setDbNotice('Please enter both Supabase Project URL and Anon Public Key.');
-      return;
-    }
-    setIsTestingDb(true);
-    setDbNotice(null);
-    supabaseService.setCredentials(inputDbUrl.trim(), inputDbKey.trim());
-    const res = await supabaseService.testConnection();
-    setIsTestingDb(false);
-    if (res.success) {
-      setIsDbConfigured(true);
-      setDbNotice('Connected to Supabase successfully! Synced across all devices.');
-      setTimeout(() => {
-        setIsDbModalOpen(false);
-        setDbNotice(null);
-      }, 1500);
-    } else {
-      setDbNotice(`Connection notice: ${res.message}. Credentials saved.`);
     }
   };
 
   return (
     <div
       id="vtm-broker-landing"
-      className={`min-h-screen flex flex-col font-['Plus_Jakarta_Sans',sans-serif] selection:bg-[#E51937] selection:text-white transition-colors duration-200 ${
+      className={`min-h-screen w-full max-w-full overflow-x-hidden flex flex-col font-['Plus_Jakarta_Sans',sans-serif] selection:bg-[#E51937] selection:text-white transition-colors duration-200 ${
         isDarkMode ? 'bg-[#0A0C10] text-white' : 'bg-white text-slate-900'
       }`}
     >
       {/* MAIN HEADER NAVIGATION */}
       <header
-        className={`sticky top-0 z-40 w-full border-b backdrop-blur-md px-4 sm:px-8 py-3.5 flex items-center justify-between transition-colors ${
+        className={`sticky top-0 z-40 w-full max-w-full border-b backdrop-blur-md px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3.5 flex items-center justify-between transition-colors overflow-hidden ${
           isDarkMode ? 'bg-[#0A0C10]/95 border-neutral-800 text-white' : 'bg-white/95 border-slate-200 text-slate-900 shadow-xs'
         }`}
       >
-        <div className="flex items-center gap-8">
-          <VTMLogo size="md" isDarkMode={isDarkMode} />
+        <div className="flex items-center gap-4 lg:gap-8 min-w-0">
+          <VTMLogo size="sm" isDarkMode={isDarkMode} className="sm:hidden shrink-0" />
+          <VTMLogo size="md" isDarkMode={isDarkMode} className="hidden sm:flex shrink-0" />
 
           <nav className="hidden lg:flex items-center gap-7 text-xs font-bold">
             <a
@@ -520,7 +468,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </nav>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           {/* Native Fullscreen Button for Desktop PC */}
           <button
             type="button"
@@ -542,14 +490,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           {onToggleTheme && (
             <button
               onClick={onToggleTheme}
-              className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+              className={`p-1.5 sm:p-2.5 rounded-lg sm:rounded-xl border transition-all cursor-pointer shrink-0 ${
                 isDarkMode
                   ? 'border-neutral-800 text-amber-400 hover:bg-neutral-800/80'
                   : 'border-slate-300 text-slate-700 hover:bg-slate-100'
               }`}
               title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
             >
-              {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              {isDarkMode ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
             </button>
           )}
 
@@ -557,7 +505,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           <button
             type="button"
             onClick={() => setIsDbModalOpen(true)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+            className={`flex items-center gap-1 p-1.5 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl border text-xs font-bold transition-all cursor-pointer shrink-0 ${
               isDbConfigured
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
                 : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
@@ -565,8 +513,12 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             title="Configure Cloud Database for Cross-Device Synchronization"
           >
             <Database className="w-3.5 h-3.5" />
+            <span
+              className={`w-1.5 h-1.5 rounded-full sm:hidden ${
+                isDbConfigured ? 'bg-emerald-500' : 'bg-amber-500'
+              }`}
+            />
             <span className="hidden sm:inline">{isDbConfigured ? 'Cloud DB Active' : 'Connect Cloud DB'}</span>
-            <span className="sm:hidden">{isDbConfigured ? 'DB' : 'Connect'}</span>
           </button>
 
           {/* Client Portal Login & Register CTA */}
@@ -577,13 +529,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               setValidationError(null);
               setShowAuthModal(true);
             }}
-            className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 sm:px-4 sm:py-2.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 ${
               isDarkMode
                 ? 'text-neutral-200 hover:text-white hover:bg-neutral-800/70 border border-neutral-700'
                 : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100 border border-slate-300 shadow-xs'
             }`}
           >
-            Client Portal Login
+            <span className="sm:hidden">Login</span>
+            <span className="hidden sm:inline">Client Portal Login</span>
           </button>
 
           <button
@@ -593,49 +546,52 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               setValidationError(null);
               setShowAuthModal(true);
             }}
-            className="px-5 py-2.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-black transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1.5"
+            className="px-2.5 py-1.5 sm:px-5 sm:py-2.5 rounded-lg sm:rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-black transition-all shadow-md active:scale-95 cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
           >
-            <span>Create Account</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            <span className="sm:hidden">Join</span>
+            <span className="hidden sm:inline">Create Account</span>
+            <ArrowRight className="w-3.5 h-3.5 hidden sm:inline" />
           </button>
         </div>
       </header>
 
       {/* 3. LIVE TICKER STRIP */}
       <div
-        className={`border-b py-2.5 px-4 sm:px-8 overflow-x-auto no-scrollbar font-mono text-xs transition-colors ${
+        className={`border-b py-2 px-3 sm:px-6 w-full max-w-full overflow-hidden font-mono text-xs transition-colors shrink-0 select-none ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="flex items-center gap-8 min-w-max mx-auto w-full max-w-[1600px] 2xl:max-w-[1720px] justify-between">
-          <div className="flex items-center gap-2 text-[11px] font-bold font-sans">
+        <div className="flex items-center overflow-hidden w-full max-w-full">
+          <div className="flex items-center gap-1.5 pr-3 text-[11px] font-bold font-sans shrink-0 border-r border-neutral-700/50 dark:border-neutral-800 z-10">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className={`uppercase tracking-wider ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-              Institutional Feed (Live)
+            <span className={`uppercase tracking-wider hidden xs:inline ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+              Live Feeds
             </span>
           </div>
 
-          <div className="flex items-center gap-8">
-            {instruments.slice(0, 7).map((inst) => (
-              <div key={inst.symbol} className="flex items-center gap-2 font-bold">
-                <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-800 font-extrabold'}>{inst.symbol}</span>
-                <span className={`font-mono ${isDarkMode ? 'text-white' : 'text-slate-900 font-extrabold'}`}>
-                  {inst.bid.toFixed(inst.decimals)}
-                </span>
-                <span className={`text-[11px] ${inst.change24h >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                  {inst.change24h >= 0 ? '+' : ''}
-                  {inst.change24h.toFixed(2)}%
-                </span>
-              </div>
-            ))}
+          <div className="overflow-hidden flex-1 relative ml-3">
+            <div className="animate-ticker-marquee flex items-center gap-6 sm:gap-8">
+              {[...instruments, ...instruments].map((inst, idx) => (
+                <div key={`${inst.symbol}-${idx}`} className="flex items-center gap-2 font-bold shrink-0">
+                  <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-800 font-extrabold'}>{inst.symbol}</span>
+                  <span className={`font-mono ${isDarkMode ? 'text-white' : 'text-slate-900 font-extrabold'}`}>
+                    {inst.bid.toFixed(inst.decimals)}
+                  </span>
+                  <span className={`text-[11px] ${inst.change24h >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {inst.change24h >= 0 ? '+' : ''}
+                    {inst.change24h.toFixed(2)}%
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
       {/* 4. HERO SECTION */}
-      <section className="relative px-4 sm:px-8 lg:px-12 pt-14 pb-20 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto text-center flex flex-col items-center">
+      <section className="relative px-3 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 pt-10 sm:pt-14 pb-16 sm:pb-20 w-full max-w-full overflow-hidden mx-auto text-center flex flex-col items-center">
         {/* Glow effect */}
-        <div className="absolute top-10 left-1/2 -translate-x-1/2 w-[600px] h-[350px] bg-[#E51937]/10 rounded-full blur-[140px] pointer-events-none" />
+        <div className="absolute top-10 left-1/2 -translate-x-1/2 w-[320px] sm:w-[600px] h-[260px] sm:h-[350px] bg-[#E51937]/10 rounded-full blur-[100px] sm:blur-[140px] pointer-events-none" />
 
         <h1
           className={`text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight max-w-4xl leading-[1.12] ${
@@ -760,11 +716,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 5. LIVE MARKETS TABLE */}
       <section
         id="markets"
-        className={`py-16 px-4 sm:px-8 lg:px-12 border-t transition-colors ${
+        className={`py-16 px-4 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 border-t transition-colors ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto">
+        <div className="w-full max-w-[1920px] mx-auto">
           <div className="flex flex-col md:flex-row md:items-end justify-between mb-8 gap-4">
             <div>
               <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-1.5">
@@ -775,9 +731,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </h2>
             </div>
 
-            {/* Category Filter Tabs */}
+            {/* Category Filter Tabs - Wrapped and fitted so no horizontal scroll */}
             <div
-              className={`flex items-center gap-1.5 p-1 rounded-xl border overflow-x-auto no-scrollbar ${
+              className={`flex flex-wrap items-center gap-1 sm:gap-1.5 p-1 rounded-xl border max-w-full ${
                 isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
               }`}
             >
@@ -785,7 +741,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 <button
                   key={cat}
                   onClick={() => setMarketFilter(cat)}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  className={`px-2.5 sm:px-3.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-bold transition-all cursor-pointer ${
                     marketFilter === cat
                       ? 'bg-[#E51937] text-white shadow-xs'
                       : isDarkMode
@@ -799,13 +755,89 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </div>
           </div>
 
-          {/* Table Container */}
+          {/* Table Container - Responsive: Cards on Mobile (No Horizontal Scrolling Ever), Table on Desktop */}
           <div
-            className={`rounded-2xl border overflow-hidden shadow-sm ${
+            className={`rounded-2xl border overflow-hidden shadow-sm w-full max-w-full ${
               isDarkMode ? 'bg-[#141820] border-neutral-800' : 'bg-white border-slate-200'
             }`}
           >
-            <div className="overflow-x-auto">
+            {/* Mobile View: High-density cards that fit 100% screen width without right-to-left scrolling */}
+            <div className="block md:hidden divide-y divide-neutral-800/60 dark:divide-neutral-800/60 w-full max-w-full">
+              {filteredInstruments.map((inst) => {
+                const spreadPips = ((inst.ask - inst.bid) * (inst.symbol.includes('JPY') ? 100 : 10000)).toFixed(1);
+                return (
+                  <div
+                    key={inst.symbol}
+                    className={`p-3.5 space-y-2.5 w-full max-w-full ${
+                      isDarkMode ? 'bg-[#141820]' : 'bg-white'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`font-mono text-sm font-black ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {inst.symbol}
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider shrink-0 ${
+                          isDarkMode ? 'bg-neutral-800 text-neutral-400' : 'bg-slate-100 text-slate-600'
+                        }`}>
+                          {inst.category}
+                        </span>
+                        <span className={`text-[11px] truncate hidden xs:inline ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          {inst.name}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`text-xs font-mono font-bold shrink-0 ${
+                          inst.change24h >= 0
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-rose-600 dark:text-rose-400'
+                        }`}
+                      >
+                        {inst.change24h >= 0 ? '+' : ''}
+                        {inst.change24h.toFixed(2)}%
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 py-1.5 px-2.5 rounded-xl bg-neutral-900/40 dark:bg-neutral-900/60 border border-neutral-800/60">
+                      <div>
+                        <div className="text-[10px] uppercase font-bold text-neutral-400">Bid</div>
+                        <div className={`font-mono text-xs font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {inst.bid.toFixed(inst.decimals)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase font-bold text-neutral-400">Ask</div>
+                        <div className={`font-mono text-xs font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                          {inst.ask.toFixed(inst.decimals)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase font-bold text-neutral-400">Spread</div>
+                        <div className="font-mono text-xs font-bold text-sky-400">
+                          {Math.max(0.1, Math.abs(parseFloat(spreadPips)) || 0.2).toFixed(1)} pips
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthMode('register');
+                        setValidationError(null);
+                        setShowAuthModal(true);
+                      }}
+                      className="w-full py-2 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-black transition-all cursor-pointer text-center"
+                    >
+                      Trade Live {inst.symbol}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Desktop View: Full tabular layout */}
+            <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead
                   className={`border-b text-[11px] font-bold uppercase tracking-wider ${
@@ -901,7 +933,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 6. WHY TRADE WITH VTM (Bento Grid) */}
       <section
         id="why-vtm"
-        className={`py-16 px-4 sm:px-8 lg:px-12 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto transition-colors`}
+        className={`py-16 px-4 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 w-full max-w-[1920px] mx-auto transition-colors`}
       >
         <div className="text-center max-w-2xl mx-auto mb-12">
           <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
@@ -989,11 +1021,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 7. WEBTRADER PLATFORM TERMINAL SHOWCASE */}
       <section
         id="platform"
-        className={`py-16 px-4 sm:px-8 lg:px-12 border-y transition-colors ${
+        className={`py-16 px-4 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 border-y transition-colors ${
           isDarkMode ? 'bg-[#0E1117] border-neutral-800' : 'bg-white border-slate-200'
         }`}
       >
-        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div className="w-full max-w-[1920px] mx-auto grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
           <div>
             <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
               Next-Generation Browser Terminal
@@ -1171,7 +1203,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 8. HOW TO START TRADING IN 3 STEPS */}
       <section
         id="how-it-works"
-        className={`py-16 px-4 sm:px-8 lg:px-12 w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto`}
+        className={`py-16 px-4 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 w-full max-w-[1920px] mx-auto`}
       >
         <div className="text-center max-w-2xl mx-auto mb-12">
           <div className="text-xs font-bold text-[#E51937] uppercase tracking-wider mb-2">
@@ -1252,11 +1284,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {/* 9. REGULATORY & RISK WARNING FOOTER */}
       <footer
         id="company"
-        className={`mt-auto border-t py-12 px-4 sm:px-8 lg:px-12 text-xs transition-colors ${
+        className={`mt-auto border-t py-12 px-4 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 text-xs transition-colors ${
           isDarkMode ? 'bg-[#08090D] border-neutral-800 text-neutral-400' : 'bg-white border-slate-200 text-slate-600'
         }`}
       >
-        <div className="w-full max-w-[1600px] 2xl:max-w-[1720px] mx-auto space-y-8">
+        <div className="w-full max-w-[1920px] mx-auto space-y-8">
           {/* Top footer row */}
           <div
             className={`flex flex-col md:flex-row items-start md:items-center justify-between gap-6 pb-8 border-b ${
@@ -1344,9 +1376,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
       {/* 10. AUTH MODAL (CREATE ACCOUNT / CLIENT PORTAL SIGN IN) */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 overflow-x-hidden">
           <div
-            className={`w-full max-w-md sm:max-w-lg lg:max-w-4xl rounded-2xl sm:rounded-3xl border shadow-2xl transition-all max-h-[96dvh] sm:max-h-[92dvh] flex flex-col lg:flex-row overflow-hidden ${
+            className={`w-full max-w-full h-full sm:h-auto sm:max-h-[94vh] sm:max-w-lg lg:max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border shadow-2xl transition-all flex flex-col lg:flex-row overflow-x-hidden overflow-y-hidden ${
               isDarkMode
                 ? 'bg-[#11141C] border-neutral-700/70 text-white shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)]'
                 : 'bg-white border-slate-200 text-slate-900 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.25)]'
@@ -1354,7 +1386,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           >
             {/* Desktop Institutional Information Sidebar (Hidden on mobile for maximum form clarity) */}
             <div
-              className={`w-[40%] shrink-0 hidden lg:flex flex-col justify-between p-7 border-r ${
+              className={`w-[38%] shrink-0 hidden lg:flex flex-col justify-between p-8 border-r ${
                 isDarkMode
                   ? 'bg-gradient-to-b from-[#141822] via-[#0E1118] to-[#0A0C10] border-neutral-800'
                   : 'bg-gradient-to-b from-slate-900 via-slate-800 to-slate-950 border-slate-200 text-white'
@@ -1362,17 +1394,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             >
               <div>
                 <VTMLogo size="md" isDarkMode={true} />
-                <div className="mt-6 space-y-3">
+                <div className="mt-8 space-y-3">
                   <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-[#E51937]/15 border border-[#E51937]/30 text-rose-400">
                     <ShieldCheck className="w-3.5 h-3.5" />
                     <span>Institutional CFD Brokerage</span>
                   </div>
-                  <h3 className="text-xl font-black text-white tracking-tight leading-snug">
+                  <h3 className="text-2xl font-black text-white tracking-tight leading-snug">
                     {authMode === 'register'
                       ? 'Direct Interbank Liquidity & Ultra-Low Spreads'
                       : 'Welcome Back to Your Central VTM Terminal'}
                   </h3>
-                  <p className="text-xs text-neutral-300 leading-relaxed">
+                  <p className="text-xs text-neutral-300 leading-relaxed mt-2">
                     {authMode === 'register'
                       ? 'Create your multi-asset profile in 60 seconds. Instant central wallet setup with zero fees.'
                       : 'Access your unified balances, active positions, copy trading, and institutional analytical tools.'}
@@ -1380,8 +1412,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </div>
 
                 <div className="mt-8 space-y-3">
-                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 font-mono font-bold text-xs">
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-9 h-9 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 font-mono font-bold text-xs">
                       0.0
                     </div>
                     <div>
@@ -1390,8 +1422,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
                       <Zap className="w-4 h-4" />
                     </div>
                     <div>
@@ -1400,13 +1432,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3 p-2.5 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-8 h-8 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
+                    <div className="w-9 h-9 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
                       <Wallet className="w-4 h-4" />
                     </div>
                     <div>
                       <div className="text-xs font-bold text-white">Instant Kenyan &amp; Global Rail</div>
-                      <div className="text-[11px] text-neutral-400">Safaricom M-PESA B2C &amp; Web3 Crypto</div>
+                      <div className="text-[11px] text-neutral-400">Safaricom M-PESA STK &amp; Web3 Crypto</div>
                     </div>
                   </div>
                 </div>
@@ -1424,27 +1456,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               </div>
             </div>
 
-            {/* Modal Right Column / Mobile Main Container */}
-            <div className="flex-1 flex flex-col min-w-0 max-h-[96dvh] sm:max-h-[92dvh] overflow-hidden">
-              {/* Header */}
+            {/* Modal Right Column / Full Mobile Screen Container */}
+            <div className="flex-1 flex flex-col min-w-0 w-full max-w-full h-full sm:h-auto sm:max-h-[94vh] overflow-x-hidden overflow-y-hidden">
+              {/* Header - Sticky top on mobile for instant close/navigation */}
               <div
-                className={`px-4 sm:px-6 py-2.5 sm:py-3.5 border-b flex items-center justify-between shrink-0 ${
-                  isDarkMode ? 'bg-[#161B26]/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                className={`px-4 sm:px-6 py-3 sm:py-4 border-b flex items-center justify-between shrink-0 w-full max-w-full ${
+                  isDarkMode ? 'bg-[#161B26] border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
                   <VTMLogo size="sm" isDarkMode={isDarkMode} />
-                  <span className="lg:hidden text-xs font-black tracking-tight text-neutral-400">
+                  <span className="lg:hidden text-xs font-black tracking-tight text-neutral-400 truncate">
                     {authMode === 'register' ? '• Registration' : '• Portal Sign In'}
                   </span>
                 </div>
 
                 <button
+                  type="button"
                   onClick={() => {
                     setShowAuthModal(false);
                     setValidationError(null);
                   }}
-                  className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center text-xs sm:text-sm font-bold cursor-pointer transition-all ${
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold cursor-pointer transition-all shrink-0 ${
                     isDarkMode
                       ? 'text-neutral-400 hover:text-white hover:bg-neutral-800'
                       : 'text-slate-400 hover:text-slate-800 hover:bg-slate-200'
@@ -1455,14 +1488,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </button>
               </div>
 
-              {/* Scrollable Form Body - Compact, streamlined spacing for mobile viewports */}
-              <div className="p-3.5 sm:p-5 overflow-y-auto no-scrollbar space-y-2.5 sm:space-y-3.5 overscroll-contain">
+              {/* Scrollable Form Body - Strictly prevented from horizontal scrolling & iOS auto-zoom */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden no-scrollbar p-4 sm:p-7 space-y-4 overscroll-contain pb-12 sm:pb-7 w-full max-w-full">
                 {/* Title & Subtitle */}
-                <div className="text-center sm:text-left">
-                  <h3 className={`text-base sm:text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                <div className="text-center sm:text-left w-full max-w-full">
+                  <h3 className={`text-lg sm:text-xl font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     {authMode === 'register' ? 'Open Institutional Trading Account' : 'Client Portal Authentication'}
                   </h3>
-                  <p className={`text-[11px] sm:text-xs mt-0.5 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                  <p className={`text-xs sm:text-sm mt-1 font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                     {authMode === 'register'
                       ? 'Instant VTM One central wallet • 0.0 pip raw interbank spreads'
                       : 'Access your Central VTM One Wallet, open accounts, and active positions'}
@@ -1471,7 +1504,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
                 {/* Mode Switch Tabs with Icons */}
                 <div
-                  className={`grid grid-cols-2 p-1 rounded-xl border ${
+                  className={`grid grid-cols-2 p-1 rounded-xl border w-full max-w-full ${
                     isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-100 border-slate-200'
                   }`}
                 >
@@ -1481,7 +1514,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       setAuthMode('register');
                       setValidationError(null);
                     }}
-                    className={`flex items-center justify-center gap-1.5 py-1.5 sm:py-2 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs sm:text-sm font-black transition-all cursor-pointer ${
                       authMode === 'register'
                         ? 'bg-[#E51937] text-white shadow-xs'
                         : isDarkMode
@@ -1489,7 +1522,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <UserPlus className="w-3.5 h-3.5" />
+                    <UserPlus className="w-4 h-4" />
                     <span>Create Account</span>
                   </button>
                   <button
@@ -1498,7 +1531,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       setAuthMode('signin');
                       setValidationError(null);
                     }}
-                    className={`flex items-center justify-center gap-1.5 py-1.5 sm:py-2 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-xs sm:text-sm font-black transition-all cursor-pointer ${
                       authMode === 'signin'
                         ? 'bg-[#E51937] text-white shadow-xs'
                         : isDarkMode
@@ -1506,17 +1539,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         : 'text-slate-600 hover:text-slate-900'
                     }`}
                   >
-                    <LogIn className="w-3.5 h-3.5" />
+                    <LogIn className="w-4 h-4" />
                     <span>Client Login</span>
                   </button>
                 </div>
 
                 {/* Validation Error Message */}
                 {validationError && (
-                  <div className="p-2.5 sm:p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs font-semibold flex flex-col gap-1.5 animate-in slide-in-from-top-1">
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs sm:text-sm font-semibold flex flex-col gap-1.5 animate-in slide-in-from-top-1 w-full max-w-full break-words">
                     <div className="flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <span className="leading-snug">{validationError}</span>
+                      <span className="leading-snug break-words">{validationError}</span>
                     </div>
                     {!isDbConfigured && (
                       <button
@@ -1531,22 +1564,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   </div>
                 )}
 
-                <form onSubmit={handleAuthSubmit} className="space-y-2.5 sm:space-y-3">
+                <form onSubmit={handleAuthSubmit} className="space-y-3 sm:space-y-3.5 w-full max-w-full">
                   {/* Full Legal Name (Register only) */}
                   {authMode === 'register' && (
-                    <div>
-                      <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                    <div className="w-full max-w-full">
+                      <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                         Full Legal Name
                       </label>
-                      <div className="relative">
-                        <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <div className="relative w-full max-w-full">
+                        <User className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                         <input
                           type="text"
                           required
                           placeholder="e.g. Alexander Mercer"
                           value={name}
                           onChange={(e) => setName(e.target.value)}
-                          className={`w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
+                          className={`w-full pl-10 pr-3 py-2.5 rounded-xl border text-base sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all box-border ${
                             isDarkMode
                               ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                               : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1557,19 +1590,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   )}
 
                   {/* Email Address */}
-                  <div>
-                    <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                  <div className="w-full max-w-full">
+                    <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                       Email Address
                     </label>
-                    <div className="relative">
-                      <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <div className="relative w-full max-w-full">
+                      <Mail className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                       <input
                         type="email"
                         required
                         placeholder="trader@vtmmarket.com"
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className={`w-full pl-9 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all ${
+                        className={`w-full pl-10 pr-3 py-2.5 rounded-xl border text-base sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] transition-all box-border ${
                           isDarkMode
                             ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                             : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1580,8 +1613,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
                   {/* Phone Number with Auto-Detected Country Code (Register only) */}
                   {authMode === 'register' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
+                    <div className="w-full max-w-full">
+                      <div className="flex items-center justify-between mb-1.5">
                         <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                           Mobile Phone Number
                         </label>
@@ -1591,16 +1624,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         </span>
                       </div>
 
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        {/* Country code selector - neatly proportioned so phone input has ample room */}
-                        <div className="relative w-28 xs:w-32 shrink-0">
+                      <div className="flex items-center gap-2 w-full max-w-full">
+                        {/* Country code selector */}
+                        <div className="relative w-24 sm:w-28 shrink-0">
                           <select
                             value={selectedCountry.code}
                             onChange={(e) => {
                               const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
                               if (found) setSelectedCountry(found);
                             }}
-                            className={`w-full py-2 sm:py-2.5 pl-2.5 pr-6 rounded-xl border text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer ${
+                            className={`w-full py-2.5 pl-2 sm:pl-3 pr-6 sm:pr-7 rounded-xl border text-base sm:text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer box-border ${
                               isDarkMode
                                 ? 'bg-neutral-900/90 border-neutral-700 text-white'
                                 : 'bg-slate-50 border-slate-300 text-slate-900'
@@ -1624,7 +1657,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                             placeholder="712 345 678"
                             value={phoneLocal}
                             onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
-                            className={`w-full pl-8 pr-3 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                            className={`w-full pl-8 sm:pl-9 pr-3 py-2.5 rounded-xl border text-base sm:text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${
                               isDarkMode
                                 ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                                 : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1633,28 +1666,28 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         </div>
                       </div>
 
-                      {/* Anti-fraud withdrawal rule notice: compact 1-line security badge */}
-                      <div className="mt-1 text-[10.5px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
+                      {/* Anti-fraud withdrawal rule notice */}
+                      <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
                         <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                        <span>Locked to profile for withdrawal safety (cannot be altered)</span>
+                        <span className="break-words">Locked to profile for withdrawal safety (cannot be altered later)</span>
                       </div>
                     </div>
                   )}
 
                   {/* Password with Show/Hide Toggle */}
-                  <div>
-                    <label className={`block text-xs font-bold mb-1 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                  <div className="w-full max-w-full">
+                    <label className={`block text-xs font-bold mb-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                       Password
                     </label>
-                    <div className="relative">
-                      <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <div className="relative w-full max-w-full">
+                      <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                       <input
                         type={showPassword ? 'text' : 'password'}
                         required
                         placeholder="••••••••••••"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        className={`w-full pl-9 pr-9 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                        className={`w-full pl-10 pr-10 py-2.5 rounded-xl border text-base sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${
                           isDarkMode
                             ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                             : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1663,7 +1696,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowPassword(!showPassword)}
-                        className={`absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                        className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
                           isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
                         }`}
                         title={showPassword ? 'Hide password' : 'Show password'}
@@ -1675,8 +1708,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
                   {/* Confirm Password with Show/Hide Toggle (Register only) */}
                   {authMode === 'register' && (
-                    <div>
-                      <div className="flex items-center justify-between mb-1">
+                    <div className="w-full max-w-full">
+                      <div className="flex items-center justify-between mb-1.5">
                         <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                           Confirm Password
                         </label>
@@ -1690,15 +1723,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           </span>
                         )}
                       </div>
-                      <div className="relative">
-                        <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <div className="relative w-full max-w-full">
+                        <Lock className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                         <input
                           type={showConfirmPassword ? 'text' : 'password'}
                           required
                           placeholder="••••••••••••"
                           value={confirmPassword}
                           onChange={(e) => setConfirmPassword(e.target.value)}
-                          className={`w-full pl-9 pr-9 py-2 sm:py-2.5 rounded-xl border text-xs sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] ${
+                          className={`w-full pl-10 pr-10 py-2.5 rounded-xl border text-base sm:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${
                             isDarkMode
                               ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
                               : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
@@ -1707,7 +1740,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         <button
                           type="button"
                           onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                          className={`absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                          className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
                             isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
                           }`}
                           title={showConfirmPassword ? 'Hide password' : 'Show password'}
@@ -1718,11 +1751,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     </div>
                   )}
 
-                  {/* Informative Note: Compact clean onboarding note */}
+                  {/* Informative Note: Onboarding note */}
                   {authMode === 'register' && (
-                    <div className="text-[10.5px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                      <Wallet className="w-3.5 h-3.5 shrink-0" />
-                      <span>Initializes with Central Wallet ($0.00). Open Live/Demo accounts inside anytime.</span>
+                    <div className="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-2 py-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 w-full max-w-full break-words">
+                      <Wallet className="w-4 h-4 shrink-0" />
+                      <span className="break-words">Initializes with Central Wallet ($0.00). Open Live/Demo accounts inside anytime.</span>
                     </div>
                   )}
 
@@ -1731,14 +1764,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     type="submit"
                     id="submit-auth-btn"
                     disabled={isSubmitting}
-                    className={`w-full mt-2 py-2.5 sm:py-3 px-4 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-xs sm:text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 ${
+                    className={`w-full max-w-full mt-2 py-3.5 px-4 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-black text-sm shadow-xl hover:shadow-[#E51937]/30 active:scale-[0.98] transition-all flex items-center justify-center gap-2 min-h-[48px] ${
                       isSubmitting ? 'opacity-70 cursor-wait' : 'cursor-pointer'
                     }`}
                   >
                     {isSubmitting ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>{authMode === 'register' ? 'Opening Account...' : 'Authenticating...'}</span>
+                        <span>{authMode === 'register' ? 'Opening Account in Database...' : 'Authenticating with Database...'}</span>
                       </>
                     ) : (
                       <>
@@ -1750,9 +1783,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                 </form>
 
                 {/* Switch between Register and Login */}
-                <div className="pt-2 border-t border-slate-200 dark:border-neutral-800 text-center">
+                <div className="pt-3 border-t border-slate-200 dark:border-neutral-800 text-center w-full max-w-full">
                   {authMode === 'register' ? (
-                    <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    <p className={`text-xs sm:text-sm ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                       Already have an account?{' '}
                       <button
                         type="button"
@@ -1766,7 +1799,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       </button>
                     </p>
                   ) : (
-                    <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    <p className={`text-xs sm:text-sm ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                       Need a new VTM Markets trading profile?{' '}
                       <button
                         type="button"
@@ -1832,7 +1865,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   value={inputDbUrl}
                   onChange={(e) => setInputDbUrl(e.target.value)}
                   placeholder="https://xyzcompany.supabase.co"
-                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-hidden font-mono ${
+                  className={`w-full px-3 py-2 text-base sm:text-xs rounded-xl border focus:outline-hidden font-mono ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
                       : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
@@ -1849,7 +1882,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   value={inputDbKey}
                   onChange={(e) => setInputDbKey(e.target.value)}
                   placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-hidden font-mono ${
+                  className={`w-full px-3 py-2 text-base sm:text-xs rounded-xl border focus:outline-hidden font-mono ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
                       : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'

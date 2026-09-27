@@ -11,20 +11,25 @@ import {
   RefreshCw,
   Cpu,
   Users,
+  BellRing,
 } from 'lucide-react';
 import { ActionPopup } from '../../types';
 
 interface ActionToastBannerProps {
-  toasts: ActionPopup[];
+  toasts?: ActionPopup[];
+  popups?: ActionPopup[];
   onDismiss: (id: string) => void;
+  isDarkMode?: boolean;
 }
 
-export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, onDismiss }) => {
-  if (!toasts || toasts.length === 0) return null;
+export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, popups, onDismiss }) => {
+  const list = toasts || popups || [];
+  if (!list || list.length === 0) return null;
 
   return (
     <div className="fixed top-4 right-4 sm:right-6 z-[120] flex flex-col gap-2 pointer-events-none max-w-sm w-full">
-      {toasts.slice(0, 4).map((toast) => {
+      {list.slice(0, 4).map((toast) => {
+        const isPriceAlert = toast.type === 'PRICE_ALERT';
         const isSuccess =
           toast.type.includes('SUCCESS') ||
           toast.type === 'TRADE_OPENED' ||
@@ -40,7 +45,9 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, on
           <div
             key={toast.id}
             className={`pointer-events-auto flex items-start gap-3 p-3.5 rounded-xl border shadow-xl backdrop-blur-md transition-all duration-300 transform translate-y-0 animate-in slide-in-from-top-2 ${
-              isError
+              isPriceAlert
+                ? 'bg-neutral-900/95 border-amber-500/70 text-white ring-1 ring-amber-500/30'
+                : isError
                 ? 'bg-neutral-900/95 border-rose-500/40 text-white'
                 : isSuccess
                 ? 'bg-neutral-900/95 border-emerald-500/40 text-white'
@@ -48,6 +55,11 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, on
             }`}
           >
             <div className="shrink-0 mt-0.5">
+              {isPriceAlert && (
+                <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center animate-bounce">
+                  <BellRing className="w-4 h-4 text-amber-400" />
+                </div>
+              )}
               {toast.type === 'TRADE_OPENED' && toast.details?.side === 'BUY' && (
                 <TrendingUp className="w-5 h-5 text-emerald-400" />
               )}
@@ -85,6 +97,7 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, on
                 <AlertCircle className="w-5 h-5 text-rose-400" />
               )}
               {!isError &&
+                !isPriceAlert &&
                 toast.type !== 'TRADE_OPENED' &&
                 toast.type !== 'TRADE_CLOSED' &&
                 toast.type !== 'DEPOSIT_SUCCESS' &&
@@ -114,7 +127,7 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, on
             <button
               type="button"
               onClick={() => onDismiss(toast.id)}
-              className="text-neutral-400 hover:text-white p-1 -mr-1 -mt-1 rounded transition shrink-0"
+              className="text-neutral-400 hover:text-white p-1 -mr-1 -mt-1 rounded transition shrink-0 cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -124,3 +137,4 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, on
     </div>
   );
 };
+

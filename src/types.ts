@@ -203,6 +203,7 @@ export interface ActionPopup {
     | 'COPY_STOPPED'
     | 'LOGIN_SUCCESS'
     | 'LOGOUT_SUCCESS'
+    | 'PRICE_ALERT'
     | 'SUCCESS'
     | 'ERROR'
     | 'INFO';
@@ -227,3 +228,19 @@ export interface ActionPopup {
   };
   duration?: number;
 }
+
+export interface PriceAlert {
+  id: string;
+  symbol: string;
+  targetPrice: number;
+  targetType: 'BID' | 'ASK';
+  condition: 'ABOVE_OR_EQUAL' | 'BELOW_OR_EQUAL';
+  createdAt: number;
+  status: 'ACTIVE' | 'TRIGGERED' | 'CANCELLED';
+  note?: string;
+  initialPrice: number;
+  triggeredAt?: number;
+  triggeredPrice?: number;
+  recurring?: boolean;
+}
+

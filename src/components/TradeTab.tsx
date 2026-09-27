@@ -26,8 +26,10 @@ import {
   Activity,
   Layers,
   Lock,
+  BellRing,
 } from 'lucide-react';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
+import { PriceAlert } from '../types';
 
 interface TradeTabProps {
   instruments: Instrument[];
@@ -64,6 +66,8 @@ interface TradeTabProps {
   isDarkMode?: boolean;
   tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
   isMobileFrame?: boolean;
+  priceAlerts?: PriceAlert[];
+  onOpenPriceAlert?: (symbol?: string) => void;
 }
 
 export const TradeTab: React.FC<TradeTabProps> = ({
@@ -87,6 +91,8 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   isDarkMode = true,
   tickDirection = 'NEUTRAL',
   isMobileFrame = false,
+  priceAlerts = [],
+  onOpenPriceAlert,
 }) => {
   const currentInstrument =
     instruments.find((i) => i.symbol === selectedSymbol) || instruments[0];
@@ -282,6 +288,29 @@ export const TradeTab: React.FC<TradeTabProps> = ({
               <Clock className="w-3 h-3" />
               <span>Closed ({curMarketStatus.nextSession})</span>
             </span>
+          )}
+
+          {/* Quick Price Alert Button for Current Instrument */}
+          {onOpenPriceAlert && (
+            <button
+              onClick={() => onOpenPriceAlert(currentInstrument.symbol)}
+              className={`flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                priceAlerts.some((a) => a.symbol === currentInstrument.symbol && a.status === 'ACTIVE')
+                  ? 'bg-amber-500/15 border-amber-500/50 text-amber-400 hover:bg-amber-500/25 ring-1 ring-amber-500/30'
+                  : isDarkMode
+                  ? 'bg-neutral-800/90 hover:bg-neutral-700 border-neutral-700/80 text-neutral-300'
+                  : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
+              }`}
+              title={`Set price target alert for ${currentInstrument.symbol}`}
+            >
+              <BellRing className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden xs:inline">Alert</span>
+              {priceAlerts.filter((a) => a.symbol === currentInstrument.symbol && a.status === 'ACTIVE').length > 0 && (
+                <span className="w-3.5 h-3.5 rounded-full bg-amber-500 text-black text-[9px] font-black flex items-center justify-center">
+                  {priceAlerts.filter((a) => a.symbol === currentInstrument.symbol && a.status === 'ACTIVE').length}
+                </span>
+              )}
+            </button>
           )}
         </div>
 

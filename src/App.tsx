@@ -46,7 +46,9 @@ import { usePWAInstall } from './hooks/usePWAInstall';
 import { PWAInstallModals } from './components/pwa/PWAInstallModals';
 import { ActionPopupManager } from './components/popups/ActionPopupManager';
 import { ActionToastBanner } from './components/popups/ActionToastBanner';
-import { ActionPopup } from './types';
+import { ActionPopup, PriceAlert } from './types';
+import { PriceAlertModal } from './components/PriceAlertModal';
+import { loadPriceAlerts, savePriceAlerts, playAlertChime } from './utils/priceAlertStorage';
 import { UserRole, BotStrategyConfig, BotRunInstance, BotTrade, UserAuthProfile } from './types/botTypes';
 import {
   DEFAULT_INBUILT_BOTS,
@@ -292,6 +294,100 @@ export default function App() {
 
   const handleDismissToast = (id: string) => {
     setActionToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // Target Price Alerts State
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>(() => loadPriceAlerts());
+  const [isPriceAlertModalOpen, setIsPriceAlertModalOpen] = useState<boolean>(false);
+  const [priceAlertSymbol, setPriceAlertSymbol] = useState<string>('EURUSD');
+  const priceAlertsRef = useRef<PriceAlert[]>(priceAlerts);
+  priceAlertsRef.current = priceAlerts;
+
+  const handleOpenPriceAlertModal = (sym?: string) => {
+    if (sym) setPriceAlertSymbol(sym);
+    else setPriceAlertSymbol(selectedSymbol);
+    setIsPriceAlertModalOpen(true);
+  };
+
+  const handleCreatePriceAlert = (alertData: Omit<PriceAlert, 'id' | 'createdAt' | 'status'>) => {
+    const newAlert: PriceAlert = {
+      ...alertData,
+      id: `alt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: Date.now(),
+      status: 'ACTIVE',
+    };
+    setPriceAlerts((prev) => {
+      const next = [newAlert, ...prev];
+      savePriceAlerts(next);
+      return next;
+    });
+    addNotification(
+      `🔔 Target Alert Set: ${newAlert.symbol} (${newAlert.targetType}) @ ${newAlert.targetPrice}`
+    );
+    triggerActionPopup({
+      type: 'SUCCESS',
+      title: `Alert Set: ${newAlert.symbol}`,
+      subtitle: `Target: ${newAlert.targetType} @ ${newAlert.targetPrice} (${newAlert.condition === 'ABOVE_OR_EQUAL' ? '≥' : '≤'})`,
+      duration: 3500,
+    });
+  };
+
+  const handleDeletePriceAlert = (id: string) => {
+    setPriceAlerts((prev) => {
+      const next = prev.filter((a) => a.id !== id);
+      savePriceAlerts(next);
+      return next;
+    });
+  };
+
+  const handleClearTriggeredAlerts = () => {
+    setPriceAlerts((prev) => {
+      const next = prev.filter((a) => a.status === 'ACTIVE');
+      savePriceAlerts(next);
+      return next;
+    });
+  };
+
+  const handleReArmAlert = (id: string) => {
+    setPriceAlerts((prev) => {
+      const next = prev.map((a) => (a.id === id ? { ...a, status: 'ACTIVE' as const } : a));
+      savePriceAlerts(next);
+      return next;
+    });
+    addNotification('Price alert re-armed and actively monitoring.');
+    triggerActionPopup({
+      type: 'SUCCESS',
+      title: 'Alert Re-Armed',
+      subtitle: 'Actively monitoring target price level',
+      duration: 3000,
+    });
+  };
+
+  const handleTestTriggerAlert = (alert: PriceAlert) => {
+    playAlertChime();
+    const inst = instrumentsRef.current.find((i) => i.symbol === alert.symbol);
+    const curr = alert.targetType === 'BID' ? (inst?.bid || alert.targetPrice) : (inst?.ask || alert.targetPrice);
+    const formattedTarget = alert.targetPrice.toFixed(inst?.decimals || 4);
+    const formattedCurr = curr.toFixed(inst?.decimals || 4);
+    const noteStr = alert.note ? ` • "${alert.note}"` : '';
+
+    addNotification(
+      `🔔 Price Alert Hit: ${alert.symbol} ${alert.targetType} reached ${formattedTarget} (Market: ${formattedCurr})${noteStr}`
+    );
+
+    triggerActionPopup({
+      type: 'PRICE_ALERT',
+      title: `🔔 Target Alert: ${alert.symbol}`,
+      subtitle: `${alert.targetType} hit target ${formattedTarget} (Market: ${formattedCurr})${noteStr}`,
+      details: {
+        symbol: alert.symbol,
+        price: alert.targetPrice,
+        currentPrice: curr,
+        targetType: alert.targetType,
+        note: alert.note,
+      },
+      duration: 7000,
+    });
   };
 
   // Transactions Log
@@ -775,6 +871,68 @@ export default function App() {
         );
       }
     });
+
+    // Check target price alerts for live trigger
+    if (priceAlertsRef.current.length > 0) {
+      let anyAlertTriggered = false;
+      const updatedAlerts = priceAlertsRef.current.map((alert) => {
+        if (alert.status !== 'ACTIVE') return alert;
+        const inst = currentInstMap.get(alert.symbol);
+        if (!inst) return alert;
+
+        const currentPrice = alert.targetType === 'BID' ? inst.bid : inst.ask;
+        let isHit = false;
+
+        if (alert.condition === 'ABOVE_OR_EQUAL' && currentPrice >= alert.targetPrice) {
+          isHit = true;
+        } else if (alert.condition === 'BELOW_OR_EQUAL' && currentPrice <= alert.targetPrice) {
+          isHit = true;
+        }
+
+        if (isHit) {
+          anyAlertTriggered = true;
+          playAlertChime();
+
+          const formattedTarget = alert.targetPrice.toFixed(inst.decimals);
+          const formattedCurrent = currentPrice.toFixed(inst.decimals);
+          const noteStr = alert.note ? ` • "${alert.note}"` : '';
+
+          // 1. In-app Notification
+          addNotification(
+            `🔔 Price Alert Hit: ${alert.symbol} ${alert.targetType} reached ${formattedTarget} (Market: ${formattedCurrent})${noteStr}`
+          );
+
+          // 2. Global Toast Alert
+          triggerActionPopup({
+            type: 'PRICE_ALERT',
+            title: `🔔 Target Alert: ${alert.symbol}`,
+            subtitle: `${alert.targetType} hit target ${formattedTarget} (Market: ${formattedCurrent})${noteStr}`,
+            details: {
+              symbol: alert.symbol,
+              price: alert.targetPrice,
+              currentPrice,
+              targetType: alert.targetType,
+              note: alert.note,
+            },
+            duration: 7500,
+          });
+
+          return {
+            ...alert,
+            status: alert.recurring ? ('ACTIVE' as const) : ('TRIGGERED' as const),
+            triggeredAt: Date.now(),
+            triggeredPrice: currentPrice,
+          };
+        }
+
+        return alert;
+      });
+
+      if (anyAlertTriggered) {
+        setPriceAlerts(updatedAlerts);
+        savePriceAlerts(updatedAlerts);
+      }
+    }
   }, [instruments]);
 
   // Zero-balance safety mechanism: account NEVER goes negative; closes all open trades & bots immediately
@@ -2433,6 +2591,8 @@ export default function App() {
             isDarkMode={isDarkMode}
             tickStates={tickStates}
             oneClickTrading={oneClickTrading}
+            priceAlerts={priceAlerts}
+            onOpenPriceAlert={handleOpenPriceAlertModal}
           />
         );
       case 'instrument-detail':
@@ -2534,6 +2694,8 @@ export default function App() {
             isDarkMode={isDarkMode}
             tickDirection={currentTickDirection}
             isMobileFrame={isMobileFrame}
+            priceAlerts={priceAlerts}
+            onOpenPriceAlert={handleOpenPriceAlertModal}
           />
         );
       case 'hfcopy':
@@ -2632,6 +2794,7 @@ export default function App() {
           oneClickTrading={oneClickTrading}
           onToggleOneClick={() => setOneClickTrading(!oneClickTrading)}
           setActiveTab={setActiveTab}
+          activeTab={activeTab}
           notifications={notifications}
           onMarkNotificationsRead={() =>
             setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
@@ -2642,6 +2805,8 @@ export default function App() {
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
           onOpenAdminManager={() => setIsAdminManagerOpen(true)}
+          priceAlerts={priceAlerts}
+          onOpenPriceAlerts={() => handleOpenPriceAlertModal(selectedSymbol)}
         />
 
         {/* Scrollable Main Content - Full-width desktop responsive container */}
@@ -2649,8 +2814,8 @@ export default function App() {
           {renderTabContent()}
         </main>
 
-        {/* Sticky Bottom Navigation - Responsive container */}
-        <div className="sticky bottom-0 z-40 w-full border-t border-neutral-200 dark:border-neutral-800 bg-white/95 dark:bg-[#111317]/95 backdrop-blur-md">
+        {/* Sticky Bottom Navigation - Visible on Mobile/Tablet devices, hidden on Desktop PC for full-screen terminal experience */}
+        <div className="lg:hidden sticky bottom-0 z-40 w-full border-t border-neutral-200 dark:border-neutral-800 bg-white/95 dark:bg-[#111317]/95 backdrop-blur-md">
           <div className="max-w-2xl mx-auto">
             <BottomNav
               activeTab={activeTab}
@@ -2731,6 +2896,21 @@ export default function App() {
         <ActionToastBanner
           popups={actionToasts}
           onDismiss={handleDismissToast}
+          isDarkMode={isDarkMode}
+        />
+
+        {/* Real-time Target Price Alert Management Modal */}
+        <PriceAlertModal
+          isOpen={isPriceAlertModalOpen}
+          onClose={() => setIsPriceAlertModalOpen(false)}
+          instruments={instruments}
+          selectedSymbol={priceAlertSymbol}
+          alerts={priceAlerts}
+          onCreateAlert={handleCreatePriceAlert}
+          onDeleteAlert={handleDeletePriceAlert}
+          onClearTriggeredAlerts={handleClearTriggeredAlerts}
+          onReArmAlert={handleReArmAlert}
+          onTestTriggerAlert={handleTestTriggerAlert}
           isDarkMode={isDarkMode}
         />
       </div>

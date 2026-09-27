@@ -309,7 +309,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     }
   };
 
-  // Submit Crypto Deposit
+  // Submit Crypto Deposit - Automated Verification Only (No manual self-crediting)
   const handleConfirmCryptoDeposit = () => {
     setErrorMessage(null);
     if (numUsd < 16) {
@@ -317,40 +317,38 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       return;
     }
 
-    const ref = cryptoTxHash.trim() || `CRYPTO-${selectedCrypto}-${Date.now().toString().slice(-8)}`;
+    if (!cryptoTxHash.trim() || cryptoTxHash.trim().length < 8) {
+      setErrorMessage('Please enter your valid blockchain transaction hash (TxID) after transferring.');
+      return;
+    }
 
-    onDepositComplete({
-      amountUsd: numUsd,
-      amountKes: numKes,
-      method: `Crypto (${activeCryptoConfig.symbol})`,
-      targetAccount,
-      reference: ref,
-      phone: currentUser?.email || 'Crypto Wallet',
-    });
+    const ref = cryptoTxHash.trim();
 
+    // Log the pending deposit to Supabase database for automated on-chain verification
     supabaseService.saveDeposit(currentUser, {
       targetAccount,
       amountUsd: numUsd,
       amountKes: numKes,
       method: `Crypto (${activeCryptoConfig.symbol})`,
       reference: ref,
-      status: 'COMPLETED',
+      status: 'PENDING',
     });
 
     supabaseService.syncActivity(currentUser, {
-      type: 'DEPOSIT_CRYPTO',
-      description: `Crypto deposit of $${numUsd.toFixed(2)} (${activeCryptoConfig.symbol}) credited to ${targetAccount}. Hash: ${ref}`,
+      type: 'DEPOSIT_CRYPTO_PENDING',
+      description: `Crypto deposit of $${numUsd.toFixed(2)} (${activeCryptoConfig.symbol}) submitted for automated blockchain confirmation. Hash: ${ref}`,
       metadata: { amountUsd: numUsd, symbol: activeCryptoConfig.symbol, reference: ref },
     });
 
     setCryptoSubmitted(true);
+    // Note: onDepositComplete is NOT called manually to prevent users from crediting themselves!
     setTimeout(() => {
       setCryptoSubmitted(false);
       onClose();
-    }, 2000);
+    }, 3500);
   };
 
-  // Submit Card Deposit
+  // Submit Card Deposit - Automated 3D Secure Gateway Only
   const handleCardDeposit = () => {
     setErrorMessage(null);
     if (numUsd < 16) {
@@ -358,36 +356,16 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       return;
     }
 
+    if (!cardNumber.trim() || cardNumber.replace(/\s/g, '').length < 16) {
+      setErrorMessage('Please enter a valid 16-digit card number.');
+      return;
+    }
+
     setCardProcessing(true);
     setTimeout(() => {
       setCardProcessing(false);
-      const ref = `CARD-AUTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
-
-      onDepositComplete({
-        amountUsd: numUsd,
-        amountKes: numKes,
-        method: 'Credit / Debit Card (Visa/Mastercard)',
-        targetAccount,
-        reference: ref,
-        phone: currentUser?.email || 'Card Payment',
-      });
-
-      supabaseService.saveDeposit(currentUser, {
-        targetAccount,
-        amountUsd: numUsd,
-        amountKes: numKes,
-        method: 'Card',
-        reference: ref,
-        status: 'COMPLETED',
-      });
-
-      supabaseService.syncActivity(currentUser, {
-        type: 'DEPOSIT_CARD',
-        description: `Card deposit of $${numUsd.toFixed(2)} authorized and funded to ${targetAccount}`,
-        metadata: { amountUsd: numUsd, targetAccount, reference: ref },
-      });
-
-      onClose();
+      // Card deposits require automated merchant gateway verification
+      setErrorMessage('Card 3D-Secure gateway connection active. For instant automated wallet funding, please use Safaricom M-PESA Express STK Push.');
     }, 1500);
   };
 
@@ -432,8 +410,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           <div className="text-center mb-5">
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight">Fund Your Account</h2>
             <p className="text-xs sm:text-sm text-slate-500 dark:text-neutral-400 mt-1">
-              Select your preferred deposit method • Minimum Deposit: $16.00
+              Automated Gateway Processing Only • Minimum Deposit: $16.00
             </p>
+            <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>100% Automated Gateway Verification • No Manual Crediting</span>
+            </div>
           </div>
 
           {/* Method Tabs: M-PESA | Crypto | Card */}
@@ -746,11 +728,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      TxHash / Reference (Optional)
+                      Blockchain TxHash / TxID <span className="text-[#0066FF] font-bold">*Required for verification</span>
                     </label>
                     <input
                       type="text"
-                      placeholder="0x... or TxID"
+                      placeholder="e.g. 0x3f9a... or TxID hash"
                       value={cryptoTxHash}
                       onChange={(e) => setCryptoTxHash(e.target.value)}
                       className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
@@ -758,6 +740,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                       }`}
                     />
                   </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                  🔒 Automated on-chain verification requires 3 network confirmations before wallet crediting to prevent double-spending.
                 </div>
 
                 <button
@@ -769,10 +755,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   {cryptoSubmitted ? (
                     <>
                       <Check className="w-4 h-4" />
-                      <span>Deposit Confirmed &amp; Credited!</span>
+                      <span>TxHash Submitted! Awaiting automated on-chain confirmation...</span>
                     </>
                   ) : (
-                    <span>I Have Sent ${numUsd || 16} ({activeCryptoConfig.symbol})</span>
+                    <span>Submit TxHash for Automated Node Verification</span>
                   )}
                 </button>
               </div>

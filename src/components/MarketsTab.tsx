@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Instrument, MarketCategory, Timeframe } from '../types';
+import { Instrument, MarketCategory, Timeframe, PriceAlert } from '../types';
 import {
   Search,
   Star,
@@ -14,6 +14,7 @@ import {
   BarChart2,
   ExternalLink,
   Globe,
+  BellRing,
 } from 'lucide-react';
 import { formatPipPrice } from '../utils/pipFormatter';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
@@ -29,6 +30,8 @@ interface MarketsTabProps {
   isDarkMode?: boolean;
   tickStates?: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>;
   oneClickTrading?: boolean;
+  priceAlerts?: PriceAlert[];
+  onOpenPriceAlert?: (symbol: string) => void;
 }
 
 export const MarketsTab: React.FC<MarketsTabProps> = ({
@@ -39,6 +42,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   isDarkMode = false,
   tickStates = {},
   oneClickTrading = true,
+  priceAlerts = [],
+  onOpenPriceAlert,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<MarketCategory>('Forex');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
@@ -501,6 +506,26 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                             }`}
                           />
                         </button>
+
+                        {/* Set Price Alert Button */}
+                        {onOpenPriceAlert && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onOpenPriceAlert(inst.symbol);
+                            }}
+                            className="p-0.5 hover:scale-110 transition-transform cursor-pointer shrink-0"
+                            title={`Set price alert for ${inst.symbol}`}
+                          >
+                            <BellRing
+                              className={`w-3.5 h-3.5 ${
+                                priceAlerts.some((a) => a.symbol === inst.symbol && a.status === 'ACTIVE')
+                                  ? 'text-amber-400 fill-amber-400/20'
+                                  : 'text-neutral-400 hover:text-amber-400'
+                              }`}
+                            />
+                          </button>
+                        )}
                       </div>
 
                       {/* Center Sparkline & Spread Number */}
@@ -643,13 +668,25 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 <span className="text-xs text-neutral-400 block">{activePreviewInst.name}</span>
               </div>
 
-              <button
-                onClick={() => onSelectInstrument(activePreviewInst.symbol)}
-                className="flex items-center gap-1 text-xs font-bold text-[#E51937] hover:underline"
-              >
-                <span>Full Chart</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-3">
+                {onOpenPriceAlert && (
+                  <button
+                    onClick={() => onOpenPriceAlert(activePreviewInst.symbol)}
+                    className="flex items-center gap-1 text-xs font-bold text-amber-500 hover:text-amber-400 transition-colors cursor-pointer"
+                  >
+                    <BellRing className="w-3.5 h-3.5" />
+                    <span>Set Alert</span>
+                  </button>
+                )}
+
+                <button
+                  onClick={() => onSelectInstrument(activePreviewInst.symbol)}
+                  className="flex items-center gap-1 text-xs font-bold text-[#E51937] hover:underline cursor-pointer"
+                >
+                  <span>Full Chart</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             {/* Timeframe selector */}
