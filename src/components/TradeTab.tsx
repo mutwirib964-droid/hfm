@@ -705,85 +705,58 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           </div>
         )}
 
-        {/* Big Dual Execution Buttons with Requested Green / Red Box Highlights */}
-        {/* "if its buy to highlight green box and red to price goinng down" */}
+        {/* Dual Execution Buttons: Stable Red and Green buttons without pulse or movement */}
         <div className="grid grid-cols-2 gap-3 pt-1">
-          {/* Sell Button - Highlights red box when price is dropping or sell active */}
+          {/* Sell Button - Solid Red, stable and does not highlight or move */}
           <button
             id="trade-btn-sell"
             onClick={() => handleExecute('SELL')}
-            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-all border ${
+            disabled={!curMarketStatus.isOpen}
+            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-colors border select-none ${
               !curMarketStatus.isOpen
-                ? 'bg-neutral-800 border-neutral-700 opacity-60 cursor-not-allowed shadow-none'
-                : isPriceDown
-                ? 'bg-gradient-to-b from-[#E51937] to-[#B30F24] border-red-400 ring-4 ring-rose-500/70 shadow-[0_0_25px_rgba(229,25,55,0.7)] animate-pulse cursor-pointer'
-                : 'bg-gradient-to-b from-[#C5192D] to-[#990F20] hover:from-[#d61e34] hover:to-[#a91225] border-red-700/50 shadow-lg shadow-red-950/40 cursor-pointer'
+                ? 'bg-[#C5192D]/75 border-red-900/80 opacity-75 cursor-not-allowed shadow-none'
+                : 'bg-gradient-to-b from-[#E51937] to-[#B30F24] hover:from-[#f02040] hover:to-[#c01227] border-red-700/60 shadow-lg shadow-red-950/30 cursor-pointer'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-red-100">
               {!curMarketStatus.isOpen ? (
-                <span className="flex items-center gap-1 text-neutral-300"><Lock className="w-3 h-3" /> Market Closed</span>
+                <span className="flex items-center gap-1 text-red-200"><Lock className="w-3 h-3" /> Closed</span>
               ) : (
-                <>
-                  {isPriceDown && <TrendingDown className="w-3.5 h-3.5 text-white" />}
-                  <span>{orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}</span>
-                </>
+                <span>{orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}</span>
               )}
             </div>
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.bid.toFixed(currentInstrument.decimals)}
             </span>
-            {curMarketStatus.isOpen && (
-              isPriceDown ? (
-                <span className="text-[9px] bg-red-950/90 px-1.5 py-0.5 rounded font-mono font-black text-white mt-0.5 border border-red-400 flex items-center gap-0.5">
-                  <span>EXACT CHART PRICE</span>
-                  <span>▼</span>
-                </span>
-              ) : (
-                <span className="text-[9px] text-red-200/90 font-mono mt-0.5">
-                  Spread: -{currentInstrument.spread.toFixed(1)} pips
-                </span>
-              )
-            )}
+            <span className="text-[10px] text-red-200/90 font-mono mt-0.5">
+              Spread: -{currentInstrument.spread.toFixed(1)} pips
+            </span>
           </button>
 
-          {/* Buy Button - Highlights green box when price is rising or buy active */}
+          {/* Buy Button - Solid Green, stable and does not highlight or move */}
           <button
             id="trade-btn-buy"
             onClick={() => handleExecute('BUY')}
-            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-all border ${
+            disabled={!curMarketStatus.isOpen}
+            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-colors border select-none ${
               !curMarketStatus.isOpen
-                ? 'bg-neutral-800 border-neutral-700 opacity-60 cursor-not-allowed shadow-none'
-                : isPriceUp
-                ? 'bg-gradient-to-b from-[#00C076] to-[#009E60] border-emerald-300 ring-4 ring-emerald-500/70 shadow-[0_0_25px_rgba(0,192,118,0.7)] animate-pulse cursor-pointer'
-                : 'bg-gradient-to-b from-[#009E60] to-[#007A4A] hover:from-[#00b56e] hover:to-[#008d55] border-emerald-600/50 shadow-lg shadow-emerald-950/40 cursor-pointer'
+                ? 'bg-[#007A4A]/75 border-emerald-900/80 opacity-75 cursor-not-allowed shadow-none'
+                : 'bg-gradient-to-b from-[#00A86B] to-[#008050] hover:from-[#00b875] hover:to-[#008f59] border-emerald-600/60 shadow-lg shadow-emerald-950/30 cursor-pointer'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-emerald-100">
               {!curMarketStatus.isOpen ? (
-                <span className="flex items-center gap-1 text-neutral-300"><Lock className="w-3 h-3" /> Market Closed</span>
+                <span className="flex items-center gap-1 text-emerald-200"><Lock className="w-3 h-3" /> Closed</span>
               ) : (
-                <>
-                  {isPriceUp && <TrendingUp className="w-3.5 h-3.5 text-white" />}
-                  <span>{orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}</span>
-                </>
+                <span>{orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}</span>
               )}
             </div>
             <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
               {currentInstrument.ask.toFixed(currentInstrument.decimals)}
             </span>
-            {curMarketStatus.isOpen && (
-              isPriceUp ? (
-                <span className="text-[9px] bg-emerald-950/90 px-1.5 py-0.5 rounded font-mono font-black text-white mt-0.5 border border-emerald-400 flex items-center gap-0.5">
-                  <span>EXACT CHART PRICE</span>
-                  <span>▲</span>
-                </span>
-              ) : (
-                <span className="text-[9px] text-emerald-200/90 font-mono mt-0.5">
-                  Spread: +{currentInstrument.spread.toFixed(1)} pips
-                </span>
-              )
-            )}
+            <span className="text-[10px] text-emerald-200/90 font-mono mt-0.5">
+              Spread: +{currentInstrument.spread.toFixed(1)} pips
+            </span>
           </button>
         </div>
       </div>

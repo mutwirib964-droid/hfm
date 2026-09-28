@@ -404,11 +404,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.stroke();
     }
 
-    // Draw Smooth Animated Bid and Ask Lines (TradingView fidelity)
-    const smoothBid = animatedBidRef.current;
-    const smoothAsk = animatedAskRef.current;
-    const bidY = priceToY(smoothBid);
-    const askY = priceToY(smoothAsk);
+    // Draw Bid and Ask Lines in exact synchronization with execution buttons
+    const bidY = priceToY(currentBid);
+    const askY = priceToY(currentAsk);
     const spreadPoints = Math.round(Math.abs(currentAsk - currentBid) * Math.pow(10, decimals <= 3 ? 2 : 4));
 
     // 1. Bid Line (Sell Price - Red dashed)

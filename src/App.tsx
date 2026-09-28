@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   ActiveTab,
   Instrument,
@@ -288,13 +288,19 @@ export default function App() {
       timestamp: Date.now(),
     };
     setCurrentActionPopup(fullPopup);
-    setActionToasts((prev) => [fullPopup, ...prev.slice(0, 3)]);
+    setActionToasts((prev) => [fullPopup, ...prev.slice(0, 2)]);
     addNotification(fullPopup.title);
+
+    // Automatically remove toast and clear popup after 3.2 seconds
+    setTimeout(() => {
+      setActionToasts((prev) => prev.filter((t) => t.id !== uniqueId));
+      setCurrentActionPopup((curr) => (curr?.id === uniqueId ? null : curr));
+    }, 3200);
   };
 
-  const handleDismissToast = (id: string) => {
+  const handleDismissToast = useCallback((id: string) => {
     setActionToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  }, []);
 
   // Target Price Alerts State
   const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>(() => loadPriceAlerts());
@@ -630,31 +636,39 @@ export default function App() {
         const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
         let changed = false;
 
-        // Choose 2 to 4 other random instruments to tick along with the active symbol
+        // Choose 3 to 6 other random open instruments to tick along with the active symbol
         const candidates = prevInstruments.filter((i) => i.symbol !== activeSym);
         const randomPicks = new Set<string>();
         if (candidates.length > 0) {
-          for (let i = 0; i < Math.min(3, candidates.length); i++) {
+          const numPicks = Math.min(5, candidates.length);
+          for (let i = 0; i < numPicks; i++) {
             const idx = Math.floor(Math.random() * candidates.length);
             randomPicks.add(candidates[idx].symbol);
           }
         }
 
         const updated = prevInstruments.map((inst) => {
+          // 1. Check if market is closed for this instrument:
+          // If closed: strictly FROZEN, no price movement underneath!
+          const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+          if (!marketStatus.isOpen) {
+            return inst;
+          }
+
           const isTarget = inst.symbol === activeSym || randomPicks.has(inst.symbol);
           if (!isTarget) return inst;
 
-          // Anchor to master TradingView quote to prevent drift
+          // 2. Bound micro-tick fluctuations tightly to master TradingView anchor (within 1-2 pipettes)
           const anchor = realTVQuotesRef.current.get(inst.symbol);
-          const anchorBid = anchor ? anchor.bid : inst.bid;
-          const anchorAsk = anchor ? anchor.ask : inst.ask;
-          const anchorMid = (anchorBid + anchorAsk) / 2;
+          const baseBid = anchor ? anchor.bid : inst.bid;
+          const baseAsk = anchor ? anchor.ask : inst.ask;
+          const baseMid = (baseBid + baseAsk) / 2;
           const currentMid = (inst.bid + inst.ask) / 2;
-          const drift = currentMid - anchorMid;
+          const drift = currentMid - baseMid;
 
-          // Sub-pip micro tick size based on asset class
+          // Sub-pip micro tick step based on asset decimals
           let step = 0.00001;
-          let maxDrift = 0.00004;
+          let maxDrift = 0.00003;
 
           if (inst.decimals >= 5) {
             step = 0.00001;
@@ -664,28 +678,27 @@ export default function App() {
             maxDrift = 0.003;
           } else if (inst.decimals === 2) {
             if (inst.symbol === 'XAUUSD') {
-              step = 0.03;
-              maxDrift = 0.12;
-            } else if (inst.symbol.includes('OIL')) {
-              step = 0.01;
-              maxDrift = 0.04;
-            } else {
               step = 0.02;
               maxDrift = 0.08;
+            } else if (inst.symbol.includes('OIL')) {
+              step = 0.01;
+              maxDrift = 0.03;
+            } else {
+              step = 0.02;
+              maxDrift = 0.06;
             }
           } else {
             step = 0.1;
-            maxDrift = 0.5;
+            maxDrift = 0.4;
           }
 
-          // Bound price tightly to TradingView anchor
           let dir: 'UP' | 'DOWN';
-          if (drift > maxDrift) {
+          if (drift >= maxDrift) {
             dir = 'DOWN';
-          } else if (drift < -maxDrift) {
+          } else if (drift <= -maxDrift) {
             dir = 'UP';
           } else {
-            dir = Math.random() > 0.48 ? 'UP' : 'DOWN';
+            dir = Math.random() > 0.49 ? 'UP' : 'DOWN';
           }
 
           const spread = inst.spread > 0 ? inst.spread : Math.max(anchor ? anchor.spread : 0.00002, 0.00002);
@@ -700,8 +713,6 @@ export default function App() {
             nextTickStates[inst.symbol] = dir;
 
             // When active trading symbol ticks, immediately update chart candle
-            // Going up -> exact Ask price (matches BUY button)
-            // Going down -> exact Bid price (matches SELL button)
             if (inst.symbol === activeSym) {
               const exactChartPrice = dir === 'UP' ? newAsk : newBid;
               setCandles((prev) => {
@@ -715,12 +726,13 @@ export default function App() {
             }
           }
 
-          const sparkline = [...inst.sparkline.slice(1), newBid];
+          const sparkline = newBid !== inst.bid ? [...inst.sparkline.slice(1), newBid] : inst.sparkline;
 
           return {
             ...inst,
             bid: newBid,
             ask: newAsk,
+            spread: anchor?.spread || inst.spread,
             sparkline,
           };
         });
@@ -730,7 +742,7 @@ export default function App() {
           if (highlightTimeout) clearTimeout(highlightTimeout);
           highlightTimeout = setTimeout(() => {
             if (isMounted) setTickStates({});
-          }, 600);
+          }, 900);
         }
 
         return updated;
@@ -820,6 +832,11 @@ export default function App() {
     // Update active chart's latest candle smoothly in perfect sync with Buy/Sell buttons
     const activeInst = currentInstMap.get(selectedSymbol);
     if (activeInst) {
+      const marketStatus = checkInstrumentMarketHours(activeInst.symbol, activeInst.category);
+      if (!marketStatus.isOpen) {
+        // Market is closed: prices and candles do not move underneath!
+        return;
+      }
       const dir = tickStates[selectedSymbol] || 'NEUTRAL';
       setCandles((prevCandles) => {
         if (prevCandles.length === 0) return prevCandles;

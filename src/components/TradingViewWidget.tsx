@@ -154,17 +154,13 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
               {/* SELL / Bid Badge (Red) - Perfectly matching SELL button */}
               <div
                 title="SELL (Bid) Price - Synchronized with SELL button"
-                className={`flex items-center rounded overflow-hidden shadow-sm border transition-all ${
-                  tickDirection === 'DOWN'
-                    ? 'border-red-400 ring-2 ring-rose-500/70 shadow-[0_0_12px_rgba(229,25,55,0.7)] animate-pulse'
-                    : 'border-red-800/60'
-                }`}
+                className="flex items-center rounded overflow-hidden shadow-xs border border-red-800/80 bg-[#1A1215]"
               >
-                <span className="bg-[#990F20] text-red-100 px-1 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
                   SELL
                 </span>
                 <span className="bg-[#E51937] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {bid.toFixed(decimals)} {tickDirection === 'DOWN' && '▼'}
+                  {bid.toFixed(decimals)}
                 </span>
               </div>
 
@@ -196,17 +192,13 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
               {/* BUY / Ask Badge (Green) - Perfectly matching BUY button */}
               <div
                 title="BUY (Ask) Price - Synchronized with BUY button"
-                className={`flex items-center rounded overflow-hidden shadow-sm border transition-all ${
-                  tickDirection === 'UP'
-                    ? 'border-emerald-300 ring-2 ring-emerald-500/70 shadow-[0_0_12px_rgba(0,192,118,0.7)] animate-pulse'
-                    : 'border-emerald-800/60'
-                }`}
+                className="flex items-center rounded overflow-hidden shadow-xs border border-emerald-800/80 bg-[#121A15]"
               >
-                <span className="bg-[#007A4A] text-emerald-100 px-1 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
                   BUY
                 </span>
                 <span className="bg-[#00C076] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {ask.toFixed(decimals)} {tickDirection === 'UP' && '▲'}
+                  {ask.toFixed(decimals)}
                 </span>
               </div>
             </div>

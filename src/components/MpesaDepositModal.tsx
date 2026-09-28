@@ -341,7 +341,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     });
 
     setCryptoSubmitted(true);
-    // Note: onDepositComplete is NOT called manually to prevent users from crediting themselves!
+    // Explicitly guarantee: onDepositComplete is NEVER called for crypto deposits!
+    // Crypto deposits do not credit account balances.
     setTimeout(() => {
       setCryptoSubmitted(false);
       onClose();
@@ -743,22 +744,22 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
-                  🔒 Automated on-chain verification requires 3 network confirmations before wallet crediting to prevent double-spending.
+                  🔒 Notice: Direct cryptocurrency transfers do NOT credit account balances automatically. Only automated M-PESA STK Push verified by Hashback will credit trading accounts upon confirmed callback.
                 </div>
 
                 <button
                   type="button"
                   disabled={cryptoSubmitted}
                   onClick={handleConfirmCryptoDeposit}
-                  className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  className="w-full py-3 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-1.5"
                 >
                   {cryptoSubmitted ? (
                     <>
-                      <Check className="w-4 h-4" />
-                      <span>TxHash Submitted! Awaiting automated on-chain confirmation...</span>
+                      <Check className="w-4 h-4 text-emerald-400" />
+                      <span>TxHash Submitted for Manual Compliance Review (Non-Credited)</span>
                     </>
                   ) : (
-                    <span>Submit TxHash for Automated Node Verification</span>
+                    <span>Submit TxHash for Compliance Review (Non-Credited)</span>
                   )}
                 </button>
               </div>

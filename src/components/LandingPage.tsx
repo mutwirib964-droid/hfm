@@ -155,21 +155,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     const detected = detectUserCountry();
     setSelectedCountry(detected);
 
-    // Load server-backed Supabase configuration so phones/tablets connect automatically
-    supabaseService.initServerConfig().then((cfg) => {
-      if (cfg && cfg.url && cfg.anonKey) {
-        setIsDbConfigured(true);
-        setInputDbUrl(cfg.url);
-        setInputDbKey(cfg.anonKey);
-      } else {
-        setIsDbConfigured(supabaseService.isConfigured());
-        const current = supabaseService.getConfig();
-        if (current) {
-          setInputDbUrl(current.url);
-          setInputDbKey(current.anonKey);
-        }
-      }
-    });
+    // Load server-backed Supabase configuration silently in the background
+    supabaseService.initServerConfig();
   }, []);
 
   const filteredInstruments = instruments.filter((inst) => {
@@ -254,7 +241,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       if (!saveDbResult) {
         setIsSubmitting(false);
         setValidationError(
-          'Failed to record account in the database. All user accounts must be persisted to the cloud database before access is granted. Please verify your connection and try again.'
+          'Unable to complete registration. Please check your connection and try again.'
         );
         return;
       }
@@ -270,7 +257,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           errLower.includes('duplicate')
         ) {
           setIsSubmitting(false);
-          setValidationError('An account with this email already exists in the database. Please sign in instead.');
+          setValidationError('An account with this email already exists. Please sign in instead.');
           return;
         }
       }
@@ -311,7 +298,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       // Ensure server-persisted Supabase config is loaded on this mobile device/browser
       if (!supabaseService.isConfigured()) {
         await supabaseService.initServerConfig();
-        setIsDbConfigured(supabaseService.isConfigured());
       }
 
       // 1. If database is configured, test against Supabase Auth & Supabase Database
@@ -500,26 +486,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               {isDarkMode ? <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
             </button>
           )}
-
-          {/* Cloud Database Connection Status */}
-          <button
-            type="button"
-            onClick={() => setIsDbModalOpen(true)}
-            className={`flex items-center gap-1 p-1.5 sm:px-3 sm:py-2 rounded-lg sm:rounded-xl border text-xs font-bold transition-all cursor-pointer shrink-0 ${
-              isDbConfigured
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20'
-                : 'bg-amber-500/10 border-amber-500/30 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20'
-            }`}
-            title="Configure Cloud Database for Cross-Device Synchronization"
-          >
-            <Database className="w-3.5 h-3.5" />
-            <span
-              className={`w-1.5 h-1.5 rounded-full sm:hidden ${
-                isDbConfigured ? 'bg-emerald-500' : 'bg-amber-500'
-              }`}
-            />
-            <span className="hidden sm:inline">{isDbConfigured ? 'Cloud DB Active' : 'Connect Cloud DB'}</span>
-          </button>
 
           {/* Client Portal Login & Register CTA */}
           <button
@@ -1551,16 +1517,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                       <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                       <span className="leading-snug break-words">{validationError}</span>
                     </div>
-                    {!isDbConfigured && (
-                      <button
-                        type="button"
-                        onClick={() => setIsDbModalOpen(true)}
-                        className="self-start text-[11px] font-bold text-blue-500 dark:text-blue-400 hover:underline flex items-center gap-1.5 cursor-pointer ml-6"
-                      >
-                        <Database className="w-3.5 h-3.5" />
-                        <span>Click here to connect Supabase Cloud Database</span>
-                      </button>
-                    )}
                   </div>
                 )}
 
@@ -1771,7 +1727,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     {isSubmitting ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>{authMode === 'register' ? 'Opening Account in Database...' : 'Authenticating with Database...'}</span>
+                        <span>{authMode === 'register' ? 'Creating Live Account...' : 'Signing in to Terminal...'}</span>
                       </>
                     ) : (
                       <>
@@ -1815,102 +1771,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   )}
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SUPABASE CLOUD DATABASE CONFIGURATION MODAL */}
-      {isDbModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl relative ${
-              isDarkMode ? 'bg-[#14171E] border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Database className="w-5 h-5 text-blue-500" />
-                <h3 className="font-bold text-base">Supabase Cloud Database</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDbModalOpen(false);
-                  setDbNotice(null);
-                }}
-                className="text-neutral-400 hover:text-white p-1 cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-neutral-400 mb-4 leading-relaxed">
-              Connect your Supabase project to enable persistent cross-device authentication and real-time syncing for accounts, trades, settings, deposits, and withdrawals across all phones and computers.
-            </p>
-
-            {dbNotice && (
-              <div className="mb-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/25 text-blue-500 dark:text-blue-400 text-xs font-semibold">
-                {dbNotice}
-              </div>
-            )}
-
-            <div className="space-y-3.5 mb-6">
-              <div>
-                <label className="block text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-1">
-                  Project URL
-                </label>
-                <input
-                  type="text"
-                  value={inputDbUrl}
-                  onChange={(e) => setInputDbUrl(e.target.value)}
-                  placeholder="https://xyzcompany.supabase.co"
-                  className={`w-full px-3 py-2 text-base sm:text-xs rounded-xl border focus:outline-hidden font-mono ${
-                    isDarkMode
-                      ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
-                      : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
-                  }`}
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-neutral-400 uppercase tracking-wider mb-1">
-                  Anon Public Key
-                </label>
-                <textarea
-                  rows={3}
-                  value={inputDbKey}
-                  onChange={(e) => setInputDbKey(e.target.value)}
-                  placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-                  className={`w-full px-3 py-2 text-base sm:text-xs rounded-xl border focus:outline-hidden font-mono ${
-                    isDarkMode
-                      ? 'bg-neutral-900 border-neutral-700 text-white focus:border-blue-500'
-                      : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-blue-500'
-                  }`}
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDbModalOpen(false);
-                  setDbNotice(null);
-                }}
-                className="px-4 py-2 text-xs font-semibold rounded-xl text-neutral-400 hover:text-white cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveDbCredentials}
-                disabled={isTestingDb}
-                className="px-5 py-2 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow-md cursor-pointer flex items-center gap-1.5"
-              >
-                {isTestingDb ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                <span>{isTestingDb ? 'Connecting...' : 'Save & Connect All Devices'}</span>
-              </button>
             </div>
           </div>
         </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Check, X, AlertCircle } from 'lucide-react';
 import { ActionPopup } from '../../types';
 
@@ -14,23 +14,27 @@ export const ActionPopupManager: React.FC<ActionPopupManagerProps> = ({
 }) => {
   const [visible, setVisible] = useState(false);
   const [popup, setPopup] = useState<ActionPopup | null>(null);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   useEffect(() => {
     if (currentPopup) {
       setPopup(currentPopup);
       setVisible(true);
 
-      // Clean auto-dismiss in 3.2 seconds
+      // Clean auto-dismiss in 3 seconds
       const timeout = setTimeout(() => {
         setVisible(false);
-        setTimeout(onDismiss, 200);
-      }, currentPopup.duration || 3200);
+        setTimeout(() => {
+          onDismissRef.current();
+        }, 150);
+      }, currentPopup.duration || 3000);
 
       return () => clearTimeout(timeout);
     } else {
       setVisible(false);
     }
-  }, [currentPopup, onDismiss]);
+  }, [currentPopup?.id]);
 
   if (!popup || !visible) return null;
 

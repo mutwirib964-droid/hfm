@@ -3,7 +3,7 @@ import React from 'react';
 interface VTMLogoProps {
   className?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
-  variant?: 'top' | 'full'; // 'top' = just VTM; 'full' = VTM Markets
+  variant?: 'top' | 'full' | 'icon-only'; // 'top' = VTM; 'full' = VTM Markets; 'icon-only' = emblem icon only
   showSubtitle?: boolean;
   isDarkMode?: boolean;
 }
@@ -116,42 +116,44 @@ export const VTMLogo: React.FC<VTMLogoProps> = ({
         </svg>
       </div>
 
-      {/* Brand Typography */}
-      <div className="flex flex-col justify-center">
-        {variant === 'top' ? (
-          /* On the platform on top: Just show VTM */
-          <div className="flex items-center tracking-wider">
-            <span
-              className={`font-black tracking-wider leading-none ${dimensions.fontSize} ${
-                isDarkMode ? 'text-white' : 'text-slate-900'
-              }`}
-            >
-              VTM
-            </span>
-            <span className="w-1.5 h-1.5 rounded-full bg-[#E51937] ml-1.5 self-center inline-block" />
-          </div>
-        ) : (
-          /* Full Brand Presentation: VTM Markets */
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`font-black tracking-wider leading-none ${dimensions.fontSize} ${
-                isDarkMode ? 'text-white' : 'text-slate-900'
-              }`}
-            >
-              VTM
-            </span>
-            <span className={`font-bold tracking-tight leading-none text-[#E51937] ${dimensions.fontSize}`}>
-              Markets
-            </span>
-          </div>
-        )}
+      {/* Brand Typography (Omitted when variant is 'icon-only') */}
+      {variant !== 'icon-only' && (
+        <div className="flex flex-col justify-center">
+          {variant === 'top' ? (
+            /* On the platform on top: Just show VTM */
+            <div className="flex items-center tracking-wider">
+              <span
+                className={`font-black tracking-wider leading-none ${dimensions.fontSize} ${
+                  isDarkMode ? 'text-white' : 'text-slate-900'
+                }`}
+              >
+                VTM
+              </span>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#E51937] ml-1.5 self-center inline-block" />
+            </div>
+          ) : (
+            /* Full Brand Presentation: VTM Markets */
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`font-black tracking-wider leading-none ${dimensions.fontSize} ${
+                  isDarkMode ? 'text-white' : 'text-slate-900'
+                }`}
+              >
+                VTM
+              </span>
+              <span className={`font-bold tracking-tight leading-none text-[#E51937] ${dimensions.fontSize}`}>
+                Markets
+              </span>
+            </div>
+          )}
 
-        {showSubtitle && (
-          <span className={`font-semibold tracking-widest uppercase text-neutral-400 mt-0.5 ${dimensions.subSize}`}>
-            Global Broker
-          </span>
-        )}
-      </div>
+          {showSubtitle && (
+            <span className={`font-semibold tracking-widest uppercase text-neutral-400 mt-0.5 ${dimensions.subSize}`}>
+              Global Broker
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };

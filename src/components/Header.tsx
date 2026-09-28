@@ -130,9 +130,10 @@ export const Header: React.FC<HeaderProps> = ({
 
         <button
           onClick={() => setActiveTab('markets')}
-          className="flex items-center gap-1.5 focus:outline-none cursor-pointer"
+          className="flex items-center focus:outline-none cursor-pointer shrink-0"
+          title="VTM Markets"
         >
-          <VTMLogo size="sm" isDarkMode={isDarkMode} />
+          <VTMLogo size="sm" variant="icon-only" isDarkMode={isDarkMode} />
         </button>
 
         {/* Desktop Navigation Tabs for Full Screen PC View */}
@@ -164,7 +165,7 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Center: Active Trading Account Dropdown Switcher (Optimized & High-Visibility on Mobile) */}
-      <div className="relative mx-1 sm:mx-2 shrink min-w-0">
+      <div className="relative mx-1 sm:mx-2 flex-1 min-w-0 max-w-[165px] xs:max-w-[200px] sm:max-w-xs">
         {!selectedAccount || accounts.length === 0 ? (
           <div className="flex items-center gap-1 sm:gap-2">
             <div
@@ -196,7 +197,7 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="account-selector-btn"
             onClick={() => setShowAccountMenu(!showAccountMenu)}
-            className={`flex items-center gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-1.5 border rounded-xl text-left transition-all active:scale-[0.98] max-w-[125px] xs:max-w-[160px] sm:max-w-none overflow-hidden ${
+            className={`w-full flex items-center justify-between gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-1.5 border rounded-lg sm:rounded-xl text-left transition-all active:scale-[0.98] min-w-0 overflow-hidden ${
               isDarkMode
                 ? 'bg-[#1A1D23] hover:bg-[#22262E] border-neutral-700/80 text-white'
                 : 'bg-slate-100 hover:bg-slate-200/90 border-slate-300 text-slate-900 shadow-xs'
@@ -350,12 +351,12 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Right Controls: Deposit, Light/Dark Theme, View Mode & Notifications */}
-      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 whitespace-nowrap z-10">
         {/* Quick Deposit Pill Button - High Priority on Mobile */}
         <button
           id="header-deposit-btn"
           onClick={onOpenDeposit}
-          className="flex items-center gap-1 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
+          className="flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-lg sm:rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
           title="Deposit Funds"
         >
           <PlusCircle className="w-3.5 h-3.5" />
@@ -442,12 +443,12 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </button>
 
-        {/* Price Alerts Target Button */}
+        {/* Price Alerts Target Button (Visible on sm+ screens; on mobile accessed via Notification Drawer) */}
         {onOpenPriceAlerts && (
           <button
             id="price-alerts-header-btn"
             onClick={onOpenPriceAlerts}
-            className={`p-1.5 sm:p-2 rounded-lg transition-colors border relative shrink-0 cursor-pointer ${
+            className={`hidden sm:flex p-1.5 sm:p-2 rounded-lg transition-colors border relative shrink-0 cursor-pointer ${
               isDarkMode
                 ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white border-neutral-700/60'
                 : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'

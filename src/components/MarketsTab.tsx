@@ -565,9 +565,9 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                       {/* Sell Box */}
                       <button
                         onClick={(e) => handleTradeClick(e, inst, 'SELL')}
-                        className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-[0.98] min-w-0 ${
+                        className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
                           tick === 'DOWN'
-                            ? 'bg-rose-500/25 dark:bg-rose-500/30 border-rose-500 text-rose-700 dark:text-rose-200 ring-1 ring-rose-500/40 shadow-xs'
+                            ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-500 text-rose-600 dark:text-rose-300 ring-1 ring-rose-500/30 shadow-xs font-semibold'
                             : isDarkMode
                             ? 'bg-[#1F222A] border-neutral-700/60 hover:border-rose-500/50 text-white'
                             : 'bg-neutral-50/90 border-neutral-200 hover:border-rose-300 text-neutral-900'
@@ -597,9 +597,9 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                       {/* Buy Box */}
                       <button
                         onClick={(e) => handleTradeClick(e, inst, 'BUY')}
-                        className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-[0.98] min-w-0 ${
+                        className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
                           tick === 'UP'
-                            ? 'bg-emerald-500/25 dark:bg-emerald-500/30 border-emerald-500 text-emerald-700 dark:text-emerald-200 ring-1 ring-emerald-500/40 shadow-xs'
+                            ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 shadow-xs font-semibold'
                             : isDarkMode
                             ? 'bg-[#1F222A] border-neutral-700/60 hover:border-emerald-500/50 text-white'
                             : 'bg-neutral-50/90 border-neutral-200 hover:border-emerald-300 text-neutral-900'
