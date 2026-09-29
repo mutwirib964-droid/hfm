@@ -309,11 +309,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     }
   };
 
-  // Submit Crypto Deposit - Automated Verification Only (No manual self-crediting)
+  // Submit Crypto Deposit - Verification Only
   const handleConfirmCryptoDeposit = () => {
     setErrorMessage(null);
-    if (numUsd < 16) {
-      setErrorMessage('Minimum deposit amount is $16.00 USD.');
+    const minRequired = selectedCrypto === 'BTC' ? 50 : 16;
+    if (numUsd < minRequired) {
+      setErrorMessage(`Minimum deposit for ${selectedCrypto === 'BTC' ? 'Bitcoin (BTC)' : 'cryptocurrency'} is $${minRequired}.00 USD.`);
       return;
     }
 
@@ -336,7 +337,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
     supabaseService.syncActivity(currentUser, {
       type: 'DEPOSIT_CRYPTO_PENDING',
-      description: `Crypto deposit of $${numUsd.toFixed(2)} (${activeCryptoConfig.symbol}) submitted for automated blockchain confirmation. Hash: ${ref}`,
+      description: `Crypto deposit of $${numUsd.toFixed(2)} (${activeCryptoConfig.symbol}) submitted for blockchain network confirmation. Hash: ${ref}`,
       metadata: { amountUsd: numUsd, symbol: activeCryptoConfig.symbol, reference: ref },
     });
 
@@ -411,12 +412,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           <div className="text-center mb-5">
             <h2 className="text-xl sm:text-2xl font-bold tracking-tight">Fund Your Account</h2>
             <p className="text-xs sm:text-sm text-slate-500 dark:text-neutral-400 mt-1">
-              Automated Gateway Processing Only • Minimum Deposit: $16.00
+              Select your payment method below to fund your wallet
             </p>
-            <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>100% Automated Gateway Verification • No Manual Crediting</span>
-            </div>
           </div>
 
           {/* Method Tabs: M-PESA | Crypto | Card */}
@@ -442,6 +439,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               onClick={() => {
                 setActiveTab('crypto');
                 setErrorMessage(null);
+                if (selectedCrypto === 'BTC' && (parseFloat(amountInput) || 0) < 50) {
+                  setAmountInput('50');
+                }
               }}
               className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 activeTab === 'crypto'
@@ -459,7 +459,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 setActiveTab('card');
                 setErrorMessage(null);
               }}
-              className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              className={`py-2.5 px-2.5 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                 activeTab === 'card'
                   ? 'bg-[#0066FF] text-white shadow-sm font-bold'
                   : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
@@ -467,6 +467,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             >
               <CreditCard className="w-3.5 h-3.5" />
               <span>Card</span>
+              <span className="text-[9px] px-1 py-0.5 bg-amber-500/20 text-amber-500 dark:text-amber-400 rounded font-black tracking-tight ml-0.5">Soon</span>
             </button>
           </div>
 
@@ -631,7 +632,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   Cryptocurrency Direct Deposit
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-                  Select your token below to copy the verified deposit address. Min: $16.00
+                  Select your token below to copy the verified deposit address. {selectedCrypto === 'BTC' ? 'Min: $50.00' : 'Min: $16.00'}
                 </p>
               </div>
 
@@ -644,6 +645,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     onClick={() => {
                       setSelectedCrypto(coin.id as any);
                       setErrorMessage(null);
+                      if (coin.id === 'BTC' && (parseFloat(amountInput) || 0) < 50) {
+                        setAmountInput('50');
+                      }
                     }}
                     className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
                       selectedCrypto === coin.id
@@ -657,6 +661,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     <span className="block text-[10px] text-slate-500 dark:text-neutral-400 font-mono mt-0.5">
                       {coin.symbol}
                     </span>
+                    {coin.id === 'BTC' && (
+                      <span className="inline-block text-[9px] px-1.5 py-0.2 bg-amber-500/20 text-amber-500 dark:text-amber-400 font-bold rounded mt-1">
+                        Min $50
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -714,12 +723,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      Amount (USD) <span className="text-[#0066FF] font-bold">*Min $16</span>
+                      Amount (USD) <span className="text-[#0066FF] font-bold">{selectedCrypto === 'BTC' ? '*Min $50 for Bitcoin' : '*Min $16'}</span>
                     </label>
                     <input
                       type="number"
-                      min="16"
-                      placeholder="Min $16"
+                      min={selectedCrypto === 'BTC' ? 50 : 16}
+                      placeholder={selectedCrypto === 'BTC' ? 'Min $50' : 'Min $16'}
                       value={amountInput}
                       onChange={(e) => setAmountInput(e.target.value)}
                       className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
@@ -743,122 +752,77 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   </div>
                 </div>
 
-                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-600 dark:text-amber-400 font-medium">
-                  🔒 Notice: Direct cryptocurrency transfers do NOT credit account balances automatically. Only automated M-PESA STK Push verified by Hashback will credit trading accounts upon confirmed callback.
+                <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-neutral-800/80 border border-slate-200 dark:border-neutral-700 text-[11px] text-slate-600 dark:text-neutral-300 font-medium">
+                  Notice: Please transfer only {activeCryptoConfig.symbol} to the designated wallet address. Minimum deposit is {selectedCrypto === 'BTC' ? '$50.00' : '$16.00'} USD. Enter your transaction hash above after transferring.
                 </div>
 
                 <button
                   type="button"
                   disabled={cryptoSubmitted}
                   onClick={handleConfirmCryptoDeposit}
-                  className="w-full py-3 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  className="w-full py-3 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-1.5"
                 >
                   {cryptoSubmitted ? (
                     <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span>TxHash Submitted for Manual Compliance Review (Non-Credited)</span>
+                      <Check className="w-4 h-4 text-white" />
+                      <span>TxHash Submitted Successfully!</span>
                     </>
                   ) : (
-                    <span>Submit TxHash for Compliance Review (Non-Credited)</span>
+                    <span>Submit TxHash for Verification</span>
                   )}
                 </button>
               </div>
             </div>
           )}
 
-          {/* TAB 3: CARD DEPOSIT */}
+          {/* TAB 3: CARD DEPOSIT - COMING SOON */}
           {activeTab === 'card' && (
             <div
-              className={`border rounded-2xl p-5 sm:p-6 space-y-4 ${
+              className={`border rounded-2xl p-6 sm:p-8 text-center space-y-4 ${
                 isDarkMode ? 'border-neutral-800 bg-[#161922]' : 'border-slate-200 bg-white'
               }`}
             >
-              <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto mb-2">
-                  <CreditCard className="w-5 h-5 stroke-[2.2]" />
-                </div>
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                  Credit / Debit Card (Visa &amp; Mastercard)
+              <div className="w-14 h-14 rounded-2xl bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto shadow-xs">
+                <CreditCard className="w-7 h-7 stroke-[2]" />
+              </div>
+
+              <div>
+                <span className="inline-block px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-amber-500/15 text-amber-500 border border-amber-500/30 mb-2">
+                  Coming Soon
+                </span>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                  Credit / Debit Card Deposits
                 </h3>
-                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-                  Instant card deposit with 0% gateway processing fees • Min $16.00
+                <p className="text-xs text-slate-500 dark:text-neutral-400 max-w-sm mx-auto mt-1.5 leading-relaxed">
+                  Visa &amp; Mastercard payment processing is coming soon. In the meantime, please fund your account instantly using Safaricom M-PESA or Cryptocurrency (Bitcoin / USDT / Ethereum).
                 </p>
               </div>
 
-              <div className="space-y-3">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                    Deposit Amount (USD) <span className="text-[#0066FF] font-bold">*Min $16</span>
-                  </label>
-                  <input
-                    type="number"
-                    min="16"
-                    placeholder="Min $16"
-                    value={amountInput}
-                    onChange={(e) => setAmountInput(e.target.value)}
-                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
-                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-                    }`}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                    Card Number
-                  </label>
-                  <input
-                    type="text"
-                    value={cardNumber}
-                    onChange={(e) => setCardNumber(e.target.value)}
-                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none ${
-                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
-                    }`}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      Expiry Date
-                    </label>
-                    <input
-                      type="text"
-                      value={cardExpiry}
-                      onChange={(e) => setCardExpiry(e.target.value)}
-                      className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none ${
-                        isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
-                      }`}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      CVV / CVC
-                    </label>
-                    <input
-                      type="password"
-                      value={cardCvv}
-                      onChange={(e) => setCardCvv(e.target.value)}
-                      className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none ${
-                        isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-200 text-slate-900'
-                      }`}
-                    />
-                  </div>
-                </div>
-
+              <div className="pt-2 flex flex-col sm:flex-row gap-2.5 justify-center max-w-xs mx-auto">
                 <button
                   type="button"
-                  disabled={cardProcessing}
-                  onClick={handleCardDeposit}
-                  className="w-full py-3.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2 mt-2"
+                  onClick={() => {
+                    setActiveTab('mpesa');
+                    setErrorMessage(null);
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs cursor-pointer shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-1.5"
                 >
-                  {cardProcessing ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Authorizing Card Payment...</span>
-                    </>
-                  ) : (
-                    <span>Pay ${numUsd || 16}.00 with Card</span>
-                  )}
+                  <Phone className="w-3.5 h-3.5" />
+                  <span>Use Safaricom M-PESA</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('crypto');
+                    setErrorMessage(null);
+                    if (selectedCrypto === 'BTC' && (parseFloat(amountInput) || 0) < 50) {
+                      setAmountInput('50');
+                    }
+                  }}
+                  className="py-2.5 px-4 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-white font-bold text-xs cursor-pointer shadow-sm transition-all active:scale-[0.98] flex items-center justify-center gap-1.5"
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  <span>Use Crypto</span>
                 </button>
               </div>
             </div>

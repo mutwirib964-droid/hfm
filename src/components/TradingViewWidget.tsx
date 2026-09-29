@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { Timeframe, ChartType } from '../types';
 import { TradingViewPriceService } from '../services/tradingViewService';
-import { Maximize2, Minimize2, RefreshCw } from 'lucide-react';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
+import { Maximize2, Minimize2, RefreshCw, Lock } from 'lucide-react';
 
 interface TradingViewWidgetProps {
   symbol: string;
@@ -149,60 +150,69 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
           {/* Real-time SELL (Bid) and BUY (Ask) badges synchronized with execution buttons */}
-          {bid !== undefined && ask !== undefined && (
-            <div className="flex items-center gap-1.5 font-mono text-[11px]">
-              {/* SELL / Bid Badge (Red) - Perfectly matching SELL button */}
-              <div
-                title="SELL (Bid) Price - Synchronized with SELL button"
-                className="flex items-center rounded overflow-hidden shadow-xs border border-red-800/80 bg-[#1A1215]"
-              >
-                <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
-                  SELL
-                </span>
-                <span className="bg-[#E51937] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {bid.toFixed(decimals)}
-                </span>
-              </div>
+          {bid !== undefined && ask !== undefined && (() => {
+            const marketStatus = checkInstrumentMarketHours(symbol);
+            return (
+              <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                {/* Closed Indicator */}
+                {!marketStatus.isOpen && (
+                  <span className="hidden xs:flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[9px] font-extrabold tracking-wider uppercase">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Closed</span>
+                  </span>
+                )}
 
-              {/* Spread Points Pill */}
-              <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
-                <span>
-                  {(() => {
-                    const diff = Math.abs(ask - bid);
-                    if (diff === 0) return '0.0 pts';
-                    if (symbol === 'XAUUSD') {
-                      return `${diff < 1 ? diff.toFixed(2) : (diff * 10).toFixed(1)} pts`;
-                    }
-                    if (symbol === 'XAGUSD' || (symbol.startsWith('X') && symbol.endsWith('USD'))) {
-                      return `${(diff * 100).toFixed(1)} pts`;
-                    }
-                    if (decimals >= 4) {
-                      const points = diff * 100000;
-                      return `${(points / 10).toFixed(1)} pts`;
-                    }
-                    if (decimals === 3) {
-                      const points = diff * 1000;
-                      return `${(points / 10).toFixed(1)} pts`;
-                    }
-                    return `${diff.toFixed(1)} pts`;
-                  })()}
-                </span>
-              </div>
+                {/* SELL / Bid Badge (Red) - Solid red, price number changes cleanly */}
+                <div
+                  title="SELL (Bid) Price - Synchronized with SELL button"
+                  className="flex items-center rounded overflow-hidden shadow-xs border border-red-800/80 bg-[#1A1215]"
+                >
+                  <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
+                    SELL
+                  </span>
+                  <span className="bg-[#E51937] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                    {bid.toFixed(decimals)}
+                  </span>
+                </div>
 
-              {/* BUY / Ask Badge (Green) - Perfectly matching BUY button */}
-              <div
-                title="BUY (Ask) Price - Synchronized with BUY button"
-                className="flex items-center rounded overflow-hidden shadow-xs border border-emerald-800/80 bg-[#121A15]"
-              >
-                <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
-                  BUY
-                </span>
-                <span className="bg-[#00C076] text-white px-1.5 py-0.5 text-[10px] font-bold">
-                  {ask.toFixed(decimals)}
-                </span>
+                {/* Spread Points Pill */}
+                <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
+                  <span>
+                    {(() => {
+                      const diff = Math.abs(ask - bid);
+                      if (diff === 0) return '0.0 pts';
+                      if (symbol === 'XAUUSD') {
+                        return `${(diff * 10).toFixed(1)} pts`;
+                      }
+                      if (symbol === 'XAGUSD' || (symbol.startsWith('X') && symbol.endsWith('USD'))) {
+                        return `${(diff * 100).toFixed(1)} pts`;
+                      }
+                      if (decimals >= 4) {
+                        return `${(diff * 10000).toFixed(1)} pts`;
+                      }
+                      if (decimals === 3) {
+                        return `${(diff * 100).toFixed(1)} pts`;
+                      }
+                      return `${diff.toFixed(1)} pts`;
+                    })()}
+                  </span>
+                </div>
+
+                {/* BUY / Ask Badge (Green) - Solid green, price number changes cleanly */}
+                <div
+                  title="BUY (Ask) Price - Synchronized with BUY button"
+                  className="flex items-center rounded overflow-hidden shadow-xs border border-emerald-800/80 bg-[#121A15]"
+                >
+                  <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
+                    BUY
+                  </span>
+                  <span className="bg-[#00C076] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                    {ask.toFixed(decimals)}
+                  </span>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Reload Chart */}
           <button

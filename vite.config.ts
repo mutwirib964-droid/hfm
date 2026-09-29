@@ -261,10 +261,9 @@ function marketPricesPlugin() {
                 let ask: number;
                 let finalSpread: number;
 
-                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) <= 0.3) {
+                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) / close < 0.05) {
                   bid = Number(rawBid.toFixed(decimals));
                   ask = Number(rawAsk.toFixed(decimals));
-                  finalSpread = Number((ask - bid).toFixed(decimals));
                 } else {
                   let spread = cfdSpreads[conf.sym] || 0.1;
                   if (rawBid && rawAsk && rawAsk > rawBid) {
@@ -276,8 +275,9 @@ function marketPricesPlugin() {
                   const halfSpread = spread / 2;
                   bid = Number((close - halfSpread).toFixed(decimals));
                   ask = Number((close + halfSpread).toFixed(decimals));
-                  finalSpread = Number((ask - bid).toFixed(decimals));
                 }
+                const multiplier = conf.sym === 'XAUUSD' ? 10 : conf.sym === 'XAGUSD' ? 100 : (decimals >= 3 ? 100 : 10);
+                finalSpread = Number((Math.abs(ask - bid) * multiplier).toFixed(1));
 
                 results[conf.sym] = {
                   bid,
@@ -286,7 +286,7 @@ function marketPricesPlugin() {
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: finalSpread,
+                  spread: finalSpread > 0 ? finalSpread : 4.9,
                 };
               }
             });
@@ -339,7 +339,6 @@ function marketPricesPlugin() {
                 if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) / close < 0.005) {
                   bid = Number(rawBid.toFixed(decimals));
                   ask = Number(rawAsk.toFixed(decimals));
-                  finalSpread = Number((ask - bid).toFixed(decimals));
                 } else {
                   let spread = forexSpreads[sym] || (isJpy ? 0.006 : 0.00004);
                   if (rawBid && rawAsk && rawAsk > rawBid) {
@@ -351,8 +350,9 @@ function marketPricesPlugin() {
                   const halfSpread = spread / 2;
                   bid = Number((close - halfSpread).toFixed(decimals));
                   ask = Number((close + halfSpread).toFixed(decimals));
-                  finalSpread = Number((ask - bid).toFixed(decimals));
                 }
+                const pipMultiplier = isJpy ? 100 : 10000;
+                finalSpread = Number((Math.abs(ask - bid) * pipMultiplier).toFixed(1));
 
                 results[sym] = {
                   bid,
@@ -361,7 +361,7 @@ function marketPricesPlugin() {
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: finalSpread,
+                  spread: finalSpread > 0 ? finalSpread : 0.3,
                 };
               }
             });

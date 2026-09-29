@@ -547,7 +547,7 @@ export default function App() {
   // Generate initial candles for selected symbol and timeframe
   useEffect(() => {
     const inst = instruments.find((i) => i.symbol === selectedSymbol) || instruments[0];
-    const initial = generateCandles(inst.bid, timeframe, 75);
+    const initial = generateCandles(inst.bid, timeframe, 75, inst.decimals);
     setCandles(initial);
   }, [selectedSymbol, timeframe]);
 
@@ -574,10 +574,17 @@ export default function App() {
         setInstruments((prevInstruments) => {
           const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
           let hasPriceChanged = false;
+          const activeSym = selectedSymbolRef.current;
 
           const updated = prevInstruments.map((inst) => {
             const quote = quotes.get(inst.symbol);
             if (!quote) return inst;
+
+            // Strict Market Closed Check: if market is closed, prices do not move underneath!
+            const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+            if (!mStatus.isOpen) {
+              return inst;
+            }
 
             const oldBid = inst.bid;
             const newBid = quote.bid;
@@ -595,6 +602,19 @@ export default function App() {
               nextTickStates[inst.symbol] = direction;
             }
 
+            // Immediately update chart candle when master TradingView feed updates active pair
+            if (inst.symbol === activeSym && (newBid !== oldBid || newAsk !== inst.ask)) {
+              const activeChartPrice = direction === 'UP' ? newAsk : newBid;
+              setCandles((prev) => {
+                if (prev.length === 0) return prev;
+                const last = { ...prev[prev.length - 1] };
+                last.close = activeChartPrice;
+                last.high = Math.max(last.high, activeChartPrice);
+                last.low = Math.min(last.low, activeChartPrice);
+                return [...prev.slice(0, prev.length - 1), last];
+              });
+            }
+
             const sparkline = newBid !== oldBid
               ? [...inst.sparkline.slice(1), newBid]
               : inst.sparkline;
@@ -603,7 +623,7 @@ export default function App() {
               ...inst,
               bid: newBid,
               ask: newAsk,
-              spread: quote.spread,
+              spread: quote.spread > 0 ? quote.spread : inst.spread,
               change24h: quote.change24h,
               high24h: quote.high24h,
               low24h: quote.low24h,
@@ -701,12 +721,17 @@ export default function App() {
             dir = Math.random() > 0.49 ? 'UP' : 'DOWN';
           }
 
-          const spread = inst.spread > 0 ? inst.spread : Math.max(anchor ? anchor.spread : 0.00002, 0.00002);
-          const halfSpread = spread / 2;
+          const multiplier = inst.pipMultiplier || (inst.decimals >= 4 ? 10000 : inst.decimals === 3 ? 100 : 10);
+          // Actual price spread (in dollars/currency)
+          const currentSpreadPrice = Math.abs(inst.ask - inst.bid);
+          const anchorSpreadPrice = anchor ? Math.abs(anchor.ask - anchor.bid) : 0;
+          const priceSpread = anchorSpreadPrice > 0 ? anchorSpreadPrice : (currentSpreadPrice > 0 ? currentSpreadPrice : Math.pow(10, -inst.decimals) * 3);
+          const halfSpread = priceSpread / 2;
 
           const newMid = dir === 'UP' ? currentMid + step : currentMid - step;
           const newBid = Number((newMid - halfSpread).toFixed(inst.decimals));
           const newAsk = Number((newMid + halfSpread).toFixed(inst.decimals));
+          const liveSpreadPips = Number((Math.abs(newAsk - newBid) * multiplier).toFixed(1));
 
           if (newBid !== inst.bid) {
             changed = true;
@@ -732,7 +757,7 @@ export default function App() {
             ...inst,
             bid: newBid,
             ask: newAsk,
-            spread: anchor?.spread || inst.spread,
+            spread: liveSpreadPips > 0 ? liveSpreadPips : inst.spread,
             sparkline,
           };
         });

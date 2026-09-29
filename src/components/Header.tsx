@@ -165,33 +165,22 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Center: Active Trading Account Dropdown Switcher (Optimized & High-Visibility on Mobile) */}
-      <div className="relative mx-1 sm:mx-2 flex-1 min-w-0 max-w-[165px] xs:max-w-[200px] sm:max-w-xs">
+      <div className="relative mx-1 sm:mx-2 flex-1 min-w-0 max-w-[170px] xs:max-w-[210px] sm:max-w-xs">
         {!selectedAccount || accounts.length === 0 ? (
-          <div className="flex items-center gap-1 sm:gap-2">
-            <div
-              className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 sm:py-1.5 border rounded-xl text-left transition-colors ${
-                isDarkMode
-                  ? 'bg-[#1A1D23] border-neutral-700/70 text-white'
-                  : 'bg-white border-slate-300 text-slate-900 shadow-xs'
-              }`}
-            >
-              <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-500 shrink-0" />
-              <div className="flex flex-col">
-                <span className="text-[8px] sm:text-[9px] uppercase font-bold text-neutral-400 leading-none">Wallet</span>
-                <span className="text-[11px] sm:text-xs font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
-                  ${(walletBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-[9px] text-neutral-400 font-sans">USD</span>
-                </span>
-              </div>
+          <div
+            className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 sm:py-1.5 border rounded-xl text-left transition-colors ${
+              isDarkMode
+                ? 'bg-[#1A1D23] border-neutral-700/70 text-white'
+                : 'bg-white border-slate-300 text-slate-900 shadow-xs'
+            }`}
+          >
+            <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-500 shrink-0" />
+            <div className="flex flex-col min-w-0">
+              <span className="text-[8px] sm:text-[9px] uppercase font-bold text-neutral-400 leading-none">Wallet</span>
+              <span className="text-[11px] sm:text-xs font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5 truncate">
+                ${(walletBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-[9px] text-neutral-400 font-sans">USD</span>
+              </span>
             </div>
-            <button
-              id="header-open-acc-btn"
-              onClick={onOpenNewAccount}
-              className="flex items-center gap-1 px-2 sm:px-2.5 py-1 sm:py-1.5 bg-[#E51937] hover:bg-[#c9142f] active:scale-95 text-white text-[11px] sm:text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer shrink-0"
-              title="Open Live or Demo Trading Account"
-            >
-              <PlusCircle className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Open Account</span>
-            </button>
           </div>
         ) : (
           <button
@@ -352,15 +341,15 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right Controls: Deposit, Light/Dark Theme, View Mode & Notifications */}
       <div className="flex items-center gap-1 sm:gap-1.5 shrink-0 whitespace-nowrap z-10">
-        {/* Quick Deposit Pill Button - High Priority on Mobile */}
+        {/* Quick Deposit Pill Button - The Single Deposit Button in Header (matching user design) */}
         <button
           id="header-deposit-btn"
           onClick={onOpenDeposit}
-          className="flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-lg sm:rounded-xl transition-all shadow-xs shrink-0 cursor-pointer"
+          className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 bg-[#22C55E] hover:bg-[#16A34A] active:scale-95 text-white font-bold text-xs rounded-full transition-all shadow-xs shrink-0 cursor-pointer"
           title="Deposit Funds"
         >
-          <PlusCircle className="w-3.5 h-3.5" />
-          <span className="text-[11px] sm:text-xs">Deposit</span>
+          <PlusCircle className="w-3.5 h-3.5 stroke-[2.5]" />
+          <span className="text-[11px] sm:text-xs tracking-tight font-extrabold">Deposit</span>
         </button>
 
         {/* Light / Dark Mode Toggle */}
@@ -368,7 +357,7 @@ export const Header: React.FC<HeaderProps> = ({
           id="theme-toggle-btn"
           onClick={onToggleTheme}
           title={isDarkMode ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          className={`p-1.5 sm:p-2 rounded-lg transition-colors border shrink-0 cursor-pointer ${
+          className={`p-1.5 sm:p-2 rounded-xl transition-colors border shrink-0 cursor-pointer ${
             isDarkMode
               ? 'bg-neutral-800 hover:bg-neutral-700 text-amber-400 border-neutral-700/60'
               : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'

@@ -682,23 +682,39 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           </div>
         </div>
 
-        {/* Market Closed Warning Alert */}
+        {/* Market Closed Warning Alert (High Visibility in both Light & Dark modes) */}
         {!curMarketStatus.isOpen && (
-          <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-sm">
+          <div
+            className={`p-3 rounded-xl border text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 shadow-xs transition-colors ${
+              isDarkMode
+                ? 'bg-amber-500/15 border-amber-500/35 text-amber-200'
+                : 'bg-amber-50 border-amber-300 text-amber-950'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+              <Lock className={`w-4 h-4 shrink-0 ${isDarkMode ? 'text-amber-400' : 'text-amber-700'}`} />
               <div>
-                <span className="font-bold text-amber-400">Market is Closed ({currentInstrument.symbol})</span>
-                <span className="text-neutral-400 block sm:inline sm:ml-1.5">• {curMarketStatus.reason}</span>
+                <span className={`font-bold ${isDarkMode ? 'text-amber-300' : 'text-amber-950'}`}>
+                  Market is Closed ({currentInstrument.symbol})
+                </span>
+                <span className={`block sm:inline sm:ml-1.5 ${isDarkMode ? 'text-neutral-300' : 'text-amber-900'}`}>
+                  • {curMarketStatus.reason}
+                </span>
                 {curMarketStatus.nextOpenTime && (
-                  <span className="text-neutral-300 block text-[11px] mt-0.5">Reopens: {curMarketStatus.nextOpenTime}</span>
+                  <span className={`block text-[11px] mt-0.5 font-medium ${isDarkMode ? 'text-amber-200/80' : 'text-amber-800'}`}>
+                    Reopens: {curMarketStatus.nextOpenTime}
+                  </span>
                 )}
               </div>
             </div>
             <button
               type="button"
               onClick={() => onSelectSymbol('BTCUSD')}
-              className="px-2.5 py-1 text-[11px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded-lg border border-amber-500/40 transition-colors whitespace-nowrap cursor-pointer"
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition-colors whitespace-nowrap cursor-pointer ${
+                isDarkMode
+                  ? 'bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border-amber-500/40'
+                  : 'bg-amber-200/80 hover:bg-amber-300 text-amber-950 border-amber-400'
+              }`}
             >
               Trade 24/7 Crypto (BTCUSD) →
             </button>

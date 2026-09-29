@@ -215,7 +215,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-white">
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
                   {kycRecord.isVerified
                     ? 'Account Fully Verified & Approved'
                     : kycRecord.submitted

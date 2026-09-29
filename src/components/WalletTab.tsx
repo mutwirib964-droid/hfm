@@ -64,7 +64,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const liveAccounts = accounts.filter((a) => a.type === 'Live');
   const demoAccounts = accounts.filter((a) => a.type === 'Demo');
 
-  // Withdraw Form State - Strictly Minimum $35
+  // Withdraw Form State - Strictly Minimum $35 for M-PESA, $50 for Crypto
+  const [withdrawMethod, setWithdrawMethod] = useState<'mpesa' | 'crypto'>('mpesa');
+  const [withdrawCryptoCoin, setWithdrawCryptoCoin] = useState<'BTC' | 'USDT' | 'ETH'>('BTC');
+  const [withdrawCryptoAddress, setWithdrawCryptoAddress] = useState<string>('');
   const [withdrawAmount, setWithdrawAmount] = useState<number>(35);
   const [withdrawSource, setWithdrawSource] = useState('VTM Wallet');
   const [withdrawStep, setWithdrawStep] = useState<'FORM' | 'PROCESSING' | 'SUCCESS'>('FORM');
@@ -140,7 +143,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
   const currentTransferable = getTransferableBalance(transferFrom);
 
-  // Automated 5-second countdown timer for Safaricom B2C withdrawal
+  // 5-second countdown timer for withdrawal disbursement
   useEffect(() => {
     let timer: any;
     if (withdrawStep === 'PROCESSING') {
@@ -149,9 +152,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
           if (prev <= 1) {
             clearInterval(timer);
             setWithdrawStep('SUCCESS');
-            // Execute automated payout credit & deduction
+            // Execute payout credit & deduction
             onWithdraw({
-              method: 'Safaricom M-PESA B2C',
+              method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
               amount: withdrawAmount,
               sourceAccount: withdrawSource,
               reference: withdrawReceipt,
@@ -166,12 +169,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [withdrawStep, withdrawAmount, withdrawSource, withdrawReceipt, onWithdraw]);
+  }, [withdrawStep, withdrawAmount, withdrawSource, withdrawReceipt, withdrawMethod, withdrawCryptoCoin, onWithdraw]);
 
   // Open Withdraw Modal with reset state
-  const handleOpenWithdraw = (source?: string) => {
+  const handleOpenWithdraw = (source?: string, method: 'mpesa' | 'crypto' = 'mpesa') => {
     if (source) setWithdrawSource(source);
-    setWithdrawAmount(35);
+    setWithdrawMethod(method);
+    setWithdrawAmount(method === 'crypto' ? 50 : 35);
     setWithdrawStep('FORM');
     setWithdrawCountdown(5);
     setActiveModal('withdraw');
@@ -183,23 +187,30 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     setActiveModal(null);
   };
 
-  // Trigger Withdrawal (Validates min $35, then begins 5-second automated sequence)
+  // Trigger Withdrawal (Validates min $35 for M-PESA, min $50 for Crypto)
   const handleStartWithdrawal = () => {
     const maxAvailable = getWithdrawableBalance(withdrawSource);
     if (maxAvailable <= 0) {
       alert('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
       return;
     }
-    if (withdrawAmount < 35) {
-      alert(`Minimum withdrawal amount is $35.00 USD (KES ${Math.round(35 * USD_KES_RATE).toLocaleString()}).`);
+    const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
+    if (withdrawAmount < minRequired) {
+      alert(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : 'M-PESA'} is $${minRequired}.00 USD.`);
       return;
     }
     if (withdrawAmount > maxAvailable) {
       alert(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
       return;
     }
+    if (withdrawMethod === 'crypto' && (!withdrawCryptoAddress.trim() || withdrawCryptoAddress.trim().length < 10)) {
+      alert(`Please enter a valid destination ${withdrawCryptoCoin} wallet address.`);
+      return;
+    }
 
-    const receipt = `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
+    const receipt = withdrawMethod === 'crypto'
+      ? `TX-${withdrawCryptoCoin}-${Math.floor(100000000 + Math.random() * 900000000)}`
+      : `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
     setWithdrawReceipt(receipt);
     setWithdrawCountdown(5);
     setWithdrawStep('PROCESSING');
@@ -406,10 +417,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <span>Deposit</span>
                 </div>
                 <span className="text-[10px] text-slate-500 dark:text-neutral-400 block mt-1">
-                  M-Pesa • Crypto • Card
+                  M-Pesa • Crypto • Card (Soon)
                 </span>
                 <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 block font-mono mt-0.5">
-                  Min: $16.00
+                  Min: $16 / $50 BTC
                 </span>
               </div>
 
@@ -424,10 +435,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <span>Withdraw</span>
                 </div>
                 <span className="text-[10px] text-slate-500 dark:text-neutral-400 block mt-1">
-                  Safaricom B2C Instant
+                  M-Pesa • Crypto Payout
                 </span>
                 <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 block font-mono mt-0.5">
-                  Min: $35.00
+                  Min: $35.00 / $50.00
                 </span>
               </div>
             </div>
@@ -614,7 +625,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       {activeModal === 'withdraw' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
           <div
-            className={`w-full max-w-md border rounded-2xl p-5 shadow-2xl space-y-4 relative transition-colors ${
+            className={`w-full max-w-md border rounded-2xl p-5 shadow-2xl space-y-4 relative transition-colors max-h-[92vh] overflow-y-auto no-scrollbar ${
               isDarkMode ? 'bg-[#161922] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
             }`}
           >
@@ -623,13 +634,21 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               isDarkMode ? 'border-neutral-800' : 'border-slate-200'
             }`}>
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#00A34F]/20 text-[#00A34F] flex items-center justify-center font-black">
-                  M
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-black ${
+                  withdrawMethod === 'crypto'
+                    ? 'bg-amber-500/20 text-amber-500'
+                    : 'bg-[#00A34F]/20 text-[#00A34F]'
+                }`}>
+                  {withdrawMethod === 'crypto' ? <Coins className="w-4 h-4" /> : 'M'}
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm">Safaricom M-PESA B2C Payout</h3>
+                  <h3 className="font-bold text-sm">
+                    {withdrawMethod === 'crypto' ? 'Cryptocurrency Payout' : 'Safaricom M-PESA Payout'}
+                  </h3>
                   <span className="text-[10px] text-emerald-500 font-bold">
-                    Automated Instant Disbursement • Rate: 1 USD = {USD_KES_RATE} KES
+                    {withdrawMethod === 'crypto'
+                      ? 'Fast Blockchain Processing • Minimum: $50.00'
+                      : `Instant Disbursement • Rate: 1 USD = ${USD_KES_RATE} KES`}
                   </span>
                 </div>
               </div>
@@ -641,19 +660,67 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               </button>
             </div>
 
+            {/* Method Tabs: M-PESA | Crypto */}
+            {withdrawStep === 'FORM' && (
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-neutral-900 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWithdrawMethod('mpesa');
+                    if (withdrawAmount < 35) setWithdrawAmount(35);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    withdrawMethod === 'mpesa'
+                      ? 'bg-[#00A34F] text-white shadow-xs'
+                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>M-PESA (Min $35)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWithdrawMethod('crypto');
+                    if (withdrawAmount < 50) setWithdrawAmount(50);
+                  }}
+                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    withdrawMethod === 'crypto'
+                      ? 'bg-amber-600 text-white shadow-xs'
+                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Coins className="w-3.5 h-3.5" />
+                  <span>Crypto (Min $50)</span>
+                </button>
+              </div>
+            )}
+
             {/* STEP 1: WITHDRAW FORM */}
             {withdrawStep === 'FORM' && (
               <div className="space-y-4">
-                {/* Safaricom B2C Rate & Gateway Banner */}
-                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1.5">
-                  <div className="flex items-center justify-between font-bold text-emerald-600 dark:text-emerald-400">
-                    <span>Safaricom B2C Payout Rate:</span>
-                    <span className="font-mono text-sm">1 USD = {USD_KES_RATE} KES</span>
+                {/* Method Specific Info Banner */}
+                {withdrawMethod === 'mpesa' ? (
+                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
+                    <div className="flex items-center justify-between font-bold text-emerald-600 dark:text-emerald-400">
+                      <span>Safaricom M-PESA Payout Rate:</span>
+                      <span className="font-mono text-sm">1 USD = {USD_KES_RATE} KES</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
+                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number. 0% processing fee.
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                    Funds are disbursed directly via Safaricom Business-to-Customer (B2C) automated payment gateway into your registered line. 0% processing fee.
-                  </p>
-                </div>
+                ) : (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-1">
+                    <div className="flex items-center justify-between font-bold text-amber-600 dark:text-amber-400">
+                      <span>Crypto Withdrawal Policy:</span>
+                      <span className="font-mono text-xs font-bold">Strict Minimum: $50.00</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
+                      Withdraw directly to your personal Bitcoin, USDT (TRC20), or Ethereum wallet address.
+                    </p>
+                  </div>
+                )}
 
                 {/* Source Selection */}
                 <div>
@@ -681,52 +748,106 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </select>
                 </div>
 
-                {/* Registered Phone (Locked for Security) */}
-                <div className={`p-2.5 rounded-xl border text-xs ${
-                  isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
-                }`}>
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1">
-                      <Lock className="w-3 h-3 text-amber-500" />
-                      <span>Safaricom Recipient Phone:</span>
-                    </span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white">
-                      {userPhone}
-                    </span>
+                {/* Crypto Token Selector if Crypto */}
+                {withdrawMethod === 'crypto' && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                      Select Crypto Asset
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'BTC', label: 'Bitcoin (BTC)' },
+                        { id: 'USDT', label: 'USDT (TRC20)' },
+                        { id: 'ETH', label: 'Ethereum (ETH)' },
+                      ].map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setWithdrawCryptoCoin(t.id as any)}
+                          className={`py-2 px-2 rounded-xl border text-center text-xs font-bold transition-all cursor-pointer ${
+                            withdrawCryptoCoin === t.id
+                              ? 'border-amber-500 bg-amber-500/15 text-amber-500 shadow-xs'
+                              : isDarkMode
+                              ? 'border-neutral-700 bg-neutral-900 text-neutral-300 hover:border-neutral-600'
+                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Amount Input with minimum $35 */}
+                {/* Recipient Field: Phone for M-PESA, Address for Crypto */}
+                {withdrawMethod === 'mpesa' ? (
+                  <div className={`p-2.5 rounded-xl border text-xs ${
+                    isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                  }`}>
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1">
+                        <Lock className="w-3 h-3 text-amber-500" />
+                        <span>Safaricom Recipient Phone:</span>
+                      </span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white">
+                        {userPhone}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                      Recipient {withdrawCryptoCoin} Wallet Address <span className="text-amber-500 font-bold">*Required</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder={`Paste your ${withdrawCryptoCoin} destination address...`}
+                      value={withdrawCryptoAddress}
+                      onChange={(e) => setWithdrawCryptoAddress(e.target.value)}
+                      className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                        isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                      }`}
+                    />
+                  </div>
+                )}
+
+                {/* Amount Input with minimum $35 for M-PESA, $50 for Crypto */}
                 <div>
                   <div className="flex justify-between text-xs mb-1 font-semibold">
                     <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-700'}>
-                      Amount (USD) <span className="text-[#E51937] font-bold">*Min $35</span>
+                      Amount (USD) <span className="text-[#E51937] font-bold">*{withdrawMethod === 'crypto' ? 'Min $50' : 'Min $35'}</span>
                     </span>
-                    <span className="text-neutral-400 text-[11px]">Min $35 • Max ${currentWithdrawable.toFixed(2)}</span>
+                    <span className="text-neutral-400 text-[11px]">
+                      Min ${withdrawMethod === 'crypto' ? '50' : '35'} • Max ${currentWithdrawable.toFixed(2)}
+                    </span>
                   </div>
                   <input
                     type="number"
-                    min="35"
+                    min={withdrawMethod === 'crypto' ? 50 : 35}
                     max={currentWithdrawable}
                     step="1"
-                    placeholder="Min $35"
+                    placeholder={`Min $${withdrawMethod === 'crypto' ? 50 : 35}`}
                     value={withdrawAmount}
                     onChange={(e) => setWithdrawAmount(parseFloat(e.target.value) || 0)}
-                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937] ${
+                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold focus:outline-none focus:ring-2 ${
+                      withdrawMethod === 'crypto' ? 'focus:ring-amber-500' : 'focus:ring-[#E51937]'
+                    } ${
                       isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                     }`}
                   />
 
-                  {/* Preset Pills: $35, $50, $100, $250, All */}
+                  {/* Preset Pills */}
                   <div className="grid grid-cols-5 gap-1.5 mt-2">
-                    {[35, 50, 100, 250].map((val) => (
+                    {(withdrawMethod === 'crypto' ? [50, 100, 250, 500] : [35, 50, 100, 250]).map((val) => (
                       <button
                         key={val}
                         type="button"
                         onClick={() => setWithdrawAmount(val)}
                         className={`py-1.5 px-1 text-xs font-semibold rounded-lg border transition-all cursor-pointer text-center ${
                           withdrawAmount === val
-                            ? 'bg-red-50 dark:bg-red-950/60 border-[#E51937] text-[#E51937] font-bold'
+                            ? withdrawMethod === 'crypto'
+                              ? 'bg-amber-500/20 border-amber-500 text-amber-500 font-bold'
+                              : 'bg-red-50 dark:bg-red-950/60 border-[#E51937] text-[#E51937] font-bold'
                             : isDarkMode
                             ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
                             : 'border-slate-200 hover:bg-slate-100 text-slate-700'
@@ -737,7 +858,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     ))}
                     <button
                       type="button"
-                      onClick={() => setWithdrawAmount(Math.max(35, Math.floor(currentWithdrawable)))}
+                      onClick={() => setWithdrawAmount(Math.max(withdrawMethod === 'crypto' ? 50 : 35, Math.floor(currentWithdrawable)))}
                       className={`py-1.5 px-1 text-xs font-bold rounded-lg border transition-all cursor-pointer text-center ${
                         isDarkMode ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300' : 'border-slate-200 hover:bg-slate-100 text-slate-700'
                       }`}
@@ -747,7 +868,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 </div>
 
-                {/* EXACT AMOUNT IN KSH TO REMOVE & DISBURSE (HIGHLIGHTED CARD) */}
+                {/* EXACT AMOUNT SUMMARY */}
                 <div className="p-3.5 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 space-y-2">
                   <div className="flex justify-between items-center text-xs">
                     <span className="text-slate-500 dark:text-neutral-400">Total Deducted from Balance:</span>
@@ -756,69 +877,104 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     </span>
                   </div>
 
-                  <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
-                    <span className="text-slate-700 dark:text-neutral-200 font-bold">
-                      Exact Payout to Safaricom Line:
-                    </span>
-                    <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-base">
-                      KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </span>
-                  </div>
-
-                  <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
-                    * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString()}</strong> will be removed and disbursed to your Safaricom M-PESA number ({userPhone}).
-                  </p>
+                  {withdrawMethod === 'mpesa' ? (
+                    <>
+                      <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
+                        <span className="text-slate-700 dark:text-neutral-200 font-bold">
+                          Exact Payout to Safaricom Line:
+                        </span>
+                        <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-base">
+                          KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
+                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString()}</strong> will be disbursed to your Safaricom M-PESA number ({userPhone}).
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
+                        <span className="text-slate-700 dark:text-neutral-200 font-bold">
+                          Crypto Payout Asset:
+                        </span>
+                        <span className="font-mono font-black text-amber-500 text-sm">
+                          ${withdrawAmount.toFixed(2)} USD in {withdrawCryptoCoin}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
+                        * Payout will be dispatched directly to your {withdrawCryptoCoin} address on blockchain.
+                      </p>
+                    </>
+                  )}
                 </div>
 
                 {/* Submit Button */}
-                {currentWithdrawable < 35 ? (
+                {currentWithdrawable < (withdrawMethod === 'crypto' ? 50 : 35) ? (
                   <button
                     disabled
                     className="w-full py-3 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800 text-neutral-500 border-neutral-700"
                   >
-                    Insufficient Funds (Min $35.00 • Available: ${currentWithdrawable.toFixed(2)})
+                    Insufficient Funds (Min ${withdrawMethod === 'crypto' ? '50.00' : '35.00'} • Available: ${currentWithdrawable.toFixed(2)})
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={handleStartWithdrawal}
-                    className="w-full py-3.5 bg-[#00A34F] hover:bg-[#008F45] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer active:scale-98 flex items-center justify-center gap-2"
+                    className={`w-full py-3.5 text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer active:scale-98 flex items-center justify-center gap-2 ${
+                      withdrawMethod === 'crypto'
+                        ? 'bg-amber-600 hover:bg-amber-500'
+                        : 'bg-[#00A34F] hover:bg-[#008F45]'
+                    }`}
                   >
-                    <Smartphone className="w-4 h-4" />
-                    <span>Withdraw KES {exactKesToDisburse.toLocaleString()} (${withdrawAmount.toFixed(2)})</span>
+                    {withdrawMethod === 'crypto' ? (
+                      <>
+                        <Coins className="w-4 h-4" />
+                        <span>Withdraw ${withdrawAmount.toFixed(2)} to {withdrawCryptoCoin} Wallet</span>
+                      </>
+                    ) : (
+                      <>
+                        <Smartphone className="w-4 h-4" />
+                        <span>Withdraw KES {exactKesToDisburse.toLocaleString()} (${withdrawAmount.toFixed(2)})</span>
+                      </>
+                    )}
                   </button>
                 )}
               </div>
             )}
 
-            {/* STEP 2: 5-SECOND AUTOMATED SAFARICOM B2C PROCESSING */}
+            {/* STEP 2: 5-SECOND PROCESSING */}
             {withdrawStep === 'PROCESSING' && (
               <div className="p-6 text-center space-y-4">
                 {/* Circular Spinner */}
                 <div className="relative w-16 h-16 mx-auto my-2">
-                  <div className="w-16 h-16 rounded-full border-4 border-emerald-500/20 border-t-[#00A34F] animate-spin" />
-                  <div className="absolute inset-0 flex items-center justify-center text-[#00A34F] font-bold text-xs font-mono">
+                  <div className={`w-16 h-16 rounded-full border-4 border-t-transparent animate-spin ${
+                    withdrawMethod === 'crypto' ? 'border-amber-500/20 border-t-amber-500' : 'border-emerald-500/20 border-t-[#00A34F]'
+                  }`} />
+                  <div className={`absolute inset-0 flex items-center justify-center font-bold text-xs font-mono ${
+                    withdrawMethod === 'crypto' ? 'text-amber-500' : 'text-[#00A34F]'
+                  }`}>
                     {withdrawCountdown}s
                   </div>
                 </div>
 
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    Processing Safaricom B2C Payout
+                    Processing {withdrawMethod === 'crypto' ? `${withdrawCryptoCoin} Crypto` : 'Safaricom M-PESA'} Payout
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
-                    Connecting to Safaricom B2C Gateway &amp; dispatching funds to{' '}
-                    <strong className="text-slate-900 dark:text-white">{userPhone}</strong>...
+                    {withdrawMethod === 'crypto'
+                      ? `Broadcasting blockchain transaction to ${withdrawCryptoAddress.slice(0, 10)}...`
+                      : `Dispatching funds to ${userPhone}...`}
                   </p>
                 </div>
 
                 {/* Amount badge */}
-                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 max-w-xs mx-auto text-xs">
-                  <span className="text-[10px] uppercase font-bold text-emerald-500 block">
+                <div className="p-3 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 max-w-xs mx-auto text-xs">
+                  <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-neutral-400 block">
                     Disbursing Amount
                   </span>
                   <span className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
-                    KES {exactKesToDisburse.toLocaleString()}
+                    {withdrawMethod === 'crypto' ? `$${withdrawAmount.toFixed(2)} USD` : `KES ${exactKesToDisburse.toLocaleString()}`}
                   </span>
                   <span className="text-[11px] text-slate-500 dark:text-neutral-400 block mt-0.5">
                     (-${withdrawAmount.toFixed(2)} USD from {withdrawSource})
@@ -828,18 +984,20 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 {/* Progress bar filling over 5 seconds */}
                 <div className="w-full bg-slate-200 dark:bg-neutral-800 rounded-full h-2 overflow-hidden">
                   <div
-                    className="bg-[#00A34F] h-2 transition-all duration-1000 ease-linear"
+                    className={`h-2 transition-all duration-1000 ease-linear ${
+                      withdrawMethod === 'crypto' ? 'bg-amber-500' : 'bg-[#00A34F]'
+                    }`}
                     style={{ width: `${((5 - withdrawCountdown) / 5) * 100}%` }}
                   />
                 </div>
 
                 <span className="text-[11px] text-slate-400 dark:text-neutral-500 font-mono">
-                  Safaricom B2C automated execution in progress... ({withdrawCountdown}s)
+                  Disbursement in progress... ({withdrawCountdown}s)
                 </span>
               </div>
             )}
 
-            {/* STEP 3: AUTOMATED SUCCESS AFTER 5 SECONDS */}
+            {/* STEP 3: SUCCESS AFTER 5 SECONDS */}
             {withdrawStep === 'SUCCESS' && (
               <div className="p-5 text-center space-y-4">
                 <div className="w-14 h-14 rounded-full bg-emerald-500/20 text-emerald-500 flex items-center justify-center mx-auto my-1">
@@ -851,46 +1009,61 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     Withdrawal Successful!
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-                    Safaricom B2C Payout has been disbursed directly to your line.
+                    {withdrawMethod === 'crypto'
+                      ? `Crypto withdrawal of $${withdrawAmount.toFixed(2)} USD has been dispatched.`
+                      : 'Safaricom M-PESA Payout has been disbursed directly to your line.'}
                   </p>
                 </div>
 
                 {/* Details Breakdown */}
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 text-xs space-y-2 text-left">
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Safaricom B2C Receipt:</span>
+                    <span className="text-slate-500 dark:text-neutral-400">Transaction Receipt:</span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white">
                       {withdrawReceipt}
                     </span>
                   </div>
 
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Recipient Phone:</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white">
-                      {userPhone}
+                    <span className="text-slate-500 dark:text-neutral-400">Destination:</span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white truncate max-w-[200px]">
+                      {withdrawMethod === 'crypto' ? withdrawCryptoAddress : userPhone}
                     </span>
                   </div>
 
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Amount Removed:</span>
+                    <span className="text-slate-500 dark:text-neutral-400">Amount Deducted:</span>
                     <span className="font-mono font-bold text-rose-500">
                       -${withdrawAmount.toFixed(2)} USD
                     </span>
                   </div>
 
-                  <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
-                    <span className="text-slate-700 dark:text-neutral-200 font-bold">
-                      Exact Payout Received:
-                    </span>
-                    <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm">
-                      KES {exactKesToDisburse.toLocaleString()}
-                    </span>
-                  </div>
+                  {withdrawMethod === 'mpesa' ? (
+                    <>
+                      <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
+                        <span className="text-slate-700 dark:text-neutral-200 font-bold">
+                          Exact Payout Received:
+                        </span>
+                        <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm">
+                          KES {exactKesToDisburse.toLocaleString()}
+                        </span>
+                      </div>
 
-                  <div className="flex justify-between items-center text-[10px] text-slate-400">
-                    <span>Exchange Rate:</span>
-                    <span className="font-mono">1 USD = {USD_KES_RATE} KES</span>
-                  </div>
+                      <div className="flex justify-between items-center text-[10px] text-slate-400">
+                        <span>Exchange Rate:</span>
+                        <span className="font-mono">1 USD = {USD_KES_RATE} KES</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
+                      <span className="text-slate-700 dark:text-neutral-200 font-bold">
+                        Asset Dispatched:
+                      </span>
+                      <span className="font-mono font-black text-amber-500 text-sm">
+                        ${withdrawAmount.toFixed(2)} in {withdrawCryptoCoin}
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 <button

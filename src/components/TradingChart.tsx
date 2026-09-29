@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { Candle, Timeframe, ChartType, Position } from '../types';
 import { TradingViewWidget } from './TradingViewWidget';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 import {
   Maximize2,
   Minimize2,
@@ -10,6 +11,7 @@ import {
   Sliders,
   TrendingUp,
   TrendingDown,
+  Lock,
 } from 'lucide-react';
 
 interface TradingChartProps {
@@ -208,6 +210,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       }
     });
 
+    // Ensure current bid and ask are strictly inside chart bounds
+    if (currentBid < minPrice) minPrice = currentBid;
+    if (currentBid > maxPrice) maxPrice = currentBid;
+    if (currentAsk < minPrice) minPrice = currentAsk;
+    if (currentAsk > maxPrice) maxPrice = currentAsk;
+
     // Add padding to price range
     const priceRange = maxPrice - minPrice || 1;
     const paddedMin = minPrice - priceRange * 0.05;
@@ -271,15 +279,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     // Draw Candles or Line
     const bullColor = '#00C076'; // HFM Emerald
     const bearColor = '#FF334B'; // HFM Red
+    const currentPrice = tickDirection === 'UP' ? currentAsk : currentBid;
 
     if (chartType === 'candles') {
       candles.forEach((c, i) => {
         const x = i * candleSpacing + candleSpacing / 2;
-        const openY = priceToY(c.open);
-        const closeY = priceToY(c.close);
-        const highY = priceToY(c.high);
-        const lowY = priceToY(c.low);
-        const isUp = c.close >= c.open;
+        const isLast = i === candleCount - 1;
+        const cOpen = c.open;
+        const cClose = isLast ? currentPrice : c.close;
+        const cHigh = isLast ? Math.max(c.high, currentPrice) : c.high;
+        const cLow = isLast ? Math.min(c.low, currentPrice) : c.low;
+
+        const openY = priceToY(cOpen);
+        const closeY = priceToY(cClose);
+        const highY = priceToY(cHigh);
+        const lowY = priceToY(cLow);
+        const isUp = cClose >= cOpen;
 
         ctx.strokeStyle = isUp ? bullColor : bearColor;
         ctx.fillStyle = isUp ? bullColor : bearColor;
@@ -299,11 +314,17 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     } else if (chartType === 'bars') {
       candles.forEach((c, i) => {
         const x = i * candleSpacing + candleSpacing / 2;
-        const openY = priceToY(c.open);
-        const closeY = priceToY(c.close);
-        const highY = priceToY(c.high);
-        const lowY = priceToY(c.low);
-        const isUp = c.close >= c.open;
+        const isLast = i === candleCount - 1;
+        const cOpen = c.open;
+        const cClose = isLast ? currentPrice : c.close;
+        const cHigh = isLast ? Math.max(c.high, currentPrice) : c.high;
+        const cLow = isLast ? Math.min(c.low, currentPrice) : c.low;
+
+        const openY = priceToY(cOpen);
+        const closeY = priceToY(cClose);
+        const highY = priceToY(cHigh);
+        const lowY = priceToY(cLow);
+        const isUp = cClose >= cOpen;
         const color = isUp ? bullColor : bearColor;
 
         ctx.strokeStyle = color;
@@ -331,7 +352,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.beginPath();
       candles.forEach((c, i) => {
         const x = i * candleSpacing + candleSpacing / 2;
-        const y = priceToY(c.close);
+        const cClose = i === candles.length - 1 ? currentPrice : c.close;
+        const y = priceToY(cClose);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -351,7 +373,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         ctx.beginPath();
         candles.forEach((c, i) => {
           const x = i * candleSpacing + candleSpacing / 2;
-          const y = priceToY(c.close);
+          const cClose = i === candles.length - 1 ? currentPrice : c.close;
+          const y = priceToY(cClose);
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });
@@ -632,7 +655,16 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     setHoveredCandle(null);
   };
 
-  const activeCandle = hoveredCandle || candles[candles.length - 1];
+  const activeCandle = hoveredCandle
+    ? hoveredCandle
+    : candles.length > 0
+    ? {
+        ...candles[candles.length - 1],
+        close: tickDirection === 'UP' ? currentAsk : currentBid,
+        high: Math.max(candles[candles.length - 1].high, tickDirection === 'UP' ? currentAsk : currentBid),
+        low: Math.min(candles[candles.length - 1].low, tickDirection === 'UP' ? currentAsk : currentBid),
+      }
+    : null;
 
   // Render HFM Fast Canvas Chart with smooth price glide
   return (
@@ -649,17 +681,30 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         </div>
 
         <div className="flex items-center gap-1.5 text-[11px] font-mono">
-          <span
-            className={`px-2 py-0.5 rounded font-bold transition-all ${
-              tickDirection === 'UP'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse'
-                : tickDirection === 'DOWN'
-                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40 animate-pulse'
-                : 'text-neutral-400'
-            }`}
-          >
-            {tickDirection === 'UP' ? '▲ BUY FLOW' : tickDirection === 'DOWN' ? '▼ SELL FLOW' : '• LIVE FEED'}
-          </span>
+          {(() => {
+            const mStatus = checkInstrumentMarketHours(symbol);
+            if (!mStatus.isOpen) {
+              return (
+                <span className="px-2 py-0.5 rounded font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                  <Lock className="w-3 h-3" />
+                  <span>MARKET CLOSED</span>
+                </span>
+              );
+            }
+            return (
+              <span
+                className={`px-2 py-0.5 rounded font-bold transition-all ${
+                  tickDirection === 'UP'
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                    : tickDirection === 'DOWN'
+                    ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                    : 'text-neutral-400'
+                }`}
+              >
+                {tickDirection === 'UP' ? '▲ BUY FLOW' : tickDirection === 'DOWN' ? '▼ SELL FLOW' : '• LIVE FEED'}
+              </span>
+            );
+          })()}
         </div>
       </div>
 
@@ -914,7 +959,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               }`}
             >
               <span className="text-[9px] uppercase tracking-wider font-black text-rose-300">
-                {tickDirection === 'DOWN' ? 'SELL (EXACT)' : 'SELL (SPREAD)'}
+                SELL
               </span>
               <span>{currentBid.toFixed(decimals)}</span>
               {tickDirection === 'DOWN' && <span>▼</span>}
@@ -929,7 +974,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               }`}
             >
               <span className="text-[9px] uppercase tracking-wider font-black text-emerald-300">
-                {tickDirection === 'UP' ? 'BUY (EXACT)' : 'BUY (SPREAD)'}
+                BUY
               </span>
               <span>{currentAsk.toFixed(decimals)}</span>
               {tickDirection === 'UP' && <span>▲</span>}

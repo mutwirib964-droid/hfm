@@ -571,19 +571,41 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         isDarkMode ? 'bg-[#111317] text-white' : 'bg-white text-neutral-900'
       }`}
     >
-      {/* Market Closed Banner Notice */}
+      {/* Market Closed Banner Notice (High Visibility in both Light & Dark modes) */}
       {!marketStatus.isOpen && (
-        <div className="mx-3 mt-2 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
-            <span>Market Closed: {marketStatus.reason} {marketStatus.nextOpenTime ? `(Reopens ${marketStatus.nextOpenTime})` : ''}</span>
+        <div
+          className={`mx-3 mt-2 p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between shadow-xs transition-colors ${
+            isDarkMode
+              ? 'bg-amber-500/15 border-amber-500/35 text-amber-200'
+              : 'bg-amber-50 border-amber-300 text-amber-950'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0 pr-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            <span className="truncate">
+              Market Closed: {marketStatus.reason} {marketStatus.nextOpenTime ? `(Reopens ${marketStatus.nextOpenTime})` : ''}
+            </span>
           </div>
-          <span className="text-[10px] bg-amber-500/20 px-2 py-0.5 rounded text-amber-200 font-bold">Trading Suspended</span>
+          <span
+            className={`text-[10px] font-black px-2 py-0.5 rounded shrink-0 border uppercase tracking-wider ${
+              isDarkMode
+                ? 'bg-amber-500/25 border-amber-500/40 text-amber-200'
+                : 'bg-amber-200/90 border-amber-400 text-amber-950'
+            }`}
+          >
+            Trading Suspended
+          </span>
         </div>
       )}
 
       {closedNotice && (
-        <div className="mx-3 mt-2 p-2.5 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-semibold flex items-center gap-2 animate-fade-in shadow-md">
+        <div
+          className={`mx-3 mt-2 p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 animate-fade-in shadow-xs ${
+            isDarkMode
+              ? 'bg-rose-500/20 border-rose-500/40 text-rose-200'
+              : 'bg-rose-50 border-rose-300 text-rose-950'
+          }`}
+        >
           <span>⚠️ {closedNotice}</span>
         </div>
       )}
@@ -780,17 +802,15 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           {/* Red Sell Button */}
           <button
             onClick={() => handleOpenTrade('SELL')}
-            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
+            disabled={!marketStatus.isOpen}
+            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-colors shadow-sm min-w-0 ${
               !marketStatus.isOpen
-                ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
-                : tickDirection === 'DOWN'
-                ? 'bg-[#FF0F3B] ring-2 ring-red-400 shadow-[0_0_18px_rgba(255,15,59,0.75)] scale-[1.02]'
+                ? 'bg-[#C5192D]/85 border border-red-900/60 opacity-85 cursor-not-allowed'
                 : 'bg-[#E51937] hover:bg-[#c9142f] cursor-pointer'
             }`}
           >
-            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5 flex items-center gap-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider opacity-95 mb-0.5 flex items-center gap-1">
               {!marketStatus.isOpen ? '🔒 Closed' : 'Sell'}
-              {tickDirection === 'DOWN' && <span className="text-white text-[10px] animate-bounce">▼</span>}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {bidParts.isForex ? (
@@ -824,17 +844,15 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           {/* Green Buy Button */}
           <button
             onClick={() => handleOpenTrade('BUY')}
-            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-all shadow-sm min-w-0 ${
+            disabled={!marketStatus.isOpen}
+            className={`py-2.5 px-2 rounded-2xl active:scale-[0.98] text-white flex flex-col items-center justify-center transition-colors shadow-sm min-w-0 ${
               !marketStatus.isOpen
-                ? 'bg-neutral-700/80 cursor-not-allowed opacity-75'
-                : tickDirection === 'UP'
-                ? 'bg-[#00D084] ring-2 ring-emerald-400 shadow-[0_0_18px_rgba(0,208,132,0.75)] scale-[1.02]'
+                ? 'bg-[#007A4A]/85 border border-emerald-900/60 opacity-85 cursor-not-allowed'
                 : 'bg-[#22C55E] hover:bg-[#16A34A] cursor-pointer'
             }`}
           >
-            <span className="text-[11px] font-bold uppercase tracking-wider opacity-90 mb-0.5 flex items-center gap-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider opacity-95 mb-0.5 flex items-center gap-1">
               {!marketStatus.isOpen ? '🔒 Closed' : 'Buy'}
-              {tickDirection === 'UP' && <span className="text-white text-[10px] animate-bounce">▲</span>}
             </span>
             <div className="flex items-baseline justify-center leading-none whitespace-nowrap overflow-hidden max-w-full">
               {askParts.isForex ? (

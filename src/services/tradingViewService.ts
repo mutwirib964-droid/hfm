@@ -112,12 +112,15 @@ export class TradingViewPriceService {
               const conf = TV_INSTRUMENT_MAP[symbol];
               if (conf && data.bid !== undefined && data.ask !== undefined) {
                 const spreadPips = Math.abs(data.ask - data.bid) * conf.pipMultiplier;
+                const finalSpread = (data.spread && data.spread >= 0.1 && data.spread < 100)
+                  ? Number(data.spread.toFixed(1))
+                  : Number(spreadPips.toFixed(1));
                 this.lastQuotes.set(symbol, {
                   symbol,
                   tvTicker: conf.ticker,
                   bid: Number(data.bid.toFixed(conf.decimals)),
                   ask: Number(data.ask.toFixed(conf.decimals)),
-                  spread: data.spread !== undefined ? data.spread : Number(spreadPips.toFixed(1)),
+                  spread: finalSpread > 0 ? finalSpread : Number(spreadPips.toFixed(1)),
                   change24h: data.change24h !== undefined ? data.change24h : 0,
                   high24h: data.high24h || Number((data.ask * 1.008).toFixed(conf.decimals)),
                   low24h: data.low24h || Number((data.bid * 0.992).toFixed(conf.decimals)),
@@ -199,16 +202,20 @@ export class TradingViewPriceService {
               if (conf) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const realPrice = close;
+                const rawBid = row.d[2];
+                const rawAsk = row.d[3];
+                const bid = (rawBid && rawBid > 0) ? Number(rawBid.toFixed(conf.decimals)) : Number(close.toFixed(conf.decimals));
+                const ask = (rawAsk && rawAsk >= bid) ? Number(rawAsk.toFixed(conf.decimals)) : Number((bid + Math.pow(10, -conf.decimals) * 3).toFixed(conf.decimals));
+                const spreadPips = Number((Math.abs(ask - bid) * conf.pipMultiplier).toFixed(1));
                 this.lastQuotes.set(sym, {
                   symbol: sym,
                   tvTicker: conf.ticker,
-                  bid: Number(realPrice.toFixed(conf.decimals)),
-                  ask: Number(realPrice.toFixed(conf.decimals)),
-                  spread: 0,
+                  bid,
+                  ask,
+                  spread: spreadPips > 0 ? spreadPips : 0.3,
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(conf.decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(conf.decimals)),
+                  high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
+                  low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }
@@ -235,16 +242,20 @@ export class TradingViewPriceService {
               if (conf) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const realPrice = close;
+                const rawBid = row.d[2];
+                const rawAsk = row.d[3];
+                const bid = (rawBid && rawBid > 0) ? Number(rawBid.toFixed(conf.decimals)) : Number(close.toFixed(conf.decimals));
+                const ask = (rawAsk && rawAsk >= bid) ? Number(rawAsk.toFixed(conf.decimals)) : Number((bid + Math.pow(10, -conf.decimals) * 3).toFixed(conf.decimals));
+                const spreadPips = Number((Math.abs(ask - bid) * conf.pipMultiplier).toFixed(1));
                 this.lastQuotes.set(sym, {
                   symbol: sym,
                   tvTicker: conf.ticker,
-                  bid: Number(realPrice.toFixed(conf.decimals)),
-                  ask: Number(realPrice.toFixed(conf.decimals)),
-                  spread: 0,
+                  bid,
+                  ask,
+                  spread: spreadPips > 0 ? spreadPips : 0.3,
                   change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || realPrice).toFixed(conf.decimals)),
-                  low24h: Number((row.d[5] || realPrice).toFixed(conf.decimals)),
+                  high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
+                  low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }

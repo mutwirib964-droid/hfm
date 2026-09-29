@@ -196,14 +196,25 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
         isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
     >
-      {/* Market Closed Notice Toast Banner */}
+      {/* Market Closed Notice Toast Banner (High Visibility in both Light & Dark modes) */}
       {closedNotice && (
-        <div className="mx-2 sm:mx-3 mt-1.5 p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-between animate-fade-in shadow-md">
+        <div
+          className={`mx-2 sm:mx-3 mt-1.5 p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between animate-fade-in shadow-md transition-colors ${
+            isDarkMode
+              ? 'bg-amber-500/15 border-amber-500/40 text-amber-200'
+              : 'bg-amber-50 border-amber-300 text-amber-950'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+            <Clock className={`w-4 h-4 shrink-0 ${isDarkMode ? 'text-amber-400' : 'text-amber-700'}`} />
             <span>{closedNotice}</span>
           </div>
-          <button onClick={() => setClosedNotice(null)} className="text-amber-400 hover:text-white ml-2 text-xs">
+          <button
+            onClick={() => setClosedNotice(null)}
+            className={`ml-2 text-xs font-bold p-1 rounded transition-colors ${
+              isDarkMode ? 'text-amber-300 hover:text-white' : 'text-amber-800 hover:text-amber-950'
+            }`}
+          >
             ✕
           </button>
         </div>
@@ -566,7 +577,11 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                       <button
                         onClick={(e) => handleTradeClick(e, inst, 'SELL')}
                         className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
-                          tick === 'DOWN'
+                          !mHours.isOpen
+                            ? isDarkMode
+                              ? 'bg-[#24181A] border-red-900/60 text-red-300'
+                              : 'bg-red-50/70 border-red-300 text-red-900'
+                            : tick === 'DOWN'
                             ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-500 text-rose-600 dark:text-rose-300 ring-1 ring-rose-500/30 shadow-xs font-semibold'
                             : isDarkMode
                             ? 'bg-[#1F222A] border-neutral-700/60 hover:border-rose-500/50 text-white'
@@ -589,8 +604,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">
-                          <span>Sell</span>
-                          {tick === 'DOWN' && <span className="text-rose-500 font-bold text-[10px]">▼</span>}
+                          <span>{!mHours.isOpen ? '🔒 Closed' : 'Sell'}</span>
+                          {mHours.isOpen && tick === 'DOWN' && <span className="text-rose-500 font-bold text-[10px]">▼</span>}
                         </div>
                       </button>
 
@@ -598,7 +613,11 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                       <button
                         onClick={(e) => handleTradeClick(e, inst, 'BUY')}
                         className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
-                          tick === 'UP'
+                          !mHours.isOpen
+                            ? isDarkMode
+                              ? 'bg-[#18231C] border-emerald-900/60 text-emerald-300'
+                              : 'bg-emerald-50/70 border-emerald-300 text-emerald-900'
+                            : tick === 'UP'
                             ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 shadow-xs font-semibold'
                             : isDarkMode
                             ? 'bg-[#1F222A] border-neutral-700/60 hover:border-emerald-500/50 text-white'
@@ -621,8 +640,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">
-                          <span>Buy</span>
-                          {tick === 'UP' && <span className="text-emerald-500 font-bold text-[10px]">▲</span>}
+                          <span>{!mHours.isOpen ? '🔒 Closed' : 'Buy'}</span>
+                          {mHours.isOpen && tick === 'UP' && <span className="text-emerald-500 font-bold text-[10px]">▲</span>}
                         </div>
                       </button>
                     </div>
