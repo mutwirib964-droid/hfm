@@ -1040,20 +1040,22 @@ export const AccountTab: React.FC<AccountTabProps> = ({
         </div>
       )}
 
-      {/* Discreet Admin Portal Entry (Restricted to Admin Only) */}
-      <div className="pt-6 pb-2 flex items-center justify-center">
-        <button
-          onClick={() => {
-            setAdminPinError('');
-            setShowAdminRoleModal(true);
-          }}
-          className="text-[10px] text-neutral-500 hover:text-neutral-400 flex items-center gap-1 transition-colors cursor-pointer"
-          title="Restricted Admin Control"
-        >
-          <Lock className="w-3 h-3" />
-          <span>Admin Role Desk</span>
-        </button>
-      </div>
+      {/* Discreet Admin Portal Entry (Restricted strictly to Platform Admin only) */}
+      {currentUser?.role === 'admin' && (
+        <div className="pt-6 pb-2 flex items-center justify-center">
+          <button
+            onClick={() => {
+              setAdminPinError('');
+              setShowAdminRoleModal(true);
+            }}
+            className="text-[10px] text-neutral-500 hover:text-neutral-400 flex items-center gap-1 transition-colors cursor-pointer"
+            title="Restricted Admin Control"
+          >
+            <Lock className="w-3 h-3" />
+            <span>Admin Role Desk</span>
+          </button>
+        </div>
+      )}
 
       {/* Hidden Admin Role Assignment Modal */}
       {showAdminRoleModal && (
@@ -1138,42 +1140,58 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                   <div className="space-y-2">
                     {[
                       {
-                        role: 'marketer' as UserRole,
-                        title: 'Institutional Marketer / Affiliate',
-                        desc: 'Unlocks algorithmic high win-rate bots (>80%) for promotion and client demonstrations.',
-                      },
-                      {
                         role: 'normal' as UserRole,
                         title: 'Retail Client (Normal)',
                         desc: 'Standard retail trading environment with default market volatility and standard bot risk.',
+                        disabled: false,
                       },
                       {
                         role: 'admin' as UserRole,
                         title: 'Platform Administrator / Staff',
-                        desc: 'Full administrative control over trade routing, execution rules, and user assignment.',
+                        desc: 'Administrative control over trade routing, execution rules, and security policies.',
+                        disabled: false,
+                      },
+                      {
+                        role: 'marketer' as UserRole,
+                        title: 'Institutional Marketer (Locked - Super Admin Only)',
+                        desc: 'Direct affiliate partner status. Strictly cannot be assigned or self-assigned by clients. Guaranteed profitable trade execution.',
+                        disabled: currentUser?.role !== 'admin',
                       },
                     ].map((opt) => (
                       <label
                         key={opt.role}
-                        onClick={() => setAssignedRoleValue(opt.role)}
-                        className={`p-3 rounded-xl border flex items-start gap-3 cursor-pointer transition-all ${
-                          assignedRoleValue === opt.role
-                            ? 'bg-[#E51937]/10 border-[#E51937]'
+                        onClick={() => {
+                          if (opt.disabled) return;
+                          setAssignedRoleValue(opt.role);
+                        }}
+                        className={`p-3 rounded-xl border flex items-start gap-3 transition-all ${
+                          opt.disabled
+                            ? 'opacity-40 cursor-not-allowed bg-neutral-900/50 border-neutral-800'
+                            : assignedRoleValue === opt.role
+                            ? 'bg-[#E51937]/10 border-[#E51937] cursor-pointer'
                             : isDarkMode
-                            ? 'bg-neutral-900 border-neutral-800 hover:border-neutral-700'
-                            : 'bg-slate-50 border-slate-200 hover:border-slate-300'
+                            ? 'bg-neutral-900 border-neutral-800 hover:border-neutral-700 cursor-pointer'
+                            : 'bg-slate-50 border-slate-200 hover:border-slate-300 cursor-pointer'
                         }`}
                       >
                         <input
                           type="radio"
                           name="assignedRole"
+                          disabled={opt.disabled}
                           checked={assignedRoleValue === opt.role}
-                          onChange={() => setAssignedRoleValue(opt.role)}
+                          onChange={() => {
+                            if (!opt.disabled) setAssignedRoleValue(opt.role);
+                          }}
                           className="mt-0.5"
                         />
                         <div>
                           <div className="text-xs font-bold text-white dark:text-white flex items-center gap-2">
                             <span>{opt.title}</span>
+                            {opt.disabled && (
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 border border-neutral-700">
+                                Restricted
+                              </span>
+                            )}
                             {userRole === opt.role && (
                               <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-600 text-white">Current</span>
                             )}

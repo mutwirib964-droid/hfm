@@ -4,6 +4,10 @@ import {
   PendingOrder,
   ClosedTrade,
   TradingAccount,
+  Instrument,
+  Candle,
+  Timeframe,
+  ChartType,
 } from '../types';
 import {
   TrendingUp,
@@ -26,6 +30,16 @@ interface TradesTabProps {
   onCloseAllPositions: () => void;
   onCancelPendingOrder: (id: string) => void;
   isDarkMode?: boolean;
+  // Chart synchronization
+  instruments?: Instrument[];
+  selectedSymbol?: string;
+  onSelectSymbol?: (symbol: string) => void;
+  candles?: Candle[];
+  timeframe?: Timeframe;
+  onTimeframeChange?: (tf: Timeframe) => void;
+  chartType?: ChartType;
+  onChartTypeChange?: (type: ChartType) => void;
+  tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
 }
 
 export const TradesTab: React.FC<TradesTabProps> = ({
@@ -37,6 +51,15 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   onCloseAllPositions,
   onCancelPendingOrder,
   isDarkMode = false,
+  instruments = [],
+  selectedSymbol = 'EURUSD',
+  onSelectSymbol,
+  candles = [],
+  timeframe = '1H',
+  onTimeframeChange = () => {},
+  chartType = 'candles',
+  onChartTypeChange = () => {},
+  tickDirection = 'NEUTRAL',
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'open' | 'pending' | 'closed'>('open');
 
@@ -49,19 +72,34 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
     >
-      {/* Top Header */}
+      {/* Header and Subtabs: Open, Pending, Closed */}
       <div
-        className={`px-4 pt-4 pb-2 border-b ${
-          isDarkMode ? 'border-neutral-800' : 'border-neutral-200'
+        className={`px-4 pt-3 pb-2 border-b ${
+          isDarkMode ? 'border-neutral-800 bg-[#14161C]' : 'border-neutral-200 bg-white'
         }`}
       >
-        <h1 className="text-xl font-bold tracking-tight mb-3">Trades</h1>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <h1 className="text-base sm:text-lg font-bold tracking-tight">Order Positions &amp; History</h1>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-bold border border-emerald-500/20">
+              Live Equinix LD4
+            </span>
+          </div>
+          {positions.length > 0 && (
+            <button
+              onClick={onCloseAllPositions}
+              className="text-xs text-red-500 hover:text-red-600 font-bold cursor-pointer transition-colors"
+            >
+              Close All ({positions.length})
+            </button>
+          )}
+        </div>
 
         {/* 3 Subtabs: Open, Pending, Closed */}
         <div className="flex items-center justify-around border-b border-neutral-100 dark:border-neutral-800/80 -mb-2">
           <button
             onClick={() => setActiveSubTab('open')}
-            className={`pb-2.5 px-4 text-sm font-semibold relative transition-colors cursor-pointer ${
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
               activeSubTab === 'open'
                 ? isDarkMode ? 'text-white' : 'text-neutral-900'
                 : 'text-neutral-400'
@@ -69,7 +107,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           >
             <span>Open</span>
             {positions.length > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-neutral-200 dark:bg-neutral-800 font-bold">
+              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-emerald-500/20 text-emerald-500 font-bold">
                 {positions.length}
               </span>
             )}
@@ -80,7 +118,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('pending')}
-            className={`pb-2.5 px-4 text-sm font-semibold relative transition-colors cursor-pointer ${
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
               activeSubTab === 'pending'
                 ? isDarkMode ? 'text-white' : 'text-neutral-900'
                 : 'text-neutral-400'
@@ -99,13 +137,18 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('closed')}
-            className={`pb-2.5 px-4 text-sm font-semibold relative transition-colors cursor-pointer ${
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
               activeSubTab === 'closed'
                 ? isDarkMode ? 'text-white' : 'text-neutral-900'
                 : 'text-neutral-400'
             }`}
           >
             <span>Closed</span>
+            {closedTrades.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-neutral-200 dark:bg-neutral-800 font-bold">
+                {closedTrades.length}
+              </span>
+            )}
             {activeSubTab === 'closed' && (
               <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-[#E51937] rounded-full" />
             )}
@@ -113,37 +156,37 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         </div>
       </div>
 
+      {/* Floating P/L, Equity, and Free Margin Metrics Banner */}
+      <div
+        className={`px-4 py-3 border-b grid grid-cols-3 gap-2 text-xs ${
+          isDarkMode ? 'border-neutral-800 bg-neutral-900/40' : 'border-neutral-200 bg-slate-50'
+        }`}
+      >
+        <div>
+          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Floating P/L</span>
+          <span
+            className={`font-black text-sm ${
+              totalFloatingPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+            }`}
+          >
+            {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
+          </span>
+        </div>
+
+        <div>
+          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Equity</span>
+          <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.equity ?? 0).toLocaleString()}</span>
+        </div>
+
+        <div className="text-right">
+          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Free Margin</span>
+          <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.freeMargin ?? 0).toLocaleString()}</span>
+        </div>
+      </div>
+
       {/* OPEN POSITIONS SUBVIEW */}
       {activeSubTab === 'open' && (
         <div className="flex-1 flex flex-col">
-          {/* Account Summary Banner */}
-          <div
-            className={`px-4 py-3 border-b grid grid-cols-3 gap-2 text-xs ${
-              isDarkMode ? 'border-neutral-800 bg-neutral-900/40' : 'border-neutral-200 bg-slate-50'
-            }`}
-          >
-            <div>
-              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Floating P/L</span>
-              <span
-                className={`font-black text-sm ${
-                  totalFloatingPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
-                }`}
-              >
-                {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Equity</span>
-              <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.equity ?? 0).toLocaleString()}</span>
-            </div>
-
-            <div className="text-right">
-              <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Free Margin</span>
-              <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.freeMargin ?? 0).toLocaleString()}</span>
-            </div>
-          </div>
-
           {/* List or Empty State */}
           {positions.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[300px]">

@@ -1,6 +1,5 @@
 import React, { useRef, useEffect, useState, useMemo } from 'react';
 import { Candle, Timeframe, ChartType, Position } from '../types';
-import { TradingViewWidget } from './TradingViewWidget';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
 import {
   Maximize2,
@@ -52,7 +51,6 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const [showVolume, setShowVolume] = useState(true);
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [chartEngine, setChartEngine] = useState<'vtm-pro' | 'tradingview'>('vtm-pro');
 
   // Smooth Price Line Interpolation
   const animatedBidRef = useRef(currentBid);
@@ -92,58 +90,53 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     };
   }, [currentBid, currentAsk]);
 
-  // Calculations for Moving Averages
+  // Calculations for Moving Averages - spans from index 0 across all candles end to end
   const ma20 = useMemo(() => {
     const period = 20;
+    if (candles.length === 0) return [];
     return candles.map((_, i, arr) => {
-      if (i < period - 1) return null;
-      const slice = arr.slice(i - period + 1, i + 1);
+      const start = Math.max(0, i - period + 1);
+      const slice = arr.slice(start, i + 1);
       const sum = slice.reduce((acc, c) => acc + c.close, 0);
-      return sum / period;
+      return sum / slice.length;
     });
   }, [candles]);
 
   const ema50 = useMemo(() => {
     const period = 50;
     const k = 2 / (period + 1);
-    let prevEma: number | null = null;
+    if (candles.length === 0) return [];
+    let prevEma = candles[0].close;
     return candles.map((c, i) => {
-      if (i < period - 1) return null;
-      if (prevEma === null) {
-        const slice = candles.slice(0, period);
-        prevEma = slice.reduce((acc, cur) => acc + cur.close, 0) / period;
-        return prevEma;
-      }
+      if (i === 0) return prevEma;
       prevEma = c.close * k + prevEma * (1 - k);
       return prevEma;
     });
   }, [candles]);
 
-  // RSI 14
+  // RSI 14 - continuous from start to finish across all candles
   const rsiValues = useMemo(() => {
     const period = 14;
-    const rsi: (number | null)[] = [];
+    if (candles.length === 0) return [];
+    const rsi: number[] = [];
     let gains = 0;
     let losses = 0;
 
     for (let i = 0; i < candles.length; i++) {
       if (i === 0) {
-        rsi.push(null);
+        rsi.push(50);
         continue;
       }
       const change = candles[i].close - candles[i - 1].close;
-      if (i <= period) {
-        if (change >= 0) gains += change;
-        else losses -= change;
+      const count = Math.min(i, period);
+      if (change >= 0) gains += change;
+      else losses -= change;
 
-        if (i === period) {
-          const avgGain = gains / period;
-          const avgLoss = losses / period;
-          const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-          rsi.push(100 - 100 / (1 + rs));
-        } else {
-          rsi.push(null);
-        }
+      if (i <= period) {
+        const avgGain = gains / count;
+        const avgLoss = losses / count;
+        const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        rsi.push(100 - 100 / (1 + rs));
       } else {
         const prevAvgGain = gains / period;
         const prevAvgLoss = losses / period;
@@ -230,25 +223,36 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       return paddedMin + ((mainChartHeight - y) / mainChartHeight) * paddedRange;
     };
 
-    // Draw Subtle Grid
-    ctx.strokeStyle = isDarkMode ? '#1F242D' : '#F1F5F9';
+    // Draw Subtle Grid & High-Contrast Price Scale Area
+    ctx.strokeStyle = isDarkMode ? '#1E232E' : '#E2E8F0';
     ctx.lineWidth = 1;
 
-    // Horizontal Price Grid lines
+    // Dedicated right price scale column background
+    ctx.fillStyle = isDarkMode ? '#11141A' : '#F1F5F9';
+    ctx.fillRect(chartWidth, 0, priceScaleWidth, mainChartHeight);
+    ctx.strokeStyle = isDarkMode ? '#222734' : '#CBD5E1';
+    ctx.beginPath();
+    ctx.moveTo(chartWidth, 0);
+    ctx.lineTo(chartWidth, mainChartHeight);
+    ctx.stroke();
+
+    // Horizontal Price Grid lines & Bold Price Scale Labels
     const gridLines = 6;
-    ctx.fillStyle = isDarkMode ? '#6B7280' : '#94A3B8';
-    ctx.font = '10px monospace';
+    ctx.fillStyle = isDarkMode ? '#F1F5F9' : '#0F172A';
+    ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'left';
 
     for (let i = 0; i <= gridLines; i++) {
       const y = (mainChartHeight / gridLines) * i;
+      ctx.strokeStyle = isDarkMode ? '#1A1E27' : '#E2E8F0';
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(chartWidth, y);
       ctx.stroke();
 
       const priceVal = yToPrice(y);
-      ctx.fillText(priceVal.toFixed(decimals), chartWidth + 6, y + 3);
+      ctx.fillStyle = isDarkMode ? '#CBD5E1' : '#334155';
+      ctx.fillText(priceVal.toFixed(decimals), chartWidth + 5, y + 4);
     }
 
     // Candle widths and spacing
@@ -388,43 +392,73 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       }
     }
 
-    // Moving Averages
-    if (showSMA) {
+    // Moving Averages - Running end to end from left edge to right edge of the chart
+    if (showSMA && ma20.length > 0) {
       ctx.beginPath();
-      let started = false;
+      const firstY = priceToY(ma20[0]);
+      ctx.moveTo(0, firstY);
       ma20.forEach((val, i) => {
-        if (val === null) return;
         const x = i * candleSpacing + candleSpacing / 2;
         const y = priceToY(val);
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
+        ctx.lineTo(x, y);
       });
+      const lastSmaY = priceToY(ma20[ma20.length - 1]);
+      ctx.lineTo(chartWidth, lastSmaY);
       ctx.strokeStyle = '#F59E0B'; // Amber SMA
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
+
+      // Right axis price badge for SMA
+      ctx.fillStyle = '#F59E0B';
+      const badgeH = 15;
+      const badgeW = priceScaleWidth - 4;
+      ctx.fillRect(chartWidth + 2, lastSmaY - badgeH / 2, badgeW, badgeH);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(ma20[ma20.length - 1].toFixed(decimals), chartWidth + badgeW / 2 + 2, lastSmaY + 3);
     }
 
-    if (showEMA) {
+    if (showEMA && ema50.length > 0) {
       ctx.beginPath();
-      let started = false;
+      const firstY = priceToY(ema50[0]);
+      ctx.moveTo(0, firstY);
       ema50.forEach((val, i) => {
-        if (val === null) return;
         const x = i * candleSpacing + candleSpacing / 2;
         const y = priceToY(val);
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
+        ctx.lineTo(x, y);
       });
+      const lastEmaY = priceToY(ema50[ema50.length - 1]);
+      ctx.lineTo(chartWidth, lastEmaY);
       ctx.strokeStyle = '#38BDF8'; // Sky blue EMA
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
+
+      // Right axis price badge for EMA
+      ctx.fillStyle = '#38BDF8';
+      const badgeH = 15;
+      const badgeW = priceScaleWidth - 4;
+      ctx.fillRect(chartWidth + 2, lastEmaY - badgeH / 2, badgeW, badgeH);
+      ctx.fillStyle = '#000000';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(ema50[ema50.length - 1].toFixed(decimals), chartWidth + badgeW / 2 + 2, lastEmaY + 3);
+    }
+
+    // Top-left on-canvas indicator legend
+    let legendX = 12;
+    ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'left';
+    if (showSMA && ma20.length > 0) {
+      ctx.fillStyle = '#F59E0B';
+      const text = `SMA(20): ${ma20[ma20.length - 1].toFixed(decimals)}`;
+      ctx.fillText(text, legendX, 18);
+      legendX += ctx.measureText(text).width + 12;
+    }
+    if (showEMA && ema50.length > 0) {
+      ctx.fillStyle = '#38BDF8';
+      const text = `EMA(50): ${ema50[ema50.length - 1].toFixed(decimals)}`;
+      ctx.fillText(text, legendX, 18);
     }
 
     // Draw Bid and Ask Lines in exact synchronization with execution buttons
@@ -516,9 +550,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         );
       });
 
-    // Time scale labels at bottom
-    ctx.fillStyle = isDarkMode ? '#6B7280' : '#94A3B8';
-    ctx.font = '10px sans-serif';
+    // Time scale labels at bottom with high contrast
+    ctx.fillStyle = isDarkMode ? '#CBD5E1' : '#334155';
+    ctx.font = 'bold 11px monospace';
     ctx.textAlign = 'center';
     const timeStep = Math.max(1, Math.floor(candleCount / 5));
 
@@ -533,7 +567,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.fillText(timeStr, x, mainChartHeight + 16);
     }
 
-    // RSI Sub-panel
+    // RSI Sub-panel - runs end to end across canvas
     if (showRSI) {
       const rsiTop = height - timeScaleHeight - rsiHeight + 10;
       const rsiBottom = height - timeScaleHeight - 5;
@@ -545,16 +579,16 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.lineTo(width, rsiTop - 10);
       ctx.stroke();
 
-      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#64748B';
-      ctx.font = '10px sans-serif';
+      ctx.fillStyle = isDarkMode ? '#E2E8F0' : '#1E293B';
+      ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'left';
       const lastRsi = rsiValues[rsiValues.length - 1] ?? 50;
-      ctx.fillText(`RSI (14): ${lastRsi.toFixed(1)}`, 10, rsiTop + 10);
+      ctx.fillText(`RSI(14): ${lastRsi.toFixed(1)}`, 10, rsiTop + 10);
 
       const y70 = rsiBottom - 0.7 * rsiSpan;
       const y30 = rsiBottom - 0.3 * rsiSpan;
 
-      ctx.strokeStyle = isDarkMode ? '#374151' : '#CBD5E1';
+      ctx.strokeStyle = isDarkMode ? '#475569' : '#94A3B8';
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(0, y70);
@@ -564,24 +598,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       ctx.stroke();
       ctx.setLineDash([]);
 
+      ctx.fillStyle = '#A855F7';
       ctx.fillText('70', chartWidth + 6, y70 + 3);
       ctx.fillText('30', chartWidth + 6, y30 + 3);
 
       ctx.beginPath();
-      let started = false;
+      const firstRsiVal = rsiValues[0] ?? 50;
+      ctx.moveTo(0, rsiBottom - (firstRsiVal / 100) * rsiSpan);
       rsiValues.forEach((val, i) => {
-        if (val === null) return;
         const x = i * candleSpacing + candleSpacing / 2;
         const y = rsiBottom - (val / 100) * rsiSpan;
-        if (!started) {
-          ctx.moveTo(x, y);
-          started = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
+        ctx.lineTo(x, y);
       });
+      const lastRsiY = rsiBottom - (lastRsi / 100) * rsiSpan;
+      ctx.lineTo(chartWidth, lastRsiY);
       ctx.strokeStyle = '#A855F7';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.stroke();
     }
 
@@ -723,19 +755,19 @@ export const TradingChart: React.FC<TradingChartProps> = ({
             isDarkMode ? 'bg-[#181B20] border-neutral-800/70' : 'bg-slate-50 border-slate-200'
           }`}
         >
-          {/* Timeframe Buttons */}
-          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+          {/* Timeframe Buttons - High Visibility */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
             {timeframes.map((tf) => (
               <button
                 key={tf}
                 id={`tf-btn-${tf}`}
                 onClick={() => onTimeframeChange(tf)}
-                className={`px-2 py-1 rounded font-semibold transition-all ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                   timeframe === tf
-                    ? 'bg-[#E51937] text-white shadow-sm'
+                    ? 'bg-[#E51937] text-white shadow-md ring-2 ring-red-500/60 font-black'
                     : isDarkMode
-                    ? 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
-                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
+                    ? 'bg-[#1F232D] text-neutral-200 border border-neutral-700/80 hover:bg-neutral-700 hover:text-white'
+                    : 'bg-white text-slate-800 border border-slate-300 hover:bg-slate-100 hover:text-black shadow-xs'
                 }`}
               >
                 {tf}
@@ -744,24 +776,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           </div>
 
           {/* Chart Style & Indicators Controls */}
-          <div className="flex items-center gap-1.5 ml-2">
+          <div className="flex items-center gap-2 ml-2 shrink-0">
             <div
-              className={`flex rounded p-0.5 border ${
-                isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-100 border-slate-200'
+              className={`flex rounded-lg p-0.5 border ${
+                isDarkMode ? 'bg-[#181B22] border-neutral-700' : 'bg-slate-200 border-slate-300'
               }`}
             >
               <button
                 id="chart-type-candles"
                 title="Candlesticks"
                 onClick={() => onChartTypeChange('candles')}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                   chartType === 'candles'
-                    ? isDarkMode
-                      ? 'bg-neutral-700 text-white'
-                      : 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-[#E51937] text-white shadow-xs'
                     : isDarkMode
-                    ? 'text-neutral-400'
-                    : 'text-slate-500'
+                    ? 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                    : 'text-slate-700 hover:text-black hover:bg-white'
                 }`}
               >
                 Candles
@@ -770,14 +800,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 id="chart-type-line"
                 title="Line Chart"
                 onClick={() => onChartTypeChange('line')}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                   chartType === 'line'
-                    ? isDarkMode
-                      ? 'bg-neutral-700 text-white'
-                      : 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-[#E51937] text-white shadow-xs'
                     : isDarkMode
-                    ? 'text-neutral-400'
-                    : 'text-slate-500'
+                    ? 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                    : 'text-slate-700 hover:text-black hover:bg-white'
                 }`}
               >
                 Line
@@ -786,14 +814,12 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                 id="chart-type-area"
                 title="Area Chart"
                 onClick={() => onChartTypeChange('area')}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all cursor-pointer ${
                   chartType === 'area'
-                    ? isDarkMode
-                      ? 'bg-neutral-700 text-white'
-                      : 'bg-white text-slate-900 shadow-sm'
+                    ? 'bg-[#E51937] text-white shadow-xs'
                     : isDarkMode
-                    ? 'text-neutral-400'
-                    : 'text-slate-500'
+                    ? 'text-neutral-300 hover:text-white hover:bg-neutral-800'
+                    : 'text-slate-700 hover:text-black hover:bg-white'
                 }`}
               >
                 Area
@@ -805,110 +831,93 @@ export const TradingChart: React.FC<TradingChartProps> = ({
               <button
                 id="indicators-toggle-btn"
                 onClick={() => setShowIndicatorMenu(!showIndicatorMenu)}
-                className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md border text-xs font-bold transition-all cursor-pointer shadow-xs ${
                   showIndicatorMenu
-                    ? 'bg-neutral-800 border-neutral-600 text-white'
+                    ? 'bg-[#E51937] text-white border-[#E51937] ring-2 ring-red-500/50'
                     : isDarkMode
-                    ? 'bg-neutral-900/80 border-neutral-800 text-neutral-300 hover:text-white'
-                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1F232D] border-neutral-700 text-white hover:bg-neutral-700'
+                    : 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
                 }`}
               >
-                <Activity className="w-3.5 h-3.5 text-[#E51937]" />
-                <span className="hidden sm:inline">Indicators</span>
+                <Activity className="w-4 h-4 text-amber-400" />
+                <span className="font-bold">Indicators</span>
+                {(showSMA || showEMA || showRSI) && (
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-emerald-500/40 animate-pulse" />
+                )}
               </button>
 
               {showIndicatorMenu && (
                 <div
-                  className={`absolute right-0 top-full mt-1.5 w-48 border rounded-lg p-2 shadow-2xl z-30 space-y-1.5 text-xs ${
-                    isDarkMode ? 'bg-[#1E222A] border-neutral-700 text-neutral-200' : 'bg-white border-slate-200 text-slate-800'
+                  className={`absolute right-0 top-full mt-2 w-52 border rounded-xl p-2.5 shadow-2xl z-30 space-y-2 text-xs backdrop-blur-md ${
+                    isDarkMode ? 'bg-[#1C2029] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900 shadow-xl'
                   }`}
                 >
-                  <label className="flex items-center justify-between p-1.5 hover:bg-neutral-800/40 rounded cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-neutral-400 px-1 border-b pb-1">
+                    Technical Indicators
+                  </div>
+                  <label className="flex items-center justify-between p-2 hover:bg-neutral-800/60 dark:hover:bg-neutral-800 rounded-lg cursor-pointer transition-colors">
+                    <span className="flex items-center gap-2 font-bold">
+                      <span className="w-3 h-3 rounded-full bg-amber-500 shadow-xs" />
                       SMA (20)
                     </span>
                     <input
                       type="checkbox"
                       checked={showSMA}
                       onChange={(e) => setShowSMA(e.target.checked)}
-                      className="accent-[#E51937]"
+                      className="accent-[#E51937] w-4 h-4 cursor-pointer"
                     />
                   </label>
-                  <label className="flex items-center justify-between p-1.5 hover:bg-neutral-800/40 rounded cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-sky-400" />
+                  <label className="flex items-center justify-between p-2 hover:bg-neutral-800/60 dark:hover:bg-neutral-800 rounded-lg cursor-pointer transition-colors">
+                    <span className="flex items-center gap-2 font-bold">
+                      <span className="w-3 h-3 rounded-full bg-sky-400 shadow-xs" />
                       EMA (50)
                     </span>
                     <input
                       type="checkbox"
                       checked={showEMA}
                       onChange={(e) => setShowEMA(e.target.checked)}
-                      className="accent-[#E51937]"
+                      className="accent-[#E51937] w-4 h-4 cursor-pointer"
                     />
                   </label>
-                  <label className="flex items-center justify-between p-1.5 hover:bg-neutral-800/40 rounded cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-purple-500" />
+                  <label className="flex items-center justify-between p-2 hover:bg-neutral-800/60 dark:hover:bg-neutral-800 rounded-lg cursor-pointer transition-colors">
+                    <span className="flex items-center gap-2 font-bold">
+                      <span className="w-3 h-3 rounded-full bg-purple-500 shadow-xs" />
                       RSI (14)
                     </span>
                     <input
                       type="checkbox"
                       checked={showRSI}
                       onChange={(e) => setShowRSI(e.target.checked)}
-                      className="accent-[#E51937]"
+                      className="accent-[#E51937] w-4 h-4 cursor-pointer"
                     />
                   </label>
-                  <label className="flex items-center justify-between p-1.5 hover:bg-neutral-800/40 rounded cursor-pointer">
-                    <span className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-neutral-400" />
+                  <label className="flex items-center justify-between p-2 hover:bg-neutral-800/60 dark:hover:bg-neutral-800 rounded-lg cursor-pointer transition-colors">
+                    <span className="flex items-center gap-2 font-bold">
+                      <span className="w-3 h-3 rounded-full bg-neutral-400 shadow-xs" />
                       Volume Bars
                     </span>
                     <input
                       type="checkbox"
                       checked={showVolume}
                       onChange={(e) => setShowVolume(e.target.checked)}
-                      className="accent-[#E51937]"
+                      className="accent-[#E51937] w-4 h-4 cursor-pointer"
                     />
                   </label>
                 </div>
               )}
             </div>
 
-            {/* Chart Engine Switcher */}
+            {/* VTM Pro Live Chart Engine Indicator */}
             <div
-              className={`flex rounded p-0.5 border ${
-                isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-100 border-slate-200'
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded border text-[10px] font-bold ${
+                isDarkMode
+                  ? 'bg-neutral-900 border-neutral-800 text-emerald-400'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-700'
               }`}
+              title="VTM Pro Live Engine: Ultra-low latency canvas synchronized with Buy/Sell execution"
             >
-              <button
-                type="button"
-                onClick={() => setChartEngine('vtm-pro')}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                  chartEngine === 'vtm-pro'
-                    ? 'bg-[#E51937] text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-neutral-400 hover:text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title="VTM Pro Real-Time Canvas - 100% price synchronized with Buy/Sell buttons"
-              >
-                VTM Pro Live
-              </button>
-              <button
-                type="button"
-                onClick={() => setChartEngine('tradingview')}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
-                  chartEngine === 'tradingview'
-                    ? 'bg-[#E51937] text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-neutral-400 hover:text-white'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-                title="TradingView Technical Chart"
-              >
-                TradingView
-              </button>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>VTM PRO LIVE</span>
             </div>
 
             {/* Fullscreen Toggle */}
@@ -925,97 +934,82 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           </div>
         </div>
 
-        {/* OHLCV Metric Bar with Live Execution Sync */}
+        {/* OHLCV Metric Bar with Live Execution Sync - High Visibility */}
         {activeCandle && (
           <div
-            className={`flex flex-wrap items-center gap-2.5 px-3 py-1.5 text-[11px] font-mono border-b ${
+            className={`flex flex-wrap items-center gap-3 px-3 py-1.5 text-xs font-mono border-b ${
               isDarkMode
-                ? 'bg-[#14171C] text-neutral-400 border-neutral-800/40'
-                : 'bg-slate-100 text-slate-600 border-slate-200'
+                ? 'bg-[#14171E] text-neutral-300 border-neutral-800'
+                : 'bg-slate-100 text-slate-800 border-slate-300'
             }`}
           >
-            <span className={`font-bold tracking-wide ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+            <span className={`font-black tracking-wide text-sm ${isDarkMode ? 'text-white' : 'text-slate-950'}`}>
               {symbol}
             </span>
-            <span>
-              O: <span className={isDarkMode ? 'text-white' : 'text-slate-900'}>{activeCandle.open.toFixed(decimals)}</span>
+            <span className="font-semibold">
+              O: <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{activeCandle.open.toFixed(decimals)}</strong>
             </span>
-            <span>
-              H: <span className="text-emerald-500">{activeCandle.high.toFixed(decimals)}</span>
+            <span className="font-semibold">
+              H: <strong className="text-emerald-400 font-bold">{activeCandle.high.toFixed(decimals)}</strong>
             </span>
-            <span>
-              L: <span className="text-rose-500">{activeCandle.low.toFixed(decimals)}</span>
+            <span className="font-semibold">
+              L: <strong className="text-rose-400 font-bold">{activeCandle.low.toFixed(decimals)}</strong>
             </span>
-            <span>
-              C: <span className={isDarkMode ? 'text-white' : 'text-slate-900'}>{activeCandle.close.toFixed(decimals)}</span>
+            <span className="font-semibold">
+              C: <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{activeCandle.close.toFixed(decimals)}</strong>
             </span>
 
             {/* Synchronized SELL (Bid) badge */}
             <div
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono font-bold text-xs border transition-all ${
                 tickDirection === 'DOWN'
-                  ? 'bg-rose-500/30 text-rose-200 border-rose-400 ring-2 ring-rose-500/60 shadow-[0_0_12px_rgba(244,63,94,0.6)] animate-pulse'
-                  : 'bg-rose-950/30 text-rose-400 border-rose-800/40'
+                  ? 'bg-rose-500 text-white border-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.5)] animate-pulse'
+                  : 'bg-rose-950/60 text-rose-300 border-rose-700/60'
               }`}
             >
-              <span className="text-[9px] uppercase tracking-wider font-black text-rose-300">
+              <span className="text-[10px] uppercase tracking-wider font-black">
                 SELL
               </span>
-              <span>{currentBid.toFixed(decimals)}</span>
+              <span className="font-black">{currentBid.toFixed(decimals)}</span>
               {tickDirection === 'DOWN' && <span>▼</span>}
             </div>
 
             {/* Synchronized BUY (Ask) badge */}
             <div
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded font-mono font-bold text-[10px] border transition-all ${
+              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono font-bold text-xs border transition-all ${
                 tickDirection === 'UP'
-                  ? 'bg-emerald-500/30 text-emerald-200 border-emerald-400 ring-2 ring-emerald-500/60 shadow-[0_0_12px_rgba(16,185,129,0.6)] animate-pulse'
-                  : 'bg-emerald-950/30 text-emerald-400 border-emerald-800/40'
+                  ? 'bg-emerald-500 text-white border-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)] animate-pulse'
+                  : 'bg-emerald-950/60 text-emerald-300 border-emerald-700/60'
               }`}
             >
-              <span className="text-[9px] uppercase tracking-wider font-black text-emerald-300">
+              <span className="text-[10px] uppercase tracking-wider font-black">
                 BUY
               </span>
-              <span>{currentAsk.toFixed(decimals)}</span>
+              <span className="font-black">{currentAsk.toFixed(decimals)}</span>
               {tickDirection === 'UP' && <span>▲</span>}
             </div>
 
-            <span className="px-1.5 py-0.5 rounded bg-neutral-800/60 text-amber-400 font-bold text-[10px]">
+            <span className="px-2 py-0.5 rounded bg-neutral-800 border border-neutral-700 text-amber-400 font-bold text-[11px]">
               Spr: {Math.round(Math.abs(currentAsk - currentBid) * Math.pow(10, decimals <= 3 ? 2 : 4))} pts
             </span>
             {showVolume && (
-              <span className="hidden md:inline">
-                Vol: <span>{activeCandle.volume}</span>
+              <span className="hidden md:inline text-neutral-400">
+                Vol: <strong className={isDarkMode ? 'text-white' : 'text-slate-800'}>{activeCandle.volume}</strong>
               </span>
             )}
           </div>
         )}
 
-        {/* Chart Viewport: Real-Time Live Chart (Canvas or TradingView) */}
+        {/* Chart Viewport: Real-Time Live VTM Pro Canvas Chart */}
         <div className="relative flex-1 w-full h-full overflow-hidden">
-          {chartEngine === 'vtm-pro' ? (
-            <div className="relative w-full h-full">
-              <canvas
-                ref={canvasRef}
-                onMouseMove={handleMouseMove}
-                onMouseLeave={handleMouseLeave}
-                className="w-full h-full cursor-crosshair block"
-              />
-            </div>
-          ) : (
-            <TradingViewWidget
-              symbol={symbol}
-              timeframe={timeframe}
-              onTimeframeChange={onTimeframeChange}
-              isDarkMode={isDarkMode}
-              isFullscreen={isFullscreen}
-              onToggleFullscreen={() => setIsFullscreen(!isFullscreen)}
-              bid={currentBid}
-              ask={currentAsk}
-              decimals={decimals}
-              tickDirection={tickDirection}
+          <div className="relative w-full h-full">
+            <canvas
+              ref={canvasRef}
+              onMouseMove={handleMouseMove}
+              onMouseLeave={handleMouseLeave}
+              className="w-full h-full cursor-crosshair block"
             />
-          )}
+          </div>
         </div>
       </div>
     </div>

@@ -27,6 +27,7 @@ import {
   Server,
 } from 'lucide-react';
 import { Security2FAModal } from './Security2FAModal';
+import { DedicatedTraderSupportModal } from './DedicatedTraderSupportModal';
 import { UserAuthProfile } from '../types/botTypes';
 
 interface MoreTabProps {
@@ -68,6 +69,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
 }) => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [is2FAModalOpen, setIs2FAModalOpen] = useState<boolean>(false);
+  const [isSupportModalOpen, setIsSupportModalOpen] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
 
   const showToast = (msg: string) => {
@@ -371,7 +373,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
 
             {/* 24/7 Dedicated Support */}
             <div
-              onClick={() => showToast('Trading Desk: Live Support Agent connected.')}
+              onClick={() => setIsSupportModalOpen(true)}
               className="p-3.5 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-800/40 cursor-pointer transition-colors"
             >
               <div className="flex items-center gap-3">
@@ -406,6 +408,14 @@ export const MoreTab: React.FC<MoreTabProps> = ({
         onToggle2FA={(val) => {
           if (onToggle2FA) onToggle2FA(val);
         }}
+      />
+
+      {/* Dedicated Trader Support AI Modal */}
+      <DedicatedTraderSupportModal
+        isOpen={isSupportModalOpen}
+        onClose={() => setIsSupportModalOpen(false)}
+        isDarkMode={isDarkMode}
+        currentUser={currentUser}
       />
     </div>
   );

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Instrument, MarketCategory, Timeframe, PriceAlert } from '../types';
+import { Instrument, MarketCategory, Timeframe, ChartType, PriceAlert } from '../types';
 import {
   Search,
   Star,
@@ -51,6 +51,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   const [quickFilter, setQuickFilter] = useState<'ALL' | 'GAINERS' | 'LOSERS' | 'FAVORITES'>('ALL');
   const [previewSymbol, setPreviewSymbol] = useState<string>('XAUUSD');
   const [previewTimeframe, setPreviewTimeframe] = useState<Timeframe>('15M');
+  const [previewChartType, setPreviewChartType] = useState<ChartType>('candles');
   const [previewLotSize, setPreviewLotSize] = useState<number>(0.1);
   const [showEditModal, setShowEditModal] = useState(false);
   const [closedNotice, setClosedNotice] = useState<string | null>(null);
@@ -727,12 +728,19 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               ))}
             </div>
 
-            {/* Embedded Live Chart Preview */}
-            <div className="h-60 w-full rounded-xl overflow-hidden border border-neutral-800/80 mb-3 bg-black/40">
+            {/* Official TradingView Live Chart Preview */}
+            <div className="h-64 w-full rounded-xl overflow-hidden border border-neutral-800/80 mb-3 bg-black/40">
               <TradingViewWidget
                 symbol={activePreviewInst.symbol}
                 timeframe={previewTimeframe}
+                onTimeframeChange={setPreviewTimeframe}
                 isDarkMode={isDarkMode}
+                bid={activePreviewInst.bid}
+                ask={activePreviewInst.ask}
+                spread={activePreviewInst.spread}
+                decimals={activePreviewInst.decimals}
+                pipMultiplier={activePreviewInst.pipMultiplier}
+                tickDirection={tickStates[activePreviewInst.symbol] || 'NEUTRAL'}
               />
             </div>
 

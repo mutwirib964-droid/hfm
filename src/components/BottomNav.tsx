@@ -31,7 +31,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
     },
     {
       id: 'trades' as ActiveTab,
-      label: 'Trades',
+      label: 'Positions',
       icon: ArrowUpDown,
       badge: openPositionsCount > 0 ? openPositionsCount : null,
     },

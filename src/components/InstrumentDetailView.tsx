@@ -20,12 +20,13 @@ import {
   Circle,
   RefreshCw,
 } from 'lucide-react';
-import { Instrument, Candle, Timeframe } from '../types';
+import { Instrument, Candle, Timeframe, ChartType } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
 import { DrawingModal, PriceAlertModal } from './ChartModals';
 import { QuickOrderSheet } from './QuickOrderSheet';
 import { TradingViewWidget } from './TradingViewWidget';
+import { generateCandles } from '../data/initialData';
 
 export interface DrawnObject {
   id: string;
@@ -69,6 +70,18 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   const [showPriceAlertModal, setShowPriceAlertModal] = useState(false);
   const [quickOrderSide, setQuickOrderSide] = useState<'BUY' | 'SELL' | null>(null);
   const [selectedSubTab, setSelectedSubTab] = useState<'info'>('info');
+  const [chartType, setChartType] = useState<ChartType>('candles');
+
+  const effectiveCandles = useMemo(() => {
+    if (candles && candles.length > 0) {
+      const lastClose = candles[candles.length - 1].close;
+      const maxDiff = instrument.bid > 1000 ? 5 : instrument.bid > 10 ? 1 : 0.001;
+      if (Math.abs(lastClose - instrument.bid) <= maxDiff) {
+        return candles;
+      }
+    }
+    return generateCandles(instrument.bid, timeframe, 80, instrument.decimals);
+  }, [candles, instrument.bid, timeframe, instrument.decimals]);
 
   // Interactive Drawing Engine State
   const [drawings, setDrawings] = useState<DrawnObject[]>([]);
@@ -739,12 +752,12 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         </div>
       )}
 
-      {/* Main Chart Viewport: Real-Time Live Chart */}
+      {/* Main Chart Viewport: Official TradingView Interactive Live Chart Alone */}
       <div
         className={`relative w-full transition-all duration-200 ${
           isFullscreen
             ? 'fixed inset-0 z-50 bg-[#111317] h-screen'
-            : 'h-[380px] sm:h-[440px] md:h-[480px]'
+            : 'h-[440px] sm:h-[500px] md:h-[560px]'
         } bg-transparent`}
       >
         <TradingViewWidget

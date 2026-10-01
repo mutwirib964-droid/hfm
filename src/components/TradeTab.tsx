@@ -9,6 +9,7 @@ import {
   ClosedTrade,
   TradingAccount,
 } from '../types';
+import { TradingViewWidget } from './TradingViewWidget';
 import { TradingChart } from './TradingChart';
 import {
   TrendingUp,
@@ -115,6 +116,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   >('positions');
   const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
+  const [chartEngine, setChartEngine] = useState<'custom' | 'tradingview'>('custom');
 
   // Calculate Pip value and required margin
   const leverageNum = parseInt(account?.leverage ? account.leverage.split(':')[1] || '500' : '500', 10);
@@ -372,24 +374,95 @@ export const TradeTab: React.FC<TradeTabProps> = ({
         </div>
       )}
 
-      {/* Main Trading Area: 2-column responsive layout on desktop (Chart + Order Pad) */}
+      {/* Main Trading Area: 2-column responsive layout on desktop (Chart Area + Order Pad) */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] xl:grid-cols-[1fr_390px] gap-3.5 items-start">
-        {/* Left: Real-time Interactive Candlestick Chart */}
-        <div className="w-full">
-          <TradingChart
-            candles={candles}
-            symbol={currentInstrument.symbol}
-            decimals={currentInstrument.decimals}
-            currentBid={currentInstrument.bid}
-            currentAsk={currentInstrument.ask}
-            timeframe={timeframe}
-            onTimeframeChange={onTimeframeChange}
-            positions={positions}
-            chartType={chartType}
-            onChartTypeChange={onChartTypeChange}
-            isDarkMode={isDarkMode}
-            tickDirection={tickDirection}
-          />
+        {/* Left: Chart Section with High-Visibility Engine Selector */}
+        <div className="w-full flex flex-col space-y-2">
+          {/* Chart Engine Switcher - Lets user switch between Our Real-Time Chart and TradingView Chart */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
+                Chart Engine:
+              </span>
+              <div
+                className={`flex rounded-lg p-0.5 border ${
+                  isDarkMode
+                    ? 'bg-neutral-900 border-neutral-800'
+                    : 'bg-slate-100 border-slate-200'
+                }`}
+              >
+                <button
+                  type="button"
+                  id="btn-engine-custom"
+                  onClick={() => setChartEngine('custom')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                    chartEngine === 'custom'
+                      ? 'bg-[#E51937] text-white shadow-md'
+                      : isDarkMode
+                      ? 'text-neutral-400 hover:text-white'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  <Activity className="w-3.5 h-3.5" />
+                  <span>Our Real-Time Chart</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-engine-tradingview"
+                  onClick={() => setChartEngine('tradingview')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
+                    chartEngine === 'tradingview'
+                      ? 'bg-[#E51937] text-white shadow-md'
+                      : isDarkMode
+                      ? 'text-neutral-400 hover:text-white'
+                      : 'text-neutral-600 hover:text-neutral-900'
+                  }`}
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  <span>TradingView Chart</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
+                ● Live Equinix LD4 Feed
+              </span>
+            </div>
+          </div>
+
+          {/* Active Chart Container */}
+          <div className="w-full h-[520px] sm:h-[580px] lg:h-[640px] rounded-xl overflow-hidden shadow-lg border border-neutral-800/80 bg-black/40">
+            {chartEngine === 'custom' ? (
+              <TradingChart
+                candles={candles}
+                symbol={currentInstrument.symbol}
+                decimals={currentInstrument.decimals}
+                currentBid={currentInstrument.bid}
+                currentAsk={currentInstrument.ask}
+                timeframe={timeframe}
+                onTimeframeChange={onTimeframeChange}
+                positions={positions}
+                chartType={chartType}
+                onChartTypeChange={onChartTypeChange}
+                isDarkMode={isDarkMode}
+                tickDirection={tickDirection}
+              />
+            ) : (
+              <TradingViewWidget
+                symbol={currentInstrument.symbol}
+                timeframe={timeframe}
+                onTimeframeChange={onTimeframeChange}
+                isDarkMode={isDarkMode}
+                bid={currentInstrument.bid}
+                ask={currentInstrument.ask}
+                spread={currentInstrument.spread}
+                decimals={currentInstrument.decimals}
+                pipMultiplier={currentInstrument.pipMultiplier}
+                tickDirection={tickDirection}
+              />
+            )}
+          </div>
         </div>
 
         {/* Right: HFM Signature Order Execution Pad */}

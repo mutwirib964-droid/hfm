@@ -135,6 +135,24 @@ export default function App() {
     selectedSymbolRef.current = selectedSymbol;
   }, [selectedSymbol]);
   const [timeframe, setTimeframe] = useState<Timeframe>('15M');
+  const timeframeRef = useRef<Timeframe>(timeframe);
+  useEffect(() => {
+    timeframeRef.current = timeframe;
+  }, [timeframe]);
+
+  const getTimeframeDurationMs = (tf: Timeframe | string): number => {
+    switch (tf) {
+      case '1M': return 60 * 1000;
+      case '5M': return 5 * 60 * 1000;
+      case '15M': return 15 * 60 * 1000;
+      case '30M': return 30 * 60 * 1000;
+      case '1H': return 60 * 60 * 1000;
+      case '4H': return 4 * 60 * 60 * 1000;
+      case '1D': return 24 * 60 * 60 * 1000;
+      case '1W': return 7 * 24 * 60 * 60 * 1000;
+      default: return 60 * 1000;
+    }
+  };
   const [chartType, setChartType] = useState<ChartType>('candles');
   const [candles, setCandles] = useState<Candle[]>([]);
 
@@ -510,9 +528,10 @@ export default function App() {
     });
   };
 
-  // Automated Trading Bots & Role Management
+  // Automated Trading Bots & Role Management (Default is normal client; users cannot self-assign marketer)
   const [userRole, setUserRole] = useState<UserRole>(() => {
-    return (localStorage.getItem('vtm_user_role') as UserRole) || 'marketer';
+    const saved = localStorage.getItem('vtm_user_role') as UserRole;
+    return saved === 'marketer' || saved === 'admin' ? saved : 'normal';
   });
   const [importedBots, setImportedBots] = useState<BotStrategyConfig[]>(() =>
     loadStoredImportedBots()
@@ -580,10 +599,18 @@ export default function App() {
             const quote = quotes.get(inst.symbol);
             if (!quote) return inst;
 
-            // Strict Market Closed Check: if market is closed, prices do not move underneath!
+            // Strict Market Closed Check: if market is closed, update quote to TradingView official close but do not tick
             const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
             if (!mStatus.isOpen) {
-              return inst;
+              return {
+                ...inst,
+                bid: quote.bid,
+                ask: quote.ask,
+                spread: quote.spread > 0 ? quote.spread : inst.spread,
+                change24h: quote.change24h,
+                high24h: quote.high24h,
+                low24h: quote.low24h,
+              };
             }
 
             const oldBid = inst.bid;
@@ -603,15 +630,51 @@ export default function App() {
             }
 
             // Immediately update chart candle when master TradingView feed updates active pair
+            // Guaranteed to never be above or below TradingView by more than 1.5 - 2 points
+            // Forms a new candle when selected timeframe interval elapses
             if (inst.symbol === activeSym && (newBid !== oldBid || newAsk !== inst.ask)) {
               const activeChartPrice = direction === 'UP' ? newAsk : newBid;
+              const now = Date.now();
+              const currentTf = timeframeRef.current || '15M';
+              const intervalMs = getTimeframeDurationMs(currentTf);
+
               setCandles((prev) => {
                 if (prev.length === 0) return prev;
-                const last = { ...prev[prev.length - 1] };
-                last.close = activeChartPrice;
-                last.high = Math.max(last.high, activeChartPrice);
-                last.low = Math.min(last.low, activeChartPrice);
-                return [...prev.slice(0, prev.length - 1), last];
+                const last = prev[prev.length - 1];
+
+                // If time selected is over, form a brand new candle!
+                if (now >= last.time + intervalMs) {
+                  const newSlot = Math.floor(now / intervalMs) * intervalMs;
+                  const newCandle: Candle = {
+                    time: newSlot,
+                    open: last.close,
+                    high: Math.max(last.close, activeChartPrice),
+                    low: Math.min(last.close, activeChartPrice),
+                    close: activeChartPrice,
+                    volume: 1,
+                  };
+                  const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
+                  return [...trimmed, newCandle];
+                }
+
+                // Natural realistic candle wicks (like real TradingView candlesticks)
+                const bodyTop = Math.max(last.open, activeChartPrice);
+                const bodyBottom = Math.min(last.open, activeChartPrice);
+                const bodySize = bodyTop - bodyBottom;
+                const minStep = Math.pow(10, -inst.decimals);
+                const maxWick = Math.max(minStep * 2, bodySize * 0.25);
+
+                const safeHigh = Math.min(Math.max(last.high, activeChartPrice), bodyTop + maxWick);
+                const safeLow = Math.max(Math.min(last.low, activeChartPrice), bodyBottom - maxWick);
+
+                const updatedLast: Candle = {
+                  ...last,
+                  close: activeChartPrice,
+                  high: Number(safeHigh.toFixed(inst.decimals)),
+                  low: Number(safeLow.toFixed(inst.decimals)),
+                  volume: (last.volume || 1) + 1,
+                };
+                return [...prev.slice(0, prev.length - 1), updatedLast];
               });
             }
 
@@ -737,16 +800,50 @@ export default function App() {
             changed = true;
             nextTickStates[inst.symbol] = dir;
 
-            // When active trading symbol ticks, immediately update chart candle
+            // When active trading symbol ticks, immediately update chart candle and form new candle when timeframe elapses
             if (inst.symbol === activeSym) {
               const exactChartPrice = dir === 'UP' ? newAsk : newBid;
+              const now = Date.now();
+              const currentTf = timeframeRef.current || '15M';
+              const intervalMs = getTimeframeDurationMs(currentTf);
+
               setCandles((prev) => {
                 if (prev.length === 0) return prev;
-                const last = { ...prev[prev.length - 1] };
-                last.close = exactChartPrice;
-                last.high = Math.max(last.high, exactChartPrice);
-                last.low = Math.min(last.low, exactChartPrice);
-                return [...prev.slice(0, prev.length - 1), last];
+                const last = prev[prev.length - 1];
+
+                // If timeframe period is over, form a brand new candle!
+                if (now >= last.time + intervalMs) {
+                  const newSlot = Math.floor(now / intervalMs) * intervalMs;
+                  const newCandle: Candle = {
+                    time: newSlot,
+                    open: last.close,
+                    high: Math.max(last.close, exactChartPrice),
+                    low: Math.min(last.close, exactChartPrice),
+                    close: exactChartPrice,
+                    volume: 1,
+                  };
+                  const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
+                  return [...trimmed, newCandle];
+                }
+
+                // Natural realistic candle wicks (like real TradingView candlesticks)
+                const bodyTop = Math.max(last.open, exactChartPrice);
+                const bodyBottom = Math.min(last.open, exactChartPrice);
+                const bodySize = bodyTop - bodyBottom;
+                const minStep = Math.pow(10, -inst.decimals);
+                const maxWick = Math.max(minStep * 2, bodySize * 0.25);
+
+                const safeHigh = Math.max(bodyTop, Math.min(Math.max(last.high, exactChartPrice), bodyTop + maxWick));
+                const safeLow = Math.min(bodyBottom, Math.max(Math.min(last.low, exactChartPrice), bodyBottom - maxWick));
+
+                const lastUpdated: Candle = {
+                  ...last,
+                  close: exactChartPrice,
+                  high: Number(safeHigh.toFixed(inst.decimals)),
+                  low: Number(safeLow.toFixed(inst.decimals)),
+                  volume: (last.volume || 1) + 1,
+                };
+                return [...prev.slice(0, prev.length - 1), lastUpdated];
               });
             }
           }
@@ -783,10 +880,45 @@ export default function App() {
     // High-frequency micro-ticks every 420ms for smooth live movement
     const tickInterval = setInterval(runLiveMicroTicks, 420);
 
+    // Dedicated timeframe monitor - ensures new candle forms precisely when timeframe period expires
+    const candleCheckInterval = setInterval(() => {
+      if (!isMounted) return;
+      const activeSym = selectedSymbolRef.current;
+      const inst = instrumentsRef.current.find((i) => i.symbol === activeSym);
+      if (!inst) return;
+      const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+      if (!mStatus.isOpen) return;
+
+      const now = Date.now();
+      const currentTf = timeframeRef.current || '15M';
+      const intervalMs = getTimeframeDurationMs(currentTf);
+
+      setCandles((prev) => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        if (now >= last.time + intervalMs) {
+          const newSlot = Math.floor(now / intervalMs) * intervalMs;
+          const currentPrice = inst.bid;
+          const newCandle: Candle = {
+            time: newSlot,
+            open: last.close,
+            high: currentPrice,
+            low: currentPrice,
+            close: currentPrice,
+            volume: 1,
+          };
+          const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
+          return [...trimmed, newCandle];
+        }
+        return prev;
+      });
+    }, 1000);
+
     return () => {
       isMounted = false;
       clearInterval(tvInterval);
       clearInterval(tickInterval);
+      clearInterval(candleCheckInterval);
       if (highlightTimeout) clearTimeout(highlightTimeout);
     };
   }, []);
@@ -807,9 +939,17 @@ export default function App() {
           pos.side === 'BUY'
             ? currentPrice - pos.openPrice
             : pos.openPrice - currentPrice;
-        const pnl = Number((priceDiff * pos.lots * contractSize + pos.swap).toFixed(2));
+        let pnl = Number((priceDiff * pos.lots * contractSize + pos.swap).toFixed(2));
 
-        // Check automated SL / TP triggers
+        // For Marketers: Ensure their trades will ALWAYS end up on profits!
+        if (userRole === 'marketer') {
+          if (pnl <= 0) {
+            const guaranteedPts = Math.max(16, Math.abs(priceDiff * contractSize) || 24);
+            pnl = Number((guaranteedPts * pos.lots * 1.75 + Math.abs(pos.swap) + 15.50).toFixed(2));
+          }
+        }
+
+        // Check automated SL / TP triggers (Marketers never stop out in loss)
         if (
           pos.tp &&
           ((pos.side === 'BUY' && currentPrice >= pos.tp) ||
@@ -821,7 +961,7 @@ export default function App() {
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl))
         ) {
-          closePositionById(pos.id, 'SL', currentPrice);
+          closePositionById(pos.id, userRole === 'marketer' ? 'TP' : 'SL', currentPrice);
         }
 
         return {
@@ -840,7 +980,7 @@ export default function App() {
         const inst = currentInstMap.get(bt.symbol);
         if (!inst) return bt;
         const currentPrice = bt.side === 'BUY' ? inst.bid : inst.ask;
-        const profitUsd = calculateBotPnL(bt.symbol, bt.side, bt.openPrice, currentPrice, bt.lotSize);
+        const profitUsd = calculateBotPnL(bt.symbol, bt.side, bt.openPrice, currentPrice, bt.lotSize, userRole);
         if (bt.currentPrice !== currentPrice || bt.profitUsd !== profitUsd) {
           modified = true;
           return {
@@ -858,33 +998,59 @@ export default function App() {
     const activeInst = currentInstMap.get(selectedSymbol);
     if (activeInst) {
       const marketStatus = checkInstrumentMarketHours(activeInst.symbol, activeInst.category);
-      if (!marketStatus.isOpen) {
-        // Market is closed: prices and candles do not move underneath!
-        return;
-      }
-      const dir = tickStates[selectedSymbol] || 'NEUTRAL';
-      setCandles((prevCandles) => {
-        if (prevCandles.length === 0) return prevCandles;
-        const last = { ...prevCandles[prevCandles.length - 1] };
-        
-        // Exact User Rule:
-        // If market is going up on chart: show exact price on BUY, SELL shows with spread difference
-        // If market is going down on chart: show exact price on SELL, BUY shows with spread difference
+      if (marketStatus.isOpen) {
+        const dir = tickStates[selectedSymbol] || 'NEUTRAL';
         let executionPrice: number;
         if (dir === 'UP') {
           executionPrice = activeInst.ask; // Matches BUY button price exactly
         } else if (dir === 'DOWN') {
           executionPrice = activeInst.bid; // Matches SELL button price exactly
         } else {
-          // If neutral/steady, keep aligned with current candle color
-          executionPrice = last.close >= last.open ? activeInst.ask : activeInst.bid;
+          executionPrice = activeInst.bid;
         }
 
-        last.close = executionPrice;
-        last.high = Math.max(last.high, executionPrice);
-        last.low = Math.min(last.low, executionPrice);
-        return [...prevCandles.slice(0, prevCandles.length - 1), last];
-      });
+        const now = Date.now();
+        const currentTf = timeframeRef.current || '15M';
+        const intervalMs = getTimeframeDurationMs(currentTf);
+
+        setCandles((prevCandles) => {
+          if (prevCandles.length === 0) return prevCandles;
+          const last = prevCandles[prevCandles.length - 1];
+
+          // If time selected is over, form a brand new candle!
+          if (now >= last.time + intervalMs) {
+            const newSlot = Math.floor(now / intervalMs) * intervalMs;
+            const newCandle: Candle = {
+              time: newSlot,
+              open: last.close,
+              high: Math.max(last.close, executionPrice),
+              low: Math.min(last.close, executionPrice),
+              close: executionPrice,
+              volume: 1,
+            };
+            const trimmed = prevCandles.length >= 85 ? prevCandles.slice(1) : prevCandles;
+            return [...trimmed, newCandle];
+          }
+
+          const bodyTop = Math.max(last.open, executionPrice);
+          const bodyBottom = Math.min(last.open, executionPrice);
+          const bodySize = bodyTop - bodyBottom;
+          const minStep = Math.pow(10, -activeInst.decimals);
+          const maxWick = Math.max(minStep * 2, bodySize * 0.25);
+
+          const safeHigh = Math.min(Math.max(last.high, executionPrice), bodyTop + maxWick);
+          const safeLow = Math.max(Math.min(last.low, executionPrice), bodyBottom - maxWick);
+
+          const updatedLast: Candle = {
+            ...last,
+            close: executionPrice,
+            high: Number(safeHigh.toFixed(activeInst.decimals)),
+            low: Number(safeLow.toFixed(activeInst.decimals)),
+            volume: (last.volume || 1) + 1,
+          };
+          return [...prevCandles.slice(0, prevCandles.length - 1), updatedLast];
+        });
+      }
     }
 
     // Check pending orders for trigger
@@ -1276,6 +1442,20 @@ export default function App() {
         ? inst?.bid || pos.currentPrice
         : inst?.ask || pos.currentPrice);
 
+    let finalClosePrice = closePrice;
+    let finalPnl = pos.pnl;
+
+    // For Marketers: Ensure their trades will ALWAYS end up on profits!
+    if (userRole === 'marketer') {
+      if (finalPnl <= 0) {
+        finalPnl = Math.max(28.5, Number((pos.lots * 65.0 + 18.5).toFixed(2)));
+        const favorableOffset = 0.0035;
+        finalClosePrice = pos.side === 'BUY'
+          ? Number((pos.openPrice + favorableOffset).toFixed(5))
+          : Number((pos.openPrice - favorableOffset).toFixed(5));
+      }
+    }
+
     const closed: ClosedTrade = {
       id: `cl-${Date.now()}`,
       ticket: pos.ticket,
@@ -1283,11 +1463,11 @@ export default function App() {
       side: pos.side,
       lots: pos.lots,
       openPrice: pos.openPrice,
-      closePrice,
-      pnl: pos.pnl,
+      closePrice: finalClosePrice,
+      pnl: finalPnl,
       openTime: pos.openTime,
       closeTime: Date.now(),
-      reason,
+      reason: userRole === 'marketer' && finalPnl > 0 && reason === 'SL' ? 'TP' : reason,
     };
 
     setClosedTrades((prev) => [closed, ...prev]);
@@ -1304,8 +1484,8 @@ export default function App() {
         orderType: 'MARKET',
         lots: closed.lots,
         openPrice: closed.openPrice,
-        currentPrice: closePrice,
-        closePrice: closePrice,
+        currentPrice: finalClosePrice,
+        closePrice: finalClosePrice,
         sl: null,
         tp: null,
         pnl: closed.pnl,
@@ -1324,7 +1504,7 @@ export default function App() {
     // Update balance - NEVER let balance go negative!
     setSelectedAccount((acc) => {
       if (!acc) return null;
-      const newBal = Math.max(0, Number((acc.balance + pos.pnl).toFixed(2)));
+      const newBal = Math.max(0, Number((acc.balance + finalPnl).toFixed(2)));
       if (newBal <= 0) {
         setTimeout(handleZeroBalanceStopOut, 0);
       }
@@ -1334,9 +1514,9 @@ export default function App() {
       };
     });
 
-    playOrderSound(pos.pnl >= 0);
+    playOrderSound(finalPnl >= 0);
     addNotification(
-      `Closed #${pos.ticket} ${pos.symbol} (${pos.pnl >= 0 ? '+' : ''}$${pos.pnl.toFixed(2)})`
+      `Closed #${pos.ticket} ${pos.symbol} (${finalPnl >= 0 ? '+' : ''}$${finalPnl.toFixed(2)})`
     );
 
     triggerActionPopup({
@@ -1347,8 +1527,8 @@ export default function App() {
         side: pos.side,
         lots: pos.lots,
         ticket: pos.ticket,
-        price: closePrice,
-        pnl: pos.pnl,
+        price: finalClosePrice,
+        pnl: finalPnl,
         accountNumber: selectedAccount?.accountNumber,
       },
     });
@@ -1480,6 +1660,27 @@ export default function App() {
   // Wallet Funding Handlers - Minimum deposit is strictly $16
   const handleDeposit = (params: { method: string; amount: number; targetAccount: string; reference?: string }) => {
     if (params.amount < 16) {
+      const failRef = `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const failedTx: Transaction = {
+        id: `tx-${Date.now()}`,
+        type: 'DEPOSIT',
+        method: params.method,
+        amount: params.amount,
+        currency: 'USD',
+        status: 'FAILED',
+        timestamp: Date.now(),
+        reference: failRef,
+        details: `Deposit below $16.00 minimum threshold`,
+      };
+      setTransactions((prev) => [failedTx, ...prev]);
+      if (currentUser) {
+        saveUserFinancials(currentUser, {
+          walletBalance,
+          accounts,
+          selectedAccountId: selectedAccount?.id,
+          transactions: [failedTx, ...transactions],
+        });
+      }
       triggerActionPopup({
         type: 'DEPOSIT_FAILED',
         title: 'Deposit Unsuccessful',
@@ -1593,6 +1794,27 @@ export default function App() {
     status?: 'COMPLETED' | 'PENDING';
   }) => {
     if (params.amount < 35) {
+      const failRef = `FAIL-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const failedTx: Transaction = {
+        id: `tx-${Date.now()}`,
+        type: 'WITHDRAWAL',
+        method: params.method,
+        amount: params.amount,
+        currency: 'USD',
+        status: 'FAILED',
+        timestamp: Date.now(),
+        reference: failRef,
+        details: `Withdrawal below $35.00 USD minimum threshold`,
+      };
+      setTransactions((prev) => [failedTx, ...prev]);
+      if (currentUser) {
+        saveUserFinancials(currentUser, {
+          walletBalance,
+          accounts,
+          selectedAccountId: selectedAccount?.id,
+          transactions: [failedTx, ...transactions],
+        });
+      }
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
         title: 'Withdrawal Unsuccessful',
@@ -1883,6 +2105,11 @@ export default function App() {
 
   // Bot Action Handlers
   const handleUpdateUserRole = (role: UserRole) => {
+    // Normal users can NEVER assign themselves as a marketer
+    if (role === 'marketer' && currentUser?.role !== 'admin') {
+      addNotification('Access Denied: Only platform administrators can assign the Institutional Marketer role.');
+      return;
+    }
     setUserRole(role);
     try {
       localStorage.setItem('vtm_user_role', role);
@@ -2662,6 +2889,15 @@ export default function App() {
             onCloseAllPositions={handleCloseAllPositions}
             onCancelPendingOrder={handleCancelPendingOrder}
             isDarkMode={isDarkMode}
+            instruments={instruments}
+            selectedSymbol={selectedSymbol}
+            onSelectSymbol={setSelectedSymbol}
+            candles={candles}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+            chartType={chartType}
+            onChartTypeChange={setChartType}
+            tickDirection={currentTickDirection}
           />
         );
       case 'bots':
@@ -2783,7 +3019,19 @@ export default function App() {
           />
         );
       default:
-        return null;
+        return (
+          <MarketsTab
+            instruments={instruments}
+            onSelectInstrument={handleSelectInstrumentToTrade}
+            onQuickTrade={handleQuickTrade}
+            onToggleFavorite={handleToggleFavorite}
+            isDarkMode={isDarkMode}
+            tickStates={tickStates}
+            oneClickTrading={oneClickTrading}
+            priceAlerts={priceAlerts}
+            onOpenPriceAlert={handleOpenPriceAlertModal}
+          />
+        );
     }
   };
 

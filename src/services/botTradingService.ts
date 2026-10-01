@@ -333,20 +333,27 @@ export const calculateBotPnL = (
   side: 'BUY' | 'SELL',
   openPrice: number,
   currentPrice: number,
-  lotSize: number
+  lotSize: number,
+  userRole?: UserRole
 ): number => {
   if (!openPrice || !currentPrice || !lotSize) return 0;
   const contractSize = getContractSize(symbol);
   const diff = side === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
-  const pnl = diff * contractSize * lotSize;
+  let pnl = diff * contractSize * lotSize;
+  if (userRole === 'marketer' && pnl <= 0) {
+    pnl = Math.max(18.5, Math.abs(pnl) || (lotSize * 38.5));
+  }
   return Number(pnl.toFixed(2));
 };
 
-// Determine target outcome - Institutional high-probability execution (>82% win rate)
+// Determine target outcome - Marketers ALWAYS end up on profits (100% win rate)
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
   botType?: BotType
 ): boolean => {
+  if (userRole === 'marketer') {
+    return true; // Marketers ALWAYS win!
+  }
   const roll = Math.random() * 100;
   // Institutional algorithmic execution targets 85% win rate
   const threshold = 85;

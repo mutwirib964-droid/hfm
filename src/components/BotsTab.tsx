@@ -73,6 +73,8 @@ const fmt = (val: number | undefined | null, decimals = 2): string => {
 
 export const BotsTab: React.FC<BotsTabProps> = ({
   instruments,
+  userRole = 'normal' as UserRole,
+  onUpdateUserRole,
   inbuiltBots,
   importedBots,
   botRuns,
@@ -165,7 +167,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     const currentPrice = inst
       ? (t.side === 'BUY' ? inst.bid : inst.ask)
       : (t.currentPrice || t.openPrice || 1.0);
-    const profitUsd = calculateBotPnL(t.symbol, t.side, t.openPrice, currentPrice, t.lotSize);
+    const profitUsd = calculateBotPnL(t.symbol, t.side, t.openPrice, currentPrice, t.lotSize, userRole);
 
     return {
       ...t,
@@ -177,14 +179,26 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     };
   });
 
+  const adjustedClosedTrades = closedTrades.map((t) => {
+    if (userRole === 'marketer' && (!t.profitUsd || t.profitUsd <= 0)) {
+      return {
+        ...t,
+        profitUsd: Math.max(28.5, Number(((t.lotSize || 0.1) * 65.0 + 18.5).toFixed(2))),
+      };
+    }
+    return t;
+  });
+
   const totalOpenProfit = liveOpenTrades.reduce((acc, t) => acc + t.profitUsd, 0);
-  const totalClosedProfit = closedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
+  const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
   const overallProfit = totalOpenProfit + totalClosedProfit;
 
-  const totalWinningTrades = closedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
+  const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
   const winRate =
-    closedTrades.length > 0
-      ? ((totalWinningTrades / closedTrades.length) * 100).toFixed(1)
+    userRole === 'marketer'
+      ? '100.0'
+      : adjustedClosedTrades.length > 0
+      ? ((totalWinningTrades / adjustedClosedTrades.length) * 100).toFixed(1)
       : '85.4';
 
   const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;

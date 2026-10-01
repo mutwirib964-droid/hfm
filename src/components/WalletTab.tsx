@@ -116,6 +116,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   };
 
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [withdrawError, setWithdrawError] = useState<string | null>(null);
+  const [transferError, setTransferError] = useState<string | null>(null);
 
   // Calculate withdrawable balance for currently selected source
   const getWithdrawableBalance = (source: string) => {
@@ -176,6 +178,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     if (source) setWithdrawSource(source);
     setWithdrawMethod(method);
     setWithdrawAmount(method === 'crypto' ? 50 : 35);
+    setWithdrawError(null);
     setWithdrawStep('FORM');
     setWithdrawCountdown(5);
     setActiveModal('withdraw');
@@ -183,28 +186,51 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
   // Close Withdraw Modal
   const handleCloseWithdraw = () => {
+    setWithdrawError(null);
     setWithdrawStep('FORM');
     setActiveModal(null);
   };
 
   // Trigger Withdrawal (Validates min $35 for M-PESA, min $50 for Crypto)
   const handleStartWithdrawal = () => {
+    setWithdrawError(null);
     const maxAvailable = getWithdrawableBalance(withdrawSource);
     if (maxAvailable <= 0) {
-      alert('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
+      setWithdrawError('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
+      onWithdraw({
+        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        amount: withdrawAmount,
+        sourceAccount: withdrawSource,
+        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
+        status: 'FAILED',
+      });
       return;
     }
     const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
     if (withdrawAmount < minRequired) {
-      alert(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : 'M-PESA'} is $${minRequired}.00 USD.`);
+      setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : 'M-PESA'} is $${minRequired}.00 USD.`);
+      onWithdraw({
+        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        amount: withdrawAmount,
+        sourceAccount: withdrawSource,
+        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
+        status: 'FAILED',
+      });
       return;
     }
     if (withdrawAmount > maxAvailable) {
-      alert(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
+      setWithdrawError(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
+      onWithdraw({
+        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        amount: withdrawAmount,
+        sourceAccount: withdrawSource,
+        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
+        status: 'FAILED',
+      });
       return;
     }
     if (withdrawMethod === 'crypto' && (!withdrawCryptoAddress.trim() || withdrawCryptoAddress.trim().length < 10)) {
-      alert(`Please enter a valid destination ${withdrawCryptoCoin} wallet address.`);
+      setWithdrawError(`Please enter a valid destination ${withdrawCryptoCoin} wallet address.`);
       return;
     }
 
@@ -217,21 +243,22 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   };
 
   const handleProcessTransfer = () => {
+    setTransferError(null);
     if (transferFrom === transferTo) {
-      alert('Source and destination accounts must be different.');
+      setTransferError('Source and destination accounts must be different.');
       return;
     }
     const maxAvailable = getTransferableBalance(transferFrom);
     if (maxAvailable <= 0) {
-      alert('Source account has $0.00 balance available to transfer.');
+      setTransferError('Source account has $0.00 balance available to transfer.');
       return;
     }
     if (transferAmount > maxAvailable) {
-      alert(`Transfer amount exceeds available source balance ($${maxAvailable.toFixed(2)}).`);
+      setTransferError(`Transfer amount exceeds available source balance ($${maxAvailable.toFixed(2)}).`);
       return;
     }
     if (transferAmount <= 0) {
-      alert('Please enter a valid transfer amount.');
+      setTransferError('Please enter a valid transfer amount.');
       return;
     }
     onTransfer({
@@ -541,35 +568,51 @@ export const WalletTab: React.FC<WalletTabProps> = ({
             }`}
           >
             <div className="flex items-center justify-between mb-3">
-              <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-900'}`}>
-                Recent Wallet &amp; Payout Activity
+              <div>
+                <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-900'}`}>
+                  Recent Wallet &amp; Payout Activity
+                </span>
+                <span className="text-[10px] text-neutral-400 block">
+                  Last 10 Transactions (Successful &amp; Failed)
+                </span>
+              </div>
+              <span className="text-[10px] font-mono font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                Live Audit Log
               </span>
-              <span className="text-[10px] text-neutral-400">{transactions.length} Transactions</span>
             </div>
 
-            <div className="space-y-2 max-h-60 overflow-y-auto no-scrollbar">
+            <div className="space-y-2 max-h-72 overflow-y-auto no-scrollbar">
               {transactions.length === 0 ? (
                 <div className="text-center py-6 text-neutral-400 text-xs">
                   No wallet transactions recorded yet. Deposits and withdrawals will appear here.
                 </div>
               ) : (
-                transactions.map((tx) => {
+                transactions.slice(0, 10).map((tx) => {
                   const isDeposit = tx.type === 'DEPOSIT';
                   const isWithdrawal = tx.type === 'WITHDRAWAL';
+                  const isSuccess = tx.status === 'COMPLETED';
+                  const isFailed = tx.status === 'FAILED';
+                  const isCancelled = tx.status === 'CANCELLED';
+                  const isPending = tx.status === 'PENDING';
+
                   return (
                     <div
                       key={tx.id}
                       className={`p-2.5 rounded-xl border flex items-center justify-between text-xs transition-colors ${
-                        isDarkMode ? 'border-neutral-800/80 bg-neutral-900/40' : 'border-slate-100 bg-slate-50/50'
+                        isFailed
+                          ? isDarkMode ? 'border-rose-900/60 bg-rose-950/20' : 'border-rose-200 bg-rose-50/50'
+                          : isDarkMode ? 'border-neutral-800/80 bg-neutral-900/40' : 'border-slate-100 bg-slate-50/50'
                       }`}
                     >
                       <div className="flex items-center gap-2.5">
                         <div
-                          className={`w-7 h-7 rounded-lg flex items-center justify-center ${
-                            isDeposit
+                          className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                            isFailed
+                              ? 'bg-rose-500/20 text-rose-400'
+                              : isDeposit
                               ? 'bg-emerald-500/15 text-emerald-400'
                               : isWithdrawal
-                              ? 'bg-rose-500/15 text-rose-400'
+                              ? 'bg-amber-500/15 text-amber-400'
                               : 'bg-blue-500/15 text-blue-400'
                           }`}
                         >
@@ -582,11 +625,31 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           )}
                         </div>
                         <div>
-                          <span className={`font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                            {tx.method || tx.type}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className={`font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                              {tx.method || tx.type}
+                            </span>
+                            <span
+                              className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-black tracking-tight ${
+                                isSuccess
+                                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                  : isFailed
+                                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
+                                  : isCancelled
+                                  ? 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                                  : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                              }`}
+                            >
+                              {isSuccess ? 'SUCCESSFUL' : isFailed ? 'FAILED' : isCancelled ? 'CANCELLED' : 'PENDING'}
+                            </span>
+                          </div>
                           <span className="text-[10px] text-neutral-400 font-mono">
-                            {new Date(tx.timestamp).toLocaleDateString()} • Ref: {tx.reference}
+                            {new Date(tx.timestamp).toLocaleString(undefined, {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })} • Ref: {tx.reference}
                           </span>
                         </div>
                       </div>
@@ -594,10 +657,12 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       <div className="text-right">
                         <span
                           className={`font-mono font-bold block ${
-                            isDeposit
+                            isFailed
+                              ? 'text-rose-400 line-through opacity-80'
+                              : isDeposit
                               ? 'text-emerald-500'
                               : isWithdrawal
-                              ? 'text-rose-500'
+                              ? 'text-amber-500'
                               : isDarkMode
                               ? 'text-neutral-200'
                               : 'text-slate-800'
@@ -699,6 +764,12 @@ export const WalletTab: React.FC<WalletTabProps> = ({
             {/* STEP 1: WITHDRAW FORM */}
             {withdrawStep === 'FORM' && (
               <div className="space-y-4">
+                {withdrawError && (
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-400 flex items-center gap-2 animate-fadeIn">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span className="font-semibold">{withdrawError}</span>
+                  </div>
+                )}
                 {/* Method Specific Info Banner */}
                 {withdrawMethod === 'mpesa' ? (
                   <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
@@ -1104,6 +1175,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {transferError && (
+              <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-400 flex items-center gap-2 animate-fadeIn">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span className="font-semibold">{transferError}</span>
+              </div>
+            )}
 
             <div className="space-y-1">
               <label className={`text-xs font-semibold block ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
