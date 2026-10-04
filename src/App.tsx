@@ -417,7 +417,12 @@ export default function App() {
               const byId = new Map<string, { id: string; title: string; time: string; read: boolean; createdAt?: number }>();
               // Remote notifications first, then local notifications override read/unread state if already present locally
               for (const rn of remoteNotifs.notifications) {
-                if (rn && rn.id && rn.title) {
+                if (
+                  rn &&
+                  rn.id &&
+                  rn.title &&
+                  !rn.title.toLowerCase().includes('signed out')
+                ) {
                   byId.set(rn.id, {
                     id: rn.id,
                     title: rn.title,
@@ -428,7 +433,12 @@ export default function App() {
                 }
               }
               for (const ln of prev) {
-                if (ln && ln.id && ln.title) {
+                if (
+                  ln &&
+                  ln.id &&
+                  ln.title &&
+                  !ln.title.toLowerCase().includes('signed out')
+                ) {
                   byId.set(ln.id, ln);
                 }
               }
@@ -719,7 +729,9 @@ export default function App() {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed.filter((n) => n && n.id && n.title);
+          return parsed.filter(
+            (n) => n && n.id && n.title && !String(n.title).toLowerCase().includes('signed out')
+          );
         }
       }
     } catch {
@@ -926,9 +938,9 @@ export default function App() {
         transactions: transactionsRef.current ?? transactions,
       });
     }
+    currentUserRef.current = null;
     setCurrentUser(null);
     localStorage.removeItem('vtm_auth_user');
-    addNotification('You have signed out from the platform.');
     triggerActionPopup({
       type: 'LOGOUT_SUCCESS',
       title: 'Signed Out',
