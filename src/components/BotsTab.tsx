@@ -34,6 +34,7 @@ import { calculateBotPnL } from '../services/botTradingService';
 interface BotsTabProps {
   instruments: Instrument[];
   userRole?: UserRole;
+  accountType?: 'Live' | 'Demo';
   onUpdateUserRole?: (role: UserRole) => void;
   inbuiltBots: BotStrategyConfig[];
   importedBots: BotStrategyConfig[];
@@ -74,6 +75,7 @@ const fmt = (val: number | undefined | null, decimals = 2): string => {
 export const BotsTab: React.FC<BotsTabProps> = ({
   instruments,
   userRole = 'normal' as UserRole,
+  accountType = 'Live',
   onUpdateUserRole,
   inbuiltBots,
   importedBots,
@@ -131,13 +133,16 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     e.preventDefault();
     if (!editingRun) return;
     if (onUpdateBotRunSettings) {
-      onUpdateBotRunSettings(editingRun.id, {
-        symbol: editSymbol,
-        lotSize: editLotSize,
-        tpPips: editTpPips,
-        slPips: editSlPips,
-        status: editStatus,
-      });
+      onUpdateBotRunSettings(
+        editingRun.id || editingRun.runId || editingRun.botId || editingRun.botName,
+        {
+          symbol: editSymbol,
+          lotSize: editLotSize,
+          tpPips: editTpPips,
+          slPips: editSlPips,
+          status: editStatus,
+        }
+      );
     }
     setEditingRun(null);
   };
@@ -145,7 +150,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const handleConfirmDelete = () => {
     if (!runToDelete) return;
     if (onDeleteBotRun) {
-      onDeleteBotRun(runToDelete.id);
+      onDeleteBotRun(
+        runToDelete.id || runToDelete.runId || runToDelete.botId || runToDelete.botName
+      );
     }
     setRunToDelete(null);
   };
@@ -194,15 +201,20 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
   const overallProfit = totalOpenProfit + totalClosedProfit;
 
+  const isHighWinRateContext = userRole === 'marketer' || accountType === 'Demo';
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
   const rawWinRate =
     adjustedClosedTrades.length > 0
       ? (totalWinningTrades / adjustedClosedTrades.length) * 100
-      : userRole === 'marketer'
-      ? 88.5
-      : 85.4;
-  // Strictly ensure no bot or summary ever displays 100% winrate
-  const winRate = Math.min(94.8, rawWinRate).toFixed(1);
+      : isHighWinRateContext
+      ? 89.5
+      : 8.5;
+  // Strictly ensure retail on Live is capped at <= 10.0% and Demo/Marketer stays in 85.0% - 94.8%
+  const winRate = (
+    isHighWinRateContext
+      ? Math.min(94.8, Math.max(85.2, rawWinRate))
+      : Math.min(10.0, Math.max(0, rawWinRate))
+  ).toFixed(1);
 
   const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;
 
@@ -212,6 +224,18 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     setConfigLotSize(bot.defaultLotSize);
     setConfigTpPips(bot.defaultTpPips);
     setConfigSlPips(bot.defaultSlPips);
+  };
+
+  // Deploy bot to Active Bots tab in standby (PAUSED) so user can configure settings and click Run from Active Bots
+  const handleDeployToActiveBots = (bot: BotStrategyConfig) => {
+    onStartBotRun({
+      botId: bot.id,
+      symbol: bot.recommendedInstruments[0] || 'XAUUSD',
+      lotSize: bot.defaultLotSize || 0.01,
+      tpPips: bot.defaultTpPips || 30,
+      slPips: bot.defaultSlPips || 20,
+    });
+    setActiveSubTab('runs');
   };
 
   const handleDeployBot = () => {
@@ -224,7 +248,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
       slPips: configSlPips,
     });
     setSelectedBotForConfig(null);
-    setActiveSubTab('trades');
+    setActiveSubTab('runs');
   };
 
   const handleSaveImportedBot = (e: React.FormEvent) => {
@@ -399,7 +423,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
           }`}
         >
           <Sliders className="w-3.5 h-3.5" />
-          <span>Active Runs</span>
+          <span>Active Bots</span>
           {runningBotsCount > 0 && (
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           )}
@@ -517,17 +541,17 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     </div>
                   </div>
 
-                  <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between">
+                  <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-2">
                     <div className="text-[11px] text-neutral-400 font-mono">
                       Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
                     </div>
 
                     <button
                       id={`btn-deploy-${bot.id}`}
-                      onClick={() => handleOpenConfigModal(bot)}
+                      onClick={() => handleDeployToActiveBots(bot)}
                       className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
                     >
-                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <Plus className="w-3.5 h-3.5" />
                       <span>Deploy Bot</span>
                     </button>
                   </div>
@@ -537,14 +561,14 @@ export const BotsTab: React.FC<BotsTabProps> = ({
           </div>
         )}
 
-        {/* SUBTAB 2: Active Runs Management */}
+        {/* SUBTAB 2: Active Bots Management */}
         {activeSubTab === 'runs' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h2 className="text-sm sm:text-base font-bold">Active Bot Deployments & Execution Engine</h2>
+                <h2 className="text-sm sm:text-base font-bold">Active Bots &amp; Execution Engine</h2>
                 <p className="text-xs text-neutral-400">
-                  Bot instances run and close automatically in the background. No manual clicks required.
+                  Configure settings and click Run Bot to start autonomous market execution. Deployed bots stay here until deleted.
                 </p>
               </div>
 
@@ -566,9 +590,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <div className="w-12 h-12 rounded-2xl bg-neutral-800 flex items-center justify-center text-neutral-400">
                   <Sliders className="w-6 h-6" />
                 </div>
-                <h3 className="text-base font-bold">No Active Bot Runs Currently</h3>
+                <h3 className="text-base font-bold">No Active Bots Deployed Yet</h3>
                 <p className={`text-xs max-w-md ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                  Choose any bot strategy from the catalog to begin Bots &amp; EAs trading on your selected instrument.
+                  Click &ldquo;Deploy Bot&rdquo; on any strategy in the Bots catalog to add it here, configure its settings, and run it.
                 </p>
                 <button
                   onClick={() => setActiveSubTab('bots')}
@@ -580,13 +604,53 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             ) : (
               <div className="space-y-3">
                 {botRuns.map((run) => {
-                  const totalTrades = run.totalTrades ?? run.totalTradesCount ?? 0;
-                  const winningTrades = run.winningTrades ?? run.winCount ?? 0;
-                  const losingTrades = run.losingTrades ?? 0;
-                  const totalProfit = run.totalProfitUsd ?? 0;
+                  const runKey = run.id || run.runId;
+                  const closedForRun = adjustedClosedTrades.filter(
+                    (t) =>
+                      t.runId === runKey ||
+                      t.runInstanceId === runKey ||
+                      t.runId === run.runId ||
+                      t.runId === run.id
+                  );
+                  const openForRun = liveOpenTrades.filter(
+                    (t) =>
+                      t.runId === runKey ||
+                      t.runInstanceId === runKey ||
+                      t.runId === run.runId ||
+                      t.runId === run.id
+                  );
+                  const totalTrades =
+                    closedForRun.length > 0
+                      ? closedForRun.length
+                      : run.totalTrades ?? run.totalTradesCount ?? 0;
+                  const winningTrades =
+                    closedForRun.length > 0
+                      ? closedForRun.filter((t) => (t.profitUsd || 0) > 0).length
+                      : run.winningTrades ?? run.winCount ?? 0;
+                  const losingTrades =
+                    closedForRun.length > 0
+                      ? closedForRun.length - winningTrades
+                      : run.losingTrades ?? Math.max(0, totalTrades - winningTrades);
+                  const realizedProfit =
+                    closedForRun.length > 0
+                      ? closedForRun.reduce((s, t) => s + (t.profitUsd || 0), 0)
+                      : run.totalProfitUsd ?? 0;
+                  const floatingProfitForRun = openForRun.reduce(
+                    (s, t) => s + (t.profitUsd || 0),
+                    0
+                  );
+                  const totalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
                   const rawRunWinRate =
-                    totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 85.0;
-                  const runWinRate = Math.min(94.8, rawRunWinRate).toFixed(1);
+                    totalTrades > 0
+                      ? (winningTrades / totalTrades) * 100
+                      : isHighWinRateContext
+                      ? 89.5
+                      : 8.5;
+                  const runWinRate = (
+                    isHighWinRateContext
+                      ? Math.min(94.8, Math.max(85.2, rawRunWinRate))
+                      : Math.min(10.0, Math.max(0, rawRunWinRate))
+                  ).toFixed(1);
 
                   return (
                     <div
@@ -625,13 +689,19 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2 text-xs text-neutral-400 font-mono mt-0.5">
-                              <span className="font-bold text-white dark:text-white">{run.symbol}</span>
+                              <span
+                                className={`font-bold ${
+                                  isDarkMode ? 'text-white' : 'text-slate-900'
+                                }`}
+                              >
+                                {run.symbol}
+                              </span>
                               <span>•</span>
-                              <span>{run.lotSize} Lots</span>
+                              <span>{run.lotSize || 0.01} Lots</span>
                               <span>•</span>
-                              <span>TP: +{run.tpPips}p</span>
+                              <span>TP: +{run.tpPips || 30}p</span>
                               <span>•</span>
-                              <span>SL: -{run.slPips}p</span>
+                              <span>SL: -{run.slPips || 20}p</span>
                             </div>
                           </div>
                         </div>
@@ -645,25 +715,27 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             </div>
                           )}
 
-                          {/* Pause / Resume Button */}
+                          {/* Run Bot / Pause Button */}
                           <button
-                            onClick={() => onToggleBotRun(run.id)}
-                            className={`p-2 rounded-lg border transition-all cursor-pointer flex items-center gap-1 text-xs font-semibold ${
+                            onClick={() =>
+                              onToggleBotRun(run.id || run.runId || run.botId || run.botName)
+                            }
+                            className={`px-3 py-2 rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold ${
                               run.status === 'RUNNING'
                                 ? 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'
-                                : 'border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10'
+                                : 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white shadow-xs'
                             }`}
-                            title={run.status === 'RUNNING' ? 'Pause Bot' : 'Resume Bot'}
+                            title={run.status === 'RUNNING' ? 'Pause Bot' : 'Run Bot'}
                           >
                             {run.status === 'RUNNING' ? (
                               <>
                                 <Pause className="w-3.5 h-3.5 fill-current" />
-                                <span className="hidden md:inline">Pause</span>
+                                <span>Pause</span>
                               </>
                             ) : (
                               <>
                                 <Play className="w-3.5 h-3.5 fill-current" />
-                                <span className="hidden md:inline">Resume</span>
+                                <span>Run Bot</span>
                               </>
                             )}
                           </button>
@@ -671,31 +743,21 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                           {/* Settings Button */}
                           <button
                             onClick={() => handleOpenSettingsModal(run)}
-                            className="p-2 rounded-lg border border-sky-500/40 text-sky-400 hover:bg-sky-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
+                            className="px-2.5 py-2 rounded-lg border border-sky-500/40 text-sky-400 hover:bg-sky-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
                             title="Configure Bot Parameters (Lots, TP, SL, Symbol, Status)"
                           >
                             <Settings className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Settings</span>
-                          </button>
-
-                          {/* Stop Button */}
-                          <button
-                            onClick={() => onStopBotRun(run.id)}
-                            className="p-2 rounded-lg border border-neutral-700 text-neutral-400 hover:bg-neutral-800 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
-                            title="Halt & Stop Bot"
-                          >
-                            <Square className="w-3.5 h-3.5 fill-current" />
-                            <span className="hidden md:inline">Stop</span>
+                            <span>Settings</span>
                           </button>
 
                           {/* Delete Button */}
                           <button
                             onClick={() => setRunToDelete(run)}
-                            className="p-2 rounded-lg border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
+                            className="px-2.5 py-2 rounded-lg border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
                             title="Delete Deployed Bot"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Delete</span>
+                            <span>Delete</span>
                           </button>
                         </div>
                       </div>
@@ -1467,16 +1529,34 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   <button
                     type="button"
                     onClick={() => setEditingRun(null)}
-                    className="px-4 py-2 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold transition-all cursor-pointer"
+                    className="px-3.5 py-2 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold transition-all cursor-pointer"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow-md"
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-sky-500/40 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-bold transition-all cursor-pointer"
                   >
                     <Save className="w-3.5 h-3.5" />
                     <span>Save Settings</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!editingRun) return;
+                      onUpdateBotSettings(editingRun.id || editingRun.runId || '', {
+                        symbol: editSymbol,
+                        lotSize: editLotSize,
+                        tpPips: editTpPips,
+                        slPips: editSlPips,
+                        status: 'RUNNING',
+                      });
+                      setEditingRun(null);
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow-md"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Save &amp; Run Bot</span>
                   </button>
                 </div>
               </div>

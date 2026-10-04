@@ -8,7 +8,14 @@ import {
 } from '../utils/financialStorage';
 import { TradingAccount, Transaction, Position, PendingOrder, ClosedTrade } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
-import { calculateBotPnL, sanitizeBotTrades } from './botTradingService';
+import {
+  calculateBotPnL,
+  sanitizeBotTrades,
+  getDeletedBotIds,
+  markBotDeletedLocally,
+  sanitizeAndFilterBotRuns,
+  filterTradesForValidBotRuns,
+} from './botTradingService';
 
 export interface SupabaseConfig {
   url: string;
@@ -993,7 +1000,7 @@ class SupabaseService {
       const getRes = await fetch(
         `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
           cleanEmail
-        )}&activity_type=eq.${encodeURIComponent(stateType)}&select=id&order=created_at.desc&limit=1`,
+        )}&activity_type=eq.${encodeURIComponent(stateType)}&select=id&order=created_at.desc&limit=20`,
         {
           method: 'GET',
           headers: {
@@ -1007,6 +1014,28 @@ class SupabaseService {
       if (getRes.ok) {
         const rows = await getRes.json();
         if (Array.isArray(rows) && rows.length > 0 && rows[0].id) {
+          // Delete any older duplicate state rows so stale state never resurfaces
+          if (rows.length > 1) {
+            const duplicateIds = rows
+              .slice(1)
+              .map((r: any) => r.id)
+              .filter(Boolean);
+            if (duplicateIds.length > 0) {
+              fetch(
+                `${this.config.url}/rest/v1/user_activities?id=in.(${duplicateIds
+                  .map((id: string) => encodeURIComponent(id))
+                  .join(',')})`,
+                {
+                  method: 'DELETE',
+                  headers: {
+                    apikey: this.config.anonKey,
+                    Authorization: `Bearer ${this.config.anonKey}`,
+                  },
+                }
+              ).catch(() => {});
+            }
+          }
+
           const patchRes = await fetch(
             `${this.config.url}/rest/v1/user_activities?id=eq.${encodeURIComponent(rows[0].id)}`,
             {
@@ -1388,17 +1417,25 @@ class SupabaseService {
       importedBots: any[];
       botRuns: any[];
       botTrades: any[];
+      deletedBotIds?: string[];
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
+    const deletedBotIds = Array.from(
+      new Set([...getDeletedBotIds(), ...(botState.deletedBotIds || [])])
+    );
+    const cleanedRuns = sanitizeAndFilterBotRuns(botState.botRuns || [], deletedBotIds, false);
+    const cleanedTrades = filterTradesForValidBotRuns(botState.botTrades || [], cleanedRuns);
+
     return await this.saveCloudStateRecord(
       user.email,
       'STATE_BOTS',
-      `Synchronized ${botState.botRuns.length} bot runs and ${botState.botTrades.length} bot trades`,
+      `Synchronized ${cleanedRuns.length} bot runs and ${cleanedTrades.length} bot trades`,
       {
         importedBots: botState.importedBots || [],
-        botRuns: botState.botRuns || [],
-        botTrades: (botState.botTrades || []).slice(0, 100),
+        botRuns: cleanedRuns,
+        botTrades: cleanedTrades.slice(0, 100),
+        deletedBotIds,
         updatedAt: Date.now(),
       }
     );
@@ -1410,18 +1447,40 @@ class SupabaseService {
     importedBots: any[];
     botRuns: any[];
     botTrades: any[];
+    deletedBotIds: string[];
   } | null> {
     if (!this.config || !user?.email) return null;
     const raw = await this.fetchCloudStateRecord<{
       importedBots?: any[];
       botRuns?: any[];
       botTrades?: any[];
+      deletedBotIds?: string[];
     }>(user.email, 'STATE_BOTS');
     if (!raw) return null;
+
+    const remoteDeleted = Array.isArray(raw.deletedBotIds) ? raw.deletedBotIds : [];
+    const mergedDeleted = markBotDeletedLocally(remoteDeleted);
+    const rawRuns = Array.isArray(raw.botRuns) ? raw.botRuns : [];
+    const rawTrades = Array.isArray(raw.botTrades) ? raw.botTrades : [];
+    // Strip out any non-user-started, deleted, or corrupted runs
+    const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false);
+    const cleanedTrades = filterTradesForValidBotRuns(rawTrades, cleanedRuns);
+
+    // If legacy/corrupted/deleted runs or trades were present in Supabase, immediately persist the cleaned state back
+    if (cleanedRuns.length !== rawRuns.length || cleanedTrades.length !== rawTrades.length) {
+      this.syncBotState(user, {
+        importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
+        botRuns: cleanedRuns,
+        botTrades: cleanedTrades,
+        deletedBotIds: mergedDeleted,
+      }).catch(() => {});
+    }
+
     return {
       importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
-      botRuns: Array.isArray(raw.botRuns) ? raw.botRuns : [],
-      botTrades: Array.isArray(raw.botTrades) ? sanitizeBotTrades(raw.botTrades) : [],
+      botRuns: cleanedRuns,
+      botTrades: cleanedTrades,
+      deletedBotIds: mergedDeleted,
     };
   }
 

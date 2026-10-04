@@ -209,7 +209,7 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
               <div className="flex items-baseline gap-1 min-w-0 truncate">
                 <span className="text-xs sm:text-sm font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400 truncate">
-                  ${selectedAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  ${(selectedAccount.equity ?? selectedAccount.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
                 <span className="text-[9px] sm:text-[10px] text-neutral-400 font-sans font-semibold shrink-0">
                   {selectedAccount.currency}
@@ -303,7 +303,7 @@ export const Header: React.FC<HeaderProps> = ({
                         Lev: <span className="font-semibold text-slate-800 dark:text-neutral-300">{acc.leverage}</span>
                       </span>
                       <span className="font-bold font-mono text-slate-900 dark:text-white">
-                        ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        ${(acc.equity ?? acc.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                   </div>

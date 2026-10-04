@@ -65,7 +65,7 @@ function generateInstitutionalAnswer(query: string, user?: any): string {
   }
 
   if (q.includes('cashback') || q.includes('reward') || q.includes('100 lot') || q.includes('loyalty')) {
-    return `### Trader Rewards & Cashbacks Program\n\n- **Activation**: Unlocks when your cumulative trading volume reaches **100.0 Traded Lots**.\n- **Tiers**:\n  - **Silver (100–499 Lots)**: **$2.50 / lot** cash rebate.\n  - **Gold (500–1,999 Lots)**: **$4.00 / lot** cash rebate + Equinix VPS.\n  - **Diamond VIP (2,000+ Lots)**: **$6.00 / lot** cash rebate + Zero swap fees.`;
+    return `### Trader Rewards & Cashbacks Program\n\n- **Activation**: Unlocks when your cumulative trading volume reaches **100.0 Traded Lots**.\n- **Tiers**:\n  - **Silver (100–499 Lots)**: **$2.50 / lot** cash rebate.\n  - **Gold (500–1,999 Lots)**: **$4.00 / lot** cash rebate + Dedicated VPS.\n  - **Diamond VIP (2,000+ Lots)**: **$6.00 / lot** cash rebate + Zero swap fees.`;
   }
 
   if (q.includes('verify') || q.includes('kyc') || q.includes('2fa') || q.includes('security')) {

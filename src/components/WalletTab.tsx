@@ -30,13 +30,22 @@ import {
   USD_KES_WITHDRAW_RATE,
   WELL_KNOWN_AFRICAN_BANKS,
   HASHBACK_ACCOUNT_ID,
+  hashbackService,
 } from '../services/hashbackService';
 
 interface WalletTabProps {
   accounts: TradingAccount[];
   walletBalance: number;
   transactions: Transaction[];
-  onDeposit: (params: { method: string; amount: number; targetAccount: string; reference?: string }) => void;
+  onDeposit: (params: {
+    id?: string;
+    method: string;
+    amount: number;
+    targetAccount: string;
+    reference?: string;
+    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
+    details?: string;
+  }) => void;
   onWithdraw: (params: {
     method: string;
     amount: number;
@@ -71,6 +80,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
   const liveAccounts = accounts.filter((a) => a.type === 'Live');
   const demoAccounts = accounts.filter((a) => a.type === 'Demo');
+  const [, setSecretsVersion] = useState(0);
+
+  useEffect(() => {
+    hashbackService.syncSecrets().then(() => {
+      setSecretsVersion((v) => v + 1);
+    });
+  }, []);
 
   // Withdraw Form State - Strictly Minimum $35 for M-PESA/Bank, $50 for Crypto
   const [withdrawMethod, setWithdrawMethod] = useState<'mpesa' | 'bank' | 'crypto'>('mpesa');
@@ -501,10 +517,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                     <div className="text-right">
                       <span className={`font-mono font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                        ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        ${(acc.equity ?? acc.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                       <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600 font-medium'}`}>
-                        Eq: ${acc.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        Settled: ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
                   </div>
@@ -583,7 +599,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   Recent Wallet &amp; Payout Activity
                 </span>
                 <span className="text-[10px] text-neutral-400 block">
-                  Last 10 Transactions (Successful &amp; Failed)
+                  Last 20 Transactions (Deposits &amp; Withdrawals)
                 </span>
               </div>
               <span className="text-[10px] font-mono font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
@@ -591,19 +607,31 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               </span>
             </div>
 
-            <div className="space-y-2 max-h-72 overflow-y-auto no-scrollbar">
-              {transactions.length === 0 ? (
+            <div className="space-y-2 max-h-80 overflow-y-auto no-scrollbar">
+              {transactions.filter((tx) => tx.type === 'DEPOSIT' || tx.type === 'WITHDRAWAL').length === 0 ? (
                 <div className="text-center py-6 text-neutral-400 text-xs">
                   No wallet transactions recorded yet. Deposits and withdrawals will appear here.
                 </div>
               ) : (
-                transactions.slice(0, 10).map((tx) => {
+                transactions
+                  .filter((tx) => tx.type === 'DEPOSIT' || tx.type === 'WITHDRAWAL')
+                  .slice(0, 20)
+                  .map((tx) => {
                   const isDeposit = tx.type === 'DEPOSIT';
                   const isWithdrawal = tx.type === 'WITHDRAWAL';
-                  const isSuccess = tx.status === 'COMPLETED';
-                  const isFailed = tx.status === 'FAILED';
-                  const isCancelled = tx.status === 'CANCELLED';
+                  // Withdrawals are strictly PENDING or SUCCESSFUL; Deposits are COMPLETED, PENDING, or FAILED
                   const isPending = tx.status === 'PENDING';
+                  const isSuccess = isWithdrawal ? !isPending : tx.status === 'COMPLETED';
+                  const isFailed = isDeposit && !isPending && !isSuccess;
+                  const statusLabel = isWithdrawal
+                    ? isPending
+                      ? 'PENDING'
+                      : 'SUCCESSFUL'
+                    : isSuccess
+                    ? 'COMPLETED'
+                    : isPending
+                    ? 'PENDING'
+                    : 'FAILED';
 
                   return (
                     <div
@@ -637,7 +665,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <div>
                           <div className="flex items-center gap-2">
                             <span className={`font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                              {tx.method || tx.type}
+                              {(tx.method || tx.type).replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '').trim()}
                             </span>
                             <span
                               className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-black tracking-tight inline-flex items-center gap-1 ${
@@ -645,13 +673,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                                   ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                                   : isFailed
                                   ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                                  : isCancelled
-                                  ? 'bg-neutral-800 text-neutral-400 border border-neutral-700'
                                   : 'bg-amber-500/15 text-amber-400 border border-amber-500/30 animate-pulse'
                               }`}
                             >
                               {isPending && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
-                              {isSuccess ? 'SUCCESSFUL' : isFailed ? 'FAILED' : isCancelled ? 'CANCELLED' : 'PENDING'}
+                              {statusLabel}
                             </span>
                           </div>
                           <span className="text-[10px] text-neutral-400 font-mono">
@@ -660,7 +686,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                               day: 'numeric',
                               hour: '2-digit',
                               minute: '2-digit',
-                            })} • Ref: {tx.reference}
+                            })}
                           </span>
                         </div>
                       </div>
@@ -669,10 +695,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <span
                           className={`font-mono font-bold block ${
                             isFailed
-                              ? 'text-rose-400 line-through opacity-80'
-                              : isDeposit
+                              ? 'text-rose-500'
+                              : isSuccess
                               ? 'text-emerald-500'
-                              : isWithdrawal
+                              : isPending
                               ? 'text-amber-500'
                               : isDarkMode
                               ? 'text-neutral-200'
@@ -682,7 +708,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           {isDeposit ? '+' : isWithdrawal ? '-' : ''}${tx.amount.toFixed(2)}
                         </span>
                         <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                          {tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')}
+                          {isFailed
+                            ? 'Request cancelled by user'
+                            : isDeposit && isSuccess
+                            ? `Funded to ${tx.accountNumber || 'VTM One Wallet'}`
+                            : isDeposit && isPending
+                            ? 'Awaiting confirmation'
+                            : tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')}
                         </span>
                       </div>
                     </div>
@@ -1397,15 +1429,20 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         isDarkMode={isDarkMode}
         onDepositComplete={(res) => {
           onDeposit({
+            id: res.id,
             method: res.method,
             amount: res.amountUsd,
             targetAccount: res.targetAccount,
             reference: res.reference,
+            status: res.status || 'COMPLETED',
+            details: res.details,
           });
-          setFeedback(
-            `Deposit of $${res.amountUsd.toFixed(2)} (KES ${res.amountKes.toLocaleString()}) via ${res.method} to ${res.targetAccount} completed successfully!`
-          );
-          setTimeout(() => setFeedback(null), 5000);
+          if (!res.status || res.status === 'COMPLETED') {
+            setFeedback(
+              `Deposit of $${res.amountUsd.toFixed(2)} (KES ${res.amountKes.toLocaleString()}) via ${res.method} to ${res.targetAccount} completed successfully!`
+            );
+            setTimeout(() => setFeedback(null), 5000);
+          }
         }}
       />
     </div>

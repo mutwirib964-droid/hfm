@@ -108,10 +108,6 @@ export const MoreTab: React.FC<MoreTabProps> = ({
           <h1 className="text-xl font-black tracking-tight">Platform Preferences</h1>
           <p className="text-xs text-neutral-400">Settings, trade execution &amp; security</p>
         </div>
-        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/30">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-          <span>Equinix LD4 (12ms)</span>
-        </div>
       </div>
 
       {toastMessage && (
@@ -392,7 +388,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
 
         {/* Footer info */}
         <div className="text-center pt-2 pb-6 text-xs text-neutral-400 space-y-1">
-          <p className="font-semibold">Terminal Build: v4.8.0 (Equinix LD4 Edition)</p>
+          <p className="font-semibold">Terminal Build: v4.8.0</p>
           <p className="text-[11px] text-neutral-500">
             STP / ECN Direct Market Access • Ultra-Low Latency Execution
           </p>

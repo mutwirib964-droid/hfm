@@ -2,6 +2,7 @@ import { TradingAccount, Transaction } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
 import { INITIAL_ACCOUNTS, INITIAL_TRANSACTIONS } from '../data/initialData';
 import { supabaseService } from '../services/supabaseService';
+import { getUsdKesRate } from '../services/hashbackService';
 
 export interface UserFinancialState {
   walletBalance: number;
@@ -730,12 +731,59 @@ const LEGACY_MOCK_REFERENCES = new Set([
 
 export function sanitizeRealTransactions(txs?: Transaction[] | null): Transaction[] {
   if (!Array.isArray(txs)) return [];
-  return txs.filter((tx) => {
-    if (!tx || typeof tx !== 'object') return false;
-    if (tx.id && LEGACY_MOCK_TX_IDS.has(String(tx.id))) return false;
-    if (tx.reference && LEGACY_MOCK_REFERENCES.has(String(tx.reference))) return false;
-    return true;
-  });
+  const seenIds = new Set<string>();
+  const result: Transaction[] = [];
+
+  for (const tx of txs) {
+    if (!tx || typeof tx !== 'object') continue;
+    if (tx.id && LEGACY_MOCK_TX_IDS.has(String(tx.id))) continue;
+    if (tx.reference && LEGACY_MOCK_REFERENCES.has(String(tx.reference))) continue;
+    // Strip any old synthetic failed withdrawal records
+    if (tx.type === 'WITHDRAWAL' && String(tx.reference || '').startsWith('FAIL-WTH-')) continue;
+
+    const dedupeKey = String(tx.id || tx.reference || `${tx.type}-${tx.timestamp}`);
+    if (seenIds.has(dedupeKey)) continue;
+    seenIds.add(dedupeKey);
+
+    let normalizedStatus: Transaction['status'] = tx.status;
+    if (tx.type === 'WITHDRAWAL') {
+      // Withdrawals are strictly PENDING (while processing) or COMPLETED (shown as SUCCESSFUL)
+      const elapsed = Date.now() - (tx.timestamp || 0);
+      normalizedStatus = tx.status === 'PENDING' && elapsed < 3500 ? 'PENDING' : 'COMPLETED';
+    } else if (tx.type === 'DEPOSIT') {
+      // Deposits are strictly PENDING, COMPLETED, or FAILED
+      const raw = String(tx.status || '').toUpperCase();
+      normalizedStatus =
+        raw === 'COMPLETED' ? 'COMPLETED' : raw === 'PENDING' ? 'PENDING' : 'FAILED';
+    }
+
+    const cleanedMethod = tx.method
+      ? String(tx.method)
+          .replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '')
+          .replace(/\s*HashBack\s*\([^)]*\)/gi, '')
+          .trim() || tx.type
+      : tx.method;
+
+    const cleanedDetails =
+      tx.type === 'DEPOSIT' && normalizedStatus === 'FAILED'
+        ? 'Request cancelled by user'
+        : tx.details
+        ? String(tx.details)
+            .replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '')
+            .replace(/\s*HashBack\s*\([^)]*\)/gi, '')
+            .trim()
+        : tx.details;
+
+    result.push({
+      ...tx,
+      method: cleanedMethod,
+      details: cleanedDetails,
+      status: normalizedStatus,
+    });
+  }
+
+  result.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  return result;
 }
 
 /**
@@ -749,7 +797,7 @@ export function getAllPlatformDeposits(): {
 } {
   const users = getAllRegisteredUsers();
   const deposits: PlatformDepositTransaction[] = [];
-  const USD_KES = 125.67;
+  const USD_KES = getUsdKesRate();
 
   users.forEach((u) => {
     const finances = loadUserFinancials(u);
@@ -1252,7 +1300,7 @@ export function adminUpdateUserAccount(
             id: newTx.id,
             targetAccount: depositTargetLabel,
             amountUsd: Number(addedDepositUsd.toFixed(2)),
-            amountKes: Number((addedDepositUsd * 125.67).toFixed(2)),
+            amountKes: Number((addedDepositUsd * getUsdKesRate()).toFixed(2)),
             method: 'Institutional Direct Deposit',
             reference: ref,
             status: 'COMPLETED',

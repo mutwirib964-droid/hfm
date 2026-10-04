@@ -82,9 +82,6 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <h1 className="text-base sm:text-lg font-bold tracking-tight">Order Positions &amp; History</h1>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 font-bold border border-emerald-500/20">
-              Live Equinix LD4
-            </span>
           </div>
           {positions.length > 0 && (
             <button

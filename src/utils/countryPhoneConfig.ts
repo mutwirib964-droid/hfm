@@ -254,14 +254,25 @@ export const COUNTRY_OPTIONS: CountryPhoneConfig[] = [
   },
 ];
 
-export function getCountryByCode(code?: string): CountryPhoneConfig {
+export function getCountryByCode(
+  code?: string | CountryPhoneConfig | null
+): CountryPhoneConfig {
   if (!code) return COUNTRY_OPTIONS[0];
-  const normalized = code.startsWith('+') ? code.trim() : `+${code.trim()}`;
+  if (typeof code === 'object' && 'code' in code && typeof code.code === 'string') {
+    return (
+      COUNTRY_OPTIONS.find((c) => c.code === code.code) ||
+      code ||
+      COUNTRY_OPTIONS[0]
+    );
+  }
+  const codeStr = String(code).trim();
+  if (!codeStr) return COUNTRY_OPTIONS[0];
+  const normalized = codeStr.startsWith('+') ? codeStr : `+${codeStr}`;
   return COUNTRY_OPTIONS.find((c) => c.code === normalized) || COUNTRY_OPTIONS[0];
 }
 
-export function getCountryByName(name?: string): CountryPhoneConfig {
-  if (!name) return COUNTRY_OPTIONS[0];
+export function getCountryByName(name?: string | null): CountryPhoneConfig {
+  if (!name || typeof name !== 'string') return COUNTRY_OPTIONS[0];
   const lower = name.toLowerCase().trim();
   return (
     COUNTRY_OPTIONS.find(
@@ -274,9 +285,12 @@ export function getCountryByName(name?: string): CountryPhoneConfig {
  * Formats a local phone number input dynamically according to the selected country code's grouping pattern.
  * Does NOT force starting with 7 or restricting to 10 digits.
  */
-export function formatLocalPhoneInput(rawInput: string, countryCode: string): string {
+export function formatLocalPhoneInput(
+  rawInput: string,
+  countryCode?: string | CountryPhoneConfig | null
+): string {
   const country = getCountryByCode(countryCode);
-  let digits = rawInput.replace(/\D/g, '');
+  let digits = String(rawInput || '').replace(/\D/g, '');
   const codeDigits = country.code.replace(/\D/g, '');
 
   // If the user pasted the full international number including country code, strip the country code prefix
@@ -309,7 +323,7 @@ export function formatLocalPhoneInput(rawInput: string, countryCode: string): st
  */
 export function validatePhoneForCountry(
   rawInput: string,
-  countryCode: string
+  countryCode?: string | CountryPhoneConfig | null
 ): {
   valid: boolean;
   formattedDisplay: string;
@@ -318,8 +332,9 @@ export function validatePhoneForCountry(
   error?: string;
 } {
   const country = getCountryByCode(countryCode);
+  const safeInput = String(rawInput || '');
   const codeDigits = country.code.replace(/\D/g, '');
-  let digits = rawInput.replace(/\D/g, '');
+  let digits = safeInput.replace(/\D/g, '');
 
   if (digits.startsWith(codeDigits) && digits.length >= country.minDigits + codeDigits.length) {
     digits = digits.slice(codeDigits.length);
@@ -340,7 +355,7 @@ export function validatePhoneForCountry(
   if (!digits || effectiveLength < minAccepted || effectiveLength > maxAccepted) {
     return {
       valid: false,
-      formattedDisplay: `${country.code} ${rawInput.trim()}`,
+      formattedDisplay: `${country.code} ${safeInput.trim()}`,
       e164: `${country.code}${nationalDigits}`,
       nationalDigits,
       error: `Please enter a valid ${country.name} phone number (${country.exampleFormat}).`,

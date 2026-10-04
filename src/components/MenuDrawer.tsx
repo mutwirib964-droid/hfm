@@ -389,10 +389,10 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         >
           <div className="flex items-center gap-1.5 text-slate-500 dark:text-neutral-400">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[11px] font-mono">LD4 Gateway: 14ms</span>
+            <span className="text-[11px] font-mono">Connected</span>
           </div>
 
-          <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-mono">v4.8.0 (Equinix LD4)</span>
+          <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-mono">v4.8.0</span>
         </div>
       </div>
         </div>

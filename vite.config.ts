@@ -718,11 +718,179 @@ function marketPricesPlugin() {
 }
 
 function hashbackStkPlugin() {
-  const HASHBACK_ACCOUNT_ID = process.env.HASHBACK_ACCOUNT_ID || 'HP068635';
-  const HASHBACK_API_KEY = process.env.HASHBACK_API_KEY || '';
+  const hashbackConfigFile = path.resolve(__dirname, '.hashback-config.json');
+  let cachedMerchantLookup: { accountId: string; merchantName: string; fetchedAt: number } = {
+    accountId: '',
+    merchantName: '',
+    fetchedAt: 0,
+  };
+
+  const getRuntimeHashbackConfig = () => {
+    let savedConfig: { accountId?: string; apiKey?: string; usdKesRate?: number; merchantName?: string } = {};
+    try {
+      if (fs.existsSync(hashbackConfigFile)) {
+        savedConfig = JSON.parse(fs.readFileSync(hashbackConfigFile, 'utf-8') || '{}');
+      }
+    } catch {
+      // ignore read error
+    }
+
+    const accountId = (
+      process.env.HASHBACK_ACCOUNT_ID ||
+      process.env.VITE_HASHBACK_ACCOUNT_ID ||
+      savedConfig.accountId ||
+      ''
+    ).trim();
+
+    const apiKey = (
+      process.env.HASHBACK_API_KEY ||
+      process.env.VITE_HASHBACK_API_KEY ||
+      savedConfig.apiKey ||
+      ''
+    ).trim();
+
+    const rawRate = Number(
+      process.env.USD_KES_RATE ||
+      process.env.VITE_USD_KES_RATE ||
+      savedConfig.usdKesRate ||
+      0
+    );
+    const usdKesRate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 0;
+
+    return {
+      accountId,
+      apiKey,
+      usdKesRate,
+      merchantName: savedConfig.merchantName || '',
+      configured: Boolean(accountId && apiKey),
+    };
+  };
+
+  const resolveMerchantAccountName = async (accountId: string, fallbackName?: string): Promise<string> => {
+    const cleanAcc = (accountId || '').trim();
+    if (!cleanAcc) return fallbackName || 'HASHBACK PAYMENT';
+
+    // Use cached merchant name if same accountId and fetched within last 5 minutes
+    if (
+      cachedMerchantLookup.accountId === cleanAcc &&
+      cachedMerchantLookup.merchantName &&
+      Date.now() - cachedMerchantLookup.fetchedAt < 300000
+    ) {
+      return cachedMerchantLookup.merchantName;
+    }
+
+    try {
+      const res = await fetch(
+        `https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(cleanAcc)}`,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(4500),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const resolved = String(data?.merchant || data?.account_name || data?.name || '').trim();
+        if (resolved) {
+          cachedMerchantLookup = {
+            accountId: cleanAcc,
+            merchantName: resolved,
+            fetchedAt: Date.now(),
+          };
+          return resolved;
+        }
+      }
+    } catch {
+      // ignore network error and fall back to cached or saved name
+    }
+
+    return cachedMerchantLookup.merchantName || fallbackName || 'HASHBACK PAYMENT';
+  };
 
   // In-memory store for webhook callbacks received from Hashback
   const webhookStore = new Map<string, any>();
+
+  const handleConfigRequest = (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    if (req.method === 'POST') {
+      let bodyStr = '';
+      req.on('data', (chunk: any) => {
+        bodyStr += chunk;
+      });
+      req.on('end', async () => {
+        try {
+          const parsed = JSON.parse(bodyStr || '{}');
+          const current = getRuntimeHashbackConfig();
+          const nextAccountId = (parsed.accountId ?? parsed.account_id ?? current.accountId ?? '').trim();
+          const nextApiKey = (parsed.apiKey ?? parsed.api_key ?? current.apiKey ?? '').trim();
+          const nextUsdKesRate = Number(parsed.usdKesRate ?? parsed.usd_kes_rate ?? current.usdKesRate ?? 0);
+          const resolvedMerchant = await resolveMerchantAccountName(nextAccountId, current.merchantName);
+
+          const next = {
+            accountId: nextAccountId,
+            apiKey: nextApiKey,
+            usdKesRate: nextUsdKesRate,
+            merchantName: resolvedMerchant,
+            updatedAt: new Date().toISOString(),
+          };
+          fs.writeFileSync(hashbackConfigFile, JSON.stringify(next, null, 2), 'utf-8');
+          if (next.accountId) {
+            process.env.HASHBACK_ACCOUNT_ID = next.accountId;
+            process.env.VITE_HASHBACK_ACCOUNT_ID = next.accountId;
+          }
+          if (next.apiKey) {
+            process.env.HASHBACK_API_KEY = next.apiKey;
+            process.env.VITE_HASHBACK_API_KEY = next.apiKey;
+          }
+          if (next.usdKesRate > 0) {
+            process.env.USD_KES_RATE = String(next.usdKesRate);
+            process.env.VITE_USD_KES_RATE = String(next.usdKesRate);
+          }
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          // Never expose accountId or apiKey in the HTTP response
+          res.end(
+            JSON.stringify({
+              success: true,
+              usdKesRate: next.usdKesRate,
+              merchantName: resolvedMerchant,
+              configured: Boolean(next.accountId && next.apiKey),
+            })
+          );
+        } catch (err: any) {
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: err.message || 'Failed to save HashBack config' }));
+        }
+      });
+      return;
+    }
+
+    (async () => {
+      const cfg = getRuntimeHashbackConfig();
+      const merchantName = await resolveMerchantAccountName(cfg.accountId, cfg.merchantName);
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.statusCode = 200;
+      // Never expose sensitive accountId or apiKey to client
+      res.end(
+        JSON.stringify({
+          usdKesRate: cfg.usdKesRate,
+          merchantName,
+          configured: cfg.configured,
+        })
+      );
+    })();
+  };
 
   const handleStkRequest = async (req: any, res: any) => {
     if (req.method === 'OPTIONS') {
@@ -749,10 +917,11 @@ function hashbackStkPlugin() {
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(bodyStr || '{}');
+        const runtimeCfg = getRuntimeHashbackConfig();
         const payload = {
-          account_id: parsed.account_id || HASHBACK_ACCOUNT_ID,
-          api_key: parsed.api_key || HASHBACK_API_KEY,
-          amount: Number(parsed.amount),
+          account_id: parsed.account_id || runtimeCfg.accountId,
+          api_key: parsed.api_key || runtimeCfg.apiKey,
+          amount: Math.max(1, Math.round(Number(parsed.amount))),
           msisdn: String(parsed.msisdn || parsed.phone || ''),
           reference: parsed.reference || `VTM-${Date.now()}`,
         };
@@ -761,10 +930,9 @@ function hashbackStkPlugin() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': HASHBACK_API_KEY,
           },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(8000),
         });
 
         const data = await response.json();
@@ -837,9 +1005,10 @@ function hashbackStkPlugin() {
         }
 
         // 2. Query Hashback transactionstatus endpoint directly
+        const runtimeCfg = getRuntimeHashbackConfig();
         const payload = {
-          account_id: parsed.account_id || HASHBACK_ACCOUNT_ID,
-          api_key: parsed.api_key || HASHBACK_API_KEY,
+          account_id: parsed.account_id || runtimeCfg.accountId,
+          api_key: parsed.api_key || runtimeCfg.apiKey,
           checkoutid: checkoutId,
           checkout_id: checkoutId,
         };
@@ -848,10 +1017,9 @@ function hashbackStkPlugin() {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': HASHBACK_API_KEY,
           },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(6500),
         });
 
         const data = await response.json();
@@ -927,12 +1095,14 @@ function hashbackStkPlugin() {
   return {
     name: 'hashback-stk-api',
     configureServer(server: any) {
+      server.middlewares.use('/api/hashback-config', handleConfigRequest);
       server.middlewares.use('/api/hashback-stk', handleStkRequest);
       server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
       server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
     },
     configurePreviewServer(server: any) {
+      server.middlewares.use('/api/hashback-config', handleConfigRequest);
       server.middlewares.use('/api/hashback-stk', handleStkRequest);
       server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
@@ -1171,6 +1341,11 @@ export default defineConfig(() => {
       alias: {
         '@': path.resolve(__dirname, '.'),
       },
+    },
+    define: {
+      'import.meta.env.VITE_USD_KES_RATE': JSON.stringify(
+        process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || ''
+      ),
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',

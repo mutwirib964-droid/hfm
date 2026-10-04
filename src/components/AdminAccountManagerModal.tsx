@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
+import { getUsdKesRate } from '../services/hashbackService';
 import {
   getAllRegisteredUsers,
   loadUserFinancials,
@@ -300,7 +301,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             id: depTx.id,
             targetAccount: targetAcc,
             amountUsd: netCreditedUsd,
-            amountKes: Number((netCreditedUsd * 125.67).toFixed(2)),
+            amountKes: Number((netCreditedUsd * getUsdKesRate()).toFixed(2)),
             method: 'Direct Account Deposit',
             reference: depRef,
             status: 'COMPLETED',

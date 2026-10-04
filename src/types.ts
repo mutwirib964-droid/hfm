@@ -53,6 +53,7 @@ export interface Position {
   swap: number;
   commission: number;
   openTime: number;
+  targetOutcome?: 'WIN' | 'LOSS';
 }
 
 export interface PendingOrder {

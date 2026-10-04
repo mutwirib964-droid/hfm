@@ -375,36 +375,36 @@ export const getAccountMaxOpenTrades = (
   requiredCapitalPerTrade: number;
 } => {
   const cleanTier = (tier || 'Standard').trim();
-  let tierMaxTrades = 8;
+  let tierMaxTrades = 22;
   let maxLotSizeForTier = 5.0;
 
   if (cleanTier === 'Cent') {
-    tierMaxTrades = 5;
+    tierMaxTrades = 20;
     maxLotSizeForTier = 1.0;
   } else if (cleanTier === 'Micro') {
-    tierMaxTrades = 6;
+    tierMaxTrades = 20;
     maxLotSizeForTier = 2.0;
   } else if (cleanTier === 'Standard') {
-    tierMaxTrades = 8;
+    tierMaxTrades = 22;
     maxLotSizeForTier = 5.0;
   } else if (cleanTier === 'Zero' || cleanTier === 'HFcopy') {
-    tierMaxTrades = 10;
+    tierMaxTrades = 25;
     maxLotSizeForTier = 10.0;
   } else if (cleanTier === 'Premium') {
-    tierMaxTrades = 12;
+    tierMaxTrades = 28;
     maxLotSizeForTier = 20.0;
   } else if (cleanTier === 'Pro') {
-    tierMaxTrades = 20;
+    tierMaxTrades = 30;
     maxLotSizeForTier = 50.0;
   }
 
   if (accountType === 'Demo') {
-    tierMaxTrades = Math.max(tierMaxTrades, 15);
+    tierMaxTrades = Math.max(tierMaxTrades, 25);
   }
 
   const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  // Required capital per trade proportional to lot size: $10 per 0.01 lot ($100 for 0.10 lot, $1,000 for 1.00 lot)
-  const requiredCapitalPerTrade = Number((cleanLots * 1000).toFixed(2));
+  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so even $16+ accounts can open 15-20 concurrent trades
+  const requiredCapitalPerTrade = Number((cleanLots * 40).toFixed(2));
   const cleanBalance = Math.max(0, Number(balance || 0));
 
   const balanceMaxTrades =
@@ -440,9 +440,9 @@ export const calculateBotPnL = (
   return Number(pnl.toFixed(2));
 };
 
-// Determine target outcome according to user role and bot's configured win rate (never 100%):
-// - Marketers on Live accounts & Demo accounts: win according to the bot's configured win rate (~85%-92%, never 100%)
-// - Normal users on Live accounts: ~28% win rate
+// Determine target outcome according to user role and account type (never 100%):
+// - Demo accounts (all users) & Marketers on Live accounts: 85%–95% win rate (never 100%)
+// - Normal retail users on Live accounts: strictly maximum 10% win rate (~7%–10%) on both bots and manual trading
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
   _botType?: BotType,
@@ -451,11 +451,11 @@ export const evaluateTargetWinOrLoss = (
   currentWins: number = 0,
   currentTotal: number = 0
 ): boolean => {
-  const parsedRate = claimedWinRateStr ? parseFloat(String(claimedWinRateStr).replace(/[^0-9.]/g, '')) : 87.5;
-  const targetWinRate = !isNaN(parsedRate) && parsedRate > 50 ? Math.min(94.5, Math.max(82, parsedRate)) : 87.5;
+  const parsedRate = claimedWinRateStr ? parseFloat(String(claimedWinRateStr).replace(/[^0-9.]/g, '')) : 89.5;
+  const targetWinRate = !isNaN(parsedRate) && parsedRate > 50 ? Math.min(94.8, Math.max(85.5, parsedRate)) : 89.5;
 
   if (userRole === 'marketer' || isDemoAccount) {
-    // Ensure the first 2 trades of a marketer's bot are winners so the account starts increasing immediately
+    // Ensure the first 2 trades are winners so Demo and Marketer accounts start increasing immediately
     if (currentTotal < 2) {
       return true;
     }
@@ -463,42 +463,57 @@ export const evaluateTargetWinOrLoss = (
     if (currentTotal >= 5 && currentWins >= currentTotal) {
       return false;
     }
-    // If current winrate has dipped below (targetWinRate - 4%), force a win to stay true to the bot's winrate
+    // Keep winrate within 85%–95%
     const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : targetWinRate;
-    if (actualWinRate < targetWinRate - 4) {
+    if (actualWinRate < 85.5) {
       return true;
+    }
+    if (actualWinRate >= 94.8) {
+      return false;
     }
     return Math.random() * 100 < targetWinRate;
   }
 
-  return Math.random() * 100 < 28;
+  // Retail trader on Live/Real account: strictly maximum 10% win rate (~7% - 10%)
+  if (currentTotal < 3) {
+    return false;
+  }
+  // Never allow win rate to exceed 10% after this trade
+  const projectedWinRate = ((currentWins + 1) / (currentTotal + 1)) * 100;
+  if (projectedWinRate > 10.0) {
+    return false;
+  }
+  const retailWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 0;
+  if (retailWinRate >= 10.0) {
+    return false;
+  }
+  return Math.random() * 100 < 8.5;
 };
 
-// Calculate how many concurrent trades a running bot should open based on profits, currency volatility, and account limits
+// Calculate how many concurrent trades a running bot should open (maximum 5 trades)
 export const getTargetConcurrentBotTrades = (
   run: BotRunInstance,
   symbol: string,
   effectiveMaxTrades: number,
-  freeMargin: number,
+  accountBalanceOrEquity: number,
   lotSize: number
 ): number => {
-  if (effectiveMaxTrades <= 0 || freeMargin <= 0) return 0;
+  if (effectiveMaxTrades <= 0 || accountBalanceOrEquity <= 2.0) return 0;
   const s = (symbol || '').toUpperCase();
-  // Base concurrent trades by currency / asset volatility
-  let desired = 2;
+  // Base concurrent trades: 3 to 5 trades (strictly capped at maximum 5 trades)
+  let desired = 4;
   if (s.includes('BTC') || s.includes('ETH') || s.includes('XAU') || s.includes('NAS') || s.includes('US30')) {
-    desired = 3;
+    desired = 5;
   }
-  // Scale up concurrent positions as the bot accumulates profits
   const profit = Number(run.totalProfitUsd || 0);
-  if (profit >= 25) desired += 1;
-  if (profit >= 100) desired += 1;
+  if (profit >= 10) desired = 5;
 
-  // Cap by how many trades current freeMargin can support ($10 capital / $2.50 margin per 0.01 lot)
+  // Cap by total trades the account balance above protection floor can support ($0.40 margin per 0.01 lot)
   const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  const maxByFreeMargin = Math.max(1, Math.floor(freeMargin / (cleanLots * 250)));
+  const tradableCapital = Math.max(0, accountBalanceOrEquity - 2.0);
+  const maxByAccountCapacity = Math.max(1, Math.floor(tradableCapital / (cleanLots * 40)));
 
-  return Math.max(1, Math.min(desired, effectiveMaxTrades, maxByFreeMargin, 5));
+  return Math.max(1, Math.min(desired, effectiveMaxTrades, maxByAccountCapacity, 5));
 };
 
 // Determine execution direction based on market trend
@@ -556,238 +571,168 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
     });
 };
 
-// Default Initial Active Bot Runs so the platform is active right out of the box
-export const DEFAULT_INITIAL_BOT_RUNS: BotRunInstance[] = [
-  {
-    id: 'run-gold-hunter',
-    runId: 'run-gold-hunter',
-    botId: 'vtm-gold-hunter',
-    botName: 'Gold Bullion Sniper EA',
-    botType: 'INBUILT',
-    symbol: 'XAUUSD',
-    lotSize: 0.1,
-    tpPips: 50,
-    slPips: 25,
-    status: 'RUNNING',
-    startedAt: Date.now() - 3600000 * 2,
-    totalTrades: 6,
-    totalTradesCount: 6,
-    winningTrades: 5,
-    winCount: 5,
-    losingTrades: 1,
-    totalProfitUsd: 486.20,
-    lastSignal: 'Order Book Imbalance Buy Executed',
-  },
-  {
-    id: 'run-trend-matrix',
-    runId: 'run-trend-matrix',
-    botId: 'vtm-trend-matrix',
-    botName: 'VTM Trend Matrix EA',
-    botType: 'INBUILT',
-    symbol: 'EURUSD',
-    lotSize: 0.2,
-    tpPips: 35,
-    slPips: 20,
-    status: 'RUNNING',
-    startedAt: Date.now() - 3600000 * 4,
-    totalTrades: 5,
-    totalTradesCount: 5,
-    winningTrades: 4,
-    winCount: 4,
-    losingTrades: 1,
-    totalProfitUsd: 318.50,
-    lastSignal: 'Supertrend Trend Confirmation',
-  },
-];
+// Default Initial Active Bot Runs — always empty so bots NEVER deploy or run before the user explicitly clicks Run
+export const DEFAULT_INITIAL_BOT_RUNS: BotRunInstance[] = [];
 
-// Default Initial Bot Trades (active open positions + historical closed wins)
-export const DEFAULT_INITIAL_BOT_TRADES: BotTrade[] = [
-  {
-    id: 'btrade-active-xau',
-    ticket: 849201,
-    runId: 'run-gold-hunter',
-    runInstanceId: 'run-gold-hunter',
-    botId: 'vtm-gold-hunter',
-    botName: 'Gold Bullion Sniper EA',
-    symbol: 'XAUUSD',
-    side: 'BUY',
-    lotSize: 0.1,
-    openPrice: 4341.20,
-    currentPrice: 4342.60,
-    tp: 4346.20,
-    sl: 4338.70,
-    tpPrice: 4346.20,
-    slPrice: 4338.70,
-    openTime: Date.now() - 45000,
-    status: 'OPEN',
-    profitUsd: 14.00,
-    targetOutcome: 'WIN',
-  },
-  {
-    id: 'btrade-active-eur',
-    ticket: 849202,
-    runId: 'run-trend-matrix',
-    runInstanceId: 'run-trend-matrix',
-    botId: 'vtm-trend-matrix',
-    botName: 'VTM Trend Matrix EA',
-    symbol: 'EURUSD',
-    side: 'BUY',
-    lotSize: 0.2,
-    openPrice: 1.08580,
-    currentPrice: 1.08640,
-    tp: 1.08930,
-    sl: 1.08380,
-    tpPrice: 1.08930,
-    slPrice: 1.08380,
-    openTime: Date.now() - 35000,
-    status: 'OPEN',
-    profitUsd: 12.00,
-    targetOutcome: 'WIN',
-  },
-  {
-    id: 'btrade-closed-1',
-    ticket: 848910,
-    runId: 'run-gold-hunter',
-    runInstanceId: 'run-gold-hunter',
-    botId: 'vtm-gold-hunter',
-    botName: 'Gold Bullion Sniper EA',
-    symbol: 'XAUUSD',
-    side: 'BUY',
-    lotSize: 0.1,
-    openPrice: 4332.10,
-    currentPrice: 4340.50,
-    closePrice: 4340.50,
-    exitPrice: 4340.50,
-    tp: 4340.50,
-    sl: 4328.00,
-    tpPrice: 4340.50,
-    slPrice: 4328.00,
-    openTime: Date.now() - 7200000,
-    closeTime: Date.now() - 6500000,
-    status: 'CLOSED',
-    profitUsd: 84.00,
-    closeReason: 'TAKE_PROFIT',
-    exitReason: 'TP',
-  },
-  {
-    id: 'btrade-closed-2',
-    ticket: 848911,
-    runId: 'run-gold-hunter',
-    runInstanceId: 'run-gold-hunter',
-    botId: 'vtm-gold-hunter',
-    botName: 'Gold Bullion Sniper EA',
-    symbol: 'XAUUSD',
-    side: 'BUY',
-    lotSize: 0.1,
-    openPrice: 4325.00,
-    currentPrice: 4335.20,
-    closePrice: 4335.20,
-    exitPrice: 4335.20,
-    tp: 4335.00,
-    sl: 4320.00,
-    tpPrice: 4335.00,
-    slPrice: 4320.00,
-    openTime: Date.now() - 10800000,
-    closeTime: Date.now() - 9900000,
-    status: 'CLOSED',
-    profitUsd: 102.00,
-    closeReason: 'TAKE_PROFIT',
-    exitReason: 'TP',
-  },
-  {
-    id: 'btrade-closed-3',
-    ticket: 848912,
-    runId: 'run-trend-matrix',
-    runInstanceId: 'run-trend-matrix',
-    botId: 'vtm-trend-matrix',
-    botName: 'VTM Trend Matrix EA',
-    symbol: 'EURUSD',
-    side: 'BUY',
-    lotSize: 0.2,
-    openPrice: 1.08250,
-    currentPrice: 1.08550,
-    closePrice: 1.08550,
-    exitPrice: 1.08550,
-    tp: 1.08550,
-    sl: 1.08050,
-    tpPrice: 1.08550,
-    slPrice: 1.08050,
-    openTime: Date.now() - 14400000,
-    closeTime: Date.now() - 13200000,
-    status: 'CLOSED',
-    profitUsd: 60.00,
-    closeReason: 'TAKE_PROFIT',
-    exitReason: 'TP',
-  },
-  {
-    id: 'btrade-closed-4',
-    ticket: 848913,
-    runId: 'run-gold-hunter',
-    runInstanceId: 'run-gold-hunter',
-    botId: 'vtm-gold-hunter',
-    botName: 'Gold Bullion Sniper EA',
-    symbol: 'XAUUSD',
-    side: 'BUY',
-    lotSize: 0.1,
-    openPrice: 4315.40,
-    currentPrice: 4324.80,
-    closePrice: 4324.80,
-    exitPrice: 4324.80,
-    tp: 4324.80,
-    sl: 4310.00,
-    tpPrice: 4324.80,
-    slPrice: 4310.00,
-    openTime: Date.now() - 18000000,
-    closeTime: Date.now() - 16900000,
-    status: 'CLOSED',
-    profitUsd: 94.00,
-    closeReason: 'TAKE_PROFIT',
-    exitReason: 'TP',
-  },
-];
+// Default Initial Bot Trades — always empty so no bot trades exist before the user explicitly runs a bot
+export const DEFAULT_INITIAL_BOT_TRADES: BotTrade[] = [];
 
-// Local storage managers
+// Local storage managers & deleted bot tombstones
+export const getDeletedBotIds = (): string[] => {
+  try {
+    const raw = localStorage.getItem('vtm_deleted_bot_ids');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+};
+
+export const markBotDeletedLocally = (ids: Array<string | undefined | null>): string[] => {
+  const current = new Set<string>(getDeletedBotIds());
+  for (const id of ids) {
+    if (id && typeof id === 'string' && id.trim().length > 0) {
+      current.add(id.trim());
+    }
+  }
+  const updated = Array.from(current);
+  try {
+    localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+  return updated;
+};
+
+export const unmarkBotDeletedLocally = (ids: Array<string | undefined | null>): string[] => {
+  const toRemove = new Set<string>(
+    ids.filter((id): id is string => Boolean(id && typeof id === 'string')).map((id) => id.trim())
+  );
+  const updated = getDeletedBotIds().filter((id) => !toRemove.has(id));
+  try {
+    localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+  return updated;
+};
+
+export const sanitizeAndFilterBotRuns = (
+  runs: any[],
+  extraDeletedIds: string[] = [],
+  _pauseOnHydration = false
+): BotRunInstance[] => {
+  if (!Array.isArray(runs)) return [];
+  const deletedSet = new Set<string>([...getDeletedBotIds(), ...(extraDeletedIds || [])]);
+
+  return runs
+    .filter((r) => {
+      if (!r || typeof r !== 'object') return false;
+      // STRICT GUARD: Never allow any legacy, seeded, or auto-deployed bot run that was not explicitly started by the user
+      if (r.explicitUserRun !== true || r.userStartedVersion !== 2) {
+        return false;
+      }
+
+      const sym = typeof r.symbol === 'string' ? r.symbol.trim() : '';
+      const name = typeof r.botName === 'string' ? r.botName.trim() : '';
+      if (!sym || !name) return false;
+
+      const candidates = [r.id, r.runId, r.botId, r.botName]
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+        .map((v) => v.trim());
+
+      if (candidates.some((c) => deletedSet.has(c))) {
+        return false;
+      }
+      return true;
+    })
+    .map((r, idx) => {
+      const resolvedId =
+        (typeof r.id === 'string' && r.id.trim()) ||
+        (typeof r.runId === 'string' && r.runId.trim()) ||
+        (typeof r.botId === 'string' && `run-${r.botId.trim()}`) ||
+        `run-${idx}`;
+      const resolvedRunId =
+        (typeof r.runId === 'string' && r.runId.trim()) || resolvedId;
+
+      const cleanTpPips =
+        typeof r.tpPips === 'number' && !isNaN(r.tpPips) && r.tpPips > 0 ? r.tpPips : 30;
+      const cleanSlPips =
+        typeof r.slPips === 'number' && !isNaN(r.slPips) && r.slPips > 0 ? r.slPips : 20;
+      const cleanLots =
+        typeof r.lotSize === 'number' && !isNaN(r.lotSize) && r.lotSize > 0 ? r.lotSize : 0.01;
+
+      return {
+        ...r,
+        id: resolvedId,
+        runId: resolvedRunId,
+        symbol: String(r.symbol).trim().toUpperCase(),
+        lotSize: cleanLots,
+        tpPips: cleanTpPips,
+        slPips: cleanSlPips,
+        status: r.status === 'RUNNING' ? 'RUNNING' : 'PAUSED',
+        explicitUserRun: true,
+        userStartedVersion: 2,
+        totalTrades: r.totalTrades ?? r.totalTradesCount ?? 0,
+        totalTradesCount: r.totalTradesCount ?? r.totalTrades ?? 0,
+        winningTrades: r.winningTrades ?? r.winCount ?? 0,
+        winCount: r.winCount ?? r.winningTrades ?? 0,
+        losingTrades: r.losingTrades ?? 0,
+        totalProfitUsd:
+          typeof r.totalProfitUsd === 'number' && !isNaN(r.totalProfitUsd)
+            ? r.totalProfitUsd
+            : 0,
+      };
+    });
+};
+
+export const filterTradesForValidBotRuns = (
+  trades: any[],
+  validRuns: BotRunInstance[]
+): BotTrade[] => {
+  const sanitized = sanitizeBotTrades(trades);
+  const validRunIds = new Set<string>();
+  for (const r of validRuns) {
+    if (r.id) validRunIds.add(r.id);
+    if (r.runId) validRunIds.add(r.runId);
+  }
+  // Keep closed historical trades that belong to valid runs, and ONLY keep OPEN trades if their parent run exists in validRuns
+  return sanitized.filter((t) => {
+    const rId = t.runId || t.runInstanceId || '';
+    if (!rId || !validRunIds.has(rId)) {
+      return false;
+    }
+    return true;
+  });
+};
+
 export const loadStoredBotRuns = (): BotRunInstance[] => {
   try {
     const raw = localStorage.getItem('vtm_bot_runs');
     if (raw !== null) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        const deletedRaw = localStorage.getItem('vtm_deleted_bot_ids');
-        const deletedIds: string[] = deletedRaw ? JSON.parse(deletedRaw) : [];
-        return parsed
-          .filter(
-            (r) =>
-              !deletedIds.includes(r.id) &&
-              !deletedIds.includes(r.runId) &&
-              !deletedIds.includes(r.botId)
-          )
-          .map((r) => ({
-            ...r,
-            id: r.id || r.runId || `run-${Date.now()}`,
-            runId: r.runId || r.id || `run-${Date.now()}`,
-            totalTrades: r.totalTrades ?? r.totalTradesCount ?? 0,
-            totalTradesCount: r.totalTradesCount ?? r.totalTrades ?? 0,
-            winningTrades: r.winningTrades ?? r.winCount ?? 0,
-            winCount: r.winCount ?? r.winningTrades ?? 0,
-            losingTrades: r.losingTrades ?? 0,
-            totalProfitUsd:
-              typeof r.totalProfitUsd === 'number' && !isNaN(r.totalProfitUsd)
-                ? r.totalProfitUsd
-                : 0,
-          }));
+        const cleaned = sanitizeAndFilterBotRuns(parsed, [], false);
+        localStorage.setItem('vtm_bot_runs', JSON.stringify(cleaned));
+        return cleaned;
       }
     }
   } catch (e) {
     // ignore
   }
-  // When an account is opened, start clean with no running bots
+  // Start clean with no running bots until the user clicks Run
   return [];
 };
 
 export const saveStoredBotRuns = (runs: BotRunInstance[]) => {
   try {
-    localStorage.setItem('vtm_bot_runs', JSON.stringify(runs));
+    const cleaned = sanitizeAndFilterBotRuns(runs, [], false);
+    localStorage.setItem('vtm_bot_runs', JSON.stringify(cleaned));
   } catch (e) {
     // ignore
   }
@@ -795,17 +740,19 @@ export const saveStoredBotRuns = (runs: BotRunInstance[]) => {
 
 export const loadStoredBotTrades = (): BotTrade[] => {
   try {
+    const validRuns = loadStoredBotRuns();
     const raw = localStorage.getItem('vtm_bot_trades');
     if (raw !== null) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return sanitizeBotTrades(parsed);
+        const cleanedTrades = filterTradesForValidBotRuns(parsed, validRuns);
+        localStorage.setItem('vtm_bot_trades', JSON.stringify(cleanedTrades));
+        return cleanedTrades;
       }
     }
   } catch (e) {
     // ignore
   }
-  // When an account is opened, start with no running trades
   return [];
 };
 

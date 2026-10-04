@@ -1,62 +1,35 @@
 /**
- * Hashback Payment Gateway Integration for Safaricom M-PESA Kenya
- * Endpoint: https://api.hashback.co.ke/initiatestk
- * Account: HP068635
- * Rate: 1 USD = 125.67 KES
+ * Hashback Kenya M-Pesa STK Push Gateway Service
+ * Official API: https://api.hashback.co.ke
+ *
+ * All credentials (HASHBACK_ACCOUNT_ID, HASHBACK_API_KEY, USD_KES_RATE) are loaded
+ * dynamically from environment Secrets and saved configuration—never hardcoded in source code.
  */
-
-export const HASHBACK_ACCOUNT_ID = 'HP068635';
-export const HASHBACK_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_HASHBACK_API_KEY) || '';
-export const USD_KES_RATE = 125.67; // Deposit Rate: 1 USD = 125.67 KES
-export const USD_KES_WITHDRAW_RATE = 124.65; // Withdrawal Rate: 1 USD = 124.65 KES (below deposit rate)
-
-export interface AfricanBankOption {
-  id: string;
-  name: string;
-  shortName: string;
-  country: string;
-  paybill: string;
-  swiftCode: string;
-}
-
-export const WELL_KNOWN_AFRICAN_BANKS: AfricanBankOption[] = [
-  { id: 'equity', name: 'Equity Bank (Kenya & Africa)', shortName: 'Equity Bank', country: 'Kenya / East Africa', paybill: '247247', swiftCode: 'EQBLKENA' },
-  { id: 'kcb', name: 'KCB Bank (Kenya Commercial Bank)', shortName: 'KCB Bank', country: 'Kenya / East Africa', paybill: '522522', swiftCode: 'KCBLKENX' },
-  { id: 'coop', name: 'Co-operative Bank of Kenya', shortName: 'Co-op Bank', country: 'Kenya', paybill: '400200', swiftCode: 'KCOOKENA' },
-  { id: 'ncba', name: 'NCBA Bank Kenya', shortName: 'NCBA Bank', country: 'Kenya / East Africa', paybill: '880100', swiftCode: 'CBAFKENX' },
-  { id: 'absa', name: 'Absa Bank (Kenya & Africa)', shortName: 'Absa Bank', country: 'Kenya / Pan-Africa', paybill: '303030', swiftCode: 'BARCKENX' },
-  { id: 'stanchart', name: 'Standard Chartered Bank', shortName: 'Standard Chartered', country: 'Kenya / Africa', paybill: '329329', swiftCode: 'SCBLKENX' },
-  { id: 'stanbic', name: 'Stanbic Bank (Standard Bank Group)', shortName: 'Stanbic Bank', country: 'Kenya / Pan-Africa', paybill: '600100', swiftCode: 'SBICKENX' },
-  { id: 'im', name: 'I&M Bank', shortName: 'I&M Bank', country: 'Kenya / East Africa', paybill: '542542', swiftCode: 'IMBLKENA' },
-  { id: 'dtb', name: 'DTB (Diamond Trust Bank)', shortName: 'DTB Bank', country: 'Kenya / East Africa', paybill: '516600', swiftCode: 'DTKEKENA' },
-  { id: 'family', name: 'Family Bank Kenya', shortName: 'Family Bank', country: 'Kenya', paybill: '222111', swiftCode: 'FABLKENA' },
-  { id: 'ecobank', name: 'Ecobank (Pan-African)', shortName: 'Ecobank', country: 'Pan-Africa', paybill: '700200', swiftCode: 'ECOCKENA' },
-  { id: 'uba', name: 'UBA (United Bank for Africa)', shortName: 'UBA Africa', country: 'Pan-Africa', paybill: '559900', swiftCode: 'UNAFKENA' },
-];
-
-export interface MpesaPaymentRequest {
-  phone: string;
-  amountUsd: number;
-  amountKes?: number;
-  accountReference?: string;
-  targetAccount?: string;
-  userEmail?: string;
-}
 
 export interface MpesaPaymentResponse {
   success: boolean;
   message: string;
   checkoutId?: string;
-  merchantRequestId?: string;
-  responseCode?: string;
-  customerMessage?: string;
-  amountKes: number;
-  amountUsd: number;
-  formattedPhone: string;
-  rawResponse?: any;
+  reference?: string;
+  amountKes?: number;
+  amountUsd?: number;
+  formattedPhone?: string;
+  raw?: any;
 }
 
-export interface HashbackStatusResult {
+export interface HashbackStkRequest {
+  amountKes: number;
+  amountUsd: number;
+  phone: string;
+  reference?: string;
+  accountReference?: string;
+  targetAccount?: string;
+  userEmail?: string;
+  accountNumber?: string;
+}
+
+export interface HashbackStatusResponse {
+  success: boolean;
   confirmed: boolean;
   pending: boolean;
   failed: boolean;
@@ -64,279 +37,382 @@ export interface HashbackStatusResult {
   resultDesc?: string;
   mpesaReceiptNumber?: string;
   data?: any;
+  raw?: any;
+}
+
+export const WELL_KNOWN_AFRICAN_BANKS = [
+  { id: 'equity', name: 'Equity Bank Kenya', shortName: 'Equity Bank', paybill: '247247', country: 'Kenya' },
+  { id: 'kcb', name: 'KCB Bank Kenya', shortName: 'KCB Bank', paybill: '522522', country: 'Kenya' },
+  { id: 'coop', name: 'Co-operative Bank of Kenya', shortName: 'Co-op Bank', paybill: '400200', country: 'Kenya' },
+  { id: 'ncba', name: 'NCBA Bank Kenya', shortName: 'NCBA Bank', paybill: '880100', country: 'Kenya' },
+  { id: 'absa', name: 'Absa Bank Kenya', shortName: 'Absa Bank', paybill: '303030', country: 'Kenya' },
+  { id: 'stanbic', name: 'Stanbic Bank Kenya', shortName: 'Stanbic Bank', paybill: '600100', country: 'Kenya' },
+  { id: 'stanchart', name: 'Standard Chartered Kenya', shortName: 'Standard Chartered', paybill: '329329', country: 'Kenya' },
+  { id: 'im', name: 'I&M Bank Limited', shortName: 'I&M Bank', paybill: '542542', country: 'Kenya' },
+  { id: 'dtb', name: 'Diamond Trust Bank (DTB)', shortName: 'DTB Bank', paybill: '516600', country: 'Kenya' },
+  { id: 'ecobank', name: 'Ecobank Pan-African', shortName: 'Ecobank', paybill: '700201', country: 'Pan-Africa' },
+  { id: 'uba', name: 'United Bank for Africa (UBA)', shortName: 'UBA Bank', paybill: '559900', country: 'Pan-Africa' },
+];
+
+const STORAGE_KEY_USD_KES_RATE = 'vtm_hashback_usd_kes_rate';
+const STORAGE_KEY_MERCHANT_NAME = 'vtm_hashback_merchant_name';
+
+// Live mutable exports hydrated from `/api/hashback-config` (sensitive credentials remain strictly server-side)
+export let HASHBACK_MERCHANT_NAME: string = 'HASHBACK PAYMENT';
+export let USD_KES_RATE: number =
+  Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 1;
+export let USD_KES_WITHDRAW_RATE: number = USD_KES_RATE;
+
+let runtimeSecretsCache: {
+  usdKesRate: number;
+  merchantName: string;
+  isConfigured: boolean;
+  loaded: boolean;
+} = {
+  usdKesRate: USD_KES_RATE,
+  merchantName: '',
+  isConfigured: false,
+  loaded: false,
+};
+
+/**
+ * Fetches live non-sensitive configuration from `/api/hashback-config` so changes to
+ * HASHBACK_ACCOUNT_ID, HASHBACK_API_KEY, or USD_KES_RATE take effect immediately
+ * while keeping sensitive credentials strictly on the server.
+ */
+export async function syncRuntimeHashbackSecrets(): Promise<{
+  usdKesRate: number;
+  merchantName: string;
+  isConfigured: boolean;
+}> {
+  try {
+    // Clean up any legacy sensitive keys in localStorage
+    localStorage.removeItem('vtm_hashback_api_key');
+    localStorage.removeItem('vtm_hashback_account_id');
+  } catch {
+    // ignore storage errors
+  }
+
+  try {
+    const res = await fetch('/api/hashback-config', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Number(data.usdKesRate) > 0) {
+        runtimeSecretsCache.usdKesRate = Number(data.usdKesRate);
+        USD_KES_RATE = runtimeSecretsCache.usdKesRate;
+        USD_KES_WITHDRAW_RATE = runtimeSecretsCache.usdKesRate;
+      }
+      if (data.merchantName) {
+        runtimeSecretsCache.merchantName = String(data.merchantName).trim();
+        HASHBACK_MERCHANT_NAME = runtimeSecretsCache.merchantName;
+        try {
+          localStorage.setItem(STORAGE_KEY_MERCHANT_NAME, runtimeSecretsCache.merchantName);
+        } catch {
+          // ignore
+        }
+      }
+      runtimeSecretsCache.isConfigured = Boolean(data.configured);
+      runtimeSecretsCache.loaded = true;
+    }
+  } catch {
+    // Fallback to cached values
+  }
+  return getHashbackConfig();
+}
+
+// Automatically hydrate on module load in browser
+if (typeof window !== 'undefined') {
+  syncRuntimeHashbackSecrets().catch(() => {});
+}
+
+export function getUsdKesRate(): number {
+  if (runtimeSecretsCache.usdKesRate > 0) {
+    USD_KES_RATE = runtimeSecretsCache.usdKesRate;
+    USD_KES_WITHDRAW_RATE = runtimeSecretsCache.usdKesRate;
+    return runtimeSecretsCache.usdKesRate;
+  }
+  const envRate = Number(import.meta.env.VITE_USD_KES_RATE);
+  if (!Number.isNaN(envRate) && envRate > 0) {
+    USD_KES_RATE = envRate;
+    USD_KES_WITHDRAW_RATE = envRate;
+    return envRate;
+  }
+  try {
+    const storedRate = Number(localStorage.getItem(STORAGE_KEY_USD_KES_RATE));
+    if (!Number.isNaN(storedRate) && storedRate > 0) {
+      USD_KES_RATE = storedRate;
+      USD_KES_WITHDRAW_RATE = storedRate;
+      return storedRate;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return USD_KES_RATE;
+}
+
+export function getUsdKesWithdrawRate(): number {
+  return getUsdKesRate();
+}
+
+export function getHashbackMerchantName(): string {
+  return getHashbackConfig().merchantName;
+}
+
+export function getHashbackConfig() {
+  let savedMerchant = '';
+  try {
+    savedMerchant = (localStorage.getItem(STORAGE_KEY_MERCHANT_NAME) || '').trim();
+  } catch {
+    // ignore
+  }
+
+  const merchantName =
+    runtimeSecretsCache.merchantName ||
+    savedMerchant ||
+    HASHBACK_MERCHANT_NAME ||
+    'HASHBACK PAYMENT';
+
+  const usdKesRate = getUsdKesRate();
+
+  return {
+    usdKesRate,
+    merchantName,
+    isConfigured: runtimeSecretsCache.isConfigured,
+  };
+}
+
+export function saveHashbackConfig(apiKey?: string, accountId?: string, usdKesRate?: number) {
+  try {
+    if (usdKesRate !== undefined && Number(usdKesRate) > 0) {
+      const cleanRate = Number(usdKesRate);
+      localStorage.setItem(STORAGE_KEY_USD_KES_RATE, String(cleanRate));
+      runtimeSecretsCache.usdKesRate = cleanRate;
+      USD_KES_RATE = cleanRate;
+      USD_KES_WITHDRAW_RATE = cleanRate;
+    }
+    fetch('/api/hashback-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: accountId ? accountId.trim() : undefined,
+        apiKey: apiKey ? apiKey.trim() : undefined,
+        usdKesRate: runtimeSecretsCache.usdKesRate,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.merchantName) {
+          runtimeSecretsCache.merchantName = String(data.merchantName).trim();
+          HASHBACK_MERCHANT_NAME = runtimeSecretsCache.merchantName;
+        }
+      })
+      .catch(() => {});
+  } catch {
+    // ignore storage errors
+  }
 }
 
 /**
- * Standardize any Kenyan phone format to international MSISDN: 2547XXXXXXXX or 2541XXXXXXXX
- * Handles formats: 07XXXXXXXX, 01XXXXXXXX, +254XXXXXXXXX, 254XXXXXXXXX, 7XXXXXXXX, 1XXXXXXXX
+ * Formats any Kenyan phone number into standard 2547XXXXXXXX or 2541XXXXXXXX format
  */
-export function formatKenyanPhone(phone: string): { valid: boolean; formatted: string; display: string } {
-  if (!phone) return { valid: false, formatted: '', display: '' };
-  
-  // Strip all non-numeric characters except +
-  let cleaned = phone.replace(/[\s\-\(\)]/g, '').trim();
-  if (cleaned.startsWith('+')) {
-    cleaned = cleaned.substring(1);
+export function formatSafaricomPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.startsWith('07') || digits.startsWith('01')) {
+    return '254' + digits.slice(1);
+  }
+  if (digits.startsWith('7') || digits.startsWith('1')) {
+    return '254' + digits;
+  }
+  if (digits.startsWith('254')) {
+    return digits;
+  }
+  return digits;
+}
+
+export function isValidSafaricomPhone(phone: string): boolean {
+  const formatted = formatSafaricomPhone(phone);
+  return /^254(7|1)\d{8}$/.test(formatted);
+}
+
+export function formatKenyanPhone(phone: string): {
+  valid: boolean;
+  formatted: string;
+  display: string;
+} {
+  const formatted = formatSafaricomPhone(phone);
+  const valid = /^254(7|1)\d{8}$/.test(formatted);
+  const display = valid ? `+${formatted}` : phone.trim();
+  return { valid, formatted, display };
+}
+
+/**
+ * Converts USD amount to integer KES amount using the secret USD_KES_RATE
+ */
+export function usdToKes(usdAmount: number): number {
+  const rate = getUsdKesRate();
+  return Math.max(1, Math.round(usdAmount * rate));
+}
+
+export const convertUsdToKes = usdToKes;
+
+/**
+ * Converts KES amount to USD amount using the secret USD_KES_RATE
+ */
+export function kesToUsd(kesAmount: number): number {
+  const rate = getUsdKesRate();
+  return Number((kesAmount / rate).toFixed(2));
+}
+
+export const convertKesToUsd = kesToUsd;
+
+/**
+ * Initiates an M-Pesa STK Push via Hashback API using configured Secrets
+ */
+export async function initiateStkPush(req: HashbackStkRequest): Promise<MpesaPaymentResponse> {
+  await syncRuntimeHashbackSecrets();
+  const msisdn = formatSafaricomPhone(req.phone);
+  const reference = req.reference || req.accountReference || `VTM-${Date.now()}`;
+
+  if (!isValidSafaricomPhone(msisdn)) {
+    return {
+      success: false,
+      message: 'Please enter a valid Safaricom M-Pesa phone number (e.g., 0712 345 678 or 254712345678).',
+    };
   }
 
-  // Handle 07XX or 01XX -> 2547XX / 2541XX
-  if (cleaned.startsWith('0') && (cleaned.length === 10)) {
-    cleaned = '254' + cleaned.substring(1);
-  } else if ((cleaned.startsWith('7') || cleaned.startsWith('1')) && cleaned.length === 9) {
-    cleaned = '254' + cleaned;
+  const payload = {
+    amount: String(Math.max(1, Math.round(req.amountKes))),
+    msisdn,
+    reference,
+  };
+
+  let data: any = null;
+  let httpOk = false;
+
+  // Server-side proxy (/api/hashback-stk) injects server Secrets (HASHBACK_ACCOUNT_ID, HASHBACK_API_KEY) securely
+  try {
+    const proxyRes = await fetch('/api/hashback-stk', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await proxyRes.text();
+    try {
+      data = JSON.parse(text);
+      httpOk = proxyRes.ok;
+    } catch {
+      data = null;
+    }
+  } catch {
+    data = null;
   }
 
-  // Validate format: 254 + 7XXXXXXXX or 254 + 1XXXXXXXX (total 12 digits)
-  const isValid = /^254[17][0-9]{8}$/.test(cleaned);
-  const display = isValid ? `+254 ${cleaned.substring(3, 6)} ${cleaned.substring(6, 9)} ${cleaned.substring(9)}` : phone;
+  if (!data) {
+    return {
+      success: false,
+      message: 'Unable to reach M-Pesa gateway. Please check your connection and try again.',
+    };
+  }
+
+  const responseCode = String(data?.ResponseCode ?? data?.response_code ?? data?.status ?? '');
+  const isAccepted =
+    httpOk &&
+    (responseCode === '0' ||
+      responseCode === '200' ||
+      data?.success === true ||
+      data?.status === 'success' ||
+      Boolean(data?.checkout_id || data?.CheckoutRequestID || data?.checkoutid));
+
+  if (isAccepted) {
+    return {
+      success: true,
+      message:
+        data?.ResponseDescription ||
+        data?.message ||
+        'STK Push sent to your phone. Please enter your M-Pesa PIN to complete the payment.',
+      checkoutId: data?.checkout_id || data?.CheckoutRequestID || data?.checkoutid || reference,
+      reference,
+      amountKes: req.amountKes,
+      amountUsd: req.amountUsd,
+      formattedPhone: msisdn,
+      raw: data,
+    };
+  }
 
   return {
-    valid: isValid,
-    formatted: cleaned,
-    display,
+    success: false,
+    message:
+      data?.ResponseDescription ||
+      data?.error_message ||
+      data?.message ||
+      data?.error ||
+      'Failed to initiate M-Pesa STK Push. Please check your phone number.',
+    raw: data,
   };
 }
 
 /**
- * Convert USD to KES at current fixed broker rate (125.67)
+ * Polls Hashback API via server proxy to check if the customer has entered their M-Pesa PIN
+ * and Safaricom has confirmed the transaction.
  */
-export function usdToKes(usd: number): number {
-  if (!usd || usd <= 0) return 0;
-  return Math.round(usd * USD_KES_RATE);
-}
-
-/**
- * Convert KES to USD at current fixed broker rate (125.67)
- */
-export function kesToUsd(kes: number): number {
-  if (!kes || kes <= 0) return 0;
-  return Number((kes / USD_KES_RATE).toFixed(2));
-}
-
-class HashbackService {
-  private accountId: string = HASHBACK_ACCOUNT_ID;
-  private apiKey: string = HASHBACK_API_KEY;
-  private exchangeRate: number = USD_KES_RATE;
-
-  public getExchangeRate(): number {
-    return this.exchangeRate;
-  }
-
-  public getAccountId(): string {
-    return this.accountId;
-  }
-
-  /**
-   * Send STK Push prompt to customer's phone via Hashback gateway
-   */
-  public async initiateStkPush(req: MpesaPaymentRequest): Promise<MpesaPaymentResponse> {
-    const { valid, formatted, display } = formatKenyanPhone(req.phone);
-    if (!valid) {
-      return {
-        success: false,
-        message: 'Invalid Kenyan phone number. Please enter a valid Safaricom/Airtel number (e.g., 0712345678 or 0112345678).',
-        amountKes: req.amountKes || usdToKes(req.amountUsd),
-        amountUsd: req.amountUsd,
-        formattedPhone: req.phone,
-      };
-    }
-
-    const calculatedKes = req.amountKes && req.amountKes > 0 ? Math.round(req.amountKes) : usdToKes(req.amountUsd);
-    if (calculatedKes < 10) {
-      return {
-        success: false,
-        message: 'Minimum deposit via M-PESA is KES 10 ($0.10 USD).',
-        amountKes: calculatedKes,
-        amountUsd: req.amountUsd,
-        formattedPhone: formatted,
-      };
-    }
-
-    const reference = req.accountReference || `VTM-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    const payload = {
-      account_id: this.accountId,
-      api_key: this.apiKey,
-      amount: calculatedKes,
-      msisdn: formatted,
-      reference: reference,
-    };
-
-    // 1. Try server-side proxy route first (/api/hashback-stk)
-    try {
-      const serverRes = await fetch('/api/hashback-stk', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(12000),
-      });
-
-      if (serverRes.ok) {
-        const data = await serverRes.json();
-        if (data.success || data.ResponseCode === '0' || data.checkout_id || data.CheckoutRequestID) {
-          return {
-            success: true,
-            message: data.message || data.ResponseDescription || 'STK Push sent successfully to your phone.',
-            checkoutId: data.checkout_id || data.CheckoutRequestID,
-            merchantRequestId: data.MerchantRequestID,
-            responseCode: data.ResponseCode || '0',
-            customerMessage: data.CustomerMessage || 'Please check your phone and enter your M-Pesa PIN.',
-            amountKes: calculatedKes,
-            amountUsd: req.amountUsd,
-            formattedPhone: display,
-            rawResponse: data,
-          };
-        } else {
-          return {
-            success: false,
-            message: data.message || data.ResponseDescription || 'Failed to initiate STK push.',
-            amountKes: calculatedKes,
-            amountUsd: req.amountUsd,
-            formattedPhone: display,
-            rawResponse: data,
-          };
-        }
-      }
-    } catch (proxyErr) {
-      console.warn('Server proxy unavailable, falling back to direct Hashback gateway call:', proxyErr);
-    }
-
-    // 2. Direct gateway fallback (CORS is supported by Hashback API)
-    try {
-      const directRes = await fetch('https://api.hashback.co.ke/initiatestk', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(15000),
-      });
-
-      const json = await directRes.json();
-      if (directRes.ok && (json.success || json.ResponseCode === '0' || json.checkout_id || json.CheckoutRequestID)) {
-        return {
-          success: true,
-          message: json.message || json.ResponseDescription || 'STK Push sent successfully to your phone.',
-          checkoutId: json.checkout_id || json.CheckoutRequestID,
-          merchantRequestId: json.MerchantRequestID,
-          responseCode: json.ResponseCode || '0',
-          customerMessage: json.CustomerMessage || 'Please check your phone and enter your M-Pesa PIN.',
-          amountKes: calculatedKes,
-          amountUsd: req.amountUsd,
-          formattedPhone: display,
-          rawResponse: json,
-        };
-      } else {
-        return {
-          success: false,
-          message: json.message || json.ResponseDescription || json.error || 'Failed to trigger M-Pesa prompt.',
-          amountKes: calculatedKes,
-          amountUsd: req.amountUsd,
-          formattedPhone: display,
-          rawResponse: json,
-        };
-      }
-    } catch (err: any) {
-      return {
-        success: false,
-        message: err.message || 'Network error communicating with M-Pesa gateway.',
-        amountKes: calculatedKes,
-        amountUsd: req.amountUsd,
-        formattedPhone: display,
-      };
-    }
-  }
-
-  /**
-   * Polls Hashback / Safaricom Daraja for real-time transaction confirmation.
-   * Never relies on manual approval - strictly receives cryptographic confirmation
-   * from Hashback API with ResultCode = 0 and MpesaReceiptNumber.
-   */
-  public async queryTransactionStatus(checkoutId: string): Promise<HashbackStatusResult> {
-    if (!checkoutId) {
-      return { confirmed: false, pending: false, failed: true, resultDesc: 'Missing checkout_id' };
-    }
-
-    // 1. Try server proxy route first (/api/hashback-status)
-    try {
-      const res = await fetch('/api/hashback-status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account_id: this.accountId,
-          api_key: this.apiKey,
-          checkout_id: checkoutId,
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (res.ok) {
-        const json = await res.json();
-        return {
-          confirmed: Boolean(json.confirmed),
-          pending: Boolean(json.pending),
-          failed: Boolean(json.failed),
-          resultCode: json.resultCode,
-          resultDesc: json.resultDesc,
-          mpesaReceiptNumber: json.mpesaReceiptNumber,
-          data: json.data,
-        };
-      }
-    } catch (e) {
-      console.warn('Proxy status check failed, trying direct Hashback query:', e);
-    }
-
-    // 2. Direct gateway fallback to Hashback API
-    try {
-      const payload = {
-        account_id: this.accountId,
-        api_key: this.apiKey,
-        checkoutid: checkoutId,
+export async function checkStkPaymentStatus(checkoutId: string): Promise<HashbackStatusResponse> {
+  try {
+    const response = await fetch('/api/hashback-status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         checkout_id: checkoutId,
-      };
+        checkoutid: checkoutId,
+      }),
+    });
 
-      const directRes = await fetch('https://api.hashback.co.ke/transactionstatus', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Key': this.apiKey,
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(12000),
-      });
-
-      const data = await directRes.json();
-      const rawCode = data.ResultCode !== undefined ? String(data.ResultCode) : undefined;
-      const isSuccess = rawCode === '0' || data.status === 'completed' || data.status === 'success';
-      const isFailed = rawCode === '1032' || rawCode === '1037' || rawCode === '1' || (rawCode !== undefined && rawCode !== '0');
-      const isPending = !isSuccess && !isFailed;
-
-      let receiptNo = data.MpesaReceiptNumber || data.mpesa_receipt;
-      if (!receiptNo && data.CallbackMetadata?.Item) {
-        const item = data.CallbackMetadata.Item.find((i: any) => i.Name === 'MpesaReceiptNumber');
-        if (item) receiptNo = item.Value;
-      }
-
+    const data = await response.json();
+    if (data && typeof data.confirmed === 'boolean') {
       return {
-        confirmed: isSuccess,
-        pending: isPending,
-        failed: isFailed,
-        resultCode: rawCode,
-        resultDesc: data.ResultDesc || data.ResponseDescription,
-        mpesaReceiptNumber: receiptNo,
-        data,
-      };
-    } catch (err: any) {
-      return {
-        confirmed: false,
-        pending: true,
-        failed: false,
-        resultDesc: 'Waiting for network response from Hashback...',
+        success: Boolean(data.success),
+        confirmed: Boolean(data.confirmed),
+        pending: Boolean(data.pending),
+        failed: Boolean(data.failed),
+        resultCode: data.resultCode !== undefined ? String(data.resultCode) : undefined,
+        resultDesc: data.resultDesc,
+        mpesaReceiptNumber: data.mpesaReceiptNumber,
+        data: data.data || data,
+        raw: data.data || data,
       };
     }
+  } catch (err: any) {
+    return {
+      success: false,
+      confirmed: false,
+      pending: true,
+      failed: false,
+      resultDesc: err?.message || 'Checking payment status...',
+    };
   }
+
+  return {
+    success: false,
+    confirmed: false,
+    pending: true,
+    failed: false,
+    resultDesc: 'Checking payment status...',
+  };
 }
 
-export const hashbackService = new HashbackService();
+export const hashbackService = {
+  initiateStkPush,
+  queryTransactionStatus: checkStkPaymentStatus,
+  checkStkPaymentStatus,
+  syncSecrets: syncRuntimeHashbackSecrets,
+  getConfig: getHashbackConfig,
+  saveConfig: saveHashbackConfig,
+  getUsdKesRate,
+};

@@ -35,6 +35,7 @@ export interface BotRunInstance {
   status: 'RUNNING' | 'PAUSED' | 'STOPPED';
   userRoleAtStart?: UserRole;
   startedAt: number;
+  stoppedAt?: number;
   totalTrades?: number;
   totalTradesCount?: number;
   winningTrades?: number;
@@ -44,6 +45,8 @@ export interface BotRunInstance {
   activeTradeId?: string;
   lastSignal?: string;
   lastSignalTime?: number;
+  explicitUserRun?: boolean;
+  userStartedVersion?: number;
 }
 
 export interface BotTrade {

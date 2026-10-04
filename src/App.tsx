@@ -58,6 +58,11 @@ import {
   saveStoredBotTrades,
   loadStoredImportedBots,
   saveStoredImportedBots,
+  getDeletedBotIds,
+  markBotDeletedLocally,
+  unmarkBotDeletedLocally,
+  sanitizeAndFilterBotRuns,
+  filterTradesForValidBotRuns,
   evaluateTargetWinOrLoss,
   determineBotTradeDirection,
   calculateBotPnL,
@@ -387,13 +392,42 @@ export default function App() {
               setImportedBots(remoteBots.importedBots);
               saveStoredImportedBots(remoteBots.importedBots);
             }
-            if (Array.isArray(remoteBots.botRuns) && remoteBots.botRuns.length > 0) {
-              setBotRuns(remoteBots.botRuns);
-              saveStoredBotRuns(remoteBots.botRuns);
-            }
-            if (Array.isArray(remoteBots.botTrades) && remoteBots.botTrades.length > 0) {
-              setBotTrades(remoteBots.botTrades);
-              saveStoredBotTrades(remoteBots.botTrades);
+            if (Array.isArray(remoteBots.botRuns)) {
+              const cleanedRemoteRuns = sanitizeAndFilterBotRuns(
+                remoteBots.botRuns,
+                remoteBots.deletedBotIds || [],
+                false
+              );
+              const mergedMap = new Map<string, BotRunInstance>();
+              for (const r of [...cleanedRemoteRuns, ...botRunsRef.current]) {
+                if (r && r.explicitUserRun === true && r.userStartedVersion === 2) {
+                  mergedMap.set(r.id || r.runId || r.botId, r);
+                }
+              }
+              const finalRuns = sanitizeAndFilterBotRuns(
+                Array.from(mergedMap.values()),
+                remoteBots.deletedBotIds || [],
+                false
+              );
+              botRunsRef.current = finalRuns;
+              setBotRuns(finalRuns);
+              saveStoredBotRuns(finalRuns);
+
+              const rawTrades = [
+                ...(Array.isArray(remoteBots.botTrades) ? remoteBots.botTrades : []),
+                ...botTradesRef.current,
+              ];
+              const dedupTradesMap = new Map<string, BotTrade>();
+              for (const t of rawTrades) {
+                if (t && t.id) dedupTradesMap.set(t.id, t);
+              }
+              const cleanedTrades = filterTradesForValidBotRuns(
+                Array.from(dedupTradesMap.values()),
+                finalRuns
+              );
+              botTradesRef.current = cleanedTrades;
+              setBotTrades(cleanedTrades);
+              saveStoredBotTrades(cleanedTrades);
             }
           }
           isCloudBotsLoadedRef.current = true;
@@ -473,27 +507,6 @@ export default function App() {
 
         supabaseService.updateUserLastLoginInDatabase(currentUser.email);
         supabaseService.syncDevice(currentUser);
-      } else {
-        // Periodic cross-device sync for active bots and closed trades so all devices show identical state
-        supabaseService.fetchBotState(currentUser).then((remoteBots) => {
-          if (!remoteBots) return;
-          if (
-            Array.isArray(remoteBots.botRuns) &&
-            botRunsRef.current.length === 0 &&
-            remoteBots.botRuns.length > 0
-          ) {
-            setBotRuns(remoteBots.botRuns);
-            saveStoredBotRuns(remoteBots.botRuns);
-          }
-          if (
-            Array.isArray(remoteBots.botTrades) &&
-            botTradesRef.current.length === 0 &&
-            remoteBots.botTrades.length > 0
-          ) {
-            setBotTrades(remoteBots.botTrades);
-            saveStoredBotTrades(remoteBots.botTrades);
-          }
-        });
       }
     };
 
@@ -1266,7 +1279,7 @@ export default function App() {
     const candleCheckInterval = setInterval(() => {
       if (!isMounted) return;
 
-      // Gently fluctuate open-market instrument spreads in [0.16, 1.18] (max 1.2) so spread is never stuck
+      // Gently fluctuate open-market instrument bid & ask spreads in [0.16, 1.18] (max 1.2) so live P/L and account equity move continuously in real time
       setInstruments((prevInsts) =>
         prevInsts.map((item) => {
           const ms = checkInstrumentMarketHours(item.symbol, item.category);
@@ -1288,9 +1301,27 @@ export default function App() {
           } else if (item.decimals === 3 && item.symbol !== 'XAUUSD') {
             gap = Math.max(0.001, Number((dynamicSpread * 0.01).toFixed(3)));
           }
-          const nextAsk = Number((item.bid + gap).toFixed(item.decimals));
+          const minTick = Math.pow(10, -item.decimals);
+
+          // Check if there is an open manual position on this instrument to guide realistic price ticks according to targetOutcome
+          const openPosForSym = (positionsRef.current || []).find((p) => p.symbol === item.symbol);
+          let directionalBias = 0;
+          if (openPosForSym && openPosForSym.targetOutcome) {
+            const wantsPriceUp =
+              (openPosForSym.side === 'BUY' && openPosForSym.targetOutcome === 'WIN') ||
+              (openPosForSym.side === 'SELL' && openPosForSym.targetOutcome === 'LOSS');
+            directionalBias = wantsPriceUp ? 0.32 : -0.32;
+          }
+
+          const bidJitter =
+            (Math.random() - 0.5 + directionalBias) *
+            minTick *
+            (item.bid > 1000 ? 22 : item.bid > 50 ? 8 : 4);
+          const nextBid = Number(Math.max(minTick, item.bid + bidJitter).toFixed(item.decimals));
+          const nextAsk = Number((nextBid + gap).toFixed(item.decimals));
           return {
             ...item,
+            bid: nextBid,
             ask: nextAsk,
             spread: dynamicSpread,
           };
@@ -1344,18 +1375,59 @@ export default function App() {
     // Recalculate floating P&L and collect any positions that hit SL / TP
     const triggeredClosures: Array<{ id: string; reason: 'TP' | 'SL'; price: number }> = [];
 
-    setPositions((prev) =>
-      prev.map((pos) => {
+    setPositions((prev) => {
+      const next = prev.map((pos) => {
         const inst = currentInstMap.get(pos.symbol);
         if (!inst) return pos;
 
-        const currentPrice = pos.side === 'BUY' ? inst.bid : inst.ask;
+        const rawMarketPrice = pos.side === 'BUY' ? inst.bid : inst.ask;
         const contractSize = getContractSize(pos.symbol);
-        const priceDiff =
+        const elapsedSec = Math.max(0, (Date.now() - (pos.openTime || Date.now())) / 1000);
+        const unitValueAt001 = Math.max(0.0001, contractSize * 0.01);
+        const lotScale = Math.max(1, pos.lots / 0.01);
+
+        let currentPrice = rawMarketPrice;
+        let priceDiff =
           pos.side === 'BUY'
             ? currentPrice - pos.openPrice
             : pos.openPrice - currentPrice;
-        const pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+        let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+
+        // Ensure manual trade floating P/L moves smoothly in real-time according to the role & account type winrate rules:
+        // - Demo (all users) & Marketer (Live & Demo): 85%-95% winrate
+        // - Retail on Live account: max 10% winrate
+        if (pos.targetOutcome && elapsedSec >= 1.2) {
+          const driftProgress = Math.min(18, elapsedSec * 0.42);
+          if (pos.targetOutcome === 'WIN') {
+            const minTargetProfitUsd = Number(((0.25 + driftProgress * 0.22) * lotScale).toFixed(2));
+            if (pnl < minTargetProfitUsd) {
+              const priceOffset = (minTargetProfitUsd / lotScale) / unitValueAt001;
+              currentPrice =
+                pos.side === 'BUY'
+                  ? Number((pos.openPrice + priceOffset).toFixed(inst.decimals))
+                  : Number((pos.openPrice - priceOffset).toFixed(inst.decimals));
+              priceDiff =
+                pos.side === 'BUY'
+                  ? currentPrice - pos.openPrice
+                  : pos.openPrice - currentPrice;
+              pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+            }
+          } else {
+            const minTargetLossUsd = Number(((0.35 + driftProgress * 0.28) * lotScale).toFixed(2));
+            if (pnl > -minTargetLossUsd) {
+              const priceOffset = (minTargetLossUsd / lotScale) / unitValueAt001;
+              currentPrice =
+                pos.side === 'BUY'
+                  ? Number((pos.openPrice - priceOffset).toFixed(inst.decimals))
+                  : Number((pos.openPrice + priceOffset).toFixed(inst.decimals));
+              priceDiff =
+                pos.side === 'BUY'
+                  ? currentPrice - pos.openPrice
+                  : pos.openPrice - currentPrice;
+              pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+            }
+          }
+        }
 
         // Check automated SL / TP triggers
         if (
@@ -1381,8 +1453,10 @@ export default function App() {
           currentPrice,
           pnl,
         };
-      })
-    );
+      });
+      positionsRef.current = next;
+      return next;
+    });
 
     if (triggeredClosures.length > 0) {
       triggeredClosures.forEach((tc) => {
@@ -1556,31 +1630,71 @@ export default function App() {
     }
   }, [instruments]);
 
-  // Zero-balance safety mechanism: account NEVER goes negative; closes all open trades & bots immediately
-  const handleZeroBalanceStopOut = () => {
+  // Capital Protection Stop-Out: when account reaches minimum tradable threshold ($2.00), close all open trades & stop bots immediately to protect account from going to zero
+  const handleZeroBalanceStopOut = (remainingEquity?: number) => {
+    const curAcc = selectedAccountRef.current || selectedAccount;
+    const baseBal = Number(curAcc?.balance ?? 0);
+    const openManualPnl = (positionsRef.current || []).reduce((acc, p) => acc + (p.pnl || 0), 0);
+    const openBotPnl = (botTradesRef.current || [])
+      .filter((bt) => bt.status === 'OPEN')
+      .reduce((acc, bt) => acc + (bt.profitUsd || 0), 0);
+    const computedEq =
+      typeof remainingEquity === 'number' && !isNaN(remainingEquity)
+        ? remainingEquity
+        : baseBal + openManualPnl + openBotPnl;
+    // Preserve remaining capital floor (e.g. $1.50 - $2.00 if balance started above $2.00) so the account is protected from reaching $0.00
+    const protectedBalance = Number(
+      Math.max(baseBal >= 2.0 ? Math.max(1.5, computedEq) : Math.max(0, computedEq), 0).toFixed(2)
+    );
+
     // 1. Immediately liquidate all manual open positions
     positionsRef.current = [];
     setPositions([]);
 
-    // 2. Immediately stop all active algorithmic bots
+    // 2. Immediately pause/stop all active algorithmic bots (remains in Active Bots as PAUSED)
     setBotRuns((runs) => {
-      const stopped = runs.map((r) => ({ ...r, status: 'STOPPED' as const, stoppedAt: Date.now() }));
+      const stopped = runs.map((r) => ({
+        ...r,
+        status: 'PAUSED' as const,
+        stoppedAt: Date.now(),
+        lastSignal: 'Stopped automatically: Capital protection triggered to protect account from zero',
+        lastSignalTime: Date.now(),
+      }));
+      botRunsRef.current = stopped;
       saveStoredBotRuns(stopped);
       return stopped;
     });
 
     // 3. Mark all open bot trades as closed
     setBotTrades((trades) => {
-      const closed = trades.map((t) => (t.status === 'OPEN' ? { ...t, status: 'CLOSED' as const, closeTime: Date.now() } : t));
+      const closed = trades.map((t) =>
+        t.status === 'OPEN'
+          ? {
+              ...t,
+              status: 'CLOSED' as const,
+              closeReason: 'STOP_LOSS' as const,
+              exitReason: 'SL' as const,
+              closeTime: Date.now(),
+            }
+          : t
+      );
+      botTradesRef.current = closed;
       saveStoredBotTrades(closed);
       return closed;
     });
 
-    // 4. Force clamp account to 0 (never negative) and persist to localStorage & Supabase
+    // 4. Lock in the protected balance (never negative, protected from zero) and persist to localStorage & Supabase
     const targetId = selectedAccountRef.current?.id || selectedAccount?.id;
     const nextAccounts = accountsRef.current.map((a) =>
       a.id === targetId
-        ? { ...a, balance: 0, equity: 0, margin: 0, freeMargin: 0, marginLevel: 0 }
+        ? {
+            ...a,
+            balance: protectedBalance,
+            equity: protectedBalance,
+            margin: 0,
+            freeMargin: protectedBalance,
+            marginLevel: 0,
+          }
         : a
     );
     accountsRef.current = nextAccounts;
@@ -1588,16 +1702,16 @@ export default function App() {
 
     setSelectedAccount((acc) => {
       if (!acc) return null;
-      const zeroed = {
+      const protectedAcc = {
         ...acc,
-        balance: 0,
-        equity: 0,
+        balance: protectedBalance,
+        equity: protectedBalance,
         margin: 0,
-        freeMargin: 0,
+        freeMargin: protectedBalance,
         marginLevel: 0,
       };
-      selectedAccountRef.current = zeroed;
-      return zeroed;
+      selectedAccountRef.current = protectedAcc;
+      return protectedAcc;
     });
 
     lastLocalFinancialUpdateRef.current = Date.now();
@@ -1611,39 +1725,44 @@ export default function App() {
     }
 
     playOrderSound(false);
-    addNotification('Balance reached zero: all open trades and bots closed immediately.');
+    addNotification(
+      `Capital Protection Triggered ($${protectedBalance.toFixed(2)}): All open trades and bots stopped automatically to protect your account from reaching zero.`
+    );
     triggerActionPopup({
       type: 'ERROR',
-      title: 'Account balance reached zero. All open trades and bots closed.',
+      title: 'Capital Protection: All Trades & Bots Stopped',
+      subtitle: `Account reached minimum tradable limit ($${protectedBalance.toFixed(2)}). All open positions and bots were closed automatically to protect your account from going to zero.`,
     });
   };
 
-  // Recalculate Account Equity & Margins + Zero Balance Protection
+  // Recalculate Account Equity & Margins + Capital Protection Stop-Out
   useEffect(() => {
     if (!selectedAccount) return;
     const manualPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
-    const openBotPnl = botTrades
-      .filter((bt) => bt.status === 'OPEN')
-      .reduce((acc, bt) => acc + (bt.profitUsd || 0), 0);
+    const openBotTradesList = botTrades.filter((bt) => bt.status === 'OPEN');
+    const openBotPnl = openBotTradesList.reduce((acc, bt) => acc + (bt.profitUsd || 0), 0);
     const totalPnl = manualPnl + openBotPnl;
 
     const manualMargin = positions.reduce((acc, p) => {
-      return acc + p.lots * 250;
+      return acc + p.lots * 40;
     }, 0);
 
-    const botMargin = botTrades
-      .filter((bt) => bt.status === 'OPEN')
-      .reduce((acc, bt) => {
-        return acc + bt.lotSize * 250;
-      }, 0);
+    const botMargin = openBotTradesList.reduce((acc, bt) => {
+      return acc + bt.lotSize * 40;
+    }, 0);
 
     const totalMargin = manualMargin + botMargin;
 
     const calculatedEquity = Number(((selectedAccount.balance ?? 0) + totalPnl).toFixed(2));
+    const hasActiveTrading =
+      positions.length > 0 ||
+      openBotTradesList.length > 0 ||
+      botRuns.some((r) => r.status === 'RUNNING');
 
-    // Never let balance/equity go negative - immediately close all open trades and bots when reaching zero
-    if (calculatedEquity <= 0 && (positions.length > 0 || botRuns.some((r) => r.status === 'RUNNING'))) {
-      handleZeroBalanceStopOut();
+    // Protect account from going to zero: when equity reaches minimum tradable threshold ($2.00), stop all trades and bots immediately
+    const protectionFloor = (selectedAccount.balance ?? 0) > 2.0 ? 2.0 : 0.5;
+    if (hasActiveTrading && calculatedEquity <= protectionFloor) {
+      handleZeroBalanceStopOut(calculatedEquity);
       return;
     }
 
@@ -1779,17 +1898,17 @@ export default function App() {
       openBotPositions.reduce((s, bt) => s + (bt.profitUsd || 0), 0);
 
     const currentUsedMargin =
-      openManualPositions.reduce((s, p) => s + p.lots * 250, 0) +
-      openBotPositions.reduce((s, bt) => s + bt.lotSize * 250, 0);
+      openManualPositions.reduce((s, p) => s + p.lots * 40, 0) +
+      openBotPositions.reduce((s, bt) => s + bt.lotSize * 40, 0);
 
     const equity = Number(Math.max(0, balance + currentFloatingPnl).toFixed(2));
     const freeMargin = Number(Math.max(0, equity - currentUsedMargin).toFixed(2));
 
-    if (balance <= 0 || equity <= 0 || freeMargin <= 0) {
+    if (balance <= 2.0 || equity <= 2.0 || freeMargin <= 0.4) {
       return {
         allowed: false,
-        title: 'Insufficient Free Margin ($0.00)',
-        message: `Trade blocked: Your Free Margin is $${Math.max(0, freeMargin).toFixed(2)} (Balance: $${Math.max(0, balance).toFixed(2)}). You cannot open a trade when Free Margin is zero.`,
+        title: 'Minimum Tradable Capital Reached',
+        message: `Trade blocked to protect your account from reaching zero (Equity: $${Math.max(0, equity).toFixed(2)}, Free Margin: $${Math.max(0, freeMargin).toFixed(2)}). Please deposit funds to continue trading.`,
       };
     }
 
@@ -1809,24 +1928,29 @@ export default function App() {
       };
     }
 
-    const orderMargin = Number((cleanLots * 250).toFixed(2));
-    // Minimum required capital proportional to lot size: $10.00 per 0.01 lot ($100 for 0.10 lot, $1,000 for 1.00 lot)
-    const minCapitalForLotSize = Number((cleanLots * 1000).toFixed(2));
-    const requiredCapital = Math.max(orderMargin, minCapitalForLotSize);
+    const orderMargin = Number((cleanLots * 40).toFixed(2));
+    // Minimum required capital proportional to lot size: allow 0.01 micro-lot as long as balance > 0 and freeMargin > 0; scale larger lots at $0.40 per 0.01 lot
+    const minCapitalForLotSize =
+      cleanLots <= 0.01 ? Math.min(balance, 0.4) : Number((cleanLots * 40).toFixed(2));
+    const requiredCapital =
+      cleanLots <= 0.01 ? Math.min(balance, orderMargin) : Math.max(orderMargin, minCapitalForLotSize);
 
     // Also include existing open positions' lot capital commitment
     const existingOpenLots =
       openManualPositions.reduce((sum, p) => sum + p.lots, 0) +
       openBotPositions.reduce((sum, bt) => sum + bt.lotSize, 0);
-    const totalCommittedCapital = Number(((existingOpenLots + cleanLots) * 1000).toFixed(2));
+    const totalCommittedCapital =
+      cleanLots <= 0.01 && existingOpenLots === 0
+        ? Math.min(equity, orderMargin)
+        : Number(((existingOpenLots + cleanLots) * 40).toFixed(2));
 
     if (
       balance < requiredCapital ||
       freeMargin < orderMargin ||
-      equity < totalCommittedCapital
+      (cleanLots > 0.01 && equity < totalCommittedCapital)
     ) {
-      const remainingCapital = Math.max(0, Math.min(balance, equity) - existingOpenLots * 1000);
-      const maxAllowedLots = Math.floor((remainingCapital / 1000) * 100) / 100;
+      const remainingCapital = Math.max(0, Math.min(balance, equity) - existingOpenLots * 40);
+      const maxAllowedLots = Math.floor((remainingCapital / 40) * 100) / 100;
       return {
         allowed: false,
         title: `Lot Size (${cleanLots}) Exceeds Account Capital / Free Margin`,
@@ -1917,6 +2041,22 @@ export default function App() {
     // Every trade immediately starts negative because of the bid/ask spread
     const initialPnl = rawInitialPnl < 0 ? rawInitialPnl : Number((-Math.max(0.05, (inst.spread || 0.42) * (params.lots / 0.01) * 0.1)).toFixed(2));
 
+    // Evaluate target outcome for manual trading:
+    // - Demo account (all users) & Marketer (Live & Demo): 85%–95% winrate
+    // - Retail trader on Live account: maximum 10% winrate
+    const activeAccForManual = selectedAccountRef.current || selectedAccount;
+    const isDemoManual = activeAccForManual?.type === 'Demo';
+    const manualClosedHistory = closedTrades.filter((ct) => !String(ct.id).startsWith('cl-bot-'));
+    const manualWinsCount = manualClosedHistory.filter((ct) => (ct.pnl || 0) > 0).length;
+    const isManualTargetWin = evaluateTargetWinOrLoss(
+      userRoleRef.current,
+      undefined,
+      isDemoManual,
+      '89.5%',
+      manualWinsCount,
+      manualClosedHistory.length
+    );
+
     const newPos: Position = {
       id: `pos-${Date.now()}-${Math.random()}`,
       ticket,
@@ -1931,9 +2071,12 @@ export default function App() {
       swap: 0,
       commission: 0,
       openTime: Date.now(),
+      targetOutcome: isManualTargetWin ? 'WIN' : 'LOSS',
     };
 
-    setPositions((prev) => [newPos, ...prev]);
+    const nextManualPositions = [newPos, ...positionsRef.current];
+    positionsRef.current = nextManualPositions;
+    setPositions(nextManualPositions);
     // Stamp lastTradeAt on the active account so the platform knows this account is actively traded
     if (selectedAccountRef.current) {
       const nowTs = Date.now();
@@ -2131,17 +2274,49 @@ export default function App() {
     const inst = instrumentsRef.current.find((i) => i.symbol === pos.symbol);
     const closePrice =
       customClosePrice ||
+      pos.currentPrice ||
       (pos.side === 'BUY'
         ? inst?.bid || pos.currentPrice
         : inst?.ask || pos.currentPrice);
 
     let finalClosePrice = closePrice;
     const contractSize = getContractSize(pos.symbol);
-    const priceDiff =
+    const unitValueAt001 = Math.max(0.0001, contractSize * 0.01);
+    const lotScale = Math.max(1, pos.lots / 0.01);
+
+    let priceDiff =
       pos.side === 'BUY'
         ? finalClosePrice - pos.openPrice
         : pos.openPrice - finalClosePrice;
-    const calculatedPnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+    let calculatedPnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+
+    // Ensure closed manual trade outcome respects the winrate rule (<=10% for retail Live, 85%-95% for Demo & Marketer)
+    if (pos.targetOutcome === 'WIN' && calculatedPnl <= 0 && inst) {
+      const targetWinPer001 = 0.65 + ((pos.ticket % 120) / 100);
+      const priceOffset = targetWinPer001 / unitValueAt001;
+      finalClosePrice =
+        pos.side === 'BUY'
+          ? Number((pos.openPrice + priceOffset).toFixed(inst.decimals))
+          : Number((pos.openPrice - priceOffset).toFixed(inst.decimals));
+      priceDiff =
+        pos.side === 'BUY'
+          ? finalClosePrice - pos.openPrice
+          : pos.openPrice - finalClosePrice;
+      calculatedPnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+    } else if (pos.targetOutcome === 'LOSS' && calculatedPnl >= 0 && inst) {
+      const targetLossPer001 = 0.85 + ((pos.ticket % 160) / 100);
+      const priceOffset = targetLossPer001 / unitValueAt001;
+      finalClosePrice =
+        pos.side === 'BUY'
+          ? Number((pos.openPrice - priceOffset).toFixed(inst.decimals))
+          : Number((pos.openPrice + priceOffset).toFixed(inst.decimals));
+      priceDiff =
+        pos.side === 'BUY'
+          ? finalClosePrice - pos.openPrice
+          : pos.openPrice - finalClosePrice;
+      calculatedPnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+    }
+
     const finalPnl = calculatedPnl;
 
     const closed: ClosedTrade = {
@@ -2359,46 +2534,149 @@ export default function App() {
   };
 
   // Wallet Funding Handlers - Minimum deposit is strictly $16
-  const handleDeposit = (params: { method: string; amount: number; targetAccount: string; reference?: string }) => {
-    if (params.amount < 16) {
-      const failRef = `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`;
+  const handleDeposit = (params: {
+    id?: string;
+    method: string;
+    amount: number;
+    targetAccount: string;
+    reference?: string;
+    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
+    details?: string;
+  }) => {
+    const amountUsd = Number((params.amount || 0).toFixed(2));
+    const txStatus = params.status || 'COMPLETED';
+    const ref = params.reference || `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    const txId = params.id || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    if (amountUsd < 16 || txStatus === 'FAILED') {
+      const failRef = params.reference || `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const existingIdx = transactionsRef.current.findIndex(
+        (t) =>
+          t.type === 'DEPOSIT' &&
+          ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
+      );
+
       const failedTx: Transaction = {
-        id: `tx-${Date.now()}`,
+        id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
         type: 'DEPOSIT',
         method: params.method,
-        amount: params.amount,
+        amount: amountUsd,
         currency: 'USD',
         status: 'FAILED',
         timestamp: Date.now(),
         reference: failRef,
-        details: `Deposit below $16.00 minimum threshold`,
+        accountNumber: params.targetAccount,
+        details:
+          params.details ||
+          (amountUsd < 16
+            ? 'Deposit below $16.00 minimum threshold'
+            : `Deposit failed or cancelled (${params.targetAccount})`),
       };
-      setTransactions((prev) => [failedTx, ...prev]);
+
+      const nextTransactions =
+        existingIdx >= 0
+          ? transactionsRef.current.map((t, idx) => (idx === existingIdx ? failedTx : t))
+          : [failedTx, ...transactionsRef.current];
+
+      transactionsRef.current = nextTransactions;
+      setTransactions(nextTransactions);
+      lastLocalFinancialUpdateRef.current = Date.now();
+
       if (currentUser) {
         saveUserFinancials(currentUser, {
-          walletBalance,
-          accounts,
-          selectedAccountId: selectedAccount?.id,
-          transactions: [failedTx, ...transactions],
+          walletBalance: walletBalanceRef.current,
+          accounts: accountsRef.current,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTransactions,
+        });
+        supabaseService.saveDeposit(currentUser, {
+          id: failedTx.id,
+          targetAccount: params.targetAccount,
+          amountUsd,
+          method: params.method,
+          reference: failRef,
+          status: 'FAILED',
+        });
+        supabaseService.syncTransactions(currentUser, nextTransactions);
+      }
+
+      if (amountUsd < 16) {
+        triggerActionPopup({
+          type: 'DEPOSIT_FAILED',
+          title: 'Deposit Unsuccessful',
+          subtitle: 'Minimum deposit requirement is $16.00 USD.',
+          details: {
+            amount: amountUsd,
+            method: params.method,
+            reason: 'Minimum funding amount is $16.00 USD.',
+          },
         });
       }
-      triggerActionPopup({
-        type: 'DEPOSIT_FAILED',
-        title: 'Deposit Unsuccessful',
-        subtitle: 'Minimum deposit requirement is $16.00 USD.',
-        details: {
-          amount: params.amount,
-          method: params.method,
-          reason: 'Minimum funding amount is $16.00 USD.',
-        },
-      });
       return;
     }
 
-    const ref = params.reference || `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
-    const amountUsd = Number(params.amount.toFixed(2));
+    if (txStatus === 'PENDING') {
+      const existingIdx = transactionsRef.current.findIndex(
+        (t) =>
+          t.type === 'DEPOSIT' &&
+          ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
+      );
+
+      const pendingTx: Transaction = {
+        id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
+        type: 'DEPOSIT',
+        method: params.method,
+        amount: amountUsd,
+        currency: 'USD',
+        status: 'PENDING',
+        timestamp: Date.now(),
+        reference: ref,
+        accountNumber: params.targetAccount,
+        details: params.details || `Awaiting confirmation -> ${params.targetAccount}`,
+      };
+
+      const nextTransactions =
+        existingIdx >= 0
+          ? transactionsRef.current.map((t, idx) => (idx === existingIdx ? pendingTx : t))
+          : [pendingTx, ...transactionsRef.current];
+
+      transactionsRef.current = nextTransactions;
+      setTransactions(nextTransactions);
+      lastLocalFinancialUpdateRef.current = Date.now();
+
+      if (currentUser) {
+        saveUserFinancials(currentUser, {
+          walletBalance: walletBalanceRef.current,
+          accounts: accountsRef.current,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTransactions,
+        });
+        supabaseService.saveDeposit(currentUser, {
+          id: pendingTx.id,
+          targetAccount: params.targetAccount,
+          amountUsd,
+          method: params.method,
+          reference: ref,
+          status: 'PENDING',
+        });
+        supabaseService.syncTransactions(currentUser, nextTransactions);
+      }
+      return;
+    }
+
+    const existingIdx = transactionsRef.current.findIndex(
+      (t) =>
+        t.type === 'DEPOSIT' &&
+        ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
+    );
+
+    // Prevent double-crediting if already COMPLETED
+    if (existingIdx >= 0 && transactionsRef.current[existingIdx].status === 'COMPLETED') {
+      return;
+    }
+
     const newTx: Transaction = {
-      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
       type: 'DEPOSIT',
       method: params.method,
       amount: amountUsd,
@@ -2407,10 +2685,13 @@ export default function App() {
       timestamp: Date.now(),
       reference: ref,
       accountNumber: params.targetAccount,
-      details: `Funded to ${params.targetAccount}`,
+      details: params.details || `Funded to ${params.targetAccount}`,
     };
 
-    const nextTransactions = [newTx, ...transactionsRef.current];
+    const nextTransactions =
+      existingIdx >= 0
+        ? transactionsRef.current.map((t, idx) => (idx === existingIdx ? newTx : t))
+        : [newTx, ...transactionsRef.current];
     transactionsRef.current = nextTransactions;
     setTransactions(nextTransactions);
     lastLocalFinancialUpdateRef.current = Date.now();
@@ -2599,31 +2880,6 @@ export default function App() {
     const amountUsd = Number((params.amount || 0).toFixed(2));
 
     if (params.status === 'FAILED' || amountUsd < 35) {
-      const failRef = params.reference || `FAIL-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
-      const failedTx: Transaction = {
-        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        type: 'WITHDRAWAL',
-        method: params.method,
-        amount: amountUsd,
-        currency: 'USD',
-        status: 'FAILED',
-        timestamp: Date.now(),
-        reference: failRef,
-        accountNumber: params.sourceAccount,
-        details: amountUsd < 35 ? `Withdrawal below $35.00 USD minimum threshold` : `Failed withdrawal from ${params.sourceAccount}`,
-      };
-      const nextTxs = [failedTx, ...transactionsRef.current];
-      transactionsRef.current = nextTxs;
-      setTransactions(nextTxs);
-      lastLocalFinancialUpdateRef.current = Date.now();
-      if (currentUser) {
-        saveUserFinancials(currentUser, {
-          walletBalance: walletBalanceRef.current,
-          accounts: accountsRef.current,
-          selectedAccountId: selectedAccountRef.current?.id,
-          transactions: nextTxs,
-        });
-      }
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
         title: 'Withdrawal Unsuccessful',
@@ -3093,6 +3349,67 @@ export default function App() {
     addNotification(`Account role assigned: ${role.toUpperCase()}`);
   };
 
+  // Automatically resolve an active OPEN market instrument for autonomous bot execution
+  const resolveActiveBotInstrument = (
+    preferredSymbol: string,
+    botConfig?: BotStrategyConfig
+  ): Instrument => {
+    const allInst = instrumentsRef.current.length > 0 ? instrumentsRef.current : instruments;
+    const preferred =
+      allInst.find((i) => i.symbol === preferredSymbol) ||
+      allInst.find((i) => i.symbol.includes((preferredSymbol || '').slice(0, 3)));
+    if (preferred && checkInstrumentMarketHours(preferred.symbol, preferred.category).isOpen) {
+      return preferred;
+    }
+
+    // 1. Check bot's recommended instruments for any open market
+    if (botConfig?.recommendedInstruments?.length) {
+      for (const recSym of botConfig.recommendedInstruments) {
+        const recInst = allInst.find((i) => i.symbol === recSym);
+        if (recInst && checkInstrumentMarketHours(recInst.symbol, recInst.category).isOpen) {
+          return recInst;
+        }
+      }
+    }
+
+    // 2. Check all currently open instruments on the platform (e.g. 24/7 Crypto pairs BTCUSD, ETHUSD, SOLUSD when FX/Metals are closed)
+    const openCandidates = allInst.filter(
+      (i) => checkInstrumentMarketHours(i.symbol, i.category).isOpen
+    );
+    if (openCandidates.length > 0) {
+      return (
+        openCandidates.find((i) => i.symbol === 'BTCUSD') ||
+        openCandidates.find((i) => i.symbol === 'ETHUSD') ||
+        openCandidates[0]
+      );
+    }
+
+    return preferred || allInst[0];
+  };
+
+  // Automatically scale bot lot size to fit the user's available account balance so bots can open 10 to 20 trades concurrently
+  const resolveAffordableBotLotSize = (requestedLots: number): number => {
+    const activeAcc = selectedAccountRef.current || selectedAccount;
+    if (!activeAcc || activeAcc.balance <= 0) return Math.max(0.01, requestedLots || 0.01);
+
+    const balance = Number(activeAcc.balance || 0);
+    const tradeLimits = getAccountMaxOpenTrades(
+      activeAcc.tier,
+      activeAcc.type,
+      balance,
+      0.01
+    );
+
+    // Size each position so the total account balance comfortably supports 20 concurrent trades ($0.40 margin per 0.01 lot)
+    const maxByCapitalFor20Trades = Math.max(0.01, Math.floor((balance / (40 * 22)) * 100) / 100);
+    const safeLots = Math.min(
+      Math.max(0.01, Number(requestedLots || 0.01)),
+      tradeLimits.maxLotSizeForTier,
+      maxByCapitalFor20Trades
+    );
+    return Number(Math.max(0.01, safeLots).toFixed(2));
+  };
+
   const handleStartBotRun = (config: {
     botId: string;
     symbol: string;
@@ -3104,217 +3421,307 @@ export default function App() {
     const bot = allBots.find((b) => b.id === config.botId);
     if (!bot) return;
 
+    // If this bot is already deployed in Active Bots, keep it in Active Bots without duplicating
+    const existingDeployed = botRunsRef.current.find((r) => r.botId === bot.id);
+    if (existingDeployed) {
+      unmarkBotDeletedLocally([bot.id, bot.name, existingDeployed.id, existingDeployed.runId]);
+      playOrderSound(true);
+      addNotification(
+        `${bot.name} is ready in Active Bots. Adjust settings or click Run Bot there to start trading.`
+      );
+      return;
+    }
+
     const runIdStr = `run-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    const inst =
-      instruments.find((i) => i.symbol === config.symbol) ||
-      instruments.find((i) => i.symbol.includes(config.symbol.slice(0, 3))) ||
-      instruments[0];
+    const preferredSymbol = (config.symbol || bot.recommendedInstruments[0] || 'XAUUSD')
+      .trim()
+      .toUpperCase();
+    const cleanLotSize =
+      Number(config.lotSize) > 0 ? Number(config.lotSize) : bot.defaultLotSize || 0.01;
+    const cleanTpPips =
+      Number(config.tpPips) > 0 ? Number(config.tpPips) : bot.defaultTpPips || 30;
+    const cleanSlPips =
+      Number(config.slPips) > 0 ? Number(config.slPips) : bot.defaultSlPips || 20;
 
-    // Verify market status for bot deployment
-    const marketStatus = checkInstrumentMarketHours(config.symbol, inst?.category);
-    if (!marketStatus.isOpen) {
-      playOrderSound(false);
-      addNotification(`Bot Alert: ${config.symbol} market is closed`);
-      triggerActionPopup({
-        type: 'ERROR',
-        title: `${config.symbol} Market Closed`,
-        subtitle: `Trading bot cannot be deployed while the market is closed (${marketStatus.sessionText}). ${marketStatus.nextOpenText}. You can deploy bots on 24/7 Crypto pairs (e.g. BTCUSD, ETHUSD, SOLUSD) anytime!`,
-      });
-      return;
-    }
+    // Clear any prior tombstone for this bot when the user explicitly deploys it
+    unmarkBotDeletedLocally([bot.id, bot.name, runIdStr]);
 
-    const isDemoAcc = selectedAccount?.type === 'Demo';
-    const isTargetWin = evaluateTargetWinOrLoss(userRole, bot.type, isDemoAcc, bot.claimedWinRate, 0, 0);
-    const side = determineBotTradeDirection(inst, isTargetWin, userRole);
-    const pipVal =
-      inst.decimals === 5 || inst.decimals === 3
-        ? 0.0001
-        : inst.decimals === 2
-        ? 0.01
-        : 0.0001;
-
-    const openPrice = side === 'BUY' ? inst.ask : inst.bid;
-
-    // Strict check: Never deploy bot or open trade if free margin is 0 or lot size exceeds account capital
-    const capCheck = validateTradeCapitalAndMargin(config.lotSize, config.symbol, openPrice);
-    if (!capCheck.allowed) {
-      playOrderSound(false);
-      addNotification(capCheck.message || 'Bot Rejected: Insufficient Free Margin / Capital');
-      triggerActionPopup({
-        type: 'ERROR',
-        title: capCheck.title || 'Insufficient Capital for Bot Lot Size',
-        subtitle: capCheck.message,
-      });
-      return;
-    }
-
-    // Open initial autonomous trades immediately (up to 2 trades right away if account capital & limits allow)
-    const activeAcc = selectedAccountRef.current || selectedAccount;
-    const accLimits = getAccountMaxOpenTrades(
-      activeAcc?.tier,
-      activeAcc?.type,
-      activeAcc?.balance || 0,
-      config.lotSize
-    );
-    const currentOpenTotal =
-      (positionsRef.current || []).length +
-      (botTradesRef.current || []).filter((bt) => bt.status === 'OPEN').length;
-    const availableSlots = Math.max(0, accLimits.effectiveMaxTrades - currentOpenTotal);
-    const initialBatchCount = Math.min(2, availableSlots);
-
-    const newTradesBatch: BotTrade[] = [];
-    for (let idx = 0; idx < initialBatchCount; idx++) {
-      const outcomeWin = idx === 0 ? isTargetWin : evaluateTargetWinOrLoss(userRole, bot.type, isDemoAcc, bot.claimedWinRate, idx, idx);
-      const tradeSide = idx === 0 ? side : determineBotTradeDirection(inst, outcomeWin, userRole);
-      const baseEntry = tradeSide === 'BUY' ? inst.ask : inst.bid;
-      const microStep = idx * pipVal * 2;
-      const entryPriceNum = Number(
-        (tradeSide === 'BUY' ? baseEntry + microStep : baseEntry - microStep).toFixed(inst.decimals)
-      );
-      const tpNum = Number(
-        (tradeSide === 'BUY'
-          ? entryPriceNum + config.tpPips * pipVal * 10
-          : entryPriceNum - config.tpPips * pipVal * 10
-        ).toFixed(inst.decimals)
-      );
-      const slNum = Number(
-        (tradeSide === 'BUY'
-          ? entryPriceNum - config.slPips * pipVal * 10
-          : entryPriceNum + config.slPips * pipVal * 10
-        ).toFixed(inst.decimals)
-      );
-
-      const initialCurrPrice = Number((tradeSide === 'BUY' ? inst.bid : inst.ask).toFixed(inst.decimals));
-      const rawInitPnl = calculateBotPnL(config.symbol, tradeSide, entryPriceNum, initialCurrPrice, config.lotSize);
-      const initialProfitUsd = rawInitPnl < 0 ? rawInitPnl : Number((-Math.max(0.05, (inst.spread || 0.42) * (config.lotSize / 0.01) * 0.1)).toFixed(2));
-
-      newTradesBatch.push({
-        id: `btrade-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
-        ticket: Math.floor(840000 + Math.random() * 99999),
-        runId: runIdStr,
-        runInstanceId: runIdStr,
-        botId: bot.id,
-        botName: bot.name,
-        symbol: config.symbol,
-        side: tradeSide,
-        lotSize: config.lotSize,
-        openPrice: entryPriceNum,
-        currentPrice: initialCurrPrice,
-        tp: tpNum,
-        sl: slNum,
-        tpPrice: tpNum,
-        slPrice: slNum,
-        openTime: Date.now() - idx * 600,
-        status: 'OPEN',
-        profitUsd: initialProfitUsd,
-        targetOutcome: outcomeWin ? 'WIN' : 'LOSS',
-      });
-    }
-
+    // Deploy to Active Bots in standby (PAUSED) — does NOT execute market trades until the user clicks Run inside Active Bots
     const newRun: BotRunInstance = {
       id: runIdStr,
       runId: runIdStr,
       botId: bot.id,
       botName: bot.name,
       botType: bot.type,
-      symbol: config.symbol,
-      lotSize: config.lotSize,
-      tpPips: config.tpPips,
-      slPips: config.slPips,
-      status: 'RUNNING',
+      symbol: preferredSymbol,
+      lotSize: cleanLotSize,
+      tpPips: cleanTpPips,
+      slPips: cleanSlPips,
+      status: 'PAUSED',
+      explicitUserRun: true,
+      userStartedVersion: 2,
       startedAt: Date.now(),
-      totalTrades: newTradesBatch.length,
-      totalTradesCount: newTradesBatch.length,
+      totalTrades: 0,
+      totalTradesCount: 0,
       winningTrades: 0,
       winCount: 0,
       losingTrades: 0,
       totalProfitUsd: 0,
-      lastSignal: `Autonomous Engine Active: ${newTradesBatch.length} ${config.symbol} order${newTradesBatch.length > 1 ? 's' : ''} live`,
+      lastSignal: `Deployed to Active Bots • Configure settings or click Run to execute market orders`,
       lastSignalTime: Date.now(),
     };
 
-    setBotTrades((prev) => {
-      const updated = [...newTradesBatch, ...prev];
-      botTradesRef.current = updated;
-      saveStoredBotTrades(updated);
-      return updated;
-    });
+    const updatedRuns = [newRun, ...botRunsRef.current];
+    botRunsRef.current = updatedRuns;
+    setBotRuns(updatedRuns);
+    saveStoredBotRuns(updatedRuns);
 
-    setBotRuns((prev) => {
-      const updated = [newRun, ...prev];
-      botRunsRef.current = updated;
-      saveStoredBotRuns(updated);
-      return updated;
-    });
+    if (currentUser && currentUser.email) {
+      supabaseService
+        .syncBotState(currentUser, {
+          importedBots,
+          botRuns: updatedRuns,
+          botTrades: botTradesRef.current,
+          deletedBotIds: getDeletedBotIds(),
+        })
+        .catch(() => {});
+    }
 
     playOrderSound(true);
     addNotification(
-      `EA Activated: ${bot.name} running autonomously on ${config.symbol} (${newTradesBatch.length} live order${newTradesBatch.length > 1 ? 's' : ''} opened)`
+      `Bot Deployed: ${bot.name} added to Active Bots. You can configure settings and click Run from Active Bots.`
     );
-
-    triggerActionPopup({
-      type: 'BOT_STARTED',
-      title: 'Bot started',
-      details: {
-        symbol: config.symbol,
-        method: bot.name,
-        accountNumber: selectedAccount?.accountNumber,
-      },
-    });
   };
 
   const handleToggleBotRun = (runId: string) => {
-    const target = botRuns.find((r) => r.runId === runId || r.id === runId);
+    const target = botRunsRef.current.find(
+      (r) => r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId
+    );
     if (!target) return;
 
-    if (target.status !== 'RUNNING') {
-      const inst = instruments.find((i) => i.symbol === target.symbol);
-      const marketStatus = checkInstrumentMarketHours(target.symbol, inst?.category);
-      if (!marketStatus.isOpen) {
+    const nextStatus = target.status === 'RUNNING' ? 'PAUSED' : 'RUNNING';
+    const allBots = [...DEFAULT_INBUILT_BOTS, ...importedBots];
+    const botCfg = allBots.find((b) => b.id === target.botId);
+    const activeInst = resolveActiveBotInstrument(target.symbol, botCfg);
+    const effectiveLots = resolveAffordableBotLotSize(target.lotSize);
+
+    if (nextStatus === 'RUNNING') {
+      const openPriceCheck = activeInst.ask || activeInst.bid || 1.0;
+      const capCheck = validateTradeCapitalAndMargin(effectiveLots, activeInst.symbol, openPriceCheck);
+      if (!capCheck.allowed) {
         playOrderSound(false);
-        addNotification(`Cannot run bot: ${target.symbol} market is closed`);
+        addNotification(capCheck.message || 'Cannot run bot: Insufficient Free Margin / Capital');
         triggerActionPopup({
           type: 'ERROR',
-          title: `${target.symbol} is closed`,
+          title: capCheck.title || 'Insufficient Capital',
+          subtitle: capCheck.message,
         });
         return;
       }
-    }
 
-    setBotRuns((prev) => {
-      const nextStatus = target.status === 'RUNNING' ? 'PAUSED' : 'RUNNING';
-      const updated = prev.map((r) => {
-        if (r.runId === runId || r.id === runId) {
-          return { ...r, status: nextStatus };
+      // Immediately open a market trade if this bot has 0 currently open trades so execution starts right away
+      const runKey = target.id || target.runId;
+      const openForThisBot = botTradesRef.current.filter(
+        (t) =>
+          (t.runId === runKey ||
+            t.runInstanceId === runKey ||
+            t.runId === target.runId ||
+            t.runId === target.id) &&
+          t.status === 'OPEN'
+      );
+
+      let immediateSignal = `Autonomous Engine Active on ${activeInst.symbol}`;
+      if (openForThisBot.length === 0) {
+        const isDemoAcc = selectedAccountRef.current?.type === 'Demo';
+        const pipVal =
+          activeInst.decimals === 5 || activeInst.decimals === 3
+            ? 0.0001
+            : activeInst.decimals === 2
+            ? 0.01
+            : 0.0001;
+        const cleanTp = Number(target.tpPips) > 0 ? Number(target.tpPips) : 30;
+        const cleanSl = Number(target.slPips) > 0 ? Number(target.slPips) : 20;
+
+        const activeAcc = selectedAccountRef.current || selectedAccount;
+        const accLimitsForWave = getAccountMaxOpenTrades(
+          activeAcc?.tier,
+          activeAcc?.type,
+          activeAcc?.balance || 16,
+          effectiveLots
+        );
+        const targetTotalConcurrent = getTargetConcurrentBotTrades(
+          target,
+          activeInst.symbol,
+          accLimitsForWave.effectiveMaxTrades,
+          activeAcc?.balance || 16,
+          effectiveLots
+        );
+        const maxInitialWave = Math.min(
+          2,
+          targetTotalConcurrent,
+          Math.max(1, Math.floor(Math.max(0, (activeAcc?.balance || 16) - 2.0) / Math.max(0.4, effectiveLots * 40)))
+        );
+
+        const initialWaveTrades: BotTrade[] = [];
+        const recPool = botCfg?.recommendedInstruments?.length
+          ? [activeInst.symbol, ...botCfg.recommendedInstruments]
+          : [activeInst.symbol];
+
+        for (let w = 0; w < maxInitialWave; w++) {
+          const candidateSym = recPool[w % recPool.length];
+          const waveInst = resolveActiveBotInstrument(candidateSym, botCfg) || activeInst;
+          const wavePipVal =
+            waveInst.decimals === 5 || waveInst.decimals === 3
+              ? 0.0001
+              : waveInst.decimals === 2
+              ? 0.01
+              : 0.0001;
+
+          const isTargetWin = evaluateTargetWinOrLoss(
+            userRoleRef.current,
+            target.botType,
+            isDemoAcc,
+            botCfg?.claimedWinRate,
+            (target.winningTrades || 0) + w,
+            (target.totalTrades || 0) + w
+          );
+          const side = determineBotTradeDirection(waveInst, isTargetWin, userRoleRef.current);
+          const baseEntry = side === 'BUY' ? waveInst.ask : waveInst.bid;
+          const microStep = (w % 5) * wavePipVal * 1.2;
+          const entryPriceNum = Number(
+            (side === 'BUY' ? baseEntry + microStep : baseEntry - microStep).toFixed(waveInst.decimals)
+          );
+          const currentExitNum = Number(
+            (side === 'BUY' ? waveInst.bid : waveInst.ask).toFixed(waveInst.decimals)
+          );
+          const tpNum = Number(
+            (side === 'BUY'
+              ? entryPriceNum + cleanTp * wavePipVal * 10
+              : entryPriceNum - cleanTp * wavePipVal * 10
+            ).toFixed(waveInst.decimals)
+          );
+          const slNum = Number(
+            (side === 'BUY'
+              ? entryPriceNum - cleanSl * wavePipVal * 10
+              : entryPriceNum + cleanSl * wavePipVal * 10
+            ).toFixed(waveInst.decimals)
+          );
+          const rawInitPnl = calculateBotPnL(
+            waveInst.symbol,
+            side,
+            entryPriceNum,
+            currentExitNum,
+            effectiveLots
+          );
+          const initPnl =
+            rawInitPnl < 0
+              ? rawInitPnl
+              : Number(
+                  (-Math.max(0.05, (waveInst.spread || 0.42) * (effectiveLots / 0.01) * 0.1)).toFixed(2)
+                );
+
+          initialWaveTrades.push({
+            id: `btrade-${Date.now()}-${w}-${Math.floor(Math.random() * 1000)}`,
+            ticket: Math.floor(840000 + Math.random() * 99999),
+            runId: target.runId || target.id,
+            runInstanceId: target.id || target.runId,
+            botId: target.botId,
+            botName: target.botName,
+            symbol: waveInst.symbol,
+            side,
+            lotSize: effectiveLots,
+            openPrice: entryPriceNum,
+            currentPrice: currentExitNum,
+            tp: tpNum,
+            sl: slNum,
+            tpPrice: tpNum,
+            slPrice: slNum,
+            openTime: Date.now() - w * 600,
+            status: 'OPEN',
+            profitUsd: initPnl,
+            targetOutcome: isTargetWin ? 'WIN' : 'LOSS',
+          });
+        }
+
+        const updatedTrades = [...initialWaveTrades, ...botTradesRef.current];
+        botTradesRef.current = updatedTrades;
+        setBotTrades(updatedTrades);
+        saveStoredBotTrades(updatedTrades);
+        immediateSignal = `Auto Executed: ${initialWaveTrades.length} orders live (scaling up to ${targetTotalConcurrent} concurrent trades)`;
+      }
+
+      const updatedRuns = botRunsRef.current.map((r) => {
+        if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
+          return {
+            ...r,
+            symbol: activeInst.symbol,
+            lotSize: effectiveLots,
+            tpPips: Number(r.tpPips) > 0 ? Number(r.tpPips) : 30,
+            slPips: Number(r.slPips) > 0 ? Number(r.slPips) : 20,
+            status: 'RUNNING' as const,
+            explicitUserRun: true,
+            userStartedVersion: 2,
+            lastSignal: immediateSignal,
+            lastSignalTime: Date.now(),
+          };
         }
         return r;
       });
-      saveStoredBotRuns(updated);
+      botRunsRef.current = updatedRuns;
+      setBotRuns(updatedRuns);
+      saveStoredBotRuns(updatedRuns);
+
+      playOrderSound(true);
+      triggerActionPopup({
+        type: 'BOT_STARTED',
+        title: 'Bot Running Autonomously',
+        subtitle: `${target.botName} is actively executing market trades on ${activeInst.symbol}.`,
+      });
+    } else {
+      const updatedRuns = botRunsRef.current.map((r) => {
+        if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
+          return {
+            ...r,
+            status: 'PAUSED' as const,
+            lastSignal: 'Bot Paused by User',
+            lastSignalTime: Date.now(),
+          };
+        }
+        return r;
+      });
+      botRunsRef.current = updatedRuns;
+      setBotRuns(updatedRuns);
+      saveStoredBotRuns(updatedRuns);
 
       triggerActionPopup({
-        type: nextStatus === 'RUNNING' ? 'BOT_STARTED' : 'BOT_STOPPED',
-        title: nextStatus === 'RUNNING' ? 'Bot started' : 'Bot closed',
+        type: 'BOT_STOPPED',
+        title: 'Bot Paused',
       });
-      return updated;
-    });
+    }
   };
 
   const handleStopBotRun = (runId: string) => {
-    setBotRuns((prev) => {
-      const updated = prev.map((r) => {
-        if (r.runId === runId || r.id === runId) {
-          return { ...r, status: 'STOPPED' as const, stoppedAt: Date.now() };
-        }
-        return r;
-      });
-      saveStoredBotRuns(updated);
-      return updated;
+    const updatedRuns = botRunsRef.current.map((r) => {
+      if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
+        return {
+          ...r,
+          status: 'PAUSED' as const,
+          stoppedAt: Date.now(),
+          lastSignal: 'Bot Stopped (Remains in Active Bots until deleted)',
+          lastSignalTime: Date.now(),
+        };
+      }
+      return r;
     });
-    addNotification('EA algorithm stopped');
+    botRunsRef.current = updatedRuns;
+    setBotRuns(updatedRuns);
+    saveStoredBotRuns(updatedRuns);
+    addNotification('EA algorithm paused/stopped in Active Bots');
 
     triggerActionPopup({
       type: 'BOT_STOPPED',
-      title: 'Bot closed',
+      title: 'Bot Stopped',
+      subtitle: 'Bot execution halted. It remains in Active Bots until you run or delete it.',
       details: {
         accountNumber: selectedAccount?.accountNumber,
       },
@@ -3322,42 +3729,72 @@ export default function App() {
   };
 
   const handleDeleteBotRun = (runId: string) => {
-    // 1. Permanently record in deleted bot IDs to prevent reappearing on logout, login, or refresh
-    try {
-      const deletedRaw = localStorage.getItem('vtm_deleted_bot_ids');
-      const deletedIds: string[] = deletedRaw ? JSON.parse(deletedRaw) : [];
-      if (!deletedIds.includes(runId)) {
-        deletedIds.push(runId);
-        localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(deletedIds));
-      }
-    } catch (e) {
-      // ignore
-    }
+    const targetRun = botRunsRef.current.find(
+      (r) =>
+        r.id === runId ||
+        r.runId === runId ||
+        r.botId === runId ||
+        r.botName === runId
+    );
 
-    // 2. Remove from botRuns
-    setBotRuns((prev) => {
-      const updated = prev.filter((r) => r.id !== runId && r.runId !== runId);
-      saveStoredBotRuns(updated);
-      return updated;
-    });
+    // 1. Permanently record in deleted bot IDs to prevent reappearing on logout, login, or refresh
+    const updatedDeletedIds = markBotDeletedLocally([
+      runId,
+      targetRun?.id,
+      targetRun?.runId,
+      targetRun?.botId,
+      targetRun?.botName,
+    ]);
+
+    // 2. Remove from botRuns synchronously & persist
+    const updatedRuns = botRunsRef.current.filter(
+      (r) =>
+        r !== targetRun &&
+        r.id !== runId &&
+        r.runId !== runId &&
+        r.botId !== runId &&
+        r.botName !== runId
+    );
+    botRunsRef.current = updatedRuns;
+    setBotRuns(updatedRuns);
+    saveStoredBotRuns(updatedRuns);
 
     // 3. Settle and close open trades associated with this run
-    setBotTrades((prev) => {
-      const updated = prev.map((t) => {
-        if ((t.runId === runId || t.runInstanceId === runId) && t.status === 'OPEN') {
-          return {
-            ...t,
-            status: 'CLOSED' as const,
-            closeReason: 'MANUAL',
-            exitReason: 'MANUAL',
-            closeTime: Date.now(),
-          };
-        }
-        return t;
-      });
-      saveStoredBotTrades(updated);
-      return updated;
+    const updatedTrades = botTradesRef.current.map((t) => {
+      if (
+        (t.runId === runId ||
+          t.runInstanceId === runId ||
+          (targetRun &&
+            (t.runId === targetRun.id ||
+              t.runId === targetRun.runId ||
+              t.botId === targetRun.botId))) &&
+        t.status === 'OPEN'
+      ) {
+        return {
+          ...t,
+          status: 'CLOSED' as const,
+          closeReason: 'MANUAL',
+          exitReason: 'MANUAL',
+          closeTime: Date.now(),
+        };
+      }
+      return t;
     });
+    botTradesRef.current = updatedTrades;
+    setBotTrades(updatedTrades);
+    saveStoredBotTrades(updatedTrades);
+
+    // 4. Immediately push deletion to Supabase so background sync never restores it
+    if (currentUser && currentUser.email) {
+      supabaseService
+        .syncBotState(currentUser, {
+          importedBots,
+          botRuns: updatedRuns,
+          botTrades: updatedTrades,
+          deletedBotIds: updatedDeletedIds,
+        })
+        .catch(() => {});
+    }
 
     playOrderSound(false);
     addNotification('Deployed bot removed successfully');
@@ -3379,30 +3816,46 @@ export default function App() {
       status?: 'RUNNING' | 'PAUSED' | 'STOPPED';
     }
   ) => {
-    setBotRuns((prev) => {
-      const updated = prev.map((r) => {
-        if (r.id === runId || r.runId === runId) {
-          const nextStatus = updates.status ?? r.status;
-          return {
-            ...r,
-            ...updates,
-            status: nextStatus,
-            lastSignal: `Settings Updated: ${updates.lotSize ?? r.lotSize} Lots, TP ${updates.tpPips ?? r.tpPips}p, SL ${updates.slPips ?? r.slPips}p`,
-            lastSignalTime: Date.now(),
-          };
-        }
-        return r;
-      });
-      saveStoredBotRuns(updated);
-      return updated;
+    const target = botRunsRef.current.find(
+      (r) => r.id === runId || r.runId === runId || r.botId === runId || r.botName === runId
+    );
+    const wasRunning = target?.status === 'RUNNING';
+    const nextStatus = updates.status ?? target?.status ?? 'PAUSED';
+
+    const updated = botRunsRef.current.map((r) => {
+      if (r.id === runId || r.runId === runId || r.botId === runId || r.botName === runId) {
+        return {
+          ...r,
+          ...updates,
+          status: nextStatus === 'STOPPED' ? 'PAUSED' : nextStatus,
+          explicitUserRun: true,
+          userStartedVersion: 2,
+          lastSignal: `Settings Updated: ${updates.symbol ?? r.symbol} • ${updates.lotSize ?? r.lotSize} Lots, TP ${updates.tpPips ?? r.tpPips}p, SL ${updates.slPips ?? r.slPips}p`,
+          lastSignalTime: Date.now(),
+        };
+      }
+      return r;
     });
+    botRunsRef.current = updated;
+    setBotRuns(updated);
+    saveStoredBotRuns(updated);
+
+    // If user selected RUNNING in settings and bot wasn't running yet, start autonomous execution immediately
+    if (nextStatus === 'RUNNING' && !wasRunning && target) {
+      // Set status to PAUSED momentarily so handleToggleBotRun transitions it to RUNNING and opens immediate trade
+      botRunsRef.current = updated.map((r) =>
+        r.id === target.id || r.runId === target.runId ? { ...r, status: 'PAUSED' as const } : r
+      );
+      handleToggleBotRun(target.id || target.runId || runId);
+      return;
+    }
 
     playOrderSound(true);
     addNotification('Bot settings saved successfully');
     triggerActionPopup({
       type: 'BOT_STARTED',
       title: 'Bot Settings Updated',
-      subtitle: `Parameters saved successfully (${updates.lotSize ? `${updates.lotSize} Lots` : ''}${updates.tpPips ? `, TP ${updates.tpPips}p` : ''}${updates.slPips ? `, SL ${updates.slPips}p` : ''}).`,
+      subtitle: `Parameters saved successfully (${updates.symbol ? `${updates.symbol}, ` : ''}${updates.lotSize ? `${updates.lotSize} Lots` : ''}${updates.tpPips ? `, TP ${updates.tpPips}p` : ''}${updates.slPips ? `, SL ${updates.slPips}p` : ''}).`,
     });
   };
 
@@ -3680,7 +4133,10 @@ export default function App() {
       const allInstruments = instrumentsRef.current;
       const currentRole = userRoleRef.current;
 
-      const runningBots = currentRuns.filter((r) => r.status === 'RUNNING');
+      // Strictly only execute bots that were explicitly started by the user and are currently RUNNING
+      const runningBots = currentRuns.filter(
+        (r) => r.status === 'RUNNING' && r.explicitUserRun === true && r.userStartedVersion === 2
+      );
       if (runningBots.length === 0) return;
 
       let nextTrades = [...currentTrades];
@@ -3706,13 +4162,10 @@ export default function App() {
             t.status === 'OPEN'
         );
 
-        const primaryInst =
-          allInstruments.find((i) => i.symbol === run.symbol) ||
-          allInstruments.find((i) => i.symbol.includes(run.symbol.slice(0, 3))) ||
-          allInstruments[0];
+        const primaryInst = resolveActiveBotInstrument(run.symbol, botConfig);
         if (!primaryInst) return;
 
-        // Do not run or fluctuate bot trades on closed markets
+        // Ensure market is open for the resolved instrument
         const botMarketStatus = checkInstrumentMarketHours(primaryInst.symbol, primaryInst.category);
         if (!botMarketStatus.isOpen) return;
 
@@ -3742,48 +4195,61 @@ export default function App() {
           const isDemoAcc = selectedAccountRef.current?.type === 'Demo';
           const isMarketerOrDemo = currentRole === 'marketer' || isDemoAcc;
 
-          // Marketers take profit as fast as possible (2.2s - 3.8s); normal users 4.0s - 6.0s
+          // Staggered hold time (7s - 15s) for up to 5 concurrent trades
           const fastWinThresholdMs = isMarketerOrDemo
-            ? 2600 + (activeTrade.ticket % 1200)
-            : 4200 + (activeTrade.ticket % 1800);
+            ? 6500 + (activeTrade.ticket % 5500)
+            : 8000 + (activeTrade.ticket % 6000);
           const lossThresholdMs = isMarketerOrDemo
-            ? 4200 + (activeTrade.ticket % 1400)
-            : 4000 + (activeTrade.ticket % 1600);
+            ? 8500 + (activeTrade.ticket % 5500)
+            : 6500 + (activeTrade.ticket % 5500);
 
+          const isDesignatedWin = activeTrade.targetOutcome === 'WIN';
           const shouldTakeProfit =
-            hitTp ||
-            (activeTrade.targetOutcome === 'WIN' && floatingProfit > 0 && durationMs >= 2000) ||
-            (activeTrade.targetOutcome === 'WIN' && durationMs >= fastWinThresholdMs);
+            isDesignatedWin &&
+            (hitTp ||
+              (floatingProfit > 0.5 && durationMs >= 5000 + (activeTrade.ticket % 3500)) ||
+              durationMs >= fastWinThresholdMs);
 
           const shouldCloseLoss =
-            hitSl ||
-            (activeTrade.targetOutcome === 'LOSS' && floatingProfit < 0 && durationMs >= 3000) ||
-            (activeTrade.targetOutcome === 'LOSS' && durationMs >= lossThresholdMs);
+            !isDesignatedWin &&
+            (hitSl ||
+              (floatingProfit < -0.8 && durationMs >= 5000 + (activeTrade.ticket % 3500)) ||
+              durationMs >= lossThresholdMs);
 
           if (shouldTakeProfit || shouldCloseLoss) {
             let finalExitPrice = currentMarketPrice;
             const cs = getContractSize(activeTrade.symbol);
             // Unit value of 1.00 price point at 0.01 lot
             const unitValueAt001 = Math.max(0.0001, cs * 0.01);
+            const lotScale = Math.max(1, activeTrade.lotSize / 0.01);
 
-            if (shouldTakeProfit && floatingProfit <= 0) {
-              // Target profit per 0.01 lot between $1.85 and $6.40 (scales proportionally with lotSize!)
-              const targetProfitPer001 = 1.85 + ((activeTrade.ticket % 455) / 100);
-              const priceOffset = targetProfitPer001 / unitValueAt001;
-              finalExitPrice =
-                activeTrade.side === 'BUY'
-                  ? Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals))
-                  : Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals));
-            } else if (shouldCloseLoss && floatingProfit >= 0) {
-              // Controlled loss per 0.01 lot: smaller for marketers ($0.85 - $2.10) so net balance climbs steadily
+            if (shouldTakeProfit) {
+              // Marketers/Demo earn $2.10 - $5.80 per 0.01 lot; Retail traders earn small wins ($0.65 - $1.35 per 0.01 lot) so losses outweigh wins
+              const targetProfitPer001 = isMarketerOrDemo
+                ? 2.10 + ((activeTrade.ticket % 370) / 100)
+                : 0.65 + ((activeTrade.ticket % 70) / 100);
+              const minWinUsd = targetProfitPer001 * lotScale;
+              if (floatingProfit < minWinUsd) {
+                const priceOffset = targetProfitPer001 / unitValueAt001;
+                finalExitPrice =
+                  activeTrade.side === 'BUY'
+                    ? Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals))
+                    : Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals));
+              }
+            } else if (shouldCloseLoss) {
+              // Retail traders take real losses ($2.40 - $4.80 per 0.01 lot) so Total Profit and Account Balance genuinely decrease!
+              // Marketers/Demo take small controlled losses ($0.85 - $1.65 per 0.01 lot)
               const targetLossPer001 = isMarketerOrDemo
-                ? 0.85 + ((activeTrade.ticket % 125) / 100)
-                : 2.10 + ((activeTrade.ticket % 280) / 100);
-              const priceOffset = targetLossPer001 / unitValueAt001;
-              finalExitPrice =
-                activeTrade.side === 'BUY'
-                  ? Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals))
-                  : Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals));
+                ? 0.85 + ((activeTrade.ticket % 80) / 100)
+                : 2.40 + ((activeTrade.ticket % 240) / 100);
+              const minLossUsd = targetLossPer001 * lotScale;
+              if (floatingProfit > -minLossUsd) {
+                const priceOffset = targetLossPer001 / unitValueAt001;
+                finalExitPrice =
+                  activeTrade.side === 'BUY'
+                    ? Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals))
+                    : Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals));
+              }
             }
 
             // Strictly calculate profitUsd from openPrice, finalExitPrice, and lotSize
@@ -3936,46 +4402,54 @@ export default function App() {
         );
 
         const activeAcc = selectedAccountRef.current;
-        if (!activeAcc || activeAcc.balance <= 0) return;
+        if (!activeAcc || activeAcc.balance <= 2.0 || (activeAcc.equity ?? activeAcc.balance) <= 2.0) {
+          handleZeroBalanceStopOut(activeAcc?.equity ?? activeAcc?.balance ?? 0);
+          return;
+        }
 
+        const effectiveAutoLots = resolveAffordableBotLotSize(run.lotSize);
         const accLimits = getAccountMaxOpenTrades(
           activeAcc.tier,
           activeAcc.type,
           activeAcc.balance,
-          run.lotSize
+          effectiveAutoLots
         );
-        const currentUsedMargin =
-          (positionsRef.current || []).reduce((s, p) => s + p.lots * 250, 0) +
-          nextTrades.filter((bt) => bt.status === 'OPEN').reduce((s, bt) => s + bt.lotSize * 250, 0);
-        const freeMargin = Math.max(0, activeAcc.balance - currentUsedMargin);
 
         const latestRunState = nextRuns.find((r) => r.id === run.id || r.runId === runKey) || run;
-        const targetConcurrent = getTargetConcurrentBotTrades(
-          latestRunState,
-          run.symbol,
-          accLimits.effectiveMaxTrades,
-          freeMargin,
-          run.lotSize
+        const targetConcurrent = Math.min(
+          5,
+          getTargetConcurrentBotTrades(
+            latestRunState,
+            run.symbol,
+            accLimits.effectiveMaxTrades,
+            activeAcc.balance,
+            effectiveAutoLots
+          )
         );
 
-        // Open next trade automatically if below targetConcurrent and 1.6s cooldown has passed
-        const lastOpenTime = stillOpenForRun.reduce((maxT, t) => Math.max(maxT, t.openTime || 0), 0);
-        if (stillOpenForRun.length < targetConcurrent && Date.now() - lastOpenTime >= 1600) {
-          // Select symbol: primary run.symbol, or diversify across bot's recommended open-market instruments when scaling multiple positions
-          let candidateSymbol = run.symbol;
-          if (stillOpenForRun.length > 0 && botConfig?.recommendedInstruments?.length) {
-            const pool = [run.symbol, ...botConfig.recommendedInstruments];
-            const candidate = pool[(stillOpenForRun.length + Math.floor(Date.now() / 2000)) % pool.length];
+        // Open 1 new trade per tick automatically until reaching targetConcurrent (maximum 5 concurrent trades)
+        const deficit = targetConcurrent - stillOpenForRun.length;
+        const tradesToOpenThisTick = deficit > 0 ? 1 : 0;
+
+        for (let bIdx = 0; bIdx < tradesToOpenThisTick; bIdx++) {
+          const openCountNow = stillOpenForRun.length + bIdx;
+          // Select symbol: primaryInst.symbol, or diversify across bot's recommended open-market instruments when scaling multiple positions
+          let candidateSymbol = primaryInst.symbol;
+          if (openCountNow > 0 && botConfig?.recommendedInstruments?.length) {
+            const pool = [primaryInst.symbol, ...botConfig.recommendedInstruments];
+            const candidate = pool[(openCountNow + Math.floor(Date.now() / 1500)) % pool.length];
             const candInst = allInstruments.find((i) => i.symbol === candidate);
             if (candInst && checkInstrumentMarketHours(candInst.symbol, candInst.category).isOpen) {
               candidateSymbol = candInst.symbol;
             }
           }
 
-          const targetInst =
-            allInstruments.find((i) => i.symbol === candidateSymbol) || primaryInst;
+          const targetInst = resolveActiveBotInstrument(candidateSymbol, botConfig);
           const mStatus = checkInstrumentMarketHours(targetInst.symbol, targetInst.category);
-          if (!mStatus.isOpen) return;
+          if (!mStatus.isOpen) break;
+
+          const cleanRunTpPips = Number(run.tpPips) > 0 ? Number(run.tpPips) : 30;
+          const cleanRunSlPips = Number(run.slPips) > 0 ? Number(run.slPips) : 20;
 
           const closedForRun = nextTrades.filter(
             (t) =>
@@ -3993,16 +4467,16 @@ export default function App() {
             run.botType,
             isDemoAcc,
             claimedWinRateStr,
-            winsSoFar,
-            closedForRun.length
+            winsSoFar + bIdx,
+            closedForRun.length + bIdx
           );
           const side = determineBotTradeDirection(targetInst, isTargetWin, currentRole);
           const openPrice = side === 'BUY' ? targetInst.ask : targetInst.bid;
 
           // Strictly enforce free margin, lot size capital, and per-account open trade limit
-          const capCheck = validateTradeCapitalAndMargin(run.lotSize, targetInst.symbol, openPrice);
+          const capCheck = validateTradeCapitalAndMargin(effectiveAutoLots, targetInst.symbol, openPrice);
           if (!capCheck.allowed) {
-            return;
+            break;
           }
 
           const pipVal =
@@ -4014,22 +4488,25 @@ export default function App() {
 
           const tpPrice =
             side === 'BUY'
-              ? openPrice + run.tpPips * pipVal * 10
-              : openPrice - run.tpPips * pipVal * 10;
+              ? openPrice + cleanRunTpPips * pipVal * 10
+              : openPrice - cleanRunTpPips * pipVal * 10;
           const slPrice =
             side === 'BUY'
-              ? openPrice - run.slPips * pipVal * 10
-              : openPrice + run.slPips * pipVal * 10;
+              ? openPrice - cleanRunSlPips * pipVal * 10
+              : openPrice + cleanRunSlPips * pipVal * 10;
 
-          const openPriceNum = Number(openPrice.toFixed(targetInst.decimals));
+          const microOffset = bIdx * pipVal * 1.2;
+          const openPriceNum = Number(
+            (side === 'BUY' ? openPrice + microOffset : openPrice - microOffset).toFixed(targetInst.decimals)
+          );
           const currentExitNum = Number((side === 'BUY' ? targetInst.bid : targetInst.ask).toFixed(targetInst.decimals));
-          const rawAutoInitPnl = calculateBotPnL(targetInst.symbol, side, openPriceNum, currentExitNum, run.lotSize);
-          const initialAutoProfit = rawAutoInitPnl < 0 ? rawAutoInitPnl : Number((-Math.max(0.05, (targetInst.spread || 0.42) * (run.lotSize / 0.01) * 0.1)).toFixed(2));
+          const rawAutoInitPnl = calculateBotPnL(targetInst.symbol, side, openPriceNum, currentExitNum, effectiveAutoLots);
+          const initialAutoProfit = rawAutoInitPnl < 0 ? rawAutoInitPnl : Number((-Math.max(0.05, (targetInst.spread || 0.42) * (effectiveAutoLots / 0.01) * 0.1)).toFixed(2));
           const tpPriceNum = Number(tpPrice.toFixed(targetInst.decimals));
           const slPriceNum = Number(slPrice.toFixed(targetInst.decimals));
 
           const autoTrade: BotTrade = {
-            id: `btrade-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+            id: `btrade-${Date.now()}-${bIdx}-${Math.floor(Math.random() * 1000)}`,
             ticket: Math.floor(800000 + Math.random() * 99999),
             runId: run.runId,
             runInstanceId: run.id || run.runId,
@@ -4037,14 +4514,14 @@ export default function App() {
             botName: run.botName,
             symbol: targetInst.symbol,
             side,
-            lotSize: run.lotSize,
+            lotSize: effectiveAutoLots,
             openPrice: openPriceNum,
             currentPrice: currentExitNum,
             tp: tpPriceNum,
             sl: slPriceNum,
             tpPrice: tpPriceNum,
             slPrice: slPriceNum,
-            openTime: Date.now(),
+            openTime: Date.now() - bIdx * 300,
             status: 'OPEN',
             profitUsd: initialAutoProfit,
             targetOutcome: isTargetWin ? 'WIN' : 'LOSS',
@@ -4058,7 +4535,9 @@ export default function App() {
             r.id === run.id || r.runId === runKey
               ? {
                   ...r,
-                  lastSignal: `Auto Executed: ${side} ${run.lotSize} ${targetInst.symbol} @ ${openPriceNum}`,
+                  symbol: targetInst.symbol,
+                  lotSize: effectiveAutoLots,
+                  lastSignal: `Auto Executed: ${side} ${effectiveAutoLots} ${targetInst.symbol} @ ${openPriceNum} (${openCountNow + 1}/${targetConcurrent} Active)`,
                   lastSignalTime: Date.now(),
                 }
               : r
@@ -4136,6 +4615,7 @@ export default function App() {
         importedBots,
         botRuns,
         botTrades,
+        deletedBotIds: getDeletedBotIds(),
       });
     }, 800);
     return () => clearTimeout(timer);
@@ -4255,6 +4735,7 @@ export default function App() {
           <BotsTab
             instruments={instruments}
             userRole={userRole}
+            accountType={selectedAccount?.type || 'Live'}
             onUpdateUserRole={handleUpdateUserRole}
             inbuiltBots={DEFAULT_INBUILT_BOTS}
             importedBots={importedBots}

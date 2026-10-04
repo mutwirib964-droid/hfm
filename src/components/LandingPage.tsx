@@ -675,7 +675,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           }`}
         >
           Access 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto. Enjoy raw interbank spreads from 0.0 pips,
-          ultra-fast Equinix execution, and tier-1 bank fund segregation.
+          ultra-fast institutional execution, and tier-1 bank fund segregation.
         </p>
 
         {/* Hero CTA Buttons */}
@@ -759,7 +759,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               &lt; 9.8 ms
             </div>
             <div className={`text-xs mt-1.5 font-bold ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-              Equinix NY4 / LD4 Execution
+              Direct STP / ECN Execution
             </div>
           </div>
 
@@ -1039,10 +1039,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <Zap className="w-6 h-6" />
             </div>
             <h3 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-              Equinix Ultra-Low Latency
+              Ultra-Low Latency Execution
             </h3>
             <p className={`text-xs mt-2 leading-relaxed ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-              Direct cross-connects in London (LD4) and New York (NY4) ensure lightning order routing under 10ms with minimal
+              Direct institutional liquidity cross-connects ensure lightning order routing under 10ms with minimal
               slippage.
             </p>
           </div>

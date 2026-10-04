@@ -41,12 +41,15 @@ interface MpesaDepositModalProps {
   currentUser?: UserAuthProfile | null;
   defaultTarget?: string;
   onDepositComplete: (result: {
+    id?: string;
     amountUsd: number;
     amountKes: number;
     method: string;
     targetAccount: string;
     reference: string;
     phone: string;
+    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
+    details?: string;
   }) => void;
   isDarkMode?: boolean;
 }
@@ -91,8 +94,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   onDepositComplete,
   isDarkMode = false,
 }) => {
-  // Method selection: 'mpesa' | 'bank' | 'crypto' | 'card'
-  const [activeTab, setActiveTab] = useState<'mpesa' | 'bank' | 'crypto' | 'card'>('mpesa');
+  // Method selection: 'mpesa' | 'crypto' | 'card' (Bank is strictly for Withdrawal only)
+  const [activeTab, setActiveTab] = useState<'mpesa' | 'crypto' | 'card'>('mpesa');
 
   // Input states - Minimum deposit is strictly $16
   const [amountInput, setAmountInput] = useState<string>('16');
@@ -102,9 +105,6 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const activeCountryCfg = getCountryByCode(selectedCountryCode);
   const [phoneInput, setPhoneInput] = useState<string>('');
   const [targetAccount, setTargetAccount] = useState<string>(defaultTarget);
-  const [selectedBankId, setSelectedBankId] = useState<string>(WELL_KNOWN_AFRICAN_BANKS[0].id);
-  const [bankRefInput, setBankRefInput] = useState<string>('');
-  const [bankSubmitted, setBankSubmitted] = useState<boolean>(false);
 
   // Crypto state
   const [selectedCrypto, setSelectedCrypto] = useState<'BTC' | 'ETH' | 'USDT'>('USDT');
@@ -129,8 +129,24 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const [countdownSeconds, setCountdownSeconds] = useState<number>(87);
   const [confirmedReceipt, setConfirmedReceipt] = useState<string>('');
   const [confirmedReference, setConfirmedReference] = useState<string>('');
+  const [liveUsdKesRate, setLiveUsdKesRate] = useState<number>(() => hashbackService.getUsdKesRate());
+  const [hashbackMerchantName, setHashbackMerchantName] = useState<string>(
+    () => hashbackService.getConfig().merchantName
+  );
 
   const isPollingRef = useRef(false);
+  const activeDepositTxIdRef = useRef<string>('');
+  const activeDepositReferenceRef = useRef<string>('');
+  const activeDepositResolvedRef = useRef<boolean>(false);
+
+  // Sync HashBack configuration (merchantName, USD_KES_RATE) whenever modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    hashbackService.syncSecrets().then((cfg) => {
+      if (cfg.usdKesRate > 0) setLiveUsdKesRate(cfg.usdKesRate);
+      if (cfg.merchantName) setHashbackMerchantName(cfg.merchantName);
+    });
+  }, [isOpen]);
 
   // Pre-fill phone from registered user
   useEffect(() => {
@@ -157,7 +173,14 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   }, [defaultTarget]);
 
   const numUsd = parseFloat(amountInput) || 0;
-  const numKes = usdToKes(numUsd);
+  const numKes = Math.max(1, Math.round(numUsd * (liveUsdKesRate || USD_KES_RATE)));
+  const userAccountName = hashbackMerchantName || 'HASHBACK PAYMENT';
+  const matchedLiveAccount = accounts.find(
+    (a) => `Account #${a.accountNumber}` === targetAccount || a.accountNumber === targetAccount
+  );
+  const settlementDestinationLabel = matchedLiveAccount
+    ? `${matchedLiveAccount.name || 'Live Account'} (#${matchedLiveAccount.accountNumber})`
+    : targetAccount;
   const kenyanCheck = formatKenyanPhone(phoneInput);
   const intlCheck = validatePhoneForCountry(phoneInput, activeCountryCfg);
   const phoneCheck =
@@ -178,127 +201,180 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     setTimeout(() => setCryptoCopied(null), 2500);
   };
 
-  // Automated HashBack polling listener
-  useEffect(() => {
-    let pollTimer: any;
-    let countTimer: any;
-
-    if (hashbackPopupStep === 'WAITING' && stkResult?.checkoutId) {
-      const checkoutId = stkResult.checkoutId;
-      isPollingRef.current = true;
-
-      // Countdown timer formatting mm:ss
-      countTimer = setInterval(() => {
-        setCountdownSeconds((prev) => {
-          if (prev <= 1) {
-            clearInterval(countTimer);
-            clearInterval(pollTimer);
-            isPollingRef.current = false;
-            setHashbackPopupStep('CANCELLED');
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-
-      // Automated query function
-      const pollHashback = async () => {
-        if (!isPollingRef.current) return;
-
-        try {
-          const res = await hashbackService.queryTransactionStatus(checkoutId);
-          if (!isPollingRef.current) return;
-
-          // 1. Success confirmation from Hashback
-          if (res.confirmed) {
-            isPollingRef.current = false;
-            clearInterval(pollTimer);
-            clearInterval(countTimer);
-
-            const receipt =
-              res.mpesaReceiptNumber ||
-              res.data?.MpesaReceiptNumber ||
-              `UIP${Math.floor(100000 + Math.random() * 900000)}TGY`;
-
-            const reference =
-              res.data?.reference ||
-              checkoutId ||
-              `HPB${Math.floor(10000000 + Math.random() * 90000000)}`;
-
-            setConfirmedReceipt(receipt);
-            setConfirmedReference(reference);
-
-            // Automatically credit the user's account
-            onDepositComplete({
-              amountUsd: numUsd,
-              amountKes: numKes,
-              method: 'M-PESA',
-              targetAccount,
-              reference: receipt,
-              phone: phoneCheck.display || phoneInput,
-            });
-
-            // Save deposit to Supabase cloud database
-            supabaseService.saveDeposit(currentUser, {
-              targetAccount,
-              amountUsd: numUsd,
-              amountKes: numKes,
-              method: 'M-PESA',
-              phone: phoneCheck.formatted || phoneInput,
-              reference: receipt,
-              checkoutId,
-              status: 'COMPLETED',
-            });
-            supabaseService.syncActivity(currentUser, {
-              type: 'DEPOSIT_CONFIRMED',
-              description: `M-PESA payment of $${numUsd.toFixed(2)} (KES ${numKes.toLocaleString()}) confirmed by Hashback. Receipt: ${receipt}`,
-              metadata: { receipt, checkoutId, amountUsd: numUsd, amountKes: numKes },
-            });
-
-            setHashbackPopupStep('SUCCESS');
-            return;
-          }
-
-          // 2. Cancellation or failure
-          if (res.failed) {
-            isPollingRef.current = false;
-            clearInterval(pollTimer);
-            clearInterval(countTimer);
-            setHashbackPopupStep('CANCELLED');
-            return;
-          }
-        } catch (e) {
-          // keep polling until timer ends
-        }
-      };
-
-      const delay = setTimeout(() => {
-        pollHashback();
-        pollTimer = setInterval(pollHashback, 2500);
-      }, 1500);
-
-      return () => {
-        isPollingRef.current = false;
-        clearTimeout(delay);
-        clearInterval(pollTimer);
-        clearInterval(countTimer);
-      };
-    }
-  }, [
-    hashbackPopupStep,
-    stkResult?.checkoutId,
+  // Keep latest deposit state in a ref so parent re-renders (every 350ms from live quotes) never reset the 1s countdown or 2.5s status polling
+  const latestDepositStateRef = useRef({
     numUsd,
     numKes,
     targetAccount,
-    phoneCheck.display,
+    userAccountName,
+    settlementDestinationLabel,
+    phoneDisplay: phoneCheck.display,
+    phoneFormatted: phoneCheck.formatted,
     phoneInput,
     currentUser,
     onDepositComplete,
-  ]);
+  });
+  latestDepositStateRef.current = {
+    numUsd,
+    numKes,
+    targetAccount,
+    userAccountName,
+    settlementDestinationLabel,
+    phoneDisplay: phoneCheck.display,
+    phoneFormatted: phoneCheck.formatted,
+    phoneInput,
+    currentUser,
+    onDepositComplete,
+  };
+
+  // Dedicated 1-second HashBack countdown timer (isolated from parent re-renders and checkoutId updates)
+  useEffect(() => {
+    if (hashbackPopupStep !== 'WAITING') return;
+
+    const countTimer = setInterval(() => {
+      setCountdownSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(countTimer);
+          isPollingRef.current = false;
+          if (!activeDepositResolvedRef.current && activeDepositTxIdRef.current) {
+            activeDepositResolvedRef.current = true;
+            const latest = latestDepositStateRef.current;
+            latest.onDepositComplete({
+              id: activeDepositTxIdRef.current,
+              amountUsd: latest.numUsd,
+              amountKes: latest.numKes,
+              method: 'M-PESA',
+              targetAccount: latest.targetAccount,
+              reference: activeDepositReferenceRef.current || `EXP-${Date.now().toString().slice(-6)}`,
+              phone: latest.phoneDisplay || latest.phoneInput,
+              status: 'FAILED',
+              details: 'Request cancelled by user',
+            });
+          }
+          setHashbackPopupStep('CANCELLED');
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      clearInterval(countTimer);
+    };
+  }, [hashbackPopupStep]);
+
+  // Automated HashBack status polling listener (isolated from parent re-renders)
+  useEffect(() => {
+    if (hashbackPopupStep !== 'WAITING' || !stkResult?.checkoutId) return;
+
+    const checkoutId = stkResult.checkoutId;
+    isPollingRef.current = true;
+    let pollTimer: any;
+
+    const pollHashback = async () => {
+      if (!isPollingRef.current) return;
+
+      try {
+        const res = await hashbackService.queryTransactionStatus(checkoutId);
+        if (!isPollingRef.current) return;
+
+        // 1. Success confirmation from Hashback
+        if (res.confirmed) {
+          isPollingRef.current = false;
+          activeDepositResolvedRef.current = true;
+          clearInterval(pollTimer);
+
+          const latest = latestDepositStateRef.current;
+          const receipt =
+            res.mpesaReceiptNumber ||
+            res.data?.MpesaReceiptNumber ||
+            `UIP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+
+          const reference =
+            res.data?.reference ||
+            checkoutId ||
+            `HPB${Math.floor(10000000 + Math.random() * 90000000)}`;
+
+          setConfirmedReceipt(receipt);
+          setConfirmedReference(reference);
+
+          // Automatically credit the user's account and update transaction status to COMPLETED
+          latest.onDepositComplete({
+            id: activeDepositTxIdRef.current || undefined,
+            amountUsd: latest.numUsd,
+            amountKes: latest.numKes,
+            method: 'M-PESA',
+            targetAccount: latest.targetAccount,
+            reference: receipt,
+            phone: latest.phoneDisplay || latest.phoneInput,
+            status: 'COMPLETED',
+            details: `Funded to ${latest.settlementDestinationLabel}`,
+          });
+
+          // Save deposit to Supabase cloud database
+          supabaseService.saveDeposit(latest.currentUser, {
+            id: activeDepositTxIdRef.current || undefined,
+            targetAccount: latest.targetAccount,
+            amountUsd: latest.numUsd,
+            amountKes: latest.numKes,
+            method: 'M-PESA',
+            phone: latest.phoneFormatted || latest.phoneInput,
+            reference: receipt,
+            checkoutId,
+            status: 'COMPLETED',
+          });
+          supabaseService.syncActivity(latest.currentUser, {
+            type: 'DEPOSIT_CONFIRMED',
+            description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed by Hashback for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Receipt: ${receipt}`,
+            metadata: { receipt, checkoutId, amountUsd: latest.numUsd, amountKes: latest.numKes, targetAccount: latest.targetAccount },
+          });
+
+          setHashbackPopupStep('SUCCESS');
+          return;
+        }
+
+        // 2. Cancellation or failure
+        if (res.failed) {
+          isPollingRef.current = false;
+          clearInterval(pollTimer);
+          if (!activeDepositResolvedRef.current) {
+            activeDepositResolvedRef.current = true;
+            const latest = latestDepositStateRef.current;
+            latest.onDepositComplete({
+              id: activeDepositTxIdRef.current || undefined,
+              amountUsd: latest.numUsd,
+              amountKes: latest.numKes,
+              method: 'M-PESA',
+              targetAccount: latest.targetAccount,
+              reference: checkoutId,
+              phone: latest.phoneDisplay || latest.phoneInput,
+              status: 'FAILED',
+              details: 'Request cancelled by user',
+            });
+          }
+          setHashbackPopupStep('CANCELLED');
+          return;
+        }
+      } catch {
+        // keep polling until timer ends
+      }
+    };
+
+    const delay = setTimeout(() => {
+      pollHashback();
+      pollTimer = setInterval(pollHashback, 2500);
+    }, 1500);
+
+    return () => {
+      isPollingRef.current = false;
+      clearTimeout(delay);
+      clearInterval(pollTimer);
+    };
+  }, [hashbackPopupStep, stkResult?.checkoutId]);
 
   if (!isOpen) return null;
 
-  // Trigger STK Push and open HashBack popup
+  // Trigger STK Push and immediately open HashBack popup + live countdown
   const handleDepositNow = async () => {
     setErrorMessage(null);
 
@@ -315,7 +391,37 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       return;
     }
 
+    const accountReference = `VTM-${Math.floor(100000 + Math.random() * 900000)}`;
+    const txId = `tx-dep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    activeDepositTxIdRef.current = txId;
+    activeDepositReferenceRef.current = accountReference;
+    activeDepositResolvedRef.current = false;
     setIsProcessingStk(true);
+
+    // Record PENDING deposit immediately in transaction history
+    onDepositComplete({
+      id: txId,
+      amountUsd: numUsd,
+      amountKes: numKes,
+      method: 'M-PESA',
+      targetAccount,
+      reference: accountReference,
+      phone: phoneCheck.display || phoneInput,
+      status: 'PENDING',
+      details: 'Awaiting M-Pesa PIN',
+    });
+
+    // Open HashBack waiting modal & start the 87s (1:27) countdown immediately while dispatching STK prompt
+    setCountdownSeconds(87);
+    setStkResult({
+      success: true,
+      message: 'Dispatching M-Pesa STK prompt to your phone...',
+      checkoutId: accountReference,
+      amountKes: numKes,
+      amountUsd: numUsd,
+      formattedPhone: phoneCheck.display,
+    });
+    setHashbackPopupStep('WAITING');
 
     try {
       const res = await hashbackService.initiateStkPush({
@@ -324,17 +430,46 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         amountKes: numKes,
         targetAccount,
         userEmail: currentUser?.email,
-        accountReference: `VTM-${Math.floor(100000 + Math.random() * 900000)}`,
+        accountReference,
       });
 
-      if (res.success && res.checkoutId) {
-        setStkResult(res);
-        setCountdownSeconds(87);
-        setHashbackPopupStep('WAITING');
+      if (res.success) {
+        const finalCheckoutId = res.checkoutId || accountReference;
+        activeDepositReferenceRef.current = finalCheckoutId;
+        setStkResult({
+          ...res,
+          checkoutId: finalCheckoutId,
+        });
       } else {
+        activeDepositResolvedRef.current = true;
+        onDepositComplete({
+          id: txId,
+          amountUsd: numUsd,
+          amountKes: numKes,
+          method: 'M-PESA',
+          targetAccount,
+          reference: accountReference,
+          phone: phoneCheck.display || phoneInput,
+          status: 'FAILED',
+          details: 'Request cancelled by user',
+        });
+        setHashbackPopupStep(null);
         setErrorMessage(res.message || 'Failed to dispatch M-PESA STK prompt.');
       }
     } catch (err: any) {
+      activeDepositResolvedRef.current = true;
+      onDepositComplete({
+        id: txId,
+        amountUsd: numUsd,
+        amountKes: numKes,
+        method: 'M-PESA',
+        targetAccount,
+        reference: accountReference,
+        phone: phoneCheck.display || phoneInput,
+        status: 'FAILED',
+        details: 'Request cancelled by user',
+      });
+      setHashbackPopupStep(null);
       setErrorMessage(err.message || 'Connection error. Please try again.');
     } finally {
       setIsProcessingStk(false);
@@ -357,25 +492,25 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
     const ref = cryptoTxHash.trim();
 
-    // Log the pending deposit to Supabase database for automated on-chain verification
-    supabaseService.saveDeposit(currentUser, {
-      targetAccount,
+    // Record PENDING crypto deposit in transaction history (does not credit balance until confirmed)
+    onDepositComplete({
       amountUsd: numUsd,
       amountKes: numKes,
       method: `Crypto (${activeCryptoConfig.symbol})`,
+      targetAccount,
       reference: ref,
+      phone: '',
       status: 'PENDING',
+      details: 'Blockchain verification pending',
     });
 
     supabaseService.syncActivity(currentUser, {
       type: 'DEPOSIT_CRYPTO_PENDING',
       description: `Crypto deposit of $${numUsd.toFixed(2)} (${activeCryptoConfig.symbol}) submitted for blockchain network confirmation. Hash: ${ref}`,
-      metadata: { amountUsd: numUsd, symbol: activeCryptoConfig.symbol, reference: ref },
+      metadata: { amountUsd: numUsd, symbol: activeCryptoConfig.symbol, reference: ref, targetAccount },
     });
 
     setCryptoSubmitted(true);
-    // Explicitly guarantee: onDepositComplete is NEVER called for crypto deposits!
-    // Crypto deposits do not credit account balances.
     setTimeout(() => {
       setCryptoSubmitted(false);
       onClose();
@@ -398,7 +533,16 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     setCardProcessing(true);
     setTimeout(() => {
       setCardProcessing(false);
-      // Card deposits require automated merchant gateway verification
+      onDepositComplete({
+        amountUsd: numUsd,
+        amountKes: numKes,
+        method: 'Card (3DS)',
+        targetAccount,
+        reference: `CRD-${Math.floor(100000 + Math.random() * 900000)}`,
+        phone: '',
+        status: 'FAILED',
+        details: 'Request cancelled by user',
+      });
       setErrorMessage('Card 3D-Secure gateway connection active. For instant automated wallet funding, please use Safaricom M-PESA Express STK Push.');
     }, 1500);
   };
@@ -412,6 +556,20 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   const handleClosePopup = () => {
     isPollingRef.current = false;
+    if (hashbackPopupStep === 'WAITING' && !activeDepositResolvedRef.current && activeDepositTxIdRef.current) {
+      activeDepositResolvedRef.current = true;
+      onDepositComplete({
+        id: activeDepositTxIdRef.current,
+        amountUsd: numUsd,
+        amountKes: numKes,
+        method: 'M-PESA',
+        targetAccount,
+        reference: activeDepositReferenceRef.current || `CAN-${Date.now().toString().slice(-6)}`,
+        phone: phoneCheck.display || phoneInput,
+        status: 'FAILED',
+        details: 'Request cancelled by user',
+      });
+    }
     setHashbackPopupStep(null);
   };
 
@@ -448,8 +606,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             </p>
           </div>
 
-          {/* Method Tabs: M-PESA | Bank | Crypto | Card */}
-          <div className="grid grid-cols-4 gap-1.5 p-1.5 bg-slate-100 dark:bg-neutral-800/80 rounded-2xl mb-5">
+          {/* Method Tabs: M-PESA | Crypto | Card (Bank is strictly for Withdrawal only) */}
+          <div className="grid grid-cols-3 gap-1.5 p-1.5 bg-slate-100 dark:bg-neutral-800/80 rounded-2xl mb-5">
             <button
               type="button"
               onClick={() => {
@@ -464,22 +622,6 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             >
               <Phone className="w-3.5 h-3.5 shrink-0" />
               <span>M-PESA</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('bank');
-                setErrorMessage(null);
-              }}
-              className={`py-2.5 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
-                activeTab === 'bank'
-                  ? 'bg-[#0066FF] text-white shadow-sm font-bold'
-                  : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              <Building2 className="w-3.5 h-3.5 shrink-0" />
-              <span>Banks</span>
             </button>
 
             <button
@@ -562,11 +704,29 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               </div>
 
               <h3 className="text-base sm:text-lg font-bold text-center mb-1 text-slate-900 dark:text-white">
-                Safaricom M-PESA Express
+                Safaricom M-PESA Express (HashBack)
               </h3>
-              <p className="text-center text-xs text-slate-500 dark:text-neutral-400 mb-4">
-                Instant prompt sent to your Safaricom mobile • Rate: 1 USD = {USD_KES_RATE} KES
+              <p className="text-center text-xs text-slate-500 dark:text-neutral-400 mb-3">
+                Instant prompt sent to your Safaricom mobile • Rate: 1 USD = {liveUsdKesRate} KES
               </p>
+
+              {/* Dynamic HashBack Account & Settlement Details Summary (no sensitive credentials exposed) */}
+              <div
+                className={`mb-4 p-3 rounded-xl border text-xs space-y-1.5 ${
+                  isDarkMode
+                    ? 'bg-neutral-900/70 border-neutral-800 text-neutral-300'
+                    : 'bg-slate-50 border-slate-200 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 dark:text-neutral-400">Account Name:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{userAccountName}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 dark:text-neutral-400">Where Deposit Settles:</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{settlementDestinationLabel}</span>
+                </div>
+              </div>
 
               <div className="space-y-4">
                 {/* Amount (USD) */}
@@ -691,134 +851,6 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   )}
                 </button>
               </div>
-            </div>
-          )}
-
-          {/* TAB 1B: KENYA & AFRICA BANK DEPOSIT */}
-          {activeTab === 'bank' && (
-            <div
-              className={`border rounded-2xl p-5 sm:p-6 space-y-4 transition-colors ${
-                isDarkMode ? 'border-neutral-800 bg-[#161922]' : 'border-slate-200 bg-white'
-              }`}
-            >
-              <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-950/50 text-[#0066FF] flex items-center justify-center mx-auto mb-2">
-                  <Building2 className="w-5 h-5 stroke-[2.2]" />
-                </div>
-                <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
-                  Kenya &amp; Africa Bank Deposit
-                </h3>
-                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-                  Deposit Rate: 1 USD = {USD_KES_RATE} KES • Withdrawal Rate: 1 USD = {USD_KES_WITHDRAW_RATE} KES
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1.5">
-                  Select Partner Bank (Kenya &amp; Africa)
-                </label>
-                <select
-                  value={selectedBankId}
-                  onChange={(e) => setSelectedBankId(e.target.value)}
-                  className={`w-full border rounded-xl px-3 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
-                    isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-                  }`}
-                >
-                  {WELL_KNOWN_AFRICAN_BANKS.map((bank) => (
-                    <option key={bank.id} value={bank.id}>
-                      {bank.name} ({bank.country}) — Paybill: {bank.paybill}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Bank Paybill / Direct STK option */}
-              {(() => {
-                const chosenBank =
-                  WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === selectedBankId) ||
-                  WELL_KNOWN_AFRICAN_BANKS[0];
-                return (
-                  <div
-                    className={`p-3.5 rounded-xl border space-y-2 text-xs ${
-                      isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-neutral-400 font-medium">Bank Name:</span>
-                      <span className="font-bold text-slate-900 dark:text-white">{chosenBank.name}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-neutral-400 font-medium">Paybill / Routing:</span>
-                      <span className="font-mono font-bold text-[#0066FF]">{chosenBank.paybill}</span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-neutral-400 font-medium">SWIFT / BIC:</span>
-                      <span className="font-mono font-semibold text-slate-700 dark:text-neutral-300">{chosenBank.swift}</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <div className="flex justify-between items-center mb-1">
-                    <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
-                      Amount (USD) <span className="text-[#0066FF]">*Min $16</span>
-                    </label>
-                    <span className="text-[11px] font-mono font-bold text-emerald-500">
-                      KES {numKes.toLocaleString()}
-                    </span>
-                  </div>
-                  <input
-                    type="number"
-                    min="16"
-                    value={amountInput}
-                    onChange={(e) => {
-                      setAmountInput(e.target.value);
-                      setErrorMessage(null);
-                    }}
-                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
-                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                    Mobile / Bank Linked Phone
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="0712345678"
-                    value={phoneInput}
-                    onChange={(e) => {
-                      setPhoneInput(e.target.value);
-                      setErrorMessage(null);
-                    }}
-                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
-                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
-                    }`}
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                disabled={isProcessingStk}
-                onClick={handleDepositNow}
-                className="w-full py-3.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {isProcessingStk ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Initiating Bank / STK Settlement...</span>
-                  </>
-                ) : (
-                  <span>
-                    Deposit KES {numKes.toLocaleString()} (${numUsd || 16}) via{' '}
-                    {WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === selectedBankId)?.shortName || 'Bank'}
-                  </span>
-                )}
-              </button>
             </div>
           )}
 
@@ -1053,8 +1085,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               PAYMENT TO
             </span>
             <h4 className="text-base sm:text-lg font-black tracking-tight leading-snug mt-0.5">
-              HASHBACK SOLUTIONS NCBA
+              {userAccountName}
             </h4>
+            <span className="text-[11px] font-semibold block text-white/95 mt-0.5">
+              Settles To: {settlementDestinationLabel}
+            </span>
             <span className="text-xs font-bold block mt-1 text-white">
               Amount: KES {numKes.toLocaleString()} (${numUsd})
             </span>
@@ -1154,6 +1189,14 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               <p className="text-xs text-slate-600">Your payment has been received and credited.</p>
 
               <div className="bg-[#F8FAFC] border border-slate-200/80 rounded-xl p-3.5 my-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Account Name</span>
+                  <span className="font-bold text-slate-900">{userAccountName}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-medium">Settled Into</span>
+                  <span className="font-bold text-emerald-700">{settlementDestinationLabel}</span>
+                </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 font-medium">Receipt</span>
                   <span className="font-bold font-mono text-slate-900">{confirmedReceipt}</span>

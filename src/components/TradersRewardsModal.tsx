@@ -235,7 +235,7 @@ export const TradersRewardsModal: React.FC<TradersRewardsModalProps> = ({
                 <ul className={`text-[11px] space-y-1 pt-1.5 border-t ${isDarkMode ? 'text-neutral-400 border-neutral-800/80' : 'text-slate-600 border-slate-200'}`}>
                   <li className="flex items-center gap-1.5">
                     <CheckCircle2 className="w-3 h-3 text-amber-500 shrink-0" />
-                    <span>Equinix LD4 Dedicated VPS</span>
+                    <span>Dedicated Institutional VPS</span>
                   </li>
                   <li className="flex items-center gap-1.5">
                     <CheckCircle2 className="w-3 h-3 text-amber-500 shrink-0" />

@@ -452,10 +452,10 @@ export const AccountTab: React.FC<AccountTabProps> = ({
 
                       <div className="text-right">
                         <span className={`font-mono font-bold text-base ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                          ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          ${(acc.equity ?? acc.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                         <span className={`text-[10px] block font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                          Equity: ${acc.equity.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          Settled: ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                     </div>
