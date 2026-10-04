@@ -94,7 +94,7 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
               </span>
             </h3>
             <span className="text-xs text-neutral-400">
-              Spread: {instrument.spread} pips • Pip Value: ~${pipValue}
+              Spread: {(instrument.spread > 0 && instrument.spread <= 1.2 ? instrument.spread : 0.42).toFixed(2)} pips • Pip Value: ~${pipValue}
             </span>
           </div>
 

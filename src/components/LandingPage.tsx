@@ -511,7 +511,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     >
       {/* MAIN HEADER NAVIGATION */}
       <header
-        className={`sticky top-0 z-40 w-full max-w-full border-b backdrop-blur-md px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3.5 flex items-center justify-between transition-colors overflow-hidden ${
+        className={`pwa-safe-top sticky top-0 z-40 w-full max-w-full border-b backdrop-blur-md px-3 sm:px-6 lg:px-8 pb-2.5 sm:pb-3.5 flex items-center justify-between transition-colors overflow-hidden ${
           isDarkMode ? 'bg-[#0A0C10]/95 border-neutral-800 text-white' : 'bg-white/95 border-slate-200 text-slate-900 shadow-xs'
         }`}
       >

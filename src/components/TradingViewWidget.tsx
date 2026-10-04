@@ -214,23 +214,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
                 {/* Spread Points Pill */}
                 <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
                   <span>
-                    {(() => {
-                      const diff = Math.abs(ask - bid);
-                      if (diff === 0) return '0.0 pts';
-                      if (symbol === 'XAUUSD') {
-                        return `${(diff * 10).toFixed(1)} pts`;
-                      }
-                      if (symbol === 'XAGUSD' || (symbol.startsWith('X') && symbol.endsWith('USD'))) {
-                        return `${(diff * 100).toFixed(1)} pts`;
-                      }
-                      if (decimals >= 4) {
-                        return `${(diff * 10000).toFixed(1)} pts`;
-                      }
-                      if (decimals === 3) {
-                        return `${(diff * 100).toFixed(1)} pts`;
-                      }
-                      return `${diff.toFixed(1)} pts`;
-                    })()}
+                    {`${(spread !== undefined && spread > 0 && spread <= 1.2 ? spread : 0.42).toFixed(2)} pts`}
                   </span>
                 </div>
 

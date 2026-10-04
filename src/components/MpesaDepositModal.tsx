@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Coins,
   CreditCard,
+  Building2,
   Check,
   Copy,
   ExternalLink,
@@ -19,6 +20,8 @@ import {
   usdToKes,
   kesToUsd,
   USD_KES_RATE,
+  USD_KES_WITHDRAW_RATE,
+  WELL_KNOWN_AFRICAN_BANKS,
   MpesaPaymentResponse,
 } from '../services/hashbackService';
 import { supabaseService } from '../services/supabaseService';
@@ -82,13 +85,16 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   onDepositComplete,
   isDarkMode = false,
 }) => {
-  // Method selection: 'mpesa' | 'crypto' | 'card'
-  const [activeTab, setActiveTab] = useState<'mpesa' | 'crypto' | 'card'>('mpesa');
+  // Method selection: 'mpesa' | 'bank' | 'crypto' | 'card'
+  const [activeTab, setActiveTab] = useState<'mpesa' | 'bank' | 'crypto' | 'card'>('mpesa');
 
   // Input states - Minimum deposit is strictly $16
   const [amountInput, setAmountInput] = useState<string>('16');
   const [phoneInput, setPhoneInput] = useState<string>('0712345678');
   const [targetAccount, setTargetAccount] = useState<string>(defaultTarget);
+  const [selectedBankId, setSelectedBankId] = useState<string>(WELL_KNOWN_AFRICAN_BANKS[0].id);
+  const [bankRefInput, setBankRefInput] = useState<string>('');
+  const [bankSubmitted, setBankSubmitted] = useState<boolean>(false);
 
   // Crypto state
   const [selectedCrypto, setSelectedCrypto] = useState<'BTC' | 'ETH' | 'USDT'>('USDT');
@@ -416,22 +422,38 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             </p>
           </div>
 
-          {/* Method Tabs: M-PESA | Crypto | Card */}
-          <div className="grid grid-cols-3 gap-2 p-1.5 bg-slate-100 dark:bg-neutral-800/80 rounded-2xl mb-5">
+          {/* Method Tabs: M-PESA | Bank | Crypto | Card */}
+          <div className="grid grid-cols-4 gap-1.5 p-1.5 bg-slate-100 dark:bg-neutral-800/80 rounded-2xl mb-5">
             <button
               type="button"
               onClick={() => {
                 setActiveTab('mpesa');
                 setErrorMessage(null);
               }}
-              className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              className={`py-2.5 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                 activeTab === 'mpesa'
                   ? 'bg-[#0066FF] text-white shadow-sm font-bold'
                   : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Phone className="w-3.5 h-3.5" />
+              <Phone className="w-3.5 h-3.5 shrink-0" />
               <span>M-PESA</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('bank');
+                setErrorMessage(null);
+              }}
+              className={`py-2.5 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                activeTab === 'bank'
+                  ? 'bg-[#0066FF] text-white shadow-sm font-bold'
+                  : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Banks</span>
             </button>
 
             <button
@@ -443,13 +465,13 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   setAmountInput('50');
                 }
               }}
-              className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+              className={`py-2.5 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                 activeTab === 'crypto'
                   ? 'bg-[#0066FF] text-white shadow-sm font-bold'
                   : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <Coins className="w-3.5 h-3.5" />
+              <Coins className="w-3.5 h-3.5 shrink-0" />
               <span>Crypto</span>
             </button>
 
@@ -459,15 +481,14 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 setActiveTab('card');
                 setErrorMessage(null);
               }}
-              className={`py-2.5 px-2.5 rounded-xl text-xs sm:text-sm font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
+              className={`py-2.5 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                 activeTab === 'card'
                   ? 'bg-[#0066FF] text-white shadow-sm font-bold'
                   : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              <CreditCard className="w-3.5 h-3.5" />
+              <CreditCard className="w-3.5 h-3.5 shrink-0" />
               <span>Card</span>
-              <span className="text-[9px] px-1 py-0.5 bg-amber-500/20 text-amber-500 dark:text-amber-400 rounded font-black tracking-tight ml-0.5">Soon</span>
             </button>
           </div>
 
@@ -614,6 +635,134 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   )}
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* TAB 1B: KENYA & AFRICA BANK DEPOSIT */}
+          {activeTab === 'bank' && (
+            <div
+              className={`border rounded-2xl p-5 sm:p-6 space-y-4 transition-colors ${
+                isDarkMode ? 'border-neutral-800 bg-[#161922]' : 'border-slate-200 bg-white'
+              }`}
+            >
+              <div className="text-center">
+                <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-950/50 text-[#0066FF] flex items-center justify-center mx-auto mb-2">
+                  <Building2 className="w-5 h-5 stroke-[2.2]" />
+                </div>
+                <h3 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white">
+                  Kenya &amp; Africa Bank Deposit
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
+                  Deposit Rate: 1 USD = {USD_KES_RATE} KES • Withdrawal Rate: 1 USD = {USD_KES_WITHDRAW_RATE} KES
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1.5">
+                  Select Partner Bank (Kenya &amp; Africa)
+                </label>
+                <select
+                  value={selectedBankId}
+                  onChange={(e) => setSelectedBankId(e.target.value)}
+                  className={`w-full border rounded-xl px-3 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                    isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+                  }`}
+                >
+                  {WELL_KNOWN_AFRICAN_BANKS.map((bank) => (
+                    <option key={bank.id} value={bank.id}>
+                      {bank.name} ({bank.country}) — Paybill: {bank.paybill}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Bank Paybill / Direct STK option */}
+              {(() => {
+                const chosenBank =
+                  WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === selectedBankId) ||
+                  WELL_KNOWN_AFRICAN_BANKS[0];
+                return (
+                  <div
+                    className={`p-3.5 rounded-xl border space-y-2 text-xs ${
+                      isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-medium">Bank Name:</span>
+                      <span className="font-bold text-slate-900 dark:text-white">{chosenBank.name}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-medium">Paybill / Routing:</span>
+                      <span className="font-mono font-bold text-[#0066FF]">{chosenBank.paybill}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-medium">SWIFT / BIC:</span>
+                      <span className="font-mono font-semibold text-slate-700 dark:text-neutral-300">{chosenBank.swift}</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
+                      Amount (USD) <span className="text-[#0066FF]">*Min $16</span>
+                    </label>
+                    <span className="text-[11px] font-mono font-bold text-emerald-500">
+                      KES {numKes.toLocaleString()}
+                    </span>
+                  </div>
+                  <input
+                    type="number"
+                    min="16"
+                    value={amountInput}
+                    onChange={(e) => {
+                      setAmountInput(e.target.value);
+                      setErrorMessage(null);
+                    }}
+                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+                    }`}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                    Mobile / Bank Linked Phone
+                  </label>
+                  <input
+                    type="tel"
+                    placeholder="0712345678"
+                    value={phoneInput}
+                    onChange={(e) => {
+                      setPhoneInput(e.target.value);
+                      setErrorMessage(null);
+                    }}
+                    className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-medium focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-white border-slate-200 text-slate-900'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isProcessingStk}
+                onClick={handleDepositNow}
+                className="w-full py-3.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs sm:text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isProcessingStk ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Initiating Bank / STK Settlement...</span>
+                  </>
+                ) : (
+                  <span>
+                    Deposit KES {numKes.toLocaleString()} (${numUsd || 16}) via{' '}
+                    {WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === selectedBankId)?.shortName || 'Bank'}
+                  </span>
+                )}
+              </button>
             </div>
           )}
 

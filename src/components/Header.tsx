@@ -43,6 +43,7 @@ interface HeaderProps {
   activeTab?: ActiveTab;
   notifications: Array<{ id: string; title: string; time: string; read: boolean }>;
   onMarkNotificationsRead: () => void;
+  onToggleNotificationRead?: (id: string) => void;
   onOpenMenuDrawer?: () => void;
   currentUser?: UserAuthProfile | null;
   onSignOut?: () => void;
@@ -71,6 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
   activeTab,
   notifications,
   onMarkNotificationsRead,
+  onToggleNotificationRead,
   onOpenMenuDrawer,
   currentUser,
   onSignOut,
@@ -105,7 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header
       id="hfm-main-header"
-      className={`sticky top-0 z-40 w-full border-b px-2 sm:px-4 py-1.5 sm:py-2 flex items-center justify-between shadow-xs transition-colors duration-200 ${
+      className={`pwa-safe-top sticky top-0 z-40 w-full border-b px-2 sm:px-4 pb-1.5 sm:pb-2 flex items-center justify-between shadow-xs transition-colors duration-200 ${
         isDarkMode
           ? 'bg-[#111317] border-neutral-800 text-white'
           : 'bg-white border-neutral-200 text-neutral-900 shadow-xs'
@@ -142,7 +144,7 @@ export const Header: React.FC<HeaderProps> = ({
             { id: 'markets', label: 'Markets' },
             { id: 'trade', label: 'Trade' },
             { id: 'trades', label: 'Positions' },
-            { id: 'hfcopy', label: 'Bots & EAs' },
+            { id: 'bots', label: 'Bots & EAs' },
             { id: 'news', label: 'News' },
             { id: 'wallet', label: 'Wallet' },
             { id: 'account', label: 'Accounts' },
@@ -432,7 +434,6 @@ export const Header: React.FC<HeaderProps> = ({
             id="notifications-bell-btn"
             onClick={() => {
               setShowNotificationDrawer(!showNotificationDrawer);
-              if (unreadCount > 0) onMarkNotificationsRead();
             }}
             className={`p-1.5 sm:p-2 rounded-lg transition-colors border relative shrink-0 cursor-pointer ${
               isDarkMode
@@ -443,7 +444,7 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Bell className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 w-4 h-4 bg-[#E51937] text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-pulse">
+              <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-[#E51937] text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-pulse">
                 {unreadCount}
               </span>
             )}
@@ -452,16 +453,29 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Notifications Drawer - Mobile Responsive */}
           {showNotificationDrawer && (
             <div
-              className={`fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-13 sm:top-full sm:mt-2 sm:w-80 border rounded-xl shadow-2xl p-3 z-50 text-xs ${
+              className={`fixed sm:absolute left-3 right-3 sm:left-auto sm:right-0 top-13 sm:top-full sm:mt-2 sm:w-88 border rounded-xl shadow-2xl p-3 z-50 text-xs ${
                 isDarkMode ? 'bg-[#1A1D24] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
               }`}
             >
               <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-700/50">
                 <span className="font-bold flex items-center gap-1.5 text-slate-900 dark:text-white">
                   <Bell className="w-3.5 h-3.5 text-[#E51937]" />
-                  Notifications &amp; Activity
+                  <span>Notifications</span>
+                  {unreadCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-[#E51937]/15 text-[#E51937] text-[10px] font-extrabold">
+                      {unreadCount} unread
+                    </span>
+                  )}
                 </span>
                 <div className="flex items-center gap-2">
+                  {unreadCount > 0 && (
+                    <button
+                      onClick={() => onMarkNotificationsRead()}
+                      className="text-[11px] text-emerald-500 hover:underline font-bold cursor-pointer"
+                    >
+                      Mark all read
+                    </button>
+                  )}
                   {onOpenPriceAlerts && (
                     <button
                       onClick={() => {
@@ -483,22 +497,62 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-2 mt-2 max-h-60 overflow-y-auto">
-                {notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    className={`p-2 border rounded-lg text-left ${
-                      isDarkMode
-                        ? 'bg-neutral-900/80 border-neutral-800'
-                        : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <p className="text-xs font-medium">{n.title}</p>
-                    <span className="text-[10px] text-neutral-500 font-mono mt-0.5 block">
-                      {n.time}
-                    </span>
+              <div className="space-y-2 mt-2 max-h-72 overflow-y-auto">
+                {notifications.length === 0 ? (
+                  <div className="py-6 text-center text-neutral-500 text-xs">
+                    No notifications yet
                   </div>
-                ))}
+                ) : (
+                  notifications.map((n) => (
+                    <div
+                      key={n.id}
+                      onClick={() => onToggleNotificationRead && onToggleNotificationRead(n.id)}
+                      className={`p-2.5 border rounded-lg text-left transition-colors cursor-pointer ${
+                        !n.read
+                          ? isDarkMode
+                            ? 'bg-[#E51937]/10 border-[#E51937]/40'
+                            : 'bg-red-50/70 border-red-200'
+                          : isDarkMode
+                          ? 'bg-neutral-900/80 border-neutral-800'
+                          : 'bg-slate-50 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-1.5">
+                          {!n.read && (
+                            <span className="w-2 h-2 rounded-full bg-[#E51937] shrink-0 mt-1" />
+                          )}
+                          <p className={`text-xs ${!n.read ? 'font-bold' : 'font-medium'}`}>
+                            {n.title}
+                          </p>
+                        </div>
+                        {onToggleNotificationRead && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleNotificationRead(n.id);
+                            }}
+                            className={`text-[10px] font-semibold shrink-0 px-1.5 py-0.5 rounded border cursor-pointer ${
+                              !n.read
+                                ? isDarkMode
+                                  ? 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'
+                                  : 'border-slate-300 text-slate-700 hover:bg-white'
+                                : isDarkMode
+                                ? 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
+                                : 'border-slate-200 text-slate-500 hover:text-slate-800'
+                            }`}
+                          >
+                            {!n.read ? 'Mark read' : 'Mark unread'}
+                          </button>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-neutral-500 font-mono mt-1 block">
+                        {n.time}
+                      </span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}

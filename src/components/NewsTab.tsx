@@ -34,11 +34,11 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
 
-  const fetchData = async () => {
+  const fetchData = async (forceRefresh: boolean = false) => {
     setIsLoading(true);
     try {
       const [newsData, calData] = await Promise.all([
-        marketNewsService.getLatestNews(),
+        marketNewsService.getLatestNews(forceRefresh),
         marketNewsService.getCalendarEvents(),
       ]);
       setNews(newsData);
@@ -52,8 +52,8 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 60000); // 1 minute auto refresh
+    fetchData(true);
+    const interval = setInterval(() => fetchData(true), 25000); // 25s live rotation & feed update
     return () => clearInterval(interval);
   }, []);
 
@@ -148,7 +148,7 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
           </div>
 
           <button
-            onClick={fetchData}
+            onClick={() => fetchData(true)}
             disabled={isLoading}
             className={`p-2 rounded-xl border transition-all cursor-pointer ${
               isDarkMode

@@ -176,10 +176,12 @@ export const TradeTab: React.FC<TradeTabProps> = ({
     }
   }, [tickDirection]);
 
-  // Live spread calculation in exact pips
+  // Live spread calculation in exact pips (dynamic 0.something up to max 1.2)
   const liveSpreadPips = (
-    Math.abs(currentInstrument.ask - currentInstrument.bid) * currentInstrument.pipMultiplier
-  ).toFixed(1);
+    currentInstrument.spread > 0 && currentInstrument.spread <= 1.2
+      ? currentInstrument.spread
+      : Math.min(1.2, Math.max(0.18, Math.abs(currentInstrument.ask - currentInstrument.bid)))
+  ).toFixed(2);
 
   // Calculate Pip value and required margin
   const leverageNum = parseInt(account?.leverage ? account.leverage.split(':')[1] || '500' : '500', 10);
@@ -392,7 +394,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                 isDarkMode ? 'text-neutral-200' : 'text-slate-700'
               }`}
             >
-              {currentInstrument.spread.toFixed(1)} pips
+              {liveSpreadPips} pips
             </span>
           </div>
 

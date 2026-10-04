@@ -7,7 +7,32 @@
 
 export const HASHBACK_ACCOUNT_ID = 'HP068635';
 export const HASHBACK_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_HASHBACK_API_KEY) || '';
-export const USD_KES_RATE = 125.67;
+export const USD_KES_RATE = 125.67; // Deposit Rate: 1 USD = 125.67 KES
+export const USD_KES_WITHDRAW_RATE = 124.65; // Withdrawal Rate: 1 USD = 124.65 KES (below deposit rate)
+
+export interface AfricanBankOption {
+  id: string;
+  name: string;
+  shortName: string;
+  country: string;
+  paybill: string;
+  swiftCode: string;
+}
+
+export const WELL_KNOWN_AFRICAN_BANKS: AfricanBankOption[] = [
+  { id: 'equity', name: 'Equity Bank (Kenya & Africa)', shortName: 'Equity Bank', country: 'Kenya / East Africa', paybill: '247247', swiftCode: 'EQBLKENA' },
+  { id: 'kcb', name: 'KCB Bank (Kenya Commercial Bank)', shortName: 'KCB Bank', country: 'Kenya / East Africa', paybill: '522522', swiftCode: 'KCBLKENX' },
+  { id: 'coop', name: 'Co-operative Bank of Kenya', shortName: 'Co-op Bank', country: 'Kenya', paybill: '400200', swiftCode: 'KCOOKENA' },
+  { id: 'ncba', name: 'NCBA Bank Kenya', shortName: 'NCBA Bank', country: 'Kenya / East Africa', paybill: '880100', swiftCode: 'CBAFKENX' },
+  { id: 'absa', name: 'Absa Bank (Kenya & Africa)', shortName: 'Absa Bank', country: 'Kenya / Pan-Africa', paybill: '303030', swiftCode: 'BARCKENX' },
+  { id: 'stanchart', name: 'Standard Chartered Bank', shortName: 'Standard Chartered', country: 'Kenya / Africa', paybill: '329329', swiftCode: 'SCBLKENX' },
+  { id: 'stanbic', name: 'Stanbic Bank (Standard Bank Group)', shortName: 'Stanbic Bank', country: 'Kenya / Pan-Africa', paybill: '600100', swiftCode: 'SBICKENX' },
+  { id: 'im', name: 'I&M Bank', shortName: 'I&M Bank', country: 'Kenya / East Africa', paybill: '542542', swiftCode: 'IMBLKENA' },
+  { id: 'dtb', name: 'DTB (Diamond Trust Bank)', shortName: 'DTB Bank', country: 'Kenya / East Africa', paybill: '516600', swiftCode: 'DTKEKENA' },
+  { id: 'family', name: 'Family Bank Kenya', shortName: 'Family Bank', country: 'Kenya', paybill: '222111', swiftCode: 'FABLKENA' },
+  { id: 'ecobank', name: 'Ecobank (Pan-African)', shortName: 'Ecobank', country: 'Pan-Africa', paybill: '700200', swiftCode: 'ECOCKENA' },
+  { id: 'uba', name: 'UBA (United Bank for Africa)', shortName: 'UBA Africa', country: 'Pan-Africa', paybill: '559900', swiftCode: 'UNAFKENA' },
+];
 
 export interface MpesaPaymentRequest {
   phone: string;

@@ -347,71 +347,87 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
           <div className={`rounded-2xl border p-4 shadow-xl ${
             isDarkMode
               ? 'bg-gradient-to-br from-neutral-900 to-[#191D26] border-neutral-800 text-white'
-              : 'bg-gradient-to-br from-slate-900 to-slate-800 border-slate-700 text-white shadow-md'
+              : 'bg-slate-50 border-slate-200 text-slate-900 shadow-sm'
           }`}>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-300 block mb-3">
+            <span className={`text-[10px] font-bold uppercase tracking-wider block mb-3 ${
+              isDarkMode ? 'text-neutral-300' : 'text-slate-600'
+            }`}>
               Institutional Mathematical Output
             </span>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
               {/* Position Size */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
-                <span className="text-[10px] text-neutral-300 block">Recommended Lots</span>
-                <span className="text-xl font-black font-mono text-[#ff4d67]">
+              <div className={`p-3 rounded-xl border ${
+                isDarkMode ? 'bg-neutral-950/70 border-neutral-700/50' : 'bg-white border-slate-200'
+              }`}>
+                <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>Recommended Lots</span>
+                <span className="text-xl font-black font-mono text-[#E51937]">
                   {roundedLots.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-400 block mt-0.5">
+                <span className={`text-[9px] block mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                   Standard Lots ({roundedLots * 100000 >= 1000 ? `${(roundedLots * 100).toFixed(0)}k units` : 'Units'})
                 </span>
               </div>
 
               {/* Pip Value */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
-                <span className="text-[10px] text-neutral-300 block">Pip Value ($)</span>
-                <span className="text-xl font-black font-mono text-emerald-400">
+              <div className={`p-3 rounded-xl border ${
+                isDarkMode ? 'bg-neutral-950/70 border-neutral-700/50' : 'bg-white border-slate-200'
+              }`}>
+                <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>Pip Value ($)</span>
+                <span className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
                   ${activePipValue.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-400 block mt-0.5">per pip movement</span>
+                <span className={`text-[9px] block mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>per pip movement</span>
               </div>
 
               {/* Total Risk */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
-                <span className="text-[10px] text-neutral-300 block">Capital at Risk</span>
-                <span className="text-xl font-black font-mono text-rose-400">
+              <div className={`p-3 rounded-xl border ${
+                isDarkMode ? 'bg-neutral-950/70 border-neutral-700/50' : 'bg-white border-slate-200'
+              }`}>
+                <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>Capital at Risk</span>
+                <span className="text-xl font-black font-mono text-rose-600 dark:text-rose-400">
                   ${riskAmountUSD.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-400 block mt-0.5">
+                <span className={`text-[9px] block mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                   {((riskAmountUSD / accountBalance) * 100).toFixed(1)}% of balance
                 </span>
               </div>
 
               {/* Required Margin */}
-              <div className="p-3 rounded-xl bg-neutral-950/70 border border-neutral-700/50">
-                <span className="text-[10px] text-neutral-300 block">Required Margin</span>
-                <span className="text-xl font-black font-mono text-sky-400">
+              <div className={`p-3 rounded-xl border ${
+                isDarkMode ? 'bg-neutral-950/70 border-neutral-700/50' : 'bg-white border-slate-200'
+              }`}>
+                <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>Required Margin</span>
+                <span className="text-xl font-black font-mono text-sky-600 dark:text-sky-400">
                   ${requiredMargin.toFixed(2)}
                 </span>
-                <span className="text-[9px] text-neutral-400 block mt-0.5">at 1:{leverage}</span>
+                <span className={`text-[9px] block mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>at 1:{leverage}</span>
               </div>
             </div>
 
             {/* Risk to Reward Matrix */}
-            <div className="mt-4 pt-3 border-t border-neutral-700/60">
-              <span className="text-[10px] text-neutral-300 font-bold block mb-2">
+            <div className={`mt-4 pt-3 border-t ${isDarkMode ? 'border-neutral-700/60' : 'border-slate-200'}`}>
+              <span className={`text-[10px] font-bold block mb-2 ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
                 Risk-To-Reward Target Projections
               </span>
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
-                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
-                  <span className="text-[10px] text-neutral-300 block">1:1 Target ({stopLossPips}p)</span>
-                  <span className="font-mono font-bold text-emerald-400">+${reward1to1.toFixed(2)}</span>
+                <div className={`p-2 rounded-lg border ${
+                  isDarkMode ? 'bg-neutral-950/60 border-neutral-700/50' : 'bg-white border-slate-200'
+                }`}>
+                  <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>1:1 Target ({stopLossPips}p)</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">+${reward1to1.toFixed(2)}</span>
                 </div>
-                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
-                  <span className="text-[10px] text-neutral-300 block">1:2 Target ({stopLossPips * 2}p)</span>
-                  <span className="font-mono font-bold text-emerald-400">+${reward1to2.toFixed(2)}</span>
+                <div className={`p-2 rounded-lg border ${
+                  isDarkMode ? 'bg-neutral-950/60 border-neutral-700/50' : 'bg-white border-slate-200'
+                }`}>
+                  <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>1:2 Target ({stopLossPips * 2}p)</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">+${reward1to2.toFixed(2)}</span>
                 </div>
-                <div className="p-2 rounded-lg bg-neutral-950/60 border border-neutral-700/50">
-                  <span className="text-[10px] text-neutral-300 block">1:3 Target ({stopLossPips * 3}p)</span>
-                  <span className="font-mono font-bold text-emerald-400">+${reward1to3.toFixed(2)}</span>
+                <div className={`p-2 rounded-lg border ${
+                  isDarkMode ? 'bg-neutral-950/60 border-neutral-700/50' : 'bg-white border-slate-200'
+                }`}>
+                  <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>1:3 Target ({stopLossPips * 3}p)</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">+${reward1to3.toFixed(2)}</span>
                 </div>
               </div>
             </div>

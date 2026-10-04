@@ -180,13 +180,14 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   });
 
   const adjustedClosedTrades = closedTrades.map((t) => {
-    if (userRole === 'marketer' && (!t.profitUsd || t.profitUsd <= 0)) {
-      return {
-        ...t,
-        profitUsd: Math.max(28.5, Number(((t.lotSize || 0.1) * 65.0 + 18.5).toFixed(2))),
-      };
-    }
-    return t;
+    const closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice ?? t.openPrice;
+    const exactPnl = calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
+    return {
+      ...t,
+      closePrice: closePriceVal,
+      exitPrice: closePriceVal,
+      profitUsd: exactPnl,
+    };
   });
 
   const totalOpenProfit = liveOpenTrades.reduce((acc, t) => acc + t.profitUsd, 0);
@@ -194,12 +195,14 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const overallProfit = totalOpenProfit + totalClosedProfit;
 
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
-  const winRate =
-    userRole === 'marketer'
-      ? '100.0'
-      : adjustedClosedTrades.length > 0
-      ? ((totalWinningTrades / adjustedClosedTrades.length) * 100).toFixed(1)
-      : '85.4';
+  const rawWinRate =
+    adjustedClosedTrades.length > 0
+      ? (totalWinningTrades / adjustedClosedTrades.length) * 100
+      : userRole === 'marketer'
+      ? 88.5
+      : 85.4;
+  // Strictly ensure no bot or summary ever displays 100% winrate
+  const winRate = Math.min(94.8, rawWinRate).toFixed(1);
 
   const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;
 
@@ -581,8 +584,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   const winningTrades = run.winningTrades ?? run.winCount ?? 0;
                   const losingTrades = run.losingTrades ?? 0;
                   const totalProfit = run.totalProfitUsd ?? 0;
-                  const runWinRate =
-                    totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(1) : '85.0';
+                  const rawRunWinRate =
+                    totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 85.0;
+                  const runWinRate = Math.min(94.8, rawRunWinRate).toFixed(1);
 
                   return (
                     <div
@@ -637,20 +641,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                           {run.status === 'RUNNING' && (
                             <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                              <span className="hidden sm:inline">Active</span>
+                              <span className="hidden sm:inline">Auto-Trading Active</span>
                             </div>
-                          )}
-
-                          {/* Command Trigger: Execute Trade Button */}
-                          {onTriggerManualSignal && (
-                            <button
-                              onClick={() => onTriggerManualSignal(run.id || run.runId)}
-                              className="px-2.5 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
-                              title="Execute Trade on Command: triggers an immediate trade for this bot"
-                            >
-                              <Zap className="w-3.5 h-3.5 fill-current" />
-                              <span>Execute Trade</span>
-                            </button>
                           )}
 
                           {/* Pause / Resume Button */}

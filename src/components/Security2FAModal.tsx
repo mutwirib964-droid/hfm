@@ -73,19 +73,31 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
         }`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-800/80">
+        <div
+          className={`flex items-center justify-between px-5 py-4 border-b ${
+            isDarkMode ? 'border-neutral-800/80' : 'border-slate-200 bg-slate-50'
+          }`}
+        >
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-400">
+            <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-500">
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold">Account Security & 2FA</h2>
-              <p className="text-xs text-neutral-400">Two-Factor Authentication Protection</p>
+              <h2 className={`text-base font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                Account Security &amp; 2FA
+              </h2>
+              <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                Two-Factor Authentication Protection
+              </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors"
+            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+              isDarkMode
+                ? 'hover:bg-neutral-800 text-neutral-400 hover:text-white'
+                : 'hover:bg-slate-200 text-slate-500 hover:text-slate-900'
+            }`}
           >
             <X className="w-5 h-5" />
           </button>
@@ -94,14 +106,14 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
         {/* Body */}
         <div className="p-5 space-y-4 text-xs">
           {successMsg && (
-            <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 rounded-xl flex items-center gap-2 font-bold">
+            <div className="p-3 bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 rounded-xl flex items-center gap-2 font-bold">
               <CheckCircle2 className="w-4 h-4 shrink-0" />
               <span>{successMsg}</span>
             </div>
           )}
 
           {errorMsg && (
-            <div className="p-3 bg-rose-500/15 border border-rose-500/30 text-rose-400 rounded-xl flex items-center gap-2 font-bold">
+            <div className="p-3 bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 rounded-xl flex items-center gap-2 font-bold">
               <AlertTriangle className="w-4 h-4 shrink-0" />
               <span>{errorMsg}</span>
             </div>
@@ -109,14 +121,28 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
 
           {step === 'status' ? (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-neutral-900/90 border border-neutral-800 flex items-center justify-between">
+              <div
+                className={`p-4 rounded-xl border flex items-center justify-between ${
+                  isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                }`}
+              >
                 <div className="flex items-center gap-3">
-                  <div className={`p-2.5 rounded-xl ${twoFactorEnabled ? 'bg-emerald-500/15 text-emerald-400' : 'bg-neutral-800 text-neutral-400'}`}>
+                  <div
+                    className={`p-2.5 rounded-xl ${
+                      twoFactorEnabled
+                        ? 'bg-emerald-500/15 text-emerald-500'
+                        : isDarkMode
+                        ? 'bg-neutral-800 text-neutral-400'
+                        : 'bg-slate-200 text-slate-600'
+                    }`}
+                  >
                     <Smartphone className="w-5 h-5" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-bold">Authenticator App (TOTP)</h3>
-                    <p className="text-neutral-400 text-[11px]">
+                    <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                      Authenticator App (TOTP)
+                    </h3>
+                    <p className={`text-[11px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                       {twoFactorEnabled ? 'Currently protecting logins & withdrawals' : 'Disabled — Not protected'}
                     </p>
                   </div>
@@ -125,8 +151,10 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
                 <span
                   className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
                     twoFactorEnabled
-                      ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                      : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
+                      : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                      : 'bg-slate-200 text-slate-600 border border-slate-300'
                   }`}
                 >
                   {twoFactorEnabled ? 'ACTIVE' : 'OFF'}
@@ -135,36 +163,46 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
 
               {twoFactorEnabled ? (
                 <div className="space-y-3">
-                  <div className="p-3 rounded-xl bg-neutral-900 border border-neutral-800 space-y-2">
-                    <span className="font-bold text-neutral-300 block">Security Features Enabled:</span>
-                    <ul className="space-y-1.5 text-[11px] text-neutral-400">
+                  <div
+                    className={`p-3 rounded-xl border space-y-2 ${
+                      isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <span className={`font-bold block ${isDarkMode ? 'text-neutral-300' : 'text-slate-800'}`}>
+                      Security Features Enabled:
+                    </span>
+                    <ul className={`space-y-1.5 text-[11px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                       <li className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                         <span>Withdrawal authorization requires 6-digit TOTP code</span>
                       </li>
                       <li className="flex items-center gap-1.5">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Password changes & profile modifications protected</span>
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>Password changes &amp; profile modifications protected</span>
                       </li>
                     </ul>
                   </div>
 
                   <button
                     onClick={handleDisable2FA}
-                    className="w-full py-2.5 bg-neutral-800 hover:bg-rose-950/70 text-rose-400 border border-rose-900/40 rounded-xl font-bold transition-colors"
+                    className={`w-full py-2.5 border rounded-xl font-bold transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-neutral-800 hover:bg-rose-950/70 text-rose-400 border-rose-900/40'
+                        : 'bg-rose-50 hover:bg-rose-100 text-rose-600 border-rose-200'
+                    }`}
                   >
                     Deactivate Two-Factor Authentication
                   </button>
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <p className="text-neutral-400 leading-relaxed">
+                  <p className={`leading-relaxed ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Protect your funds, trades, and personal data from unauthorized access by requiring a time-based 6-digit code on sensitive operations.
                   </p>
 
                   <button
                     onClick={() => setStep('setup')}
-                    className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white rounded-xl font-bold transition-all shadow-md active:scale-95"
+                    className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white rounded-xl font-bold transition-all shadow-md active:scale-95 cursor-pointer"
                   >
                     Set Up Two-Factor Authentication
                   </button>
@@ -174,24 +212,32 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
           ) : (
             /* Setup Flow */
             <div className="space-y-4">
-              <div className="p-3 bg-neutral-900 rounded-xl border border-neutral-800 space-y-2 text-center">
-                <span className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider block">
+              <div
+                className={`p-3 rounded-xl border space-y-2 text-center ${
+                  isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                }`}
+              >
+                <span className={`text-[10px] font-bold uppercase tracking-wider block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                   Step 1: Link Secret Key in Google Authenticator
                 </span>
-                <div className="font-mono text-base font-black text-amber-400 tracking-widest bg-black/40 p-2.5 rounded-lg border border-neutral-800 flex items-center justify-center gap-2">
+                <div
+                  className={`font-mono text-base font-black text-amber-600 dark:text-amber-400 tracking-widest p-2.5 rounded-lg border flex items-center justify-center gap-2 ${
+                    isDarkMode ? 'bg-black/40 border-neutral-800' : 'bg-white border-slate-200'
+                  }`}
+                >
                   <span>{secretKey}</span>
                   <button
                     type="button"
                     onClick={handleCopySecret}
-                    className="text-neutral-400 hover:text-white"
+                    className={`cursor-pointer ${isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'}`}
                   >
-                    {copiedKey ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    {copiedKey ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
                   </button>
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <label className="font-bold text-neutral-300 block">
+                <label className={`font-bold block ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
                   Step 2: Enter the 6-digit code generated by your app
                 </label>
                 <input
@@ -200,7 +246,11 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
                   placeholder="000000"
                   value={authCode}
                   onChange={(e) => setAuthCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full bg-neutral-900 border border-neutral-700 rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest text-white focus:outline-none focus:border-[#E51937]"
+                  className={`w-full border rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest focus:outline-none focus:border-[#E51937] ${
+                    isDarkMode
+                      ? 'bg-neutral-900 border-neutral-700 text-white'
+                      : 'bg-slate-50 border-slate-300 text-slate-900'
+                  }`}
                 />
               </div>
 
@@ -208,16 +258,20 @@ export const Security2FAModal: React.FC<Security2FAModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setStep('status')}
-                  className="w-1/3 py-2.5 bg-neutral-800 text-neutral-300 rounded-xl font-bold hover:bg-neutral-700"
+                  className={`w-1/3 py-2.5 rounded-xl font-bold cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-300'
+                  }`}
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleVerifyAndActivate}
-                  className="flex-1 py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white rounded-xl font-bold transition-all shadow-md active:scale-95"
+                  className="flex-1 py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white rounded-xl font-bold transition-all shadow-md active:scale-95 cursor-pointer"
                 >
-                  Confirm & Protect
+                  Confirm &amp; Protect
                 </button>
               </div>
             </div>

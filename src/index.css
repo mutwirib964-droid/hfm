@@ -25,6 +25,24 @@
     touch-action: pan-y;
   }
 
+  /* Ensure iOS / Android Installed PWA (Standalone Mode) never clips top headers or bottom nav behind Notch / Dynamic Island / Home Bar */
+  .pwa-safe-top {
+    padding-top: max(env(safe-area-inset-top, 0px), 0.375rem);
+  }
+
+  .pwa-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  @media all and (display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui) {
+    .pwa-safe-top {
+      padding-top: max(env(safe-area-inset-top, 0px), 0.625rem) !important;
+    }
+    .pwa-safe-bottom {
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 0.5rem) !important;
+    }
+  }
+
   /* Prevent iOS Safari automatic auto-zoom when tapping inputs, selects, or textareas */
   @media screen and (max-width: 768px) {
     input, select, textarea {

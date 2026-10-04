@@ -80,19 +80,21 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex animate-fadeIn">
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity cursor-pointer"
-        onClick={onClose}
-      />
+    <>
+      {isOpen && (
+        <div className="fixed inset-0 z-50 flex animate-fadeIn">
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity cursor-pointer"
+            onClick={onClose}
+          />
 
-      {/* Drawer content (slides in from left) */}
-      <div
-        className={`relative w-[320px] max-w-[85vw] h-full flex flex-col z-50 shadow-2xl transition-colors duration-200 overflow-y-auto ${
-          isDarkMode ? 'bg-[#0E1116] text-white' : 'bg-white text-neutral-900'
-        }`}
-      >
+          {/* Drawer content (slides in from left) */}
+          <div
+            className={`relative w-[320px] max-w-[85vw] h-full flex flex-col z-50 shadow-2xl transition-colors duration-200 overflow-y-auto ${
+              isDarkMode ? 'bg-[#0E1116] text-white' : 'bg-white text-neutral-900'
+            }`}
+          >
         {/* Top Profile & Account Header */}
         <div
           className={`p-4 border-b relative ${
@@ -393,6 +395,8 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
           <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-mono">v4.8.0 (Equinix LD4)</span>
         </div>
       </div>
+        </div>
+      )}
 
       {/* Internal Interactive Modals (No external redirection) */}
       <RiskPipCalculatorModal
@@ -421,6 +425,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         isDarkMode={isDarkMode}
         currentUser={currentUser}
       />
-    </div>
+    </>
   );
 };

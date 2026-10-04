@@ -24,7 +24,12 @@ import {
 } from 'lucide-react';
 import { UserAuthProfile } from '../types';
 import { MpesaDepositModal } from './MpesaDepositModal';
-import { USD_KES_RATE, HASHBACK_ACCOUNT_ID } from '../services/hashbackService';
+import {
+  USD_KES_RATE,
+  USD_KES_WITHDRAW_RATE,
+  WELL_KNOWN_AFRICAN_BANKS,
+  HASHBACK_ACCOUNT_ID,
+} from '../services/hashbackService';
 
 interface WalletTabProps {
   accounts: TradingAccount[];
@@ -64,8 +69,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const liveAccounts = accounts.filter((a) => a.type === 'Live');
   const demoAccounts = accounts.filter((a) => a.type === 'Demo');
 
-  // Withdraw Form State - Strictly Minimum $35 for M-PESA, $50 for Crypto
-  const [withdrawMethod, setWithdrawMethod] = useState<'mpesa' | 'crypto'>('mpesa');
+  // Withdraw Form State - Strictly Minimum $35 for M-PESA/Bank, $50 for Crypto
+  const [withdrawMethod, setWithdrawMethod] = useState<'mpesa' | 'bank' | 'crypto'>('mpesa');
+  const [withdrawBankId, setWithdrawBankId] = useState<string>(WELL_KNOWN_AFRICAN_BANKS[0].id);
+  const [withdrawBankAccount, setWithdrawBankAccount] = useState<string>('');
+  const [withdrawBankHolder, setWithdrawBankHolder] = useState<string>(currentUser?.fullName || '');
   const [withdrawCryptoCoin, setWithdrawCryptoCoin] = useState<'BTC' | 'USDT' | 'ETH'>('BTC');
   const [withdrawCryptoAddress, setWithdrawCryptoAddress] = useState<string>('');
   const [withdrawAmount, setWithdrawAmount] = useState<number>(35);
@@ -180,7 +188,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   }, [withdrawStep]);
 
   // Open Withdraw Modal with smart source selection
-  const handleOpenWithdraw = (source?: string, method: 'mpesa' | 'crypto' = 'mpesa') => {
+  const handleOpenWithdraw = (source?: string, method: 'mpesa' | 'bank' | 'crypto' = 'mpesa') => {
     let resolvedSource = source || 'VTM Wallet';
     // If default VTM Wallet has insufficient funds (< $35) and a Live Account has funds, auto-select the funded Live Account
     if (!source || source === 'VTM Wallet') {
@@ -210,14 +218,24 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     setActiveModal(null);
   };
 
-  // Trigger Withdrawal (Validates min $35 for M-PESA, min $50 for Crypto; records PENDING for 3s then shifts to SUCCESSFUL automatically)
+  const selectedBankInfo =
+    WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === withdrawBankId) || WELL_KNOWN_AFRICAN_BANKS[0];
+
+  // Trigger Withdrawal (Validates min $35 for M-PESA/Bank, min $50 for Crypto; records PENDING for 3s then shifts to SUCCESSFUL automatically)
   const handleStartWithdrawal = () => {
     setWithdrawError(null);
     const maxAvailable = getWithdrawableBalance(withdrawSource);
+    const methodLabel =
+      withdrawMethod === 'crypto'
+        ? `Crypto Payout (${withdrawCryptoCoin})`
+        : withdrawMethod === 'bank'
+        ? `${selectedBankInfo.shortName} Transfer`
+        : 'Safaricom M-PESA B2C';
+
     if (maxAvailable <= 0) {
       setWithdrawError('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
       onWithdraw({
-        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
@@ -227,9 +245,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     }
     const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
     if (withdrawAmount < minRequired) {
-      setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : 'M-PESA'} is $${minRequired}.00 USD.`);
+      setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'M-PESA'} is $${minRequired}.00 USD.`);
       onWithdraw({
-        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
@@ -240,7 +258,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     if (withdrawAmount > maxAvailable) {
       setWithdrawError(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
       onWithdraw({
-        method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+        method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
@@ -252,17 +270,24 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       setWithdrawError(`Please enter a valid destination ${withdrawCryptoCoin} wallet address.`);
       return;
     }
+    if (withdrawMethod === 'bank' && (!withdrawBankAccount.trim() || withdrawBankAccount.trim().length < 6)) {
+      setWithdrawError(`Please enter a valid ${selectedBankInfo.shortName} account number.`);
+      return;
+    }
 
-    const receipt = withdrawMethod === 'crypto'
-      ? `TX-${withdrawCryptoCoin}-${Math.floor(100000000 + Math.random() * 900000000)}`
-      : `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
+    const receipt =
+      withdrawMethod === 'crypto'
+        ? `TX-${withdrawCryptoCoin}-${Math.floor(100000000 + Math.random() * 900000000)}`
+        : withdrawMethod === 'bank'
+        ? `BNK-${selectedBankInfo.id.toUpperCase()}-${Math.floor(10000000 + Math.random() * 90000000)}`
+        : `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
     setWithdrawReceipt(receipt);
     setWithdrawCountdown(3);
     setWithdrawStep('PROCESSING');
 
     // Immediately deduct from account and record as PENDING; App.tsx automatically transitions it to COMPLETED (SUCCESSFUL) after 3 seconds
     onWithdraw({
-      method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+      method: methodLabel,
       amount: Number(withdrawAmount.toFixed(2)),
       sourceAccount: withdrawSource,
       reference: receipt,
@@ -304,7 +329,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     (currentUser as any)?.phone ||
     '0712345678';
 
-  const exactKesToDisburse = withdrawAmount * USD_KES_RATE;
+  const exactKesToDisburse = Number((withdrawAmount * USD_KES_WITHDRAW_RATE).toFixed(2));
 
   return (
     <div id="vtm-wallet-tab" className="flex flex-col w-full pb-20 space-y-4 px-2 sm:px-4 pt-2">
@@ -432,70 +457,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <ArrowLeftRight className="w-4 h-4" />
                 <span>Transfer</span>
               </button>
-            </div>
-          </div>
-
-          {/* Clean Overview Card of Deposit & Withdrawal Gateways */}
-          <div
-            className={`p-4 rounded-2xl border transition-all ${
-              isDarkMode
-                ? 'bg-gradient-to-r from-neutral-900/90 via-[#141720] to-[#12141A] border-neutral-800'
-                : 'bg-white border-slate-200 shadow-sm'
-            }`}
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-800/40 dark:border-neutral-800">
-              <div>
-                <span className="text-[10px] uppercase tracking-wider font-extrabold text-[#0066FF]">
-                  Verified Gateways
-                </span>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
-                  Deposit &amp; Payout Options
-                </h4>
-              </div>
-              <span className="text-[10px] font-mono font-bold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
-                1 USD = {USD_KES_RATE} KES
-              </span>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 mt-3">
-              <div
-                onClick={() => {
-                  setDepositTarget('VTM One Wallet');
-                  setIsDepositModalOpen(true);
-                }}
-                className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all hover:border-[#0066FF] ${
-                  isDarkMode ? 'bg-neutral-900/50 border-neutral-800' : 'bg-slate-50 border-slate-200'
-                }`}
-              >
-                <div className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-neutral-200">
-                  <ArrowDownToLine className="w-3.5 h-3.5 text-[#0066FF]" />
-                  <span>Deposit</span>
-                </div>
-                <span className="text-[10px] text-slate-500 dark:text-neutral-400 block mt-1">
-                  M-Pesa • Crypto • Card (Soon)
-                </span>
-                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 block font-mono mt-0.5">
-                  Min: $16 / $50 BTC
-                </span>
-              </div>
-
-              <div
-                onClick={() => handleOpenWithdraw('VTM Wallet')}
-                className={`p-2.5 rounded-xl border text-xs cursor-pointer transition-all hover:border-[#E51937] ${
-                  isDarkMode ? 'bg-neutral-900/50 border-neutral-800' : 'bg-slate-50 border-slate-200'
-                }`}
-              >
-                <div className="flex items-center gap-1.5 font-bold text-slate-800 dark:text-neutral-200">
-                  <ArrowUpFromLine className="w-3.5 h-3.5 text-[#E51937]" />
-                  <span>Withdraw</span>
-                </div>
-                <span className="text-[10px] text-slate-500 dark:text-neutral-400 block mt-1">
-                  M-Pesa • Crypto Payout
-                </span>
-                <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 block font-mono mt-0.5">
-                  Min: $35.00 / $50.00
-                </span>
-              </div>
             </div>
           </div>
         </div>
@@ -751,23 +712,38 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               </button>
             </div>
 
-            {/* Method Tabs: M-PESA | Crypto */}
+            {/* Method Tabs: M-PESA | Bank (Kenya & Africa) | Crypto */}
             {withdrawStep === 'FORM' && (
-              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-neutral-900 rounded-xl">
+              <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 dark:bg-neutral-900 rounded-xl">
                 <button
                   type="button"
                   onClick={() => {
                     setWithdrawMethod('mpesa');
                     if (withdrawAmount < 35) setWithdrawAmount(35);
                   }}
-                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                     withdrawMethod === 'mpesa'
                       ? 'bg-[#00A34F] text-white shadow-xs'
                       : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
-                  <Smartphone className="w-3.5 h-3.5" />
-                  <span>M-PESA (Min $35)</span>
+                  <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">M-PESA</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setWithdrawMethod('bank');
+                    if (withdrawAmount < 35) setWithdrawAmount(35);
+                  }}
+                  className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
+                    withdrawMethod === 'bank'
+                      ? 'bg-[#0066FF] text-white shadow-xs'
+                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Building className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Bank</span>
                 </button>
                 <button
                   type="button"
@@ -775,14 +751,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     setWithdrawMethod('crypto');
                     if (withdrawAmount < 50) setWithdrawAmount(50);
                   }}
-                  className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                  className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                     withdrawMethod === 'crypto'
                       ? 'bg-amber-600 text-white shadow-xs'
                       : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
-                  <Coins className="w-3.5 h-3.5" />
-                  <span>Crypto (Min $50)</span>
+                  <Coins className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Crypto</span>
                 </button>
               </div>
             )}
@@ -800,11 +776,21 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 {withdrawMethod === 'mpesa' ? (
                   <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
                     <div className="flex items-center justify-between font-bold text-emerald-600 dark:text-emerald-400">
-                      <span>Safaricom M-PESA Payout Rate:</span>
-                      <span className="font-mono text-sm">1 USD = {USD_KES_RATE} KES</span>
+                      <span>Safaricom M-PESA Withdrawal Rate:</span>
+                      <span className="font-mono text-sm">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
                     </div>
                     <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number. 0% processing fee.
+                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number (Deposit Rate: {USD_KES_RATE} KES • Withdrawal Rate: {USD_KES_WITHDRAW_RATE} KES).
+                    </p>
+                  </div>
+                ) : withdrawMethod === 'bank' ? (
+                  <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs space-y-1">
+                    <div className="flex items-center justify-between font-bold text-blue-600 dark:text-blue-400">
+                      <span>Kenya &amp; Africa Bank Payout Rate:</span>
+                      <span className="font-mono text-sm">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
+                    </div>
+                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
+                      Instant Pesalink &amp; EFT settlement to major Kenyan and Pan-African banks (Equity, KCB, Co-op, NCBA, Absa, Stanbic, Standard Chartered, I&amp;M, DTB, Ecobank, UBA).
                     </p>
                   </div>
                 ) : (
@@ -876,7 +862,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 )}
 
-                {/* Recipient Field: Phone for M-PESA, Address for Crypto */}
+                {/* Recipient Field: Phone for M-PESA, Bank Selector for Bank, Address for Crypto */}
                 {withdrawMethod === 'mpesa' ? (
                   <div className={`p-2.5 rounded-xl border text-xs ${
                     isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
@@ -889,6 +875,57 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       <span className="font-mono font-bold text-slate-900 dark:text-white">
                         {userPhone}
                       </span>
+                    </div>
+                  </div>
+                ) : withdrawMethod === 'bank' ? (
+                  <div className="space-y-2.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                        Select Bank (Kenya &amp; Africa)
+                      </label>
+                      <select
+                        value={withdrawBankId}
+                        onChange={(e) => setWithdrawBankId(e.target.value)}
+                        className={`w-full border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                          isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                        }`}
+                      >
+                        {WELL_KNOWN_AFRICAN_BANKS.map((bank) => (
+                          <option key={bank.id} value={bank.id}>
+                            {bank.name} — Paybill {bank.paybill} ({bank.country})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                          Bank Account Number <span className="text-[#0066FF] font-bold">*Required</span>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 01109283746500"
+                          value={withdrawBankAccount}
+                          onChange={(e) => setWithdrawBankAccount(e.target.value)}
+                          className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                            isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                          }`}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                          Account Holder Name
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={currentUser?.fullName || 'Account Holder Name'}
+                          value={withdrawBankHolder}
+                          onChange={(e) => setWithdrawBankHolder(e.target.value)}
+                          className={`w-full border rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                            isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                          }`}
+                        />
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -974,18 +1011,20 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     </span>
                   </div>
 
-                  {withdrawMethod === 'mpesa' ? (
+                  {withdrawMethod === 'mpesa' || withdrawMethod === 'bank' ? (
                     <>
                       <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
                         <span className="text-slate-700 dark:text-neutral-200 font-bold">
-                          Exact Payout to Safaricom Line:
+                          {withdrawMethod === 'bank'
+                            ? `Exact Payout to ${selectedBankInfo.shortName}:`
+                            : 'Exact Payout to Safaricom Line:'}
                         </span>
                         <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-base">
                           KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
-                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString()}</strong> will be disbursed to your Safaricom M-PESA number ({userPhone}).
+                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> (Rate: 1 USD = {USD_KES_WITHDRAW_RATE} KES) will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
                       </p>
                     </>
                   ) : (
@@ -1147,8 +1186,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       </div>
 
                       <div className="flex justify-between items-center text-[10px] text-slate-400">
-                        <span>Exchange Rate:</span>
-                        <span className="font-mono">1 USD = {USD_KES_RATE} KES</span>
+                        <span>Withdrawal Exchange Rate:</span>
+                        <span className="font-mono">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
                       </div>
                     </>
                   ) : (

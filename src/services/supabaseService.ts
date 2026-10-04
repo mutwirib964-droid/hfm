@@ -1,6 +1,7 @@
-import { UserFinancialState, getUserStorageKey } from '../utils/financialStorage';
+import { UserFinancialState, getUserStorageKey, sanitizeRealTransactions } from '../utils/financialStorage';
 import { TradingAccount, Transaction, Position, PendingOrder, ClosedTrade } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
+import { calculateBotPnL, sanitizeBotTrades } from './botTradingService';
 
 export interface SupabaseConfig {
   url: string;
@@ -549,7 +550,7 @@ class SupabaseService {
             walletBalance: Number(r.wallet_balance || 0),
             accounts: Array.isArray(r.accounts) ? r.accounts : [],
             selectedAccountId: r.selected_account_id || null,
-            transactions: Array.isArray(r.transactions) ? r.transactions : [],
+            transactions: sanitizeRealTransactions(Array.isArray(r.transactions) ? r.transactions : []),
             lastUpdated: r.last_updated ? new Date(r.last_updated).getTime() : Date.now(),
           };
 
@@ -575,13 +576,12 @@ class SupabaseService {
           const isAdmin = this.isMasterAdminEmail(rawEmail);
           const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
           const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
-          const resolvedUid = isAdmin
+          let resolvedUid = isAdmin
             ? '84a1e1db-f302-4dac-a077-291128ae0cea'
             : row.uid || parsedHash.uid || uidByEmail[rawEmail] || '';
 
-          // Strictly skip any non-admin user that does not have a valid Supabase UID
           if (!isAdmin && !this.isValidUuid(resolvedUid)) {
-            return;
+            resolvedUid = this.deterministicUuidFromEmail(rawEmail);
           }
 
           const safeRole = isAdmin
@@ -941,14 +941,38 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
+
+    // Never overwrite existing cloud closedTrades with an empty array on initial mount/login
+    let mergedClosed = Array.isArray(data.closedTrades) ? [...data.closedTrades] : [];
+    try {
+      const existing = await this.fetchCloudStateRecord<{
+        closedTrades?: ClosedTrade[];
+      }>(user.email, 'STATE_TRADES');
+      if (existing && Array.isArray(existing.closedTrades) && existing.closedTrades.length > 0) {
+        const seenTickets = new Set(mergedClosed.map((t) => `${t.ticket}-${t.openTime}`));
+        for (const oldTrade of existing.closedTrades) {
+          const key = `${oldTrade.ticket}-${oldTrade.openTime}`;
+          if (!seenTickets.has(key)) {
+            seenTickets.add(key);
+            mergedClosed.push(oldTrade);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
+    const latestClosed = mergedClosed.slice(0, 50);
+
     return await this.saveCloudStateRecord(
       user.email,
       'STATE_TRADES',
-      `Synchronized ${data.positions.length} open positions, ${data.pendingOrders.length} pending orders, ${data.closedTrades.length} closed trades`,
+      `Synchronized ${data.positions.length} open positions, ${data.pendingOrders.length} pending orders, ${latestClosed.length} closed trades`,
       {
         positions: data.positions,
         pendingOrders: data.pendingOrders,
-        closedTrades: data.closedTrades.slice(0, 100),
+        closedTrades: latestClosed,
         accountNumber: data.accountNumber || user.accountNumber || '',
         updatedAt: Date.now(),
       }
@@ -963,17 +987,94 @@ class SupabaseService {
     closedTrades: ClosedTrade[];
   } | null> {
     if (!this.config || !user?.email) return null;
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
     const data = await this.fetchCloudStateRecord<{
       positions?: Position[];
       pendingOrders?: PendingOrder[];
       closedTrades?: ClosedTrade[];
-    }>(user.email, 'STATE_TRADES');
+    }>(cleanEmail, 'STATE_TRADES');
 
-    if (!data) return null;
+      const closedMap = new Map<string, ClosedTrade>();
+      if (data && Array.isArray(data.closedTrades)) {
+        for (const ct of data.closedTrades) {
+          if (ct && ct.symbol) {
+            const key = String(ct.ticket || ct.id);
+            const lots = Number(ct.lots || 0.01);
+            const openPrice = Number(ct.openPrice || 0);
+            const closePrice = Number(ct.closePrice ?? openPrice);
+            const side: 'BUY' | 'SELL' = ct.side === 'SELL' ? 'SELL' : 'BUY';
+            const exactPnl = calculateBotPnL(ct.symbol, side, openPrice, closePrice, lots);
+            closedMap.set(key, {
+              ...ct,
+              side,
+              lots,
+              openPrice,
+              closePrice,
+              pnl: exactPnl,
+            });
+          }
+        }
+      }
+
+      // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so the latest 20 closed trades are always recovered
+      try {
+        const res = await fetch(
+          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=30`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(4500),
+          }
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const m = row?.metadata;
+              if (m && m.symbol && (m.closePrice !== undefined || m.openPrice !== undefined)) {
+                const key = String(m.ticket || m.id || row.created_at);
+                if (!closedMap.has(key) && m.openPrice !== undefined) {
+                  const side: 'BUY' | 'SELL' = m.side === 'SELL' ? 'SELL' : 'BUY';
+                  const lots = Number(m.lots || 0.01);
+                  const openPrice = Number(m.openPrice);
+                  const closePrice = Number(m.closePrice ?? m.currentPrice ?? m.openPrice);
+                  const exactPnl = calculateBotPnL(m.symbol, side, openPrice, closePrice, lots);
+                  closedMap.set(key, {
+                    id: m.id || `cl-${key}`,
+                    ticket: Number(m.ticket || Math.floor(700000 + Math.random() * 99999)),
+                    symbol: m.symbol,
+                    side,
+                    lots,
+                    openPrice,
+                    closePrice,
+                    pnl: exactPnl,
+                    openTime: Number(m.openTime || (row.created_at ? new Date(row.created_at).getTime() - 60000 : Date.now())),
+                    closeTime: Number(m.closeTime || (row.created_at ? new Date(row.created_at).getTime() : Date.now())),
+                    reason: m.closeReason === 'TP' || m.closeReason === 'SL' ? m.closeReason : 'MANUAL',
+                  });
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+    const mergedClosedTrades = Array.from(closedMap.values())
+      .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
+      .slice(0, 50);
+
     return {
-      positions: Array.isArray(data.positions) ? data.positions : [],
-      pendingOrders: Array.isArray(data.pendingOrders) ? data.pendingOrders : [],
-      closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades : [],
+      positions: data && Array.isArray(data.positions) ? data.positions : [],
+      pendingOrders: data && Array.isArray(data.pendingOrders) ? data.pendingOrders : [],
+      closedTrades: mergedClosedTrades,
     };
   }
 
@@ -1007,7 +1108,17 @@ class SupabaseService {
     botTrades: any[];
   } | null> {
     if (!this.config || !user?.email) return null;
-    return await this.fetchCloudStateRecord(user.email, 'STATE_BOTS');
+    const raw = await this.fetchCloudStateRecord<{
+      importedBots?: any[];
+      botRuns?: any[];
+      botTrades?: any[];
+    }>(user.email, 'STATE_BOTS');
+    if (!raw) return null;
+    return {
+      importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
+      botRuns: Array.isArray(raw.botRuns) ? raw.botRuns : [],
+      botTrades: Array.isArray(raw.botTrades) ? sanitizeBotTrades(raw.botTrades) : [],
+    };
   }
 
   public async syncExtrasState(
@@ -1285,7 +1396,7 @@ class SupabaseService {
             walletBalance: Number(row.wallet_balance || 0),
             accounts: Array.isArray(row.accounts) ? row.accounts : [],
             selectedAccountId: row.selected_account_id || null,
-            transactions: Array.isArray(row.transactions) ? row.transactions : [],
+            transactions: sanitizeRealTransactions(Array.isArray(row.transactions) ? row.transactions : []),
             lastUpdated: row.last_updated ? new Date(row.last_updated).getTime() : Date.now(),
           };
         }
@@ -1309,6 +1420,36 @@ class SupabaseService {
       transactions,
       lastUpdated: Date.now(),
     });
+  }
+
+  public async syncNotifications(
+    user: UserAuthProfile | null | undefined,
+    notifications: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>,
+    lastWelcomeDate?: string
+  ): Promise<boolean> {
+    if (!this.config || !user) return false;
+    return this.upsertStateViaActivities(user, 'STATE_NOTIFICATIONS', {
+      notifications: notifications.slice(0, 200),
+      lastWelcomeDate: lastWelcomeDate || '',
+      updatedAt: Date.now(),
+    });
+  }
+
+  public async fetchNotifications(
+    user: UserAuthProfile | null | undefined
+  ): Promise<{
+    notifications: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>;
+    lastWelcomeDate?: string;
+  } | null> {
+    if (!this.config || !user) return null;
+    const state = await this.fetchStateViaActivities(user, 'STATE_NOTIFICATIONS');
+    if (state && Array.isArray(state.notifications)) {
+      return {
+        notifications: state.notifications,
+        lastWelcomeDate: state.lastWelcomeDate || '',
+      };
+    }
+    return null;
   }
 
   // =========================================================================

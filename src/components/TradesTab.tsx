@@ -20,6 +20,7 @@ import {
   Clock,
   CheckCircle2,
 } from 'lucide-react';
+import { calculateBotPnL } from '../services/botTradingService';
 
 interface TradesTabProps {
   account: TradingAccount | null;
@@ -135,7 +136,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             )}
           </button>
 
-          <button
+            <button
             onClick={() => setActiveSubTab('closed')}
             className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
               activeSubTab === 'closed'
@@ -145,8 +146,10 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           >
             <span>Closed</span>
             {closedTrades.length > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-neutral-200 dark:bg-neutral-800 font-bold">
-                {closedTrades.length}
+              <span className={`ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full font-bold ${
+                isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {Math.min(20, closedTrades.length)}
               </span>
             )}
             {activeSubTab === 'closed' && (
@@ -163,7 +166,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         }`}
       >
         <div>
-          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Floating P/L</span>
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Floating P/L</span>
           <span
             className={`font-black text-sm ${
               totalFloatingPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
@@ -174,13 +177,13 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         </div>
 
         <div>
-          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Equity</span>
-          <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.equity ?? 0).toLocaleString()}</span>
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Equity</span>
+          <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>${(account?.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
 
         <div className="text-right">
-          <span className="text-slate-500 dark:text-neutral-400 block text-[10px] uppercase font-semibold">Free Margin</span>
-          <span className="font-bold text-sm text-slate-900 dark:text-white">${(account?.freeMargin ?? 0).toLocaleString()}</span>
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Free Margin</span>
+          <span className={`font-bold text-sm ${(account?.freeMargin ?? 0) <= 0 ? 'text-red-500' : isDarkMode ? 'text-white' : 'text-slate-900'}`}>${(account?.freeMargin ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
         </div>
       </div>
 
@@ -189,19 +192,20 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         <div className="flex-1 flex flex-col">
           {/* List or Empty State */}
           {positions.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[300px]">
-              {/* Authentic HFM Empty State Graphic (matching video 00:41) */}
-              <div className="w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 text-neutral-400">
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[220px]">
+              <div className={`w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed ${
+                isDarkMode ? 'border-neutral-700 bg-neutral-800/50 text-neutral-400' : 'border-slate-300 bg-slate-50 text-slate-400'
+              }`}>
                 <Smartphone className="w-10 h-10 stroke-[1.5]" />
               </div>
-              <p className="text-sm text-neutral-500 font-medium">
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                 There are no open trades at this time
               </p>
             </div>
           ) : (
             <div className="p-3 sm:p-4">
               <div className="flex items-center justify-between px-1 mb-3">
-                <span className="text-xs text-neutral-400 font-medium">
+                <span className={`text-xs font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                   {positions.length} Open Position{positions.length > 1 ? 's' : ''}
                 </span>
                 <button
@@ -226,17 +230,17 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                     >
                       <div className="flex items-center justify-between mb-1.5">
                         <div className="flex items-center gap-2">
-                          <span className="font-black text-sm">{pos.symbol}</span>
+                          <span className={`font-black text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{pos.symbol}</span>
                           <span
                             className={`text-[10px] font-black px-1.5 py-0.5 rounded-md uppercase ${
                               isBuy
-                                ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400'
-                                : 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                                ? isDarkMode ? 'bg-emerald-950/60 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                                : isDarkMode ? 'bg-red-950/60 text-red-400' : 'bg-red-100 text-red-700'
                             }`}
                           >
                             {pos.side} {pos.lots}
                           </span>
-                          <span className="text-[10px] text-slate-500 dark:text-neutral-400">#{pos.ticket}</span>
+                          <span className={`text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>#{pos.ticket}</span>
                         </div>
 
                         {/* Profit */}
@@ -249,10 +253,12 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 pt-1 border-t border-neutral-100 dark:border-neutral-800/80">
+                      <div className={`flex items-center justify-between text-xs pt-1 border-t ${
+                        isDarkMode ? 'text-neutral-400 border-neutral-800/80' : 'text-slate-500 border-slate-100'
+                      }`}>
                         <div>
                           <span>{pos.openPrice}</span> ➔{' '}
-                          <span className={isDarkMode ? 'text-white' : 'text-neutral-800'}>
+                          <span className={isDarkMode ? 'text-white font-semibold' : 'text-slate-900 font-semibold'}>
                             {pos.currentPrice}
                           </span>
                         </div>
@@ -262,13 +268,87 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                         </div>
                       </div>
 
-                      <div className="mt-2 pt-2 border-t border-neutral-100 dark:border-neutral-800 flex items-center justify-end">
+                      <div className={`mt-2 pt-2 border-t flex items-center justify-end ${
+                        isDarkMode ? 'border-neutral-800' : 'border-slate-100'
+                      }`}>
                         <button
                           onClick={() => onClosePosition(pos.id)}
-                          className="py-1 px-3 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/60 text-red-600 dark:text-red-400 text-xs font-bold rounded-lg transition-colors cursor-pointer"
+                          className={`py-1 px-3 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-red-950/40 hover:bg-red-900/60 text-red-400'
+                              : 'bg-red-50 hover:bg-red-100 text-red-600'
+                          }`}
                         >
                           Close Position
                         </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Latest 20 Closed Trades Preview directly visible below Open Positions */}
+          {closedTrades.length > 0 && (
+            <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'}`}>
+              <div className="flex items-center justify-between px-1 mb-3">
+                <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+                  Latest {Math.min(20, closedTrades.length)} Closed Trades (Stored in Supabase)
+                </span>
+                <button
+                  onClick={() => setActiveSubTab('closed')}
+                  className="text-xs text-[#E51937] hover:underline font-semibold cursor-pointer"
+                >
+                  View Full History
+                </button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {closedTrades.slice(0, 20).map((cl) => {
+                  const exactPnl =
+                    cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
+                      ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
+                      : cl.pnl;
+                  return (
+                    <div
+                      key={cl.id}
+                      className={`p-3 rounded-2xl border ${
+                        isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{cl.symbol}</span>
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              cl.side === 'BUY'
+                                ? isDarkMode ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                                : isDarkMode ? 'bg-red-950 text-red-400' : 'bg-red-100 text-red-700'
+                            }`}
+                          >
+                            {cl.side} {cl.lots}
+                          </span>
+                          <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-500' : 'text-slate-400'}`}>
+                            #{cl.ticket}
+                          </span>
+                        </div>
+                        <span
+                          className={`font-black text-xs ${
+                            exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                          }`}
+                        >
+                          {exactPnl >= 0 ? '+' : ''}${exactPnl.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className={`flex items-center justify-between text-[11px] mt-1.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                        <span>
+                          {cl.openPrice} ➔ <strong className={isDarkMode ? 'text-neutral-200' : 'text-slate-800'}>{cl.closePrice}</strong>
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-100 text-slate-700'
+                        }`}>
+                          {cl.reason}
+                        </span>
                       </div>
                     </div>
                   );
@@ -284,10 +364,12 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         <div className="flex-1 p-4">
           {pendingOrders.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[300px]">
-              <div className="w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed border-neutral-300 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 text-neutral-400">
+              <div className={`w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed ${
+                isDarkMode ? 'border-neutral-700 bg-neutral-800/50 text-neutral-400' : 'border-slate-300 bg-slate-50 text-slate-400'
+              }`}>
                 <Clock className="w-10 h-10 stroke-[1.5]" />
               </div>
-              <p className="text-sm text-neutral-500 font-medium">
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                 No pending orders active
               </p>
             </div>
@@ -302,8 +384,10 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-sm">{ord.symbol}</span>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400">
+                      <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{ord.symbol}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        isDarkMode ? 'bg-blue-950/60 text-blue-400' : 'bg-blue-100 text-blue-700'
+                      }`}>
                         {ord.type} {ord.lots}
                       </span>
                     </div>
@@ -314,8 +398,8 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                       Cancel
                     </button>
                   </div>
-                  <div className="text-xs text-neutral-400">
-                    Target Price: <strong className="text-neutral-800 dark:text-white">{ord.targetPrice}</strong>
+                  <div className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                    Target Price: <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{ord.targetPrice}</strong>
                   </div>
                 </div>
               ))}
@@ -327,46 +411,75 @@ export const TradesTab: React.FC<TradesTabProps> = ({
       {/* CLOSED TRADES SUBVIEW */}
       {activeSubTab === 'closed' && (
         <div className="flex-1 p-3 sm:p-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {closedTrades.map((cl) => (
-              <div
-                key={cl.id}
-                className={`p-3.5 rounded-2xl border ${
-                  isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="font-bold text-sm">{cl.symbol}</span>
-                    <span
-                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                        cl.side === 'BUY'
-                          ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-600'
-                          : 'bg-red-100 dark:bg-red-950 text-red-600'
-                      }`}
-                    >
-                      {cl.side} {cl.lots}
-                    </span>
-                  </div>
-                  <span
-                    className={`font-black text-sm ${
-                      cl.pnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+          <div className="flex items-center justify-between px-1 mb-3">
+            <span className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+              Showing Latest {Math.min(20, closedTrades.length)} Closed Trades
+            </span>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
+              isDarkMode ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+            }`}>
+              Synced with Cloud Database
+            </span>
+          </div>
+          {closedTrades.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[260px]">
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                No closed trades recorded yet
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {closedTrades.slice(0, 20).map((cl) => {
+                const exactPnl =
+                  cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
+                    ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
+                    : cl.pnl;
+                return (
+                  <div
+                    key={cl.id}
+                    className={`p-3.5 rounded-2xl border ${
+                      isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200 shadow-xs'
                     }`}
                   >
-                    {cl.pnl >= 0 ? '+' : ''}${cl.pnl.toFixed(2)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 mt-2">
-                  <span>
-                    {cl.openPrice} ➔ {cl.closePrice}
-                  </span>
-                  <span className="text-[10px] bg-slate-100 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300 px-1.5 py-0.5 rounded">
-                    Reason: {cl.reason}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{cl.symbol}</span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            cl.side === 'BUY'
+                              ? isDarkMode ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                              : isDarkMode ? 'bg-red-950 text-red-400' : 'bg-red-100 text-red-700'
+                          }`}
+                        >
+                          {cl.side} {cl.lots}
+                        </span>
+                        <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          #{cl.ticket}
+                        </span>
+                      </div>
+                      <span
+                        className={`font-black text-sm ${
+                          exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                        }`}
+                      >
+                        {exactPnl >= 0 ? '+' : ''}${exactPnl.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className={`flex items-center justify-between text-xs mt-2 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                      <span>
+                        {cl.openPrice} ➔ <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{cl.closePrice}</strong>
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-100 text-slate-700'
+                      }`}>
+                        Reason: {cl.reason}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -89,6 +89,7 @@ export const TV_INSTRUMENT_MAP: Record<
 
 export class TradingViewPriceService {
   private lastQuotes: Map<string, TVQuote> = new Map();
+  private lastSpreads: Map<string, number> = new Map();
   private isFetching = false;
   private lastFetchTime = 0;
   private ws: WebSocket | null = null;
@@ -96,6 +97,52 @@ export class TradingViewPriceService {
 
   constructor() {
     this.initLiveWebSocket();
+  }
+
+  /**
+   * Computes a dynamic, smoothly fluctuating spread in [0.15, 1.18] (predominantly 0.18 - 0.96, max 1.20)
+   * that changes on every tick so it is never stuck on one static number, and derives exact Bid & Ask.
+   */
+  public computeDynamicBidAsk(
+    symbol: string,
+    rawPrice: number,
+    decimals: number,
+    _pipMultiplier: number
+  ): { bid: number; ask: number; spread: number } {
+    const prevSpread = this.lastSpreads.get(symbol) ?? (0.28 + ((symbol.charCodeAt(0) % 5) * 0.11));
+    // Random step between -0.14 and +0.14, biased toward 0.22 - 0.92 ("0.something"), strictly capped at 1.20
+    const drift = (Math.random() - 0.48) * 0.24;
+    let nextSpread = prevSpread + drift;
+    if (nextSpread > 0.96 && Math.random() < 0.7) {
+      nextSpread -= 0.18;
+    }
+    if (nextSpread < 0.16) {
+      nextSpread = 0.16 + Math.random() * 0.18;
+    }
+    if (nextSpread > 1.18) {
+      nextSpread = 1.18 - Math.random() * 0.22;
+    }
+    const spread = Number(Math.min(1.2, Math.max(0.15, nextSpread)).toFixed(2));
+    this.lastSpreads.set(symbol, spread);
+
+    const bid = Number(rawPrice.toFixed(decimals));
+    let priceGap = spread;
+    if (decimals === 5) {
+      // 5-decimal Forex: 1.0 pip = 0.00010, so spread 0.35 pips = 0.000035 -> rounded to 5 decimals
+      priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
+    } else if (decimals === 4) {
+      // 4-decimal Crypto (XRP, DOGE, ADA)
+      priceGap = Math.max(0.0001, Number((spread * 0.001).toFixed(4)));
+    } else if (decimals === 3 && symbol.includes('JPY')) {
+      // 3-decimal JPY Forex pairs
+      priceGap = Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+    } else if (decimals === 3) {
+      // 3-decimal commodities (NGAS, COPPER, XAUUSD)
+      priceGap = symbol === 'XAUUSD' ? spread : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+    }
+
+    const ask = Number((bid + priceGap).toFixed(decimals));
+    return { bid, ask, spread };
   }
 
   public subscribe(callback: (quotes: Map<string, TVQuote>) => void): () => void {
@@ -140,21 +187,22 @@ export class TradingViewPriceService {
               if (conf) {
                 const price = parseFloat(item.c);
                 if (price > 0) {
-                  const dec = conf.decimals;
-                  const spread = dec === 4 ? 0.0004 : dec === 3 ? 0.01 : 1.5;
-                  const bid = Number(price.toFixed(dec));
-                  const ask = Number((bid + spread).toFixed(dec));
-                  const spreadPips = Number((spread * conf.pipMultiplier).toFixed(1));
+                  const { bid, ask, spread } = this.computeDynamicBidAsk(
+                    sym,
+                    price,
+                    conf.decimals,
+                    conf.pipMultiplier
+                  );
 
                   this.lastQuotes.set(sym, {
                     symbol: sym,
                     tvTicker: conf.ticker,
                     bid,
                     ask,
-                    spread: spreadPips > 0 ? spreadPips : 1.0,
+                    spread,
                     change24h: 0,
-                    high24h: parseFloat(item.h) || price,
-                    low24h: parseFloat(item.l) || price,
+                    high24h: parseFloat(item.h) || ask,
+                    low24h: parseFloat(item.l) || bid,
                     timestamp: now,
                   });
                   hasChanged = true;
@@ -205,20 +253,22 @@ export class TradingViewPriceService {
             gotProxyQuotes = true;
             Object.entries(json.quotes).forEach(([symbol, data]: [string, any]) => {
               const conf = TV_INSTRUMENT_MAP[symbol];
-              if (conf && data.bid !== undefined && data.ask !== undefined) {
-                const spreadPips = Math.abs(data.ask - data.bid) * conf.pipMultiplier;
-                const finalSpread = (data.spread && data.spread >= 0.1 && data.spread < 100)
-                  ? Number(data.spread.toFixed(1))
-                  : Number(spreadPips.toFixed(1));
+              if (conf && data.bid !== undefined) {
+                const { bid, ask, spread } = this.computeDynamicBidAsk(
+                  symbol,
+                  Number(data.bid),
+                  conf.decimals,
+                  conf.pipMultiplier
+                );
                 this.lastQuotes.set(symbol, {
                   symbol,
                   tvTicker: conf.ticker,
-                  bid: Number(data.bid.toFixed(conf.decimals)),
-                  ask: Number(data.ask.toFixed(conf.decimals)),
-                  spread: finalSpread > 0 ? finalSpread : Number(spreadPips.toFixed(1)),
+                  bid,
+                  ask,
+                  spread,
                   change24h: data.change24h !== undefined ? data.change24h : 0,
-                  high24h: data.high24h || Number((data.ask * 1.008).toFixed(conf.decimals)),
-                  low24h: data.low24h || Number((data.bid * 0.992).toFixed(conf.decimals)),
+                  high24h: data.high24h || Number((ask * 1.008).toFixed(conf.decimals)),
+                  low24h: data.low24h || Number((bid * 0.992).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }
@@ -299,16 +349,19 @@ export class TradingViewPriceService {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
                 const rawBid = row.d[2];
-                const rawAsk = row.d[3];
-                const bid = (rawBid && rawBid > 0) ? Number(rawBid.toFixed(conf.decimals)) : Number(close.toFixed(conf.decimals));
-                const ask = (rawAsk && rawAsk >= bid) ? Number(rawAsk.toFixed(conf.decimals)) : Number((bid + Math.pow(10, -conf.decimals) * 3).toFixed(conf.decimals));
-                const spreadPips = Number((Math.abs(ask - bid) * conf.pipMultiplier).toFixed(1));
+                const basePrice = rawBid && rawBid > 0 ? rawBid : close;
+                const { bid, ask, spread } = this.computeDynamicBidAsk(
+                  sym,
+                  basePrice,
+                  conf.decimals,
+                  conf.pipMultiplier
+                );
                 this.lastQuotes.set(sym, {
                   symbol: sym,
                   tvTicker: conf.ticker,
                   bid,
                   ask,
-                  spread: spreadPips > 0 ? spreadPips : 0.3,
+                  spread,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
                   low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
@@ -339,16 +392,19 @@ export class TradingViewPriceService {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
                 const rawBid = row.d[2];
-                const rawAsk = row.d[3];
-                const bid = (rawBid && rawBid > 0) ? Number(rawBid.toFixed(conf.decimals)) : Number(close.toFixed(conf.decimals));
-                const ask = (rawAsk && rawAsk >= bid) ? Number(rawAsk.toFixed(conf.decimals)) : Number((bid + Math.pow(10, -conf.decimals) * 3).toFixed(conf.decimals));
-                const spreadPips = Number((Math.abs(ask - bid) * conf.pipMultiplier).toFixed(1));
+                const basePrice = rawBid && rawBid > 0 ? rawBid : close;
+                const { bid, ask, spread } = this.computeDynamicBidAsk(
+                  sym,
+                  basePrice,
+                  conf.decimals,
+                  conf.pipMultiplier
+                );
                 this.lastQuotes.set(sym, {
                   symbol: sym,
                   tvTicker: conf.ticker,
                   bid,
                   ask,
-                  spread: spreadPips > 0 ? spreadPips : 0.3,
+                  spread,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
                   low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
@@ -376,16 +432,22 @@ export class TradingViewPriceService {
               const price = parseFloat(item.price);
               const symbolBase = item.symbol.replace('USDT', 'USD');
               const conf = TV_INSTRUMENT_MAP[symbolBase];
-              if (conf && price > 0 && !this.lastQuotes.has(symbolBase)) {
+              if (conf && price > 0) {
+                const { bid, ask, spread } = this.computeDynamicBidAsk(
+                  symbolBase,
+                  price,
+                  conf.decimals,
+                  conf.pipMultiplier
+                );
                 this.lastQuotes.set(symbolBase, {
                   symbol: symbolBase,
                   tvTicker: conf.ticker,
-                  bid: Number(price.toFixed(conf.decimals)),
-                  ask: Number(price.toFixed(conf.decimals)),
-                  spread: 0,
-                  change24h: 0,
-                  high24h: Number((price * 1.01).toFixed(conf.decimals)),
-                  low24h: Number((price * 0.99).toFixed(conf.decimals)),
+                  bid,
+                  ask,
+                  spread,
+                  change24h: this.lastQuotes.get(symbolBase)?.change24h || 0,
+                  high24h: this.lastQuotes.get(symbolBase)?.high24h || Number((price * 1.01).toFixed(conf.decimals)),
+                  low24h: this.lastQuotes.get(symbolBase)?.low24h || Number((price * 0.99).toFixed(conf.decimals)),
                   timestamp: now,
                 });
               }

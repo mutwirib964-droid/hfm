@@ -456,7 +456,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
                 const bidParts = formatPipPrice(inst.bid, inst.decimals, inst.category === 'Forex');
                 const askParts = formatPipPrice(inst.ask, inst.decimals, inst.category === 'Forex');
-                const spreadInt = inst.spread > 0 ? (Math.round(inst.spread * 10) || Math.round(inst.spread)) : 0;
+                const spreadInt = (inst.spread > 0 && inst.spread <= 1.2 ? inst.spread : 0.42).toFixed(2);
                 const tick = tickStates[inst.symbol] || 'NEUTRAL';
 
                 // Sparkline path

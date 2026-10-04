@@ -394,51 +394,52 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     >
       {/* TOP BAR */}
       <header
-        className={`w-full border-b transition-colors duration-200 ${
+        className={`pwa-safe-top sticky top-0 z-40 w-full border-b transition-colors duration-200 ${
           isDarkMode
-            ? 'bg-[#0E1118] border-white/[0.08]'
-            : 'bg-white border-slate-200 shadow-2xs'
+            ? 'bg-[#0E1118]/95 backdrop-blur-md border-white/[0.08]'
+            : 'bg-white/95 backdrop-blur-md border-slate-200 shadow-2xs'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 rounded-lg bg-[#E51937] text-white flex items-center justify-center shrink-0 shadow-xs">
-              <ShieldCheck className="w-5 h-5" />
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2.5 sm:py-3 flex flex-wrap items-center justify-between gap-2 sm:gap-4">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-[#E51937] text-white flex items-center justify-center shrink-0 shadow-xs">
+              <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
             </div>
             <div className="min-w-0">
-              <h1 className="text-sm sm:text-base font-semibold tracking-tight truncate">
+              <h1 className="text-xs sm:text-base font-semibold tracking-tight truncate">
                 VTM Markets Administration
               </h1>
-              <div className={`flex items-center gap-2 text-xs truncate ${mutedText}`}>
-                <span>Administrator</span>
-                <span aria-hidden="true">·</span>
-                <span className={`font-medium ${secondaryText}`}>{MASTER_ADMIN_EMAIL}</span>
+              <div className={`flex items-center gap-1.5 text-[11px] sm:text-xs truncate ${mutedText}`}>
+                <span className="hidden xs:inline">Administrator</span>
+                <span className="hidden xs:inline" aria-hidden="true">·</span>
+                <span className={`font-medium truncate ${secondaryText}`}>{MASTER_ADMIN_EMAIL}</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <button
               type="button"
               onClick={syncFromSupabaseCloud}
               disabled={isSyncingCloud}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors ${
+              className={`px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors ${
                 isDarkMode
                   ? 'bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.08] text-slate-200'
                   : 'bg-slate-100 hover:bg-slate-200 border-slate-300 text-slate-700'
               }`}
+              title="Refresh Data"
             >
               <RefreshCw
                 className={`w-3.5 h-3.5 text-emerald-500 ${isSyncingCloud ? 'animate-spin' : ''}`}
               />
-              <span>{isSyncingCloud ? 'Syncing...' : 'Refresh Data'}</span>
+              <span className="hidden sm:inline">{isSyncingCloud ? 'Syncing...' : 'Refresh Data'}</span>
             </button>
 
             {onToggleTheme && (
               <button
                 type="button"
                 onClick={onToggleTheme}
-                className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors ${
                   isDarkMode
                     ? 'border-white/[0.1] bg-white/[0.05] text-amber-400 hover:bg-white/[0.1]'
                     : 'border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200'
@@ -463,7 +464,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               <button
                 type="button"
                 onClick={onSignOut}
-                className="px-3.5 py-1.5 rounded-lg bg-[#E51937] hover:bg-[#c9142f] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
+                className="px-2.5 sm:px-3.5 py-1.5 rounded-lg bg-[#E51937] hover:bg-[#c9142f] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shadow-xs"
               >
                 <LogOut className="w-3.5 h-3.5" />
                 <span>Sign Out</span>
@@ -474,7 +475,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               <button
                 type="button"
                 onClick={onClose}
-                className={`px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-medium cursor-pointer ${
                   isDarkMode
                     ? 'border-white/10 text-slate-400 hover:text-white'
                     : 'border-slate-300 text-slate-600 hover:text-slate-900'
@@ -512,7 +513,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             </div>
           </div>
 
-          {/* KPI 2: Money Deposited (Money In) */}
+          {/* KPI 2: Money Deposited (Money In - Strictly COMPLETED Transactions Only) */}
           <div
             onClick={() => setActiveTab('deposits')}
             className={`p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
@@ -531,7 +532,9 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 KES {depositsData.totalDepositedKes.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
               <span aria-hidden="true">·</span>
-              <span className="font-sans">{depositsData.deposits.length} completed deposits</span>
+              <span className="font-sans">
+                {depositsData.deposits.filter((d) => d.status === 'COMPLETED').length} completed deposits
+              </span>
             </div>
           </div>
 
@@ -612,6 +615,42 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               <ArrowDownLeft className="w-3.5 h-3.5" />
               <span>Money Deposited (${depositsData.totalDepositedUsd.toFixed(2)})</span>
             </button>
+          </div>
+
+          {/* Global Admin User Search Bar (Search by Username or Email) */}
+          <div className="relative w-full sm:w-80">
+            <Search className={`w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 ${mutedText}`} />
+            <input
+              type="text"
+              placeholder="Search user by username or email..."
+              value={searchQuery}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSearchQuery(val);
+                if (val.trim()) {
+                  const q = val.trim().toLowerCase();
+                  const match = userMetrics.find(
+                    (m) =>
+                      m.user.name.toLowerCase().includes(q) ||
+                      m.user.email.toLowerCase().includes(q)
+                  );
+                  if (match) {
+                    handleSelectUserForEdit(match.user.email);
+                  }
+                }
+              }}
+              className={`w-full pl-9 pr-8 py-2 rounded-xl border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-xs px-1 cursor-pointer ${mutedText}`}
+                title="Clear search"
+              >
+                ✕
+              </button>
+            )}
           </div>
         </div>
 
@@ -830,26 +869,67 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 </p>
               </div>
 
-              {/* User Selector (Name & Email only) */}
-              <div className="space-y-1.5">
-                <label className={`text-xs font-medium block ${mutedText}`}>
-                  Website User
-                </label>
-                <select
-                  value={selectedUserEmail}
-                  onChange={(e) => handleSelectUserForEdit(e.target.value)}
-                  className={`w-full p-2.5 rounded-lg border text-xs font-medium focus:outline-none focus:border-[#E51937] ${inputBg}`}
-                >
-                  {userMetrics.map((m) => {
-                    const isMaster = isMasterAdminEmail(m.user.email);
-                    const emailShown = isMaster ? MASTER_ADMIN_EMAIL : m.user.email;
-                    return (
-                      <option key={m.user.email} value={m.user.email.toLowerCase()}>
-                        {m.user.name} — {emailShown} ({m.accountsCount} Live Accounts)
-                      </option>
-                    );
-                  })}
-                </select>
+              {/* Search Bar + User Selector (Search by Username or Email) */}
+              <div className="space-y-2.5">
+                <div>
+                  <label className={`text-xs font-medium block mb-1.5 ${mutedText}`}>
+                    Search User by Username or Email
+                  </label>
+                  <div className="relative">
+                    <Search className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 ${mutedText}`} />
+                    <input
+                      type="text"
+                      placeholder="Type username or email to find user..."
+                      value={searchQuery}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSearchQuery(val);
+                        if (val.trim()) {
+                          const q = val.trim().toLowerCase();
+                          const match = userMetrics.find(
+                            (m) =>
+                              m.user.name.toLowerCase().includes(q) ||
+                              m.user.email.toLowerCase().includes(q)
+                          );
+                          if (match) {
+                            handleSelectUserForEdit(match.user.email);
+                          }
+                        }
+                      }}
+                      className={`w-full pl-9 pr-8 py-2 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-xs px-1 cursor-pointer ${mutedText}`}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <label className={`text-xs font-medium block mb-1.5 ${mutedText}`}>
+                    Select Website User ({filteredUsers.length} matching)
+                  </label>
+                  <select
+                    value={selectedUserEmail}
+                    onChange={(e) => handleSelectUserForEdit(e.target.value)}
+                    className={`w-full p-2.5 rounded-lg border text-xs font-medium focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                  >
+                    {(filteredUsers.length > 0 ? filteredUsers : userMetrics).map((m) => {
+                      const isMaster = isMasterAdminEmail(m.user.email);
+                      const emailShown = isMaster ? MASTER_ADMIN_EMAIL : m.user.email;
+                      return (
+                        <option key={m.user.email} value={m.user.email.toLowerCase()}>
+                          {m.user.name} — {emailShown} ({m.accountsCount} Live Accounts)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
 
                 {selectedUserObj && (
                   <div className={`pt-1 flex items-center justify-between text-xs ${mutedText}`}>

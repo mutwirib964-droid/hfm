@@ -153,18 +153,18 @@ function marketPricesPlugin() {
               'BINANCE:SUIUSDT': { sym: 'SUIUSD', dec: 2 },
             };
             const cryptoSpreads: Record<string, number> = {
-              'BTCUSD': 2.50,
-              'ETHUSD': 0.40,
-              'SOLUSD': 0.04,
-              'XRPUSD': 0.0004,
-              'BNBUSD': 0.20,
-              'DOGEUSD': 0.0002,
-              'ADAUSD': 0.0003,
-              'AVAXUSD': 0.03,
-              'LINKUSD': 0.02,
-              'DOTUSD': 0.01,
-              'NEARUSD': 0.01,
-              'SUIUSD': 0.002,
+              'BTCUSD': 0.58,
+              'ETHUSD': 0.35,
+              'SOLUSD': 0.24,
+              'XRPUSD': 0.32,
+              'BNBUSD': 0.28,
+              'DOGEUSD': 0.25,
+              'ADAUSD': 0.30,
+              'AVAXUSD': 0.26,
+              'LINKUSD': 0.22,
+              'DOTUSD': 0.24,
+              'NEARUSD': 0.22,
+              'SUIUSD': 0.25,
             };
             cryptoRes.value.data.forEach((row: any) => {
               const conf = cryptoMap[row.s];
@@ -172,10 +172,11 @@ function marketPricesPlugin() {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
                 const decimals = conf.dec;
-                const spread = cryptoSpreads[conf.sym] || (decimals === 4 ? 0.0004 : 0.20);
+                const baseSpr = cryptoSpreads[conf.sym] || 0.38;
+                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.26)).toFixed(2));
+                const priceDiff = decimals >= 4 ? dynamicSpread * 0.0001 : dynamicSpread;
                 const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + spread).toFixed(decimals));
-                const finalSpread = Number((ask - bid).toFixed(decimals));
+                const ask = Number((bid + priceDiff).toFixed(decimals));
                 results[conf.sym] = {
                   bid,
                   ask,
@@ -183,7 +184,7 @@ function marketPricesPlugin() {
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: finalSpread,
+                  spread: dynamicSpread,
                 };
               }
             });
@@ -197,9 +198,11 @@ function marketPricesPlugin() {
               if (price > 0) {
                 const dec = sym.includes('XRP') || sym.includes('DOGE') || sym.includes('ADA') ? 4 : 2;
                 const existing = results[sym];
-                const spread = existing?.spread || (dec === 4 ? 0.0004 : 1.5);
+                const baseSpr = existing?.spread && existing.spread <= 1.2 ? existing.spread : 0.52;
+                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.22)).toFixed(2));
+                const priceDiff = dec >= 4 ? dynamicSpread * 0.0001 : dynamicSpread;
                 const bid = Number(price.toFixed(dec));
-                const ask = Number((bid + spread).toFixed(dec));
+                const ask = Number((bid + priceDiff).toFixed(dec));
                 results[sym] = {
                   bid,
                   ask,
@@ -207,7 +210,7 @@ function marketPricesPlugin() {
                   change24h: existing?.change24h !== undefined ? existing.change24h : 0,
                   high24h: existing?.high24h || Number((price * 1.01).toFixed(dec)),
                   low24h: existing?.low24h || Number((price * 0.99).toFixed(dec)),
-                  spread: Number((ask - bid).toFixed(dec)),
+                  spread: dynamicSpread,
                 };
               }
             });
@@ -232,19 +235,19 @@ function marketPricesPlugin() {
             };
 
             const cfdSpreads: Record<string, number> = {
-              'XAUUSD': 0.490, // Gold 49.0 points spread matching TradingView
-              'XAGUSD': 0.025, // Silver 25.0 points spread
-              'USOIL': 0.03,
-              'UKOIL': 0.03,
-              'NGAS': 0.005,
-              'US30': 2.40,
-              'GER40': 1.40,
+              'XAUUSD': 0.49,
+              'XAGUSD': 0.25,
+              'USOIL': 0.32,
+              'UKOIL': 0.34,
+              'NGAS': 0.28,
+              'US30': 0.85,
+              'GER40': 0.72,
               'US500': 0.45,
-              'NAS100': 1.20,
-              'COPPER': 0.003,
-              'XPTUSD': 0.80,
-              'UK100': 1.50,
-              'JPN225': 5.0,
+              'NAS100': 0.78,
+              'COPPER': 0.30,
+              'XPTUSD': 0.65,
+              'UK100': 0.74,
+              'JPN225': 0.88,
             };
 
             cfdRes.value.data.forEach((row: any) => {
@@ -253,11 +256,11 @@ function marketPricesPlugin() {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
                 const decimals = conf.dec;
-                const spread = cfdSpreads[conf.sym] || 0.1;
+                const baseSpr = cfdSpreads[conf.sym] || 0.45;
+                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.24)).toFixed(2));
+                const priceDiff = decimals === 3 ? dynamicSpread * 0.01 : dynamicSpread;
                 const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + spread).toFixed(decimals));
-                const multiplier = conf.sym === 'XAUUSD' ? 10 : conf.sym === 'XAGUSD' ? 100 : (decimals >= 3 ? 100 : 10);
-                const finalSpread = Number((Math.abs(ask - bid) * multiplier).toFixed(1));
+                const ask = Number((bid + priceDiff).toFixed(decimals));
 
                 results[conf.sym] = {
                   bid,
@@ -266,7 +269,7 @@ function marketPricesPlugin() {
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: finalSpread > 0 ? finalSpread : 4.9,
+                  spread: dynamicSpread,
                 };
               }
             });

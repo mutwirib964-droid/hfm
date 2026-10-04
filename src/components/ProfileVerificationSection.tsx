@@ -215,7 +215,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                   {kycRecord.isVerified
                     ? 'Account Fully Verified & Approved'
                     : kycRecord.submitted
@@ -225,10 +225,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 <span
                   className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
                     kycRecord.isVerified
-                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                      ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30'
                       : kycRecord.submitted
-                      ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                      : 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                      ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30'
+                      : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 border border-neutral-700'
+                      : 'bg-slate-200 text-slate-700 border border-slate-300'
                   }`}
                 >
                   {kycRecord.isVerified
@@ -239,7 +241,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 </span>
               </div>
 
-              <p className="text-[11px] text-neutral-400 mt-0.5">
+              <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                 {kycRecord.isVerified
                   ? 'Identity (ID/Licence) and Proof of Residence (KRA/Utility) verified and locked. Unlimited trading & withdrawal limits active.'
                   : kycRecord.submitted
@@ -257,7 +259,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 type="button"
                 onClick={handleSimulate15Minutes}
                 title="Fast-forward the 15-minute verification process"
-                className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-xl font-bold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border border-amber-500/40 rounded-xl font-bold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
               >
                 <FastForward className="w-3.5 h-3.5" />
                 <span>Simulate 15m Clearance</span>
@@ -268,11 +270,17 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
         {kycRecord.submitted && !kycRecord.isVerified && (
           <div className="mt-3 pt-3 border-t border-amber-500/20 flex items-center justify-between text-[11px]">
-            <span className="text-amber-400 font-semibold flex items-center gap-1.5">
+            <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 animate-spin" />
               <span>Time until automatic verification clearance:</span>
             </span>
-            <span className="font-mono font-bold text-white text-sm bg-neutral-900 px-2.5 py-0.5 rounded-lg border border-neutral-700">
+            <span
+              className={`font-mono font-bold text-sm px-2.5 py-0.5 rounded-lg border ${
+                isDarkMode
+                  ? 'text-white bg-neutral-900 border-neutral-700'
+                  : 'text-slate-900 bg-white border-slate-300'
+              }`}
+            >
               {formatTime(secondsRemaining)}
             </span>
           </div>
@@ -280,56 +288,116 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
       </div>
 
       {/* User Personal Details Section */}
-      <div className="bg-[#161920] border border-neutral-800 rounded-2xl p-4 shadow-md space-y-3">
-        <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+      <div
+        className={`border rounded-2xl p-4 shadow-md space-y-3 transition-colors ${
+          isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
+        }`}
+      >
+        <div
+          className={`flex items-center justify-between border-b pb-2 ${
+            isDarkMode ? 'border-neutral-800' : 'border-slate-200'
+          }`}
+        >
           <div className="flex items-center gap-2">
             <User className="w-4 h-4 text-[#E51937]" />
-            <h3 className="font-bold text-white text-sm">Personal Profile Details</h3>
+            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+              Personal Profile Details
+            </h3>
           </div>
-          <span className="text-[10px] text-neutral-500">Official Account Holder</span>
+          <span className={`text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+            Official Account Holder
+          </span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-1">
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Full Legal Name</span>
-            <span className="font-bold text-white text-xs">{fullName}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Full Legal Name
+            </span>
+            <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{fullName}</span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Email Address</span>
-            <span className="font-mono text-neutral-200 text-xs">{email}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Email Address
+            </span>
+            <span className={`font-mono text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>{email}</span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Phone Number</span>
-            <span className="font-mono text-neutral-200 text-xs">{phone}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Phone Number
+            </span>
+            <span className={`font-mono text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>{phone}</span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Country of Residence</span>
-            <span className="font-bold text-white text-xs">{country}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Country of Residence
+            </span>
+            <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{country}</span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Date of Birth</span>
-            <span className="text-neutral-200 text-xs">{dob}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Date of Birth
+            </span>
+            <span className={`text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>{dob}</span>
           </div>
 
-          <div className="p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-800">
-            <span className="text-[10px] text-neutral-500 block mb-0.5">Residential Street Address</span>
-            <span className="text-neutral-200 text-xs truncate block">{address}</span>
+          <div
+            className={`p-2.5 rounded-xl border ${
+              isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+              Residential Street Address
+            </span>
+            <span className={`text-xs truncate block ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>
+              {address}
+            </span>
           </div>
         </div>
       </div>
 
       {/* Document Upload & KYC Verification Form (Occurs ONLY ONCE) */}
-      <div className="bg-[#161920] border border-neutral-800 rounded-2xl p-4 shadow-md space-y-4">
-        <div className="flex items-center justify-between border-b border-neutral-800 pb-2">
+      <div
+        className={`border rounded-2xl p-4 shadow-md space-y-4 transition-colors ${
+          isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
+        }`}
+      >
+        <div
+          className={`flex items-center justify-between border-b pb-2 ${
+            isDarkMode ? 'border-neutral-800' : 'border-slate-200'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-amber-400" />
-            <h3 className="font-bold text-white text-sm">Document Verification (One-Time Submission)</h3>
+            <FileText className="w-4 h-4 text-amber-500" />
+            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+              Document Verification (One-Time Submission)
+            </h3>
           </div>
-          <span className="text-[10px] text-neutral-400">
+          <span className={`text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
             {kycRecord.submitted ? 'Submission Locked' : 'One-Time Submission'}
           </span>
         </div>
@@ -337,53 +405,65 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
         {kycRecord.submitted ? (
           /* Locked State After One-Time Submission */
           <div className="space-y-3">
-            <div className="p-3.5 rounded-xl bg-neutral-900/90 border border-neutral-800 space-y-2">
+            <div
+              className={`p-3.5 rounded-xl border space-y-2 ${
+                isDarkMode ? 'bg-neutral-900/90 border-neutral-800' : 'bg-slate-50 border-slate-200'
+              }`}
+            >
               <div className="flex items-center justify-between">
-                <span className="font-bold text-white text-xs flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-neutral-400" />
+                <span className={`font-bold text-xs flex items-center gap-1.5 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  <Lock className={`w-3.5 h-3.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`} />
                   <span>Submitted Verification Documents</span>
                 </span>
-                <span className="text-[10px] text-neutral-500">
+                <span className={`text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
                   {new Date(kycRecord.submittedAt).toLocaleDateString()}
                 </span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 {/* ID Doc */}
-                <div className="p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 flex items-center justify-between">
+                <div
+                  className={`p-2.5 rounded-lg border flex items-center justify-between ${
+                    isDarkMode ? 'bg-neutral-950 border-neutral-800' : 'bg-white border-slate-200'
+                  }`}
+                >
                   <div className="flex items-center gap-2">
-                    <FileCheck className="w-4 h-4 text-emerald-400" />
+                    <FileCheck className="w-4 h-4 text-emerald-500" />
                     <div>
-                      <span className="text-[10px] text-neutral-400 block font-semibold">
+                      <span className={`text-[10px] block font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                         Proof of Identity ({kycRecord.idType === 'ID' ? 'National ID' : 'Driving Licence'})
                       </span>
-                      <span className="font-mono text-white text-xs">
+                      <span className={`font-mono text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                         No: {kycRecord.idNumber}
                       </span>
                     </div>
                   </div>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 </div>
 
                 {/* Residency Doc */}
-                <div className="p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 flex items-center justify-between">
+                <div
+                  className={`p-2.5 rounded-lg border flex items-center justify-between ${
+                    isDarkMode ? 'bg-neutral-950 border-neutral-800' : 'bg-white border-slate-200'
+                  }`}
+                >
                   <div className="flex items-center gap-2">
-                    <FileCheck className="w-4 h-4 text-emerald-400" />
+                    <FileCheck className="w-4 h-4 text-emerald-500" />
                     <div>
-                      <span className="text-[10px] text-neutral-400 block font-semibold">
+                      <span className={`text-[10px] block font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                         Proof of Residence ({kycRecord.residencyType === 'KRA' ? 'KRA PIN' : 'Utility Bill'})
                       </span>
-                      <span className="font-mono text-white text-xs">
+                      <span className={`font-mono text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                         PIN: {kycRecord.kraPin}
                       </span>
                     </div>
                   </div>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                 </div>
               </div>
             </div>
 
-            <p className="text-[11px] text-neutral-500 italic text-center">
+            <p className={`text-[11px] italic text-center ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
               Verification submission occurs only once per regulatory account holder.
               {kycRecord.isVerified
                 ? ' Status: Permanently Approved.'
@@ -395,12 +475,18 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
           <form onSubmit={handleSubmitVerification} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Document 1: Proof of Identity (ID or Driving Licence) */}
-              <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-3">
+              <div
+                className={`p-3.5 rounded-xl border space-y-3 ${
+                  isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                }`}
+              >
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-white block">
+                  <label className={`text-xs font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     1. Proof of Identity (POI)
                   </label>
-                  <span className="text-[10px] text-neutral-400">Government Issued</span>
+                  <span className={`text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                    Government Issued
+                  </span>
                 </div>
 
                 {/* Toggle ID vs Driving Licence */}
@@ -408,10 +494,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   <button
                     type="button"
                     onClick={() => setIdType('ID')}
-                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs ${
+                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs cursor-pointer ${
                       idType === 'ID'
                         ? 'bg-[#E51937] text-white'
-                        : 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : isDarkMode
+                        ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     National ID Card
@@ -419,10 +507,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   <button
                     type="button"
                     onClick={() => setIdType('DRIVING_LICENCE')}
-                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs ${
+                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs cursor-pointer ${
                       idType === 'DRIVING_LICENCE'
                         ? 'bg-[#E51937] text-white'
-                        : 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : isDarkMode
+                        ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     Driving Licence
@@ -430,7 +520,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 </div>
 
                 <div>
-                  <label className="text-[10px] text-neutral-400 block mb-1">
+                  <label className={`text-[10px] block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     {idType === 'ID' ? 'National ID Number' : 'Driving Licence Number'}
                   </label>
                   <input
@@ -439,12 +529,20 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                     value={idNumber}
                     onChange={(e) => setIdNumber(e.target.value)}
                     placeholder="e.g. 31849201"
-                    className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-[#E51937]"
+                    className={`w-full border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#E51937] ${
+                      isDarkMode
+                        ? 'bg-neutral-950 border-neutral-700 text-white'
+                        : 'bg-white border-slate-300 text-slate-900'
+                    }`}
                   />
                 </div>
 
                 {/* Upload box */}
-                <div className="border-2 border-dashed border-neutral-700 hover:border-[#E51937] rounded-xl p-3 text-center transition-colors">
+                <div
+                  className={`border-2 border-dashed hover:border-[#E51937] rounded-xl p-3 text-center transition-colors ${
+                    isDarkMode ? 'border-neutral-700' : 'border-slate-300 bg-white'
+                  }`}
+                >
                   <input
                     type="file"
                     id="id-upload-input"
@@ -456,11 +554,11 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                     htmlFor="id-upload-input"
                     className="cursor-pointer flex flex-col items-center justify-center space-y-1"
                   >
-                    <Upload className="w-5 h-5 text-neutral-400" />
-                    <span className="font-bold text-neutral-300 text-xs">
+                    <Upload className={`w-5 h-5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-400'}`} />
+                    <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
                       {idFile ? idFile.name : `Upload ${idType === 'ID' ? 'National ID' : 'Driving Licence'} (Front & Back)`}
                     </span>
-                    <span className="text-[10px] text-neutral-500">
+                    <span className={`text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
                       PNG, JPG, or PDF (Max 15MB)
                     </span>
                   </label>
@@ -468,12 +566,18 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               </div>
 
               {/* Document 2: Proof of Residency (KRA or Utility Bill) */}
-              <div className="p-3.5 rounded-xl bg-neutral-900 border border-neutral-800 space-y-3">
+              <div
+                className={`p-3.5 rounded-xl border space-y-3 ${
+                  isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                }`}
+              >
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-white block">
+                  <label className={`text-xs font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     2. Proof of Residency (POR)
                   </label>
-                  <span className="text-[10px] text-neutral-400">Residency Verification</span>
+                  <span className={`text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                    Residency Verification
+                  </span>
                 </div>
 
                 {/* Toggle KRA vs Utility Bill */}
@@ -481,10 +585,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   <button
                     type="button"
                     onClick={() => setResidencyType('KRA')}
-                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs ${
+                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs cursor-pointer ${
                       residencyType === 'KRA'
                         ? 'bg-[#E51937] text-white'
-                        : 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : isDarkMode
+                        ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     KRA Certificate / PIN
@@ -492,10 +598,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   <button
                     type="button"
                     onClick={() => setResidencyType('UTILITY_BILL')}
-                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs ${
+                    className={`py-1.5 px-2 rounded-lg font-bold transition-all text-xs cursor-pointer ${
                       residencyType === 'UTILITY_BILL'
                         ? 'bg-[#E51937] text-white'
-                        : 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : isDarkMode
+                        ? 'bg-neutral-800 text-neutral-400 hover:text-white'
+                        : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     Utility Bill / Statement
@@ -503,7 +611,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 </div>
 
                 <div>
-                  <label className="text-[10px] text-neutral-400 block mb-1">
+                  <label className={`text-[10px] block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     {residencyType === 'KRA' ? 'KRA PIN Number' : 'Utility Account / Reference No'}
                   </label>
                   <input
@@ -512,12 +620,20 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                     value={kraPin}
                     onChange={(e) => setKraPin(e.target.value)}
                     placeholder={residencyType === 'KRA' ? 'e.g. A009284192P' : 'e.g. KPLC-8491029'}
-                    className="w-full bg-neutral-950 border border-neutral-700 rounded-lg px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-[#E51937]"
+                    className={`w-full border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#E51937] ${
+                      isDarkMode
+                        ? 'bg-neutral-950 border-neutral-700 text-white'
+                        : 'bg-white border-slate-300 text-slate-900'
+                    }`}
                   />
                 </div>
 
                 {/* Upload box */}
-                <div className="border-2 border-dashed border-neutral-700 hover:border-[#E51937] rounded-xl p-3 text-center transition-colors">
+                <div
+                  className={`border-2 border-dashed hover:border-[#E51937] rounded-xl p-3 text-center transition-colors ${
+                    isDarkMode ? 'border-neutral-700' : 'border-slate-300 bg-white'
+                  }`}
+                >
                   <input
                     type="file"
                     id="residency-upload-input"
@@ -529,13 +645,13 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                     htmlFor="residency-upload-input"
                     className="cursor-pointer flex flex-col items-center justify-center space-y-1"
                   >
-                    <Upload className="w-5 h-5 text-neutral-400" />
-                    <span className="font-bold text-neutral-300 text-xs">
+                    <Upload className={`w-5 h-5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-400'}`} />
+                    <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
                       {residencyFile
                         ? residencyFile.name
                         : `Upload ${residencyType === 'KRA' ? 'KRA PIN Certificate' : 'Utility Bill / Bank Statement'}`}
                     </span>
-                    <span className="text-[10px] text-neutral-500">
+                    <span className={`text-[10px] ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
                       PNG, JPG, or PDF (Issued within last 3 months)
                     </span>
                   </label>
@@ -544,9 +660,15 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
             </div>
 
             {/* Terms notice & Submit button */}
-            <div className="p-3 bg-neutral-900/60 rounded-xl border border-neutral-800 text-[11px] text-neutral-400 leading-relaxed">
+            <div
+              className={`p-3 rounded-xl border text-[11px] leading-relaxed ${
+                isDarkMode
+                  ? 'bg-neutral-900/60 border-neutral-800 text-neutral-400'
+                  : 'bg-amber-50/70 border-amber-200 text-slate-700'
+              }`}
+            >
               <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                 <span>
                   <strong>One-Time Verification Rule:</strong> Once uploaded, your documents are submitted
                   directly to the auto-verification gateway and locked. Verification clears automatically

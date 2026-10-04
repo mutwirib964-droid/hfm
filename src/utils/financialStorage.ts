@@ -513,8 +513,45 @@ export interface PlatformDepositTransaction {
   referenceId?: string;
 }
 
+const LEGACY_MOCK_TX_IDS = new Set([
+  'tx-101',
+  'tx-102',
+  'tx-103',
+  'tx-104',
+  'tx-105',
+  'tx-106',
+  'tx-107',
+  'tx-108',
+  'tx-109',
+  'tx-110',
+]);
+
+const LEGACY_MOCK_REFERENCES = new Set([
+  'SLK9482190',
+  '0xcc6371a1f224ac0e655b6c787be086444be2f674',
+  'TRF-884129',
+  'B2C983104921',
+  'CRD-FAIL-91024',
+  'TUmex3LPfRF8Zjbx8DUw6XS7YFdmuoXKuz',
+  'TX-BTC-49102941',
+  'SKJ3910283',
+  'STK-CAN-19402',
+  'SJH2910481',
+]);
+
+export function sanitizeRealTransactions(txs?: Transaction[] | null): Transaction[] {
+  if (!Array.isArray(txs)) return [];
+  return txs.filter((tx) => {
+    if (!tx || typeof tx !== 'object') return false;
+    if (tx.id && LEGACY_MOCK_TX_IDS.has(String(tx.id))) return false;
+    if (tx.reference && LEGACY_MOCK_REFERENCES.has(String(tx.reference))) return false;
+    return true;
+  });
+}
+
 /**
  * Super Admin function: Gathers all deposits made across the entire platform.
+ * Strictly sums ONLY COMPLETED deposits (failed, cancelled, or pending are never included in totalDepositedUsd).
  */
 export function getAllPlatformDeposits(): {
   totalDepositedUsd: number;
@@ -527,12 +564,18 @@ export function getAllPlatformDeposits(): {
 
   users.forEach((u) => {
     const finances = loadUserFinancials(u);
-    const txs = finances?.transactions || [];
+    const txs = sanitizeRealTransactions(finances?.transactions);
 
     txs.forEach((tx) => {
       if (tx.type === 'DEPOSIT') {
-        const amt = Math.abs(tx.amount);
-        const status = tx.status === 'FAILED' ? 'FAILED' : tx.status === 'PENDING' ? 'PENDING' : 'COMPLETED';
+        const amt = Math.abs(Number(tx.amount || 0));
+        const rawStatus = String(tx.status || '').toUpperCase();
+        const status: 'COMPLETED' | 'PENDING' | 'FAILED' =
+          rawStatus === 'COMPLETED'
+            ? 'COMPLETED'
+            : rawStatus === 'PENDING'
+            ? 'PENDING'
+            : 'FAILED';
         const dateObj = new Date(tx.timestamp || Date.now());
         deposits.push({
           id: tx.id || `dep-${u.accountNumber || u.id}-${tx.timestamp}`,
@@ -552,7 +595,7 @@ export function getAllPlatformDeposits(): {
             hour: '2-digit',
             minute: '2-digit',
           }),
-          referenceId: (tx as any).referenceId || (tx as any).checkoutRequestId || `VTM-DEP-${tx.id.slice(-6).toUpperCase()}`,
+          referenceId: (tx as any).referenceId || (tx as any).checkoutRequestId || tx.reference || `VTM-DEP-${String(tx.id || '').slice(-6).toUpperCase()}`,
         });
       }
     });
@@ -561,6 +604,7 @@ export function getAllPlatformDeposits(): {
   // Sort latest first
   deposits.sort((a, b) => b.timestamp - a.timestamp);
 
+  // Strictly sum ONLY COMPLETED deposits (never failed, cancelled, or pending)
   const totalDepositedUsd = Number(
     deposits.reduce((acc, curr) => (curr.status === 'COMPLETED' ? acc + curr.amountUsd : acc), 0).toFixed(2)
   );
@@ -578,7 +622,6 @@ export function getAllPlatformDeposits(): {
  */
 export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
   const users = getAllRegisteredUsers();
-  const USD_KES = 125.67;
 
   return users.map((u) => {
     const finances = loadUserFinancials(u);
@@ -586,10 +629,13 @@ export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
     const allAccounts = finances?.accounts ?? [];
     const liveAccounts = allAccounts.filter((a) => a.type === 'Live');
     const accountsBalance = liveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
-    const txs = finances?.transactions || [];
+    const txs = sanitizeRealTransactions(finances?.transactions);
 
-    const completedDeposits = txs.filter((t) => t.type === 'DEPOSIT' && t.status !== 'FAILED');
-    const totalDepositedUsd = completedDeposits.reduce((sum, t) => sum + Math.abs(t.amount), 0);
+    // Strictly count ONLY COMPLETED deposits (failed/cancelled/pending are excluded)
+    const completedDeposits = txs.filter(
+      (t) => t.type === 'DEPOSIT' && String(t.status || '').toUpperCase() === 'COMPLETED'
+    );
+    const totalDepositedUsd = completedDeposits.reduce((sum, t) => sum + Math.abs(Number(t.amount || 0)), 0);
 
     return {
       user: u,
@@ -647,7 +693,10 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (raw) {
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
-        return parsed;
+        return {
+          ...parsed,
+          transactions: sanitizeRealTransactions(parsed.transactions),
+        };
       }
     }
 
@@ -656,7 +705,10 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (activeRaw) {
       const parsed = JSON.parse(activeRaw);
       if (parsed && parsed._key === key && typeof parsed.walletBalance === 'number') {
-        return parsed;
+        return {
+          ...parsed,
+          transactions: sanitizeRealTransactions(parsed.transactions),
+        };
       }
     }
   } catch (e) {
@@ -711,7 +763,7 @@ export function saveUserFinancials(
       walletBalance: Number(state.walletBalance.toFixed(2)),
       accounts: state.accounts,
       selectedAccountId: state.selectedAccountId ?? null,
-      transactions: state.transactions || [],
+      transactions: sanitizeRealTransactions(state.transactions),
       lastUpdated: Date.now(),
     };
 

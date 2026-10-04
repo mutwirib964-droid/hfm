@@ -101,24 +101,12 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   const bidParts = formatPipPrice(instrument.bid, instrument.decimals, isForex);
   const askParts = formatPipPrice(instrument.ask, instrument.decimals, isForex);
   const spreadDisplay = useMemo(() => {
-    const diff = Math.abs(instrument.ask - instrument.bid);
-    if (diff === 0) return '0.0';
-    if (instrument.symbol === 'XAUUSD') {
-      return diff < 1 ? diff.toFixed(2) : (diff * 10).toFixed(1);
-    }
-    if (instrument.symbol === 'XAGUSD') {
-      return (diff * 100).toFixed(1);
-    }
-    if (instrument.decimals >= 4) {
-      const points = diff * 100000;
-      return (points / 10).toFixed(1);
-    }
-    if (instrument.decimals === 3) {
-      const points = diff * 1000;
-      return (points / 10).toFixed(1);
-    }
-    return diff.toFixed(1);
-  }, [instrument.ask, instrument.bid, instrument.symbol, instrument.decimals]);
+    const s =
+      instrument.spread > 0 && instrument.spread <= 1.2
+        ? instrument.spread
+        : Math.min(1.2, Math.max(0.18, Math.abs(instrument.ask - instrument.bid)));
+    return s.toFixed(2);
+  }, [instrument.ask, instrument.bid, instrument.spread]);
 
   // Handle pointer coordinate extraction
   const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -165,7 +153,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     }
 
     if (activeDrawingTool === 'Text') {
-      const text = prompt('Enter annotation text:', 'Key Level') || 'Key Level';
+      const text = `Level @ ${instrument.bid.toFixed(instrument.decimals)}`;
       const newDrawing: DrawnObject = {
         id: `draw-${Date.now()}`,
         tool: 'Text',
@@ -174,6 +162,8 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         text,
       };
       setDrawings((prev) => [...prev, newDrawing]);
+      setDrawingNotification(`Added Text Label: ${text}`);
+      setTimeout(() => setDrawingNotification(null), 2000);
       return;
     }
 
@@ -230,7 +220,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     }
   };
 
-  // Render high performance candlestick chart on HTML5 canvas
+  // Render user drawings on transparent HTML5 canvas overlay over the live chart
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -241,6 +231,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     // Handle high DPI retina display
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     canvas.width = rect.width * dpr;
     canvas.height = rect.height * dpr;
     ctx.scale(dpr, dpr);
@@ -248,81 +239,20 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     const width = rect.width;
     const height = rect.height;
 
-    // Clear background
-    ctx.fillStyle = isDarkMode ? '#111317' : '#FFFFFF';
-    ctx.fillRect(0, 0, width, height);
+    // Transparent clear so live TradingView chart underneath remains 100% visible
+    ctx.clearRect(0, 0, width, height);
 
-    if (!candles || candles.length === 0) return;
-
-    // Price scale boundaries
-    const visibleCandles = candles.slice(-55);
-    const highs = visibleCandles.map((c) => c.high);
-    const lows = visibleCandles.map((c) => c.low);
+    const visibleCandles = (effectiveCandles && effectiveCandles.length > 0 ? effectiveCandles : candles).slice(-55);
+    const highs = visibleCandles.length > 0 ? visibleCandles.map((c) => c.high) : [instrument.ask * 1.002];
+    const lows = visibleCandles.length > 0 ? visibleCandles.map((c) => c.low) : [instrument.bid * 0.998];
     const minPrice = Math.min(...lows, instrument.bid * 0.999);
     const maxPrice = Math.max(...highs, instrument.ask * 1.001);
     const priceRange = maxPrice - minPrice || 1;
 
     const paddingY = 28;
-    const chartHeight = height - paddingY * 2;
-    const paddingRight = 72; // Wide enough for exact currency digits & spread badge
-    const chartWidth = width - paddingRight;
-
-    // Helper to map price to Y coordinate
-    const priceToY = (price: number) => paddingY + chartHeight * (1 - (price - minPrice) / priceRange);
-
-    // Draw horizontal dashed gridlines & price axis labels
-    const gridLines = 5;
-    ctx.lineWidth = 1;
-    ctx.font = '10px Inter, system-ui, sans-serif';
-
-    for (let i = 0; i <= gridLines; i++) {
-      const y = paddingY + (chartHeight / gridLines) * i;
-      const price = maxPrice - (priceRange / gridLines) * i;
-
-      // Dashed grid line
-      ctx.beginPath();
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = isDarkMode ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
-      ctx.moveTo(0, y);
-      ctx.lineTo(chartWidth, y);
-      ctx.stroke();
-
-      // Right axis price text
-      ctx.setLineDash([]);
-      ctx.fillStyle = isDarkMode ? '#9CA3AF' : '#6B7280';
-      ctx.textAlign = 'left';
-      ctx.fillText(price.toFixed(instrument.decimals), chartWidth + 6, y + 3);
-    }
-
-    // Draw Candlesticks
-    const candleWidth = Math.max(3, (chartWidth / visibleCandles.length) * 0.65);
-    const candleSpacing = chartWidth / visibleCandles.length;
-
-    visibleCandles.forEach((c, idx) => {
-      const x = idx * candleSpacing + candleSpacing / 2;
-      const isBullish = c.close >= c.open;
-
-      const openY = priceToY(c.open);
-      const closeY = priceToY(c.close);
-      const highY = priceToY(c.high);
-      const lowY = priceToY(c.low);
-
-      const color = isBullish ? '#22C55E' : '#E51937';
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
-
-      // Candle Wick
-      ctx.beginPath();
-      ctx.lineWidth = 1.2;
-      ctx.moveTo(x, highY);
-      ctx.lineTo(x, lowY);
-      ctx.stroke();
-
-      // Candle Body
-      const bodyY = Math.min(openY, closeY);
-      const bodyH = Math.max(2, Math.abs(closeY - openY));
-      ctx.fillRect(x - candleWidth / 2, bodyY, candleWidth, bodyH);
-    });
+    const chartHeight = Math.max(100, height - paddingY * 2);
+    const paddingRight = 64;
+    const chartWidth = Math.max(100, width - paddingRight);
 
     // RENDER USER DRAWINGS (Persistent overlay)
     const allDrawings = [...drawings];
@@ -339,7 +269,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
       ctx.save();
       ctx.strokeStyle = draw.color;
       ctx.fillStyle = draw.color;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.2;
       ctx.setLineDash([]);
 
       const pts = draw.points;
@@ -351,25 +281,26 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
       if (draw.tool === 'Horizontal') {
         const y = pts[0].y;
         ctx.beginPath();
-        ctx.setLineDash([5, 3]);
+        ctx.setLineDash([6, 4]);
         ctx.moveTo(0, y);
         ctx.lineTo(chartWidth, y);
         ctx.stroke();
 
         // Level tag
+        ctx.setLineDash([]);
         ctx.fillStyle = draw.color;
-        ctx.fillRect(chartWidth + 2, y - 8, 68, 16);
+        ctx.fillRect(chartWidth - 2, y - 9, 64, 18);
         ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 9px monospace';
+        ctx.font = 'bold 9.5px monospace';
         ctx.textAlign = 'center';
         const pVal = maxPrice - ((y - paddingY) / chartHeight) * priceRange;
-        ctx.fillText(pVal.toFixed(instrument.decimals), chartWidth + 36, y + 3.5);
+        ctx.fillText(pVal.toFixed(instrument.decimals), chartWidth + 30, y + 3.5);
       } else if (draw.tool === 'Vertical') {
         const x = pts[0].x;
         ctx.beginPath();
-        ctx.setLineDash([4, 4]);
-        ctx.moveTo(x, paddingY);
-        ctx.lineTo(x, height - paddingY);
+        ctx.setLineDash([5, 4]);
+        ctx.moveTo(x, 36);
+        ctx.lineTo(x, height - 10);
         ctx.stroke();
       } else if (draw.tool === 'Trendline' && pts.length >= 2) {
         ctx.beginPath();
@@ -377,10 +308,9 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.lineTo(pts[1].x, pts[1].y);
         ctx.stroke();
 
-        // End circles
         ctx.beginPath();
-        ctx.arc(pts[0].x, pts[0].y, 3.5, 0, Math.PI * 2);
-        ctx.arc(pts[1].x, pts[1].y, 3.5, 0, Math.PI * 2);
+        ctx.arc(pts[0].x, pts[0].y, 4, 0, Math.PI * 2);
+        ctx.arc(pts[1].x, pts[1].y, 4, 0, Math.PI * 2);
         ctx.fill();
       } else if (draw.tool === 'Arrowed' && pts.length >= 2) {
         const [p1, p2] = pts;
@@ -389,7 +319,6 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.lineTo(p2.x, p2.y);
         ctx.stroke();
 
-        // Arrow head
         const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
         ctx.beginPath();
         ctx.moveTo(p2.x, p2.y);
@@ -404,39 +333,38 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         const rw = Math.abs(p2.x - p1.x);
         const rh = Math.abs(p2.y - p1.y);
 
-        ctx.fillStyle = draw.color.includes('rgba') ? draw.color : `${draw.color}25`;
+        ctx.fillStyle = draw.color.includes('rgba') ? draw.color : `${draw.color}28`;
         ctx.fillRect(rx, ry, rw, rh);
         ctx.strokeRect(rx, ry, rw, rh);
       } else if (draw.tool === 'Retracements' && pts.length >= 2) {
-        // Fibonacci Retracements (0%, 23.6%, 38.2%, 50%, 61.8%, 78.6%, 100%)
         const [p1, p2] = pts;
         const topY = Math.min(p1.y, p2.y);
         const botY = Math.max(p1.y, p2.y);
         const diffY = botY - topY;
 
         const fibLevels = [
-          { ratio: 0.0, label: '0.0%', col: '#787B86' },
+          { ratio: 0.0, label: '0.0%', col: '#94A3B8' },
           { ratio: 0.236, label: '23.6%', col: '#F23645' },
           { ratio: 0.382, label: '38.2%', col: '#FF9800' },
           { ratio: 0.5, label: '50.0%', col: '#4CAF50' },
           { ratio: 0.618, label: '61.8%', col: '#089981' },
           { ratio: 0.786, label: '78.6%', col: '#2962FF' },
-          { ratio: 1.0, label: '100.0%', col: '#787B86' },
+          { ratio: 1.0, label: '100.0%', col: '#94A3B8' },
         ];
 
         fibLevels.forEach((fib) => {
           const ly = topY + diffY * fib.ratio;
           ctx.beginPath();
           ctx.strokeStyle = fib.col;
-          ctx.lineWidth = 1;
-          ctx.setLineDash([3, 2]);
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([4, 3]);
           ctx.moveTo(Math.min(p1.x, p2.x), ly);
           ctx.lineTo(chartWidth, ly);
           ctx.stroke();
 
           ctx.fillStyle = fib.col;
-          ctx.font = '9px monospace';
-          ctx.fillText(`Fib ${fib.label}`, chartWidth - 55, ly - 2);
+          ctx.font = 'bold 9.5px monospace';
+          ctx.fillText(`Fib ${fib.label}`, chartWidth - 56, ly - 3);
         });
       } else if (draw.tool === 'Ellipse' && pts.length >= 2) {
         const [p1, p2] = pts;
@@ -447,7 +375,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
 
         ctx.beginPath();
         ctx.ellipse(cx, cy, Math.max(rx, 4), Math.max(ry, 4), 0, 0, Math.PI * 2);
-        ctx.fillStyle = `${draw.color}20`;
+        ctx.fillStyle = `${draw.color}25`;
         ctx.fill();
         ctx.stroke();
       } else if (draw.tool === 'Equidistant' && pts.length >= 2) {
@@ -455,99 +383,36 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
         ctx.lineTo(p2.x, p2.y);
-        ctx.moveTo(p1.x, p1.y + 24);
-        ctx.lineTo(p2.x, p2.y + 24);
+        ctx.moveTo(p1.x, p1.y + 28);
+        ctx.lineTo(p2.x, p2.y + 28);
         ctx.stroke();
+      } else if ((draw.tool === 'XABCD' || draw.tool === 'ABCD') && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const midX1 = p1.x + (p2.x - p1.x) * 0.33;
+        const midY1 = p2.y;
+        const midX2 = p1.x + (p2.x - p1.x) * 0.66;
+        const midY2 = p1.y + (p2.y - p1.y) * 0.35;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(midX1, midY1);
+        ctx.lineTo(midX2, midY2);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+        ctx.fillStyle = `${draw.color}22`;
+        ctx.fill();
       } else if (draw.tool === 'Text' && pts.length >= 1) {
         const p = pts[0];
+        const label = draw.text || 'Key Level';
         ctx.fillStyle = draw.color;
-        ctx.fillRect(p.x - 2, p.y - 12, (draw.text?.length || 4) * 7 + 10, 18);
+        ctx.fillRect(p.x - 2, p.y - 14, label.length * 6.5 + 12, 20);
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 10px sans-serif';
-        ctx.fillText(draw.text || 'Label', p.x + 3, p.y + 1);
+        ctx.fillText(label, p.x + 4, p.y);
       }
 
       ctx.restore();
     });
-
-    // DRAW LIVE EXACT BID & ASK PRICES AND SPREAD (TRADINGVIEW FIDELITY)
-    const liveBid = instrument.bid;
-    const liveAsk = instrument.ask;
-    const bidY = priceToY(liveBid);
-    const askY = priceToY(liveAsk);
-    const spreadInPoints = Math.round(
-      instrument.spread > 5 ? instrument.spread : (liveAsk - liveBid) * instrument.pipMultiplier
-    );
-
-    // 1. Draw Bid Line (Red / Sell Price)
-    if (bidY >= paddingY && bidY <= paddingY + chartHeight) {
-      ctx.beginPath();
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = '#E51937';
-      ctx.lineWidth = 1.25;
-      ctx.moveTo(0, bidY);
-      ctx.lineTo(chartWidth, bidY);
-      ctx.stroke();
-
-      // Right price tag badge (SELL / BID)
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#E51937';
-      ctx.beginPath();
-      ctx.roundRect(chartWidth + 2, bidY - 8, 68, 16, 3);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 9.5px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(liveBid.toFixed(instrument.decimals), chartWidth + 36, bidY + 3.5);
-    }
-
-    // 2. Draw Ask Line (Blue / Buy Price)
-    if (askY >= paddingY && askY <= paddingY + chartHeight) {
-      ctx.beginPath();
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = '#2563EB';
-      ctx.lineWidth = 1.25;
-      ctx.moveTo(0, askY);
-      ctx.lineTo(chartWidth, askY);
-      ctx.stroke();
-
-      // Right price tag badge (BUY / ASK)
-      ctx.setLineDash([]);
-      ctx.fillStyle = '#2563EB';
-      ctx.beginPath();
-      ctx.roundRect(chartWidth + 2, askY - 8, 68, 16, 3);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = 'bold 9.5px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(liveAsk.toFixed(instrument.decimals), chartWidth + 36, askY + 3.5);
-    }
-
-    // 3. Draw Visual Spread Zone between Bid and Ask on Chart
-    const spreadTopY = Math.min(bidY, askY);
-    const spreadHeight = Math.max(Math.abs(bidY - askY), 3);
-    ctx.fillStyle = isDarkMode ? 'rgba(239, 68, 68, 0.12)' : 'rgba(239, 68, 68, 0.1)';
-    ctx.fillRect(0, spreadTopY, chartWidth, spreadHeight);
-
-    // Spread bracket tag on right axis
-    const spreadMidY = (bidY + askY) / 2;
-    if (spreadMidY >= paddingY && spreadMidY <= paddingY + chartHeight) {
-      ctx.fillStyle = isDarkMode ? '#1E222B' : '#F1F5F9';
-      ctx.strokeStyle = isDarkMode ? '#374151' : '#CBD5E1';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.roundRect(chartWidth + 4, spreadMidY - 7, 64, 14, 3);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = isDarkMode ? '#F87171' : '#DC2626';
-      ctx.font = 'bold 8.5px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(`SPR: ${spreadInPoints} pts`, chartWidth + 36, spreadMidY + 3);
-    }
-  }, [candles, instrument, isDarkMode, drawings, isDrawing, tempPoints, activeDrawingTool, drawingColor]);
+  }, [candles, effectiveCandles, instrument, isDarkMode, drawings, isDrawing, tempPoints, activeDrawingTool, drawingColor]);
 
   // Market Specs
   const specs = [
@@ -672,14 +537,13 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           </button>
 
           <button
-            onClick={() => {
-              setDrawingNotification(
-                'Drawing toolbar is active on the left side of the chart! Click any tool to draw directly on candles.'
-              );
-              setTimeout(() => setDrawingNotification(null), 4000);
-            }}
-            className="p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400 cursor-pointer"
-            title="Drawing Tools (Available on left toolbar)"
+            onClick={() => setShowDrawingModal(true)}
+            className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+              activeDrawingTool
+                ? 'border-[#0066FF] bg-[#0066FF]/15 text-[#0066FF]'
+                : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400'
+            }`}
+            title="Open Drawing Tools"
           >
             <PenTool className="w-4 h-4" />
           </button>
@@ -752,7 +616,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         </div>
       )}
 
-      {/* Main Chart Viewport: Official TradingView Interactive Live Chart Alone */}
+      {/* Main Chart Viewport: Official TradingView Interactive Live Chart + Interactive Drawing Canvas & Left Toolbar */}
       <div
         className={`relative w-full transition-all duration-200 ${
           isFullscreen
@@ -774,6 +638,82 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           pipMultiplier={instrument.pipMultiplier}
           tickDirection={tickDirection}
         />
+
+        {/* Interactive Drawing Canvas Overlay */}
+        <canvas
+          ref={canvasRef}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          className={`absolute inset-0 top-9 w-full h-[calc(100%-36px)] z-20 ${
+            activeDrawingTool ? 'pointer-events-auto cursor-crosshair touch-none' : 'pointer-events-none'
+          }`}
+        />
+
+        {/* Visible Quick Drawing Toolbar on Left Side of Chart (Always accessible on Mobile & Desktop) */}
+        <div
+          className={`absolute left-2 top-12 z-30 flex flex-col gap-1 p-1 rounded-xl border shadow-lg backdrop-blur-md ${
+            isDarkMode
+              ? 'bg-[#151821]/90 border-neutral-700/80 text-neutral-300'
+              : 'bg-white/95 border-slate-200 text-slate-700'
+          }`}
+        >
+          {[
+            { id: 'Trendline', label: 'Trendline', icon: TrendingUp },
+            { id: 'Horizontal', label: 'Horizontal Line', icon: Minus },
+            { id: 'Vertical', label: 'Vertical Line', icon: MoveVertical },
+            { id: 'Retracements', label: 'Fibonacci', icon: Sliders },
+            { id: 'Rectangle', label: 'Rectangle Zone', icon: Square },
+            { id: 'Ellipse', label: 'Circle / Zone', icon: Circle },
+            { id: 'Text', label: 'Price Label', icon: Type },
+          ].map((t) => {
+            const IconComp = t.icon;
+            const isSelected = activeDrawingTool === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() =>
+                  setActiveDrawingTool((prev) => (prev === t.id ? null : t.id))
+                }
+                title={t.label}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                  isSelected
+                    ? 'bg-[#E51937] text-white shadow-sm scale-105'
+                    : 'hover:bg-neutral-500/15'
+                }`}
+              >
+                <IconComp className="w-3.5 h-3.5" />
+              </button>
+            );
+          })}
+
+          <div className="h-px bg-neutral-500/20 my-0.5" />
+
+          <button
+            type="button"
+            onClick={() => setShowDrawingModal(true)}
+            title="All Drawing Tools"
+            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-neutral-500/15 text-[#0066FF] cursor-pointer"
+          >
+            <PenTool className="w-3.5 h-3.5" />
+          </button>
+
+          {drawings.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setDrawings([]);
+                setActiveDrawingTool(null);
+              }}
+              title="Clear All Drawings"
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-rose-500/20 text-rose-500 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Timeframe Chips Bar */}
