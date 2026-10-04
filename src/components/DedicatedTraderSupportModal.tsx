@@ -37,7 +37,7 @@ function generateInstitutionalAnswer(query: string, user?: any): string {
   const q = (query || '').toLowerCase();
 
   if (q.includes('m-pesa') || q.includes('mpesa') || (q.includes('deposit') && q.includes('phone'))) {
-    return `### Safaricom M-PESA Express STK Deposit Guide\n\n1. **Direct Funding**: Go to the **Wallet** tab or click the green **Deposit** button in the top navigation bar.\n2. **Select Account**: Choose whether to fund your **VTM One Wallet** or a specific **Live Trading Account**.\n3. **Enter Amount**: Minimum deposit is **$16.00 USD** (converted at **1 USD = 129.50 KES**).\n4. **STK Push**: Enter your Safaricom phone number (e.g. 07XXXXXXXX or 01XXXXXXXX). Your phone will receive an STK prompt to enter your M-PESA PIN.\n5. **Instant Credit**: Once confirmed, your balance is credited immediately with 0% processing fee and synced to the cloud database.`;
+    return `### Safaricom M-PESA Express STK Deposit Guide\n\n1. **Direct Funding**: Go to the **Wallet** tab or click the green **Deposit** button in the top navigation bar.\n2. **Select Account**: Choose whether to fund your **VTM One Wallet** or a specific **Live Trading Account**.\n3. **Enter Amount**: Minimum deposit is **$16.00 USD** (converted at **1 USD = 129.50 KES**).\n4. **STK Push**: Enter your Safaricom phone number (e.g. 07XXXXXXXX or 01XXXXXXXX). Your phone will receive an STK prompt to enter your M-PESA PIN.\n5. **Instant Credit**: Once confirmed, your balance is credited immediately with 0% processing fee.`;
   }
 
   if (q.includes('bitcoin') || q.includes('crypto') || q.includes('btc') || q.includes('usdt') || q.includes('eth')) {
@@ -45,11 +45,11 @@ function generateInstitutionalAnswer(query: string, user?: any): string {
   }
 
   if (q.includes('withdraw') || q.includes('payout') || q.includes('cash out')) {
-    return `### Withdrawal Methods & Execution Speed\n\n1. **Safaricom M-PESA & Crypto Payouts**:\n   - Minimum Withdrawal: **$35.00 USD**.\n   - Processing Flow: Every withdrawal starts as **PENDING** for **3 seconds**, then automatically transitions to **COMPLETED (Successful)**.\n   - Balance Deduction: The withdrawn amount is immediately deducted from your source account and saved permanently to your cloud profile.\n2. **Fee**: 0% withdrawal fee across all supported payment channels.`;
+    return `### Withdrawal Methods & Execution Speed\n\n1. **Safaricom M-PESA & Crypto Payouts**:\n   - Minimum Withdrawal: **$35.00 USD**.\n   - Processing Flow: Every withdrawal starts as **PENDING** for **3 seconds**, then automatically transitions to **COMPLETED (Successful)**.\n   - Balance Deduction: The withdrawn amount is immediately deducted from your source account.\n2. **Fee**: 0% withdrawal fee across all supported payment channels.`;
   }
 
   if (q.includes('chart') || q.includes('tradingview') || q.includes('vtm pro') || q.includes('price')) {
-    return `### VTM Pro Live Execution Charting\n\n- **1:1 Price Synchronization**: The live candlestick chart is synchronized tick-by-tick with the **BUY (Ask)** and **SELL (Bid)** execution buttons.\n- **Accurate P/L**: Floating P/L is calculated directly from the live price difference (\`Current Price - Open Price\` for BUY, \`Open Price - Current Price\` for SELL) multiplied by your lot size and contract size.\n- **Latest 20 Trades**: Your latest 20 closed trades are automatically saved in the cloud database and visible under the Positions tab.`;
+    return `### VTM Pro Live Execution Charting\n\n- **1:1 Price Matching**: The live candlestick chart moves tick-by-tick with the **BUY (Ask)** and **SELL (Bid)** execution buttons.\n- **Accurate P/L**: Floating P/L is calculated directly from the live price difference (\`Current Price - Open Price\` for BUY, \`Open Price - Current Price\` for SELL) multiplied by your lot size and contract size.\n- **Latest 20 Trades**: Your latest 20 closed trades are visible under the Positions tab.`;
   }
 
   if (q.includes('leverage') || q.includes('margin') || q.includes('lot') || q.includes('stop out') || q.includes('free margin')) {
@@ -76,7 +76,7 @@ function generateInstitutionalAnswer(query: string, user?: any): string {
     return `### Welcome to VTM Dedicated Trader Support\n\nHello **${user?.name || 'Trader'}**! Our 24/7 Priority Execution Desk is online and ready to help.\n\nYou can ask me about:\n- **Deposits & Withdrawals** (M-PESA STK min $16, withdrawals min $35 with 3s auto-completion)\n- **Lot Size & Margin Requirements** ($10 minimum balance per 0.01 lot, Free Margin protection)\n- **Bots & EAs**, **Live Charts**, or **Account Settings**.\n\nType any question below and I will answer immediately!`;
   }
 
-  return `### VTM Priority Execution Desk Response\n\nThank you for your inquiry regarding **"${query}"**.\n\n- **Account Status**: Active session under **${user?.name || 'Trader'}** (${user?.email || 'Verified Client'}).\n- **Trading Rules**: Ensure your **Free Margin is above $0.00** and your **Account Balance** supports your selected lot size (at least **$10.00 per 0.01 lot**).\n- **Funding & Payouts**: Deposits start from **$16.00** (instant credit), and withdrawals start from **$35.00** (3-second pending to automatic completion).\n- **Trade History**: Your latest 20 closed trades are automatically saved in the cloud database and visible under the **Positions -> Closed** tab.\n\nPlease let us know if you would like specific details on deposits, withdrawals, lot sizes, or EAs!`;
+  return `### VTM Priority Execution Desk Response\n\nThank you for your inquiry regarding **"${query}"**.\n\n- **Account Status**: Active session under **${user?.name || 'Trader'}** (${user?.email || 'Verified Client'}).\n- **Trading Rules**: Ensure your **Free Margin is above $0.00** and your **Account Balance** supports your selected lot size (at least **$10.00 per 0.01 lot**).\n- **Funding & Payouts**: Deposits start from **$16.00** (instant credit), and withdrawals start from **$35.00** (3-second pending to automatic completion).\n- **Trade History**: Your latest 20 closed trades are visible under the **Positions -> Closed** tab.\n\nPlease let us know if you would like specific details on deposits, withdrawals, lot sizes, or EAs!`;
 }
 
 export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalProps> = ({

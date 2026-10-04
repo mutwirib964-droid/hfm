@@ -1,13 +1,25 @@
 import { PriceAlert, Instrument } from '../types';
 
 const STORAGE_PRICE_ALERTS_KEY = 'vtm_price_alerts';
+const STORAGE_PRICE_ALERTS_UPDATED_KEY = 'vtm_price_alerts_updated_at';
+
+function getAlertsKey(userEmail?: string | null): string {
+  if (!userEmail) return STORAGE_PRICE_ALERTS_KEY;
+  return `${STORAGE_PRICE_ALERTS_KEY}_${userEmail.trim().toLowerCase()}`;
+}
+
+function getAlertsUpdatedKey(userEmail?: string | null): string {
+  if (!userEmail) return STORAGE_PRICE_ALERTS_UPDATED_KEY;
+  return `${STORAGE_PRICE_ALERTS_UPDATED_KEY}_${userEmail.trim().toLowerCase()}`;
+}
 
 /**
  * Load stored price alerts from localStorage
  */
-export function loadPriceAlerts(): PriceAlert[] {
+export function loadPriceAlerts(userEmail?: string | null): PriceAlert[] {
   try {
-    const raw = localStorage.getItem(STORAGE_PRICE_ALERTS_KEY);
+    const userKey = getAlertsKey(userEmail);
+    const raw = localStorage.getItem(userKey) || localStorage.getItem(STORAGE_PRICE_ALERTS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
@@ -20,12 +32,34 @@ export function loadPriceAlerts(): PriceAlert[] {
   }
 }
 
+export function getPriceAlertsUpdatedAt(userEmail?: string | null): number {
+  try {
+    const raw =
+      localStorage.getItem(getAlertsUpdatedKey(userEmail)) ||
+      localStorage.getItem(STORAGE_PRICE_ALERTS_UPDATED_KEY);
+    return raw ? Number(raw) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Persist price alerts to localStorage
  */
-export function savePriceAlerts(alerts: PriceAlert[]): void {
+export function savePriceAlerts(
+  alerts: PriceAlert[],
+  userEmail?: string | null,
+  updatedAt?: number
+): void {
   try {
-    localStorage.setItem(STORAGE_PRICE_ALERTS_KEY, JSON.stringify(alerts));
+    const ts = updatedAt ?? Date.now();
+    const serialized = JSON.stringify(alerts);
+    localStorage.setItem(STORAGE_PRICE_ALERTS_KEY, serialized);
+    localStorage.setItem(STORAGE_PRICE_ALERTS_UPDATED_KEY, String(ts));
+    if (userEmail) {
+      localStorage.setItem(getAlertsKey(userEmail), serialized);
+      localStorage.setItem(getAlertsUpdatedKey(userEmail), String(ts));
+    }
   } catch (err) {
     console.error('Failed to save price alerts to storage', err);
   }

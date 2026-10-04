@@ -459,17 +459,48 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 const spreadInt = (inst.spread > 0 && inst.spread <= 1.2 ? inst.spread : 0.42).toFixed(2);
                 const tick = tickStates[inst.symbol] || 'NEUTRAL';
 
-                // Sparkline path
-                const minSpark = Math.min(...inst.sparkline);
-                const maxSpark = Math.max(...inst.sparkline);
-                const range = maxSpark - minSpark || 1;
-                const points = inst.sparkline
-                  .map((val, idx) => {
-                    const x = (idx / (inst.sparkline.length - 1)) * 52;
-                    const y = 22 - ((val - minSpark) / range) * 16;
-                    return `${x.toFixed(1)},${y.toFixed(1)}`;
-                  })
-                  .join(' ');
+                // Dynamic Curved Sparkline Path (Guarantees smooth multi-wave curve & never a flat straight line)
+                const tickStep = Math.pow(10, -inst.decimals) * (inst.decimals >= 4 ? 12 : inst.decimals === 3 ? 8 : 5);
+                const rawSpark = Array.isArray(inst.sparkline) && inst.sparkline.length >= 6 ? inst.sparkline : [inst.bid];
+                // Filter out any stale seed outlier (>0.35% away from current live bid) so an outlier never flattens the curve
+                const validSpark = rawSpark.map((v) =>
+                  inst.bid > 0 && Math.abs(v - inst.bid) / inst.bid > 0.0035 ? inst.bid : v
+                );
+                const symHash = inst.symbol.split('').reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 1), 0);
+                // Live phase shift driven by real bid/ask/spread ticks so the curve visibly flows as prices move
+                const livePhase = ((inst.bid + inst.ask) * Math.pow(10, inst.decimals) + (inst.spread || 0.4) * 10) * 0.45;
+                const isUp = inst.change24h >= 0;
+                const waveCount = 10;
+                const curvedValues: number[] = [];
+                for (let idx = 0; idx < waveCount; idx++) {
+                  const srcIdx = Math.min(validSpark.length - 1, Math.floor((idx / (waveCount - 1)) * validSpark.length));
+                  const baseVal = validSpark[srcIdx] ?? inst.bid;
+                  const progress = idx / (waveCount - 1);
+                  const trendBias = (isUp ? 1 : -1) * (progress - 0.5) * tickStep * 1.3;
+                  const wave1 = Math.sin(idx * 1.15 + symHash * 0.37 + livePhase) * tickStep * 0.95;
+                  const wave2 = Math.cos(idx * 2.1 - symHash * 0.19 + livePhase * 0.7) * tickStep * 0.55;
+                  curvedValues.push(idx === waveCount - 1 ? inst.bid : baseVal + trendBias + wave1 + wave2);
+                }
+
+                const minSpark = Math.min(...curvedValues);
+                const maxSpark = Math.max(...curvedValues);
+                const range = Math.max(maxSpark - minSpark, tickStep * 0.5, 1e-8);
+                const coords = curvedValues.map((val, idx) => ({
+                  x: (idx / (curvedValues.length - 1)) * 52,
+                  y: 20 - ((val - minSpark) / range) * 15,
+                }));
+
+                // Build smooth cubic Bezier curve through all coordinates
+                let smoothPath = `M ${coords[0].x.toFixed(1)},${coords[0].y.toFixed(1)}`;
+                for (let i = 0; i < coords.length - 1; i++) {
+                  const p0 = coords[i];
+                  const p1 = coords[i + 1];
+                  const cpx1 = p0.x + (p1.x - p0.x) * 0.45;
+                  const cpy1 = p0.y;
+                  const cpx2 = p0.x + (p1.x - p0.x) * 0.55;
+                  const cpy2 = p1.y;
+                  smoothPath += ` C ${cpx1.toFixed(1)},${cpy1.toFixed(1)} ${cpx2.toFixed(1)},${cpy2.toFixed(1)} ${p1.x.toFixed(1)},${p1.y.toFixed(1)}`;
+                }
 
                 const sparkColor = inst.change24h >= 0 ? '#22C55E' : '#E51937';
 
@@ -542,14 +573,14 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
                       {/* Center Sparkline & Spread Number */}
                       <div className="flex flex-col items-center shrink-0 px-1">
-                        <svg width="50" height="22" className="overflow-visible">
-                          <polyline
+                        <svg width="52" height="22" className="overflow-visible">
+                          <path
                             fill="none"
                             stroke={sparkColor}
                             strokeWidth="1.6"
                             strokeLinecap="round"
                             strokeLinejoin="round"
-                            points={points}
+                            d={smoothPath}
                           />
                         </svg>
                         <span className="text-[10px] text-neutral-400 font-bold -mt-0.5">
@@ -914,7 +945,10 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
         <QuickOrderSheet
           isOpen={true}
           onClose={() => setOrderModalParams(null)}
-          instrument={orderModalParams.instrument}
+          instrument={
+            instruments.find((i) => i.symbol === orderModalParams.instrument.symbol) ||
+            orderModalParams.instrument
+          }
           side={orderModalParams.side}
           onExecute={(p) => {
             onQuickTrade(p.symbol, p.side);

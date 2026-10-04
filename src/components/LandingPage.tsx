@@ -250,11 +250,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         }
       }
 
-      // 2. Persist user + verified UID + password directly to cloud registry
+      // 2. Persist user + verified UID + password directly to registry and confirm assigned UID
       const saveDbResult = await supabaseService.registerUserInDatabase(newUserProfile, password);
+      const confirmedDb = await supabaseService.findUserInDatabase(cleanEmail).catch(() => null);
+      if (confirmedDb && isValidUserUid(confirmedDb.profile?.id)) {
+        newUserProfile.id = confirmedDb.profile.id;
+      }
+
       if (!saveDbResult || !isValidUserUid(newUserProfile.id)) {
         setIsSubmitting(false);
-        setValidationError('Failed. Please try again later.');
+        setValidationError('Unable to complete registration at this moment. Please try again.');
         return;
       }
 
@@ -271,7 +276,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
       await supabaseService.syncActivity(newUserProfile, {
         type: 'REGISTRATION',
-        description: `New user registration for ${newUserProfile.email} (UID: ${newUserProfile.id})`,
+        description: `New user registration for ${newUserProfile.email}`,
       });
       await supabaseService.syncDevice(newUserProfile);
 
@@ -296,7 +301,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       try {
-        // 1. Fast direct check against vtm_registered_users (takes ~80ms)
+        // 1. Strict check: User MUST have created an account and been assigned a UID before logging in
         const remoteUser = await supabaseService.findUserInDatabase(cleanEmail).catch(() => null);
 
         // Master Admin Exclusive Login (Email: mutwirib964@gmail.com, Confirmed UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
@@ -331,162 +336,79 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           }
         }
 
-        // CASE 1: User found in vtm_registered_users
-        if (remoteUser) {
-          const storedPass = remoteUser.password ?? '';
-          let passMatches =
-            !storedPass ||
-            storedPass === password ||
-            storedPass.trim() === password.trim();
+        // Strict Enforcement: No user can ever sign in before creating an account and receiving an assigned UID
+        if (!remoteUser || !remoteUser.hasVerifiedUid || !isValidUserUid(remoteUser.profile?.id)) {
+          setIsSubmitting(false);
+          setValidationError('No registered account found for this email. Please create an account first.');
+          return;
+        }
 
-          if (!passMatches) {
-            const sbAuthRetry = await supabaseService
-              .signInWithSupabaseAuth(cleanEmail, password)
-              .catch(() => ({ success: false, data: null }));
-            if (sbAuthRetry.success) {
-              passMatches = true;
-            }
+        const storedPass = remoteUser.password ?? '';
+        let passMatches =
+          storedPass.length > 0 &&
+          (storedPass === password || storedPass.trim() === password.trim());
+
+        if (!passMatches) {
+          const sbAuthRetry = await supabaseService
+            .signInWithSupabaseAuth(cleanEmail, password)
+            .catch(() => ({ success: false, data: null }));
+          if (sbAuthRetry.success) {
+            passMatches = true;
           }
+        }
 
-          if (!passMatches) {
-            setIsSubmitting(false);
-            setValidationError('Invalid email or password. Please try again.');
-            return;
-          }
+        if (!passMatches) {
+          setIsSubmitting(false);
+          setValidationError('Invalid email or password. Please try again.');
+          return;
+        }
 
-          const resolvedUid = isValidUserUid(remoteUser.profile?.id)
-            ? remoteUser.profile.id
-            : generateSupabaseUuid();
+        const resolvedUid = remoteUser.profile.id;
 
-          const verifiedProfile: UserAuthProfile = {
-            ...remoteUser.profile,
-            id: resolvedUid,
-            role: remoteUser.profile.role === 'marketer' ? 'marketer' : 'normal',
-            isLoggedIn: true,
-          };
+        const verifiedProfile: UserAuthProfile = {
+          ...remoteUser.profile,
+          id: resolvedUid,
+          role: remoteUser.profile.role === 'marketer' ? 'marketer' : 'normal',
+          isLoggedIn: true,
+        };
 
-          registerNewUser({ ...verifiedProfile, isNewRegistration: false }, password);
-          supabaseService.registerUserInDatabase(verifiedProfile, password).catch(() => {});
+        registerNewUser({ ...verifiedProfile, isNewRegistration: false }, password);
+        supabaseService.registerUserInDatabase(verifiedProfile, password).catch(() => {});
 
-          try {
-            const localFinances = loadUserFinancials(verifiedProfile);
-            const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
-            if (localFinances && remoteFinances) {
-              if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
-                saveUserFinancials(verifiedProfile, localFinances);
-              } else {
-                saveUserFinancials(verifiedProfile, remoteFinances);
-              }
-            } else if (remoteFinances) {
-              saveUserFinancials(verifiedProfile, remoteFinances);
-            } else if (localFinances) {
+        try {
+          const localFinances = loadUserFinancials(verifiedProfile);
+          const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
+          if (localFinances && remoteFinances) {
+            if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
               saveUserFinancials(verifiedProfile, localFinances);
             } else {
-              initializeUserFinancials(verifiedProfile, false);
+              saveUserFinancials(verifiedProfile, remoteFinances);
             }
-          } catch {
+          } else if (remoteFinances) {
+            saveUserFinancials(verifiedProfile, remoteFinances);
+          } else if (localFinances) {
+            saveUserFinancials(verifiedProfile, localFinances);
+          } else {
             initializeUserFinancials(verifiedProfile, false);
           }
-
-          setIsSubmitting(false);
-          supabaseService.updateUserLastLoginInDatabase(cleanEmail).catch(() => {});
-          supabaseService
-            .syncActivity(verifiedProfile, {
-              type: 'LOGIN',
-              description: `User ${verifiedProfile.email} (UID: ${verifiedProfile.id}) logged in successfully`,
-            })
-            .catch(() => {});
-          supabaseService.syncDevice(verifiedProfile).catch(() => {});
-          onSignIn({ ...verifiedProfile, isNewRegistration: false });
-          return;
-        }
-
-        // CASE 2: Fallback check via Auth service if user was not yet in vtm_registered_users
-        const sbAuth = await supabaseService
-          .signInWithSupabaseAuth(cleanEmail, password)
-          .catch(() => ({ success: false, data: null }));
-
-        if (sbAuth.success && (sbAuth.data?.user || sbAuth.data?.id)) {
-          const authUser = sbAuth.data.user || sbAuth.data;
-          const uid = isValidUserUid(authUser.id) ? authUser.id : generateSupabaseUuid();
-          const meta = authUser.user_metadata || {};
-          const safeRole = isMasterAdminEmail(cleanEmail)
-            ? 'admin'
-            : meta.role === 'marketer'
-            ? 'marketer'
-            : 'normal';
-          const profile: UserAuthProfile = {
-            id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : uid,
-            name: isMasterAdminEmail(cleanEmail) ? 'mutwiri' : meta.display_name || meta.name || 'Trader',
-            email: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_EMAIL : cleanEmail,
-            phoneNumber: meta.phone || '',
-            phone: meta.phone || '',
-            countryCode: meta.country_code || '+1',
-            countryName: meta.country_name || 'United States',
-            accountNumber: meta.account_number || String(Math.floor(10000000 + Math.random() * 90000000)),
-            role: safeRole,
-            isLoggedIn: true,
-            isNewRegistration: false,
-            createdAt: authUser.created_at ? new Date(authUser.created_at).getTime() : Date.now(),
-          };
-
-          registerNewUser(profile, password);
-          supabaseService.registerUserInDatabase(profile, password).catch(() => {});
-
-          try {
-            const localFinances = loadUserFinancials(profile);
-            const remoteFinances = await supabaseService.fetchUserFinancials(profile);
-            if (localFinances && remoteFinances) {
-              if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
-                saveUserFinancials(profile, localFinances);
-              } else {
-                saveUserFinancials(profile, remoteFinances);
-              }
-            } else if (remoteFinances) {
-              saveUserFinancials(profile, remoteFinances);
-            } else if (localFinances) {
-              saveUserFinancials(profile, localFinances);
-            } else {
-              initializeUserFinancials(profile, false);
-            }
-          } catch {
-            initializeUserFinancials(profile, false);
-          }
-
-          setIsSubmitting(false);
-          supabaseService.updateUserLastLoginInDatabase(cleanEmail).catch(() => {});
-          supabaseService
-            .syncActivity(profile, {
-              type: 'LOGIN',
-              description: `User ${profile.email} (UID: ${profile.id}) logged in`,
-            })
-            .catch(() => {});
-          supabaseService.syncDevice(profile).catch(() => {});
-          onSignIn(profile);
-          return;
-        }
-
-        // CASE 3: Local verified account fallback (if user just created an account on this device and had a transient network delay)
-        const localVerify = verifyUserCredentials(cleanEmail, password);
-        if (localVerify.success && localVerify.user && isValidUserUid(localVerify.user.id)) {
-          const localProfile: UserAuthProfile = {
-            ...localVerify.user,
-            role: localVerify.user.role === 'marketer' ? 'marketer' : 'normal',
-            isLoggedIn: true,
-            isNewRegistration: false,
-          };
-          await supabaseService.registerUserInDatabase(localProfile, password).catch(() => {});
-          setIsSubmitting(false);
-          onSignIn(localProfile);
-          return;
+        } catch {
+          initializeUserFinancials(verifiedProfile, false);
         }
 
         setIsSubmitting(false);
-        setValidationError('Invalid email or password. Please try again.');
+        supabaseService.updateUserLastLoginInDatabase(cleanEmail).catch(() => {});
+        supabaseService
+          .syncActivity(verifiedProfile, {
+            type: 'LOGIN',
+            description: `User ${verifiedProfile.email} logged in successfully`,
+          })
+          .catch(() => {});
+        supabaseService.syncDevice(verifiedProfile).catch(() => {});
+        onSignIn({ ...verifiedProfile, isNewRegistration: false });
         return;
       } catch (err: any) {
         setIsSubmitting(false);
-        setValidationError('Failed. Please try again later.');
+        setValidationError('Unable to sign in right now. Please try again.');
         return;
       }
     }

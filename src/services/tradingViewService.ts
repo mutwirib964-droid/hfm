@@ -13,7 +13,7 @@ export interface TVQuote {
   timestamp: number;
 }
 
-// Complete mapping of app instruments
+// Complete mapping of app instruments (60 symbols) matching TradingView Widget Embed tickers 1:1
 export const TV_INSTRUMENT_MAP: Record<
   string,
   { scanner: 'forex' | 'cfd' | 'crypto' | 'america'; ticker: string; decimals: number; pipMultiplier: number }
@@ -29,22 +29,26 @@ export const TV_INSTRUMENT_MAP: Record<
   NZDUSD: { scanner: 'forex', ticker: 'FX:NZDUSD', decimals: 5, pipMultiplier: 10000 },
   EURGBP: { scanner: 'forex', ticker: 'FX:EURGBP', decimals: 5, pipMultiplier: 10000 },
   EURJPY: { scanner: 'forex', ticker: 'FX:EURJPY', decimals: 3, pipMultiplier: 100 },
+  AUDJPY: { scanner: 'forex', ticker: 'FX:AUDJPY', decimals: 3, pipMultiplier: 100 },
 
   // Metals & Commodities
   XAUUSD: { scanner: 'cfd', ticker: 'OANDA:XAUUSD', decimals: 3, pipMultiplier: 10 },
-  XAGUSD: { scanner: 'cfd', ticker: 'TVC:SILVER', decimals: 2, pipMultiplier: 100 },
+  XAGUSD: { scanner: 'cfd', ticker: 'TVC:SILVER', decimals: 3, pipMultiplier: 100 },
   XPTUSD: { scanner: 'cfd', ticker: 'TVC:PLATINUM', decimals: 2, pipMultiplier: 10 },
 
-  // Energies
+  // Energies & Commodities
   USOIL: { scanner: 'cfd', ticker: 'FX:USOIL', decimals: 2, pipMultiplier: 100 },
   UKOIL: { scanner: 'cfd', ticker: 'FX:UKOIL', decimals: 2, pipMultiplier: 100 },
   NGAS: { scanner: 'cfd', ticker: 'OANDA:NATGASUSD', decimals: 3, pipMultiplier: 1000 },
+  COPPER: { scanner: 'cfd', ticker: 'COMEX:HG1!', decimals: 3, pipMultiplier: 1000 },
 
   // Indices
   US500: { scanner: 'cfd', ticker: 'SP:SPX', decimals: 2, pipMultiplier: 10 },
   NAS100: { scanner: 'cfd', ticker: 'TVC:IXIC', decimals: 2, pipMultiplier: 1 },
   US30: { scanner: 'cfd', ticker: 'OANDA:US30USD', decimals: 2, pipMultiplier: 1 },
   GER40: { scanner: 'cfd', ticker: 'OANDA:DE30EUR', decimals: 2, pipMultiplier: 1 },
+  UK100: { scanner: 'cfd', ticker: 'OANDA:UK100GBP', decimals: 2, pipMultiplier: 1 },
+  JPN225: { scanner: 'cfd', ticker: 'INDEX:NKY', decimals: 2, pipMultiplier: 1 },
 
   // Stocks
   AAPL: { scanner: 'america', ticker: 'NASDAQ:AAPL', decimals: 2, pipMultiplier: 100 },
@@ -65,13 +69,14 @@ export const TV_INSTRUMENT_MAP: Record<
   INTC: { scanner: 'america', ticker: 'NASDAQ:INTC', decimals: 2, pipMultiplier: 100 },
   JPM: { scanner: 'america', ticker: 'NYSE:JPM', decimals: 2, pipMultiplier: 100 },
   V: { scanner: 'america', ticker: 'NYSE:V', decimals: 2, pipMultiplier: 100 },
-  WMT: { scanner: 'america', ticker: 'NYSE:WMT', decimals: 2, pipMultiplier: 100 },
+  WMT: { scanner: 'america', ticker: 'NASDAQ:WMT', decimals: 2, pipMultiplier: 100 },
 
-  // Commodities & Indices
-  COPPER: { scanner: 'cfd', ticker: 'COMEX:HG1!', decimals: 3, pipMultiplier: 1000 },
-  UK100: { scanner: 'cfd', ticker: 'INDEX:FTSE', decimals: 2, pipMultiplier: 1 },
-  JPN225: { scanner: 'cfd', ticker: 'INDEX:NKY', decimals: 2, pipMultiplier: 1 },
-  AUDJPY: { scanner: 'forex', ticker: 'FX:AUDJPY', decimals: 3, pipMultiplier: 100 },
+  // ETFs & Bonds
+  SPY: { scanner: 'america', ticker: 'AMEX:SPY', decimals: 2, pipMultiplier: 100 },
+  XLE: { scanner: 'america', ticker: 'AMEX:XLE', decimals: 2, pipMultiplier: 100 },
+  'EUBUND.F': { scanner: 'cfd', ticker: 'EUREX:FGBL1!', decimals: 2, pipMultiplier: 100 },
+  'UKGILT.F': { scanner: 'cfd', ticker: 'ICEEUR:R1!', decimals: 2, pipMultiplier: 100 },
+  'US10YR.F': { scanner: 'cfd', ticker: 'CBOT:ZN1!', decimals: 2, pipMultiplier: 100 },
 
   // Crypto
   BTCUSD: { scanner: 'crypto', ticker: 'BINANCE:BTCUSDT', decimals: 2, pipMultiplier: 1 },
@@ -94,15 +99,18 @@ export class TradingViewPriceService {
   private isFetching = false;
   private lastFetchTime = 0;
   private ws: WebSocket | null = null;
+  private sse: EventSource | null = null;
   private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
 
   constructor() {
+    this.initServerStream();
     this.initLiveWebSocket();
   }
 
   /**
-   * Computes a dynamic, smoothly fluctuating spread in [0.15, 1.18] (predominantly 0.18 - 0.96, max 1.20)
-   * that changes on every tick so it is never stuck on one static number, and derives exact Bid & Ask.
+   * Computes a dynamic, smoothly fluctuating spread in [0.16, 1.18] (max 1.20)
+   * and derives exact Bid & Ask strictly anchored 1:1 to the TradingView chart price (rawPrice).
+   * When the market is closed, Bid is locked to the exact TradingView closing price and spread is static.
    */
   public computeDynamicBidAsk(
     symbol: string,
@@ -111,62 +119,45 @@ export class TradingViewPriceService {
     _pipMultiplier: number
   ): { bid: number; ask: number; spread: number } {
     const mStatus = checkInstrumentMarketHours(symbol);
-    if (!mStatus.isOpen) {
-      const existing = this.lastQuotes.get(symbol);
-      if (existing && existing.bid > 0 && existing.ask > 0) {
-        return {
-          bid: existing.bid,
-          ask: existing.ask,
-          spread: existing.spread,
-        };
-      }
-      const staticSpread = Number((0.28 + ((symbol.charCodeAt(0) % 5) * 0.11)).toFixed(2));
-      this.lastSpreads.set(symbol, staticSpread);
-      const bid = Number(rawPrice.toFixed(decimals));
-      let priceGap = staticSpread;
-      if (decimals === 5) {
-        priceGap = Math.max(0.00001, Number((staticSpread / 10000).toFixed(5)));
-      } else if (decimals === 4) {
-        priceGap = Math.max(0.0001, Number((staticSpread * 0.001).toFixed(4)));
-      } else if (decimals === 3 && symbol.includes('JPY')) {
-        priceGap = Math.max(0.001, Number((staticSpread * 0.01).toFixed(3)));
-      } else if (decimals === 3) {
-        priceGap = symbol === 'XAUUSD' ? staticSpread : Math.max(0.001, Number((staticSpread * 0.01).toFixed(3)));
-      }
-      const ask = Number((bid + priceGap).toFixed(decimals));
-      return { bid, ask, spread: staticSpread };
-    }
+    let spread: number;
 
-    const prevSpread = this.lastSpreads.get(symbol) ?? (0.28 + ((symbol.charCodeAt(0) % 5) * 0.11));
-    // Random step between -0.14 and +0.14, biased toward 0.22 - 0.92 ("0.something"), strictly capped at 1.20
-    const drift = (Math.random() - 0.48) * 0.24;
-    let nextSpread = prevSpread + drift;
-    if (nextSpread > 0.96 && Math.random() < 0.7) {
-      nextSpread -= 0.18;
+    if (!mStatus.isOpen) {
+      const staticSpread = Number((0.28 + ((symbol.charCodeAt(0) % 4) * 0.08)).toFixed(2));
+      this.lastSpreads.set(symbol, staticSpread);
+      spread = staticSpread;
+    } else {
+      const prevSpread = this.lastSpreads.get(symbol) ?? (0.28 + ((symbol.charCodeAt(0) % 4) * 0.08));
+      const drift = (Math.random() - 0.48) * 0.16;
+      let nextSpread = prevSpread + drift;
+      if (nextSpread > 0.96 && Math.random() < 0.7) {
+        nextSpread -= 0.16;
+      }
+      if (nextSpread < 0.16) {
+        nextSpread = 0.16 + Math.random() * 0.14;
+      }
+      if (nextSpread > 1.18) {
+        nextSpread = 1.18 - Math.random() * 0.16;
+      }
+      spread = Number(Math.min(1.2, Math.max(0.16, nextSpread)).toFixed(2));
+      this.lastSpreads.set(symbol, spread);
     }
-    if (nextSpread < 0.16) {
-      nextSpread = 0.16 + Math.random() * 0.18;
-    }
-    if (nextSpread > 1.18) {
-      nextSpread = 1.18 - Math.random() * 0.22;
-    }
-    const spread = Number(Math.min(1.2, Math.max(0.15, nextSpread)).toFixed(2));
-    this.lastSpreads.set(symbol, spread);
 
     const bid = Number(rawPrice.toFixed(decimals));
     let priceGap = spread;
     if (decimals === 5) {
-      // 5-decimal Forex: 1.0 pip = 0.00010, so spread 0.35 pips = 0.000035 -> rounded to 5 decimals
       priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
     } else if (decimals === 4) {
-      // 4-decimal Crypto (XRP, DOGE, ADA)
-      priceGap = Math.max(0.0001, Number((spread * 0.001).toFixed(4)));
-    } else if (decimals === 3 && symbol.includes('JPY')) {
-      // 3-decimal JPY Forex pairs
-      priceGap = Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+      priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
     } else if (decimals === 3) {
-      // 3-decimal commodities (NGAS, COPPER, XAUUSD)
-      priceGap = symbol === 'XAUUSD' ? spread : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+      priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+    } else {
+      if (bid < 250) {
+        priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+      } else if (bid < 1000) {
+        priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+      } else {
+        priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+      }
     }
 
     const ask = Number((bid + priceGap).toFixed(decimals));
@@ -195,6 +186,89 @@ export class TradingViewPriceService {
     });
   }
 
+  private ingestServerQuotesObject(quotesObj: Record<string, any>) {
+    if (!quotesObj || typeof quotesObj !== 'object') return;
+    const now = Date.now();
+    let updatedAny = false;
+    Object.entries(quotesObj).forEach(([symbol, data]: [string, any]) => {
+      const conf = TV_INSTRUMENT_MAP[symbol];
+      if (!conf || data?.bid === undefined) return;
+      const chartPrice = Number(data.close ?? data.bid);
+      if (!(chartPrice > 0)) return;
+
+      const mStatus = checkInstrumentMarketHours(symbol);
+      const serverSpread =
+        typeof data.spread === 'number' && data.spread >= 0.15 && data.spread <= 1.2
+          ? Number(data.spread.toFixed(2))
+          : undefined;
+
+      const { bid, ask, spread } = this.computeDynamicBidAsk(
+        symbol,
+        chartPrice,
+        conf.decimals,
+        conf.pipMultiplier
+      );
+
+      const finalSpread = !mStatus.isOpen ? spread : serverSpread ?? spread;
+      let priceGap = finalSpread;
+      if (conf.decimals === 5) {
+        priceGap = Math.max(0.00001, Number((finalSpread / 10000).toFixed(5)));
+      } else if (conf.decimals === 4) {
+        priceGap = Math.max(0.0001, Number((finalSpread / 10000).toFixed(4)));
+      } else if (conf.decimals === 3) {
+        priceGap = symbol === 'XAUUSD' ? Number(finalSpread.toFixed(3)) : Math.max(0.001, Number((finalSpread * 0.01).toFixed(3)));
+      } else {
+        if (bid < 250) {
+          priceGap = Math.max(0.01, Number((finalSpread * 0.04).toFixed(2)));
+        } else if (bid < 1000) {
+          priceGap = Math.max(0.01, Number((finalSpread * 0.1).toFixed(2)));
+        } else {
+          priceGap = Math.max(0.01, Number(finalSpread.toFixed(2)));
+        }
+      }
+      const finalAsk = Number((bid + priceGap).toFixed(conf.decimals));
+
+      this.lastQuotes.set(symbol, {
+        symbol,
+        tvTicker: conf.ticker,
+        bid,
+        ask: finalAsk,
+        spread: finalSpread,
+        change24h: data.change24h !== undefined ? Number(data.change24h) : 0,
+        high24h: data.high24h || Number((finalAsk * 1.005).toFixed(conf.decimals)),
+        low24h: data.low24h || Number((bid * 0.995).toFixed(conf.decimals)),
+        timestamp: now,
+      });
+      updatedAny = true;
+    });
+
+    if (updatedAny) {
+      this.notifyListeners();
+    }
+  }
+
+  private initServerStream() {
+    if (typeof window === 'undefined' || typeof EventSource === 'undefined') return;
+    try {
+      const es = new EventSource('/api/market-stream');
+      es.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data);
+          if (parsed && parsed.quotes) {
+            this.ingestServerQuotesObject(parsed.quotes);
+          }
+        } catch {}
+      };
+      es.onerror = () => {
+        try {
+          es.close();
+        } catch {}
+        setTimeout(() => this.initServerStream(), 2000);
+      };
+      this.sse = es;
+    } catch {}
+  }
+
   private initLiveWebSocket() {
     if (typeof window === 'undefined') return;
     try {
@@ -221,6 +295,12 @@ export class TradingViewPriceService {
                     conf.decimals,
                     conf.pipMultiplier
                   );
+                  const existing = this.lastQuotes.get(sym);
+                  const openPrice = parseFloat(item.o);
+                  const computedChg =
+                    openPrice > 0
+                      ? Number((((price - openPrice) / openPrice) * 100).toFixed(2))
+                      : existing?.change24h || 0;
 
                   this.lastQuotes.set(sym, {
                     symbol: sym,
@@ -228,9 +308,9 @@ export class TradingViewPriceService {
                     bid,
                     ask,
                     spread,
-                    change24h: 0,
-                    high24h: parseFloat(item.h) || ask,
-                    low24h: parseFloat(item.l) || bid,
+                    change24h: computedChg,
+                    high24h: parseFloat(item.h) || existing?.high24h || ask,
+                    low24h: parseFloat(item.l) || existing?.low24h || bid,
                     timestamp: now,
                   });
                   hasChanged = true;
@@ -263,7 +343,7 @@ export class TradingViewPriceService {
     }
   }
 
-  // Fetch quotes from proxy API, TradingView public scanners, and Binance API
+  // Fetch quotes from internal real-time TradingView WebSocket proxy API
   public async fetchRealPrices(): Promise<Map<string, TVQuote>> {
     if (this.isFetching) return this.lastQuotes;
     this.isFetching = true;
@@ -272,44 +352,24 @@ export class TradingViewPriceService {
 
     try {
       let gotProxyQuotes = false;
-      // 1. Try our internal server endpoint first (has exact real TradingView quotes)
       try {
-        const proxyRes = await fetch('/api/market-prices', { signal: AbortSignal.timeout(1500) });
+        const proxyRes = await fetch('/api/market-prices', {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(1500),
+        });
         if (proxyRes.ok) {
           const json = await proxyRes.json();
           if (json.quotes && Object.keys(json.quotes).length > 0) {
             gotProxyQuotes = true;
-            Object.entries(json.quotes).forEach(([symbol, data]: [string, any]) => {
-              const conf = TV_INSTRUMENT_MAP[symbol];
-              if (conf && data.bid !== undefined) {
-                const { bid, ask, spread } = this.computeDynamicBidAsk(
-                  symbol,
-                  Number(data.bid),
-                  conf.decimals,
-                  conf.pipMultiplier
-                );
-                this.lastQuotes.set(symbol, {
-                  symbol,
-                  tvTicker: conf.ticker,
-                  bid,
-                  ask,
-                  spread,
-                  change24h: data.change24h !== undefined ? data.change24h : 0,
-                  high24h: data.high24h || Number((ask * 1.008).toFixed(conf.decimals)),
-                  low24h: data.low24h || Number((bid * 0.992).toFixed(conf.decimals)),
-                  timestamp: now,
-                });
-              }
-            });
-            this.notifyListeners();
+            this.ingestServerQuotesObject(json.quotes);
           }
         }
       } catch (e) {
-        // Fall through to client-side direct public feeds
+        // Fall through if offline
       }
 
-      // 2. Direct client-side fetch to TradingView Scanners if proxy failed or missing key symbols
-      if (!gotProxyQuotes || this.lastQuotes.size < 10) {
+      // Only hit public scanner as a slow backup if server proxy is completely unreachable
+      if (!gotProxyQuotes && now - this.lastFetchTime > 5000) {
         try {
           const [cfdData, forexData] = await Promise.allSettled([
             fetch('https://scanner.tradingview.com/cfd/scan', {
@@ -326,6 +386,7 @@ export class TradingViewPriceService {
                     'OANDA:NATGASUSD',
                     'OANDA:US30USD',
                     'OANDA:DE30EUR',
+                    'OANDA:UK100GBP',
                     'SP:SPX',
                     'TVC:IXIC',
                   ],
@@ -367,20 +428,19 @@ export class TradingViewPriceService {
               'OANDA:NATGASUSD': 'NGAS',
               'OANDA:US30USD': 'US30',
               'OANDA:DE30EUR': 'GER40',
+              'OANDA:UK100GBP': 'UK100',
               'SP:SPX': 'US500',
               'TVC:IXIC': 'NAS100',
             };
             cfdData.value.data.forEach((row: any) => {
               const sym = cfdMap[row.s];
               const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
-              if (conf) {
+              if (conf && row.d?.[0] > 0) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const rawBid = row.d[2];
-                const basePrice = rawBid && rawBid > 0 ? rawBid : close;
                 const { bid, ask, spread } = this.computeDynamicBidAsk(
                   sym,
-                  basePrice,
+                  close,
                   conf.decimals,
                   conf.pipMultiplier
                 );
@@ -416,14 +476,12 @@ export class TradingViewPriceService {
             forexData.value.data.forEach((row: any) => {
               const sym = forexMap[row.s];
               const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
-              if (conf) {
+              if (conf && row.d?.[0] > 0) {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const rawBid = row.d[2];
-                const basePrice = rawBid && rawBid > 0 ? rawBid : close;
                 const { bid, ask, spread } = this.computeDynamicBidAsk(
                   sym,
-                  basePrice,
+                  close,
                   conf.decimals,
                   conf.pipMultiplier
                 );
@@ -441,49 +499,10 @@ export class TradingViewPriceService {
               }
             });
           }
+          this.notifyListeners();
         } catch (e) {
           // Direct fallback failed
         }
-      }
-
-      // 3. Client-side direct public feeds for Crypto 24/7
-      try {
-        const cryptoSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT', 'SUIUSDT'];
-        const binanceRes = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(JSON.stringify(cryptoSymbols))}`,
-          { signal: AbortSignal.timeout(3000) }
-        );
-        if (binanceRes.ok) {
-          const items = await binanceRes.json();
-          if (Array.isArray(items)) {
-            items.forEach((item) => {
-              const price = parseFloat(item.price);
-              const symbolBase = item.symbol.replace('USDT', 'USD');
-              const conf = TV_INSTRUMENT_MAP[symbolBase];
-              if (conf && price > 0) {
-                const { bid, ask, spread } = this.computeDynamicBidAsk(
-                  symbolBase,
-                  price,
-                  conf.decimals,
-                  conf.pipMultiplier
-                );
-                this.lastQuotes.set(symbolBase, {
-                  symbol: symbolBase,
-                  tvTicker: conf.ticker,
-                  bid,
-                  ask,
-                  spread,
-                  change24h: this.lastQuotes.get(symbolBase)?.change24h || 0,
-                  high24h: this.lastQuotes.get(symbolBase)?.high24h || Number((price * 1.01).toFixed(conf.decimals)),
-                  low24h: this.lastQuotes.get(symbolBase)?.low24h || Number((price * 0.99).toFixed(conf.decimals)),
-                  timestamp: now,
-                });
-              }
-            });
-          }
-        }
-      } catch (e) {
-        // Continue
       }
 
       this.lastFetchTime = now;
@@ -497,7 +516,12 @@ export class TradingViewPriceService {
   }
 
   public static getTVSymbolForEmbed(symbol: string): string {
-    const clean = symbol.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const item = TV_INSTRUMENT_MAP[symbol];
+    if (item) return item.ticker;
+
+    const clean = symbol.replace(/[^A-Za-z0-9.]/g, '').toUpperCase();
+    if (TV_INSTRUMENT_MAP[clean]) return TV_INSTRUMENT_MAP[clean].ticker;
+
     const directMap: Record<string, string> = {
       EURUSD: 'FX:EURUSD',
       GBPUSD: 'FX:GBPUSD',
@@ -509,18 +533,20 @@ export class TradingViewPriceService {
       NZDUSD: 'FX:NZDUSD',
       EURGBP: 'FX:EURGBP',
       EURJPY: 'FX:EURJPY',
+      AUDJPY: 'FX:AUDJPY',
       XAUUSD: 'OANDA:XAUUSD',
       XAGUSD: 'TVC:SILVER',
       USOIL: 'FX:USOIL',
       UKOIL: 'FX:UKOIL',
       NGAS: 'OANDA:NATGASUSD',
+      COPPER: 'COMEX:HG1!',
+      XPTUSD: 'TVC:PLATINUM',
       US30: 'OANDA:US30USD',
       NAS100: 'TVC:IXIC',
       US500: 'SP:SPX',
       GER40: 'OANDA:DE30EUR',
-      BTCUSD: 'BINANCE:BTCUSDT',
-      ETHUSD: 'BINANCE:ETHUSDT',
-      SOLUSD: 'BINANCE:SOLUSDT',
+      UK100: 'OANDA:UK100GBP',
+      JPN225: 'INDEX:NKY',
       AAPL: 'NASDAQ:AAPL',
       NVDA: 'NASDAQ:NVDA',
       TSLA: 'NASDAQ:TSLA',
@@ -539,12 +565,18 @@ export class TradingViewPriceService {
       INTC: 'NASDAQ:INTC',
       JPM: 'NYSE:JPM',
       V: 'NYSE:V',
-      WMT: 'NYSE:WMT',
-      COPPER: 'COMEX:HG1!',
-      XPTUSD: 'TVC:PLATINUM',
-      UK100: 'INDEX:FTSE',
-      JPN225: 'INDEX:NKY',
-      AUDJPY: 'FX:AUDJPY',
+      WMT: 'NASDAQ:WMT',
+      SPY: 'AMEX:SPY',
+      XLE: 'AMEX:XLE',
+      'EUBUND.F': 'EUREX:FGBL1!',
+      EUBUNDF: 'EUREX:FGBL1!',
+      'UKGILT.F': 'ICEEUR:R1!',
+      UKGILTF: 'ICEEUR:R1!',
+      'US10YR.F': 'CBOT:ZN1!',
+      US10YRF: 'CBOT:ZN1!',
+      BTCUSD: 'BINANCE:BTCUSDT',
+      ETHUSD: 'BINANCE:ETHUSDT',
+      SOLUSD: 'BINANCE:SOLUSDT',
       XRPUSD: 'BINANCE:XRPUSDT',
       BNBUSD: 'BINANCE:BNBUSDT',
       DOGEUSD: 'BINANCE:DOGEUSDT',
@@ -557,8 +589,6 @@ export class TradingViewPriceService {
     };
 
     if (directMap[clean]) return directMap[clean];
-    const item = TV_INSTRUMENT_MAP[symbol];
-    if (item) return item.ticker;
     return `FX:${clean}`;
   }
 }

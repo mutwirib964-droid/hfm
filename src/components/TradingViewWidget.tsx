@@ -601,7 +601,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
                 {/* SELL / Bid Badge (Red) - Animated reaction on price change */}
                 <div
-                  title="SELL (Bid) Price - Synchronized with SELL button"
+                  title="SELL (Bid) Price"
                   className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
                     bidTick === 'UP'
                       ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'
@@ -631,7 +631,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
                 {/* BUY / Ask Badge (Green) - Animated reaction on price change */}
                 <div
-                  title="BUY (Ask) Price - Synchronized with BUY button"
+                  title="BUY (Ask) Price"
                   className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
                     askTick === 'UP'
                       ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'

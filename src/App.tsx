@@ -48,7 +48,12 @@ import { ActionPopupManager } from './components/popups/ActionPopupManager';
 import { ActionToastBanner } from './components/popups/ActionToastBanner';
 import { ActionPopup, PriceAlert } from './types';
 import { PriceAlertModal } from './components/PriceAlertModal';
-import { loadPriceAlerts, savePriceAlerts, playAlertChime } from './utils/priceAlertStorage';
+import {
+  loadPriceAlerts,
+  savePriceAlerts,
+  getPriceAlertsUpdatedAt,
+  playAlertChime,
+} from './utils/priceAlertStorage';
 import { UserRole, BotStrategyConfig, BotRunInstance, BotTrade, UserAuthProfile } from './types/botTypes';
 import {
   DEFAULT_INBUILT_BOTS,
@@ -257,22 +262,7 @@ export default function App() {
       if (!supabaseService.isConfigured()) return;
 
       const remote = await supabaseService.findUserInDatabase(currentUser.email);
-      if (!remote) {
-        // Transient network timeout or user just registered; do not forcibly sign out if currentUser has a valid UID
-        if (isValidUserUid(currentUser.id)) {
-          supabaseService.registerUserInDatabase(currentUser).catch(() => {});
-          return;
-        }
-        localStorage.removeItem('vtm_auth_user');
-        setCurrentUser(null);
-        return;
-      }
-
-      if (!isValidUserUid(remote.profile?.id)) {
-        if (isValidUserUid(currentUser.id)) {
-          supabaseService.registerUserInDatabase(currentUser).catch(() => {});
-          return;
-        }
+      if (!remote || !remote.hasVerifiedUid || !isValidUserUid(remote.profile?.id)) {
         localStorage.removeItem('vtm_auth_user');
         setCurrentUser(null);
         return;
@@ -296,7 +286,7 @@ export default function App() {
         return prevUser;
       });
 
-      // Immediately apply any Live Account or Wallet edits made by Admin in Supabase
+      // Immediately apply any Live Account or Wallet edits made by Admin or another device in Supabase
       // (while protecting any local trade/withdrawal/deposit made within the last 8 seconds from stale poll overwrites)
       const remoteFin = await supabaseService.fetchUserFinancials(remote.profile);
       if (remoteFin) {
@@ -357,62 +347,153 @@ export default function App() {
         }
       }
 
-      if (isInitialMount) {
-        supabaseService.fetchUserTrades(currentUser).then((remoteTrades) => {
-          if (remoteTrades) {
-            if (remoteTrades.positions.length > 0) setPositions(remoteTrades.positions);
-            if (remoteTrades.pendingOrders.length > 0) setPendingOrders(remoteTrades.pendingOrders);
-            if (remoteTrades.closedTrades.length > 0) {
-              setClosedTrades((prev) => {
-                const map = new Map<string, ClosedTrade>();
-                for (const t of [...prev, ...remoteTrades.closedTrades]) {
-                  if (t && t.symbol) map.set(String(t.ticket || t.id), t);
-                }
-                const merged = Array.from(map.values())
-                  .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
-                  .slice(0, 50);
-                try {
-                  localStorage.setItem(
-                    `vtm_closed_trades_${currentUser.email.trim().toLowerCase()}`,
-                    JSON.stringify(merged)
-                  );
-                } catch {
-                  // ignore
-                }
-                return merged;
-              });
-            }
-          }
-          isCloudTradesLoadedRef.current = true;
-        });
+      // Cross-device synchronization (runs on initial mount AND every 4s poll across all logged-in devices)
+      supabaseService.fetchExtrasState(remote.profile).then((remoteExtras) => {
+        if (remoteExtras) {
+          const isRecentLocalExtras = Date.now() - lastLocalExtrasUpdateRef.current < 6000;
+          const localExtrasTs = getPriceAlertsUpdatedAt(remote.profile.email);
+          const remoteExtrasTs = remoteExtras.updatedAt || 0;
+          const shouldApplyAlerts =
+            !isRecentLocalExtras &&
+            (isInitialMount || remoteExtrasTs > localExtrasTs || !isCloudExtrasLoadedRef.current);
 
-        supabaseService.fetchBotState(currentUser).then((remoteBots) => {
-          if (remoteBots) {
-            if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
-              setImportedBots(remoteBots.importedBots);
-              saveStoredImportedBots(remoteBots.importedBots);
-            }
-            if (Array.isArray(remoteBots.botRuns)) {
-              const cleanedRemoteRuns = sanitizeAndFilterBotRuns(
-                remoteBots.botRuns,
-                remoteBots.deletedBotIds || [],
-                false
-              );
-              const mergedMap = new Map<string, BotRunInstance>();
-              for (const r of [...cleanedRemoteRuns, ...botRunsRef.current]) {
-                if (r && r.explicitUserRun === true && r.userStartedVersion === 2) {
-                  mergedMap.set(r.id || r.runId || r.botId, r);
+          if (shouldApplyAlerts && Array.isArray(remoteExtras.priceAlerts)) {
+            priceAlertsRef.current = remoteExtras.priceAlerts;
+            setPriceAlerts(remoteExtras.priceAlerts);
+            savePriceAlerts(
+              remoteExtras.priceAlerts,
+              remote.profile.email,
+              remoteExtrasTs || Date.now()
+            );
+          }
+          if (shouldApplyAlerts && Array.isArray(remoteExtras.followedStrategies)) {
+            followedStrategiesRef.current = remoteExtras.followedStrategies;
+            setFollowedStrategies(remoteExtras.followedStrategies);
+          }
+        }
+        isCloudExtrasLoadedRef.current = true;
+      });
+
+      supabaseService.fetchNotifications(remote.profile).then((remoteNotifs) => {
+        if (remoteNotifs && Array.isArray(remoteNotifs.notifications)) {
+          const isRecentLocalNotif = Date.now() - lastLocalNotifsUpdateRef.current < 6000;
+          const remoteNotifsTs = remoteNotifs.updatedAt || 0;
+          const localNotifsTs = getNotificationsUpdatedAt(remote.profile);
+          const remoteIsNewerNotifs =
+            !isRecentLocalNotif && (isInitialMount || remoteNotifsTs >= localNotifsTs);
+
+          if (remoteIsNewerNotifs || isInitialMount) {
+            setNotifications((prev) => {
+              const byId = new Map<
+                string,
+                { id: string; title: string; time: string; read: boolean; createdAt?: number }
+              >();
+              // Put local items first, then let newer remote items override read/unread status across all 100 devices
+              for (const ln of prev) {
+                if (ln && ln.id && ln.title && !ln.title.toLowerCase().includes('signed out')) {
+                  byId.set(ln.id, ln);
                 }
               }
-              const finalRuns = sanitizeAndFilterBotRuns(
-                Array.from(mergedMap.values()),
-                remoteBots.deletedBotIds || [],
-                false
-              );
-              botRunsRef.current = finalRuns;
-              setBotRuns(finalRuns);
-              saveStoredBotRuns(finalRuns);
+              for (const rn of remoteNotifs.notifications) {
+                if (rn && rn.id && rn.title && !rn.title.toLowerCase().includes('signed out')) {
+                  const existingLocal = byId.get(rn.id);
+                  byId.set(rn.id, {
+                    id: rn.id,
+                    title: rn.title,
+                    time: rn.time || existingLocal?.time || 'Earlier',
+                    read: remoteIsNewerNotifs ? Boolean(rn.read) : Boolean(rn.read || existingLocal?.read),
+                    createdAt: rn.createdAt || existingLocal?.createdAt || Date.now(),
+                  });
+                }
+              }
+              const merged = Array.from(byId.values())
+                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+                .slice(0, 200);
+              saveUserNotificationsToStorage(remote.profile, merged, remoteNotifsTs || Date.now());
+              return merged;
+            });
+          }
+          if (remoteNotifs.lastWelcomeDate) {
+            try {
+              const uKey = remote.profile.email ? remote.profile.email.trim().toLowerCase() : 'guest';
+              localStorage.setItem(`vtm_welcome_date_${uKey}`, remoteNotifs.lastWelcomeDate);
+            } catch {
+              // ignore
+            }
+          }
+        }
+      });
 
+      supabaseService.fetchUserSettings(remote.profile).then((settings) => {
+        if (settings && Date.now() - lastLocalSettingsUpdateRef.current >= 6000) {
+          setIsDarkMode(settings.isDarkMode);
+          setOneClickTrading(settings.oneClickTrading);
+          setSlippage(settings.slippage);
+          setSoundEnabled(settings.soundEnabled);
+          setShowSpreadBrackets(settings.showSpreadBrackets);
+          setDrawdownProtection(settings.drawdownProtection);
+          setTwoFactorEnabled(settings.twoFactorEnabled);
+        }
+      });
+
+      supabaseService.fetchUserTrades(remote.profile).then((remoteTrades) => {
+        if (remoteTrades) {
+          if (isInitialMount) {
+            if (remoteTrades.positions.length > 0) setPositions(remoteTrades.positions);
+            if (remoteTrades.pendingOrders.length > 0) setPendingOrders(remoteTrades.pendingOrders);
+          }
+          if (remoteTrades.closedTrades.length > 0) {
+            setClosedTrades((prev) => {
+              const map = new Map<string, ClosedTrade>();
+              for (const t of [...prev, ...remoteTrades.closedTrades]) {
+                if (t && t.symbol) map.set(String(t.ticket || t.id), t);
+              }
+              const merged = Array.from(map.values())
+                .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
+                .slice(0, 50);
+              try {
+                localStorage.setItem(
+                  `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
+                  JSON.stringify(merged)
+                );
+              } catch {
+                // ignore
+              }
+              return merged;
+            });
+          }
+        }
+        isCloudTradesLoadedRef.current = true;
+      });
+
+      supabaseService.fetchBotState(remote.profile).then((remoteBots) => {
+        if (remoteBots) {
+          if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
+            setImportedBots(remoteBots.importedBots);
+            saveStoredImportedBots(remoteBots.importedBots);
+          }
+          if (Array.isArray(remoteBots.botRuns)) {
+            const cleanedRemoteRuns = sanitizeAndFilterBotRuns(
+              remoteBots.botRuns,
+              remoteBots.deletedBotIds || [],
+              false
+            );
+            const mergedMap = new Map<string, BotRunInstance>();
+            for (const r of [...cleanedRemoteRuns, ...botRunsRef.current]) {
+              if (r && r.explicitUserRun === true && r.userStartedVersion === 2) {
+                mergedMap.set(r.id || r.runId || r.botId, r);
+              }
+            }
+            const finalRuns = sanitizeAndFilterBotRuns(
+              Array.from(mergedMap.values()),
+              remoteBots.deletedBotIds || [],
+              false
+            );
+            botRunsRef.current = finalRuns;
+            setBotRuns(finalRuns);
+            saveStoredBotRuns(finalRuns);
+
+            if (isInitialMount) {
               const rawTrades = [
                 ...(Array.isArray(remoteBots.botTrades) ? remoteBots.botTrades : []),
                 ...botTradesRef.current,
@@ -430,83 +511,13 @@ export default function App() {
               saveStoredBotTrades(cleanedTrades);
             }
           }
-          isCloudBotsLoadedRef.current = true;
-        });
+        }
+        isCloudBotsLoadedRef.current = true;
+      });
 
-        supabaseService.fetchExtrasState(currentUser).then((remoteExtras) => {
-          if (remoteExtras) {
-            if (Array.isArray(remoteExtras.priceAlerts) && remoteExtras.priceAlerts.length > 0) {
-              setPriceAlerts(remoteExtras.priceAlerts);
-              savePriceAlerts(remoteExtras.priceAlerts);
-            }
-            if (Array.isArray(remoteExtras.followedStrategies) && remoteExtras.followedStrategies.length > 0) {
-              setFollowedStrategies(remoteExtras.followedStrategies);
-            }
-          }
-        });
-
-        supabaseService.fetchNotifications(currentUser).then((remoteNotifs) => {
-          if (remoteNotifs && Array.isArray(remoteNotifs.notifications) && remoteNotifs.notifications.length > 0) {
-            setNotifications((prev) => {
-              const byId = new Map<string, { id: string; title: string; time: string; read: boolean; createdAt?: number }>();
-              // Remote notifications first, then local notifications override read/unread state if already present locally
-              for (const rn of remoteNotifs.notifications) {
-                if (
-                  rn &&
-                  rn.id &&
-                  rn.title &&
-                  !rn.title.toLowerCase().includes('signed out')
-                ) {
-                  byId.set(rn.id, {
-                    id: rn.id,
-                    title: rn.title,
-                    time: rn.time || 'Earlier',
-                    read: Boolean(rn.read),
-                    createdAt: rn.createdAt || Date.now(),
-                  });
-                }
-              }
-              for (const ln of prev) {
-                if (
-                  ln &&
-                  ln.id &&
-                  ln.title &&
-                  !ln.title.toLowerCase().includes('signed out')
-                ) {
-                  byId.set(ln.id, ln);
-                }
-              }
-              const merged = Array.from(byId.values())
-                .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
-                .slice(0, 200);
-              saveUserNotificationsToStorage(currentUser, merged);
-              return merged;
-            });
-            if (remoteNotifs.lastWelcomeDate) {
-              try {
-                const uKey = currentUser.email ? currentUser.email.trim().toLowerCase() : 'guest';
-                localStorage.setItem(`vtm_welcome_date_${uKey}`, remoteNotifs.lastWelcomeDate);
-              } catch {
-                // ignore
-              }
-            }
-          }
-        });
-
-        supabaseService.fetchUserSettings(currentUser).then((settings) => {
-          if (settings) {
-            setIsDarkMode(settings.isDarkMode);
-            setOneClickTrading(settings.oneClickTrading);
-            setSlippage(settings.slippage);
-            setSoundEnabled(settings.soundEnabled);
-            setShowSpreadBrackets(settings.showSpreadBrackets);
-            setDrawdownProtection(settings.drawdownProtection);
-            setTwoFactorEnabled(settings.twoFactorEnabled);
-          }
-        });
-
-        supabaseService.updateUserLastLoginInDatabase(currentUser.email);
-        supabaseService.syncDevice(currentUser);
+      if (isInitialMount) {
+        supabaseService.updateUserLastLoginInDatabase(remote.profile.email);
+        supabaseService.syncDevice(remote.profile);
       }
     };
 
@@ -595,10 +606,16 @@ export default function App() {
   });
   const isCloudTradesLoadedRef = useRef<boolean>(false);
   const isCloudBotsLoadedRef = useRef<boolean>(false);
+  const isCloudExtrasLoadedRef = useRef<boolean>(false);
+  const lastLocalExtrasUpdateRef = useRef<number>(0);
+  const lastLocalNotifsUpdateRef = useRef<number>(0);
+  const lastLocalSettingsUpdateRef = useRef<number>(0);
 
   // HFcopy Strategies State (Clean initial state)
   const [providers, setProviders] = useState<StrategyProvider[]>(STRATEGY_PROVIDERS);
   const [followedStrategies, setFollowedStrategies] = useState<FollowedStrategy[]>([]);
+  const followedStrategiesRef = useRef<FollowedStrategy[]>(followedStrategies);
+  followedStrategiesRef.current = followedStrategies;
 
   // PWA Install Engine & Action Feedback Popups
   const pwa = usePWAInstall();
@@ -627,7 +644,7 @@ export default function App() {
   }, []);
 
   // Target Price Alerts State
-  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>(() => loadPriceAlerts());
+  const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>(() => loadPriceAlerts(currentUser?.email));
   const [isPriceAlertModalOpen, setIsPriceAlertModalOpen] = useState<boolean>(false);
   const [priceAlertSymbol, setPriceAlertSymbol] = useState<string>('EURUSD');
   const priceAlertsRef = useRef<PriceAlert[]>(priceAlerts);
@@ -646,9 +663,19 @@ export default function App() {
       createdAt: Date.now(),
       status: 'ACTIVE',
     };
+    const nowTs = Date.now();
+    lastLocalExtrasUpdateRef.current = nowTs;
+    const activeUser = currentUserRef.current || currentUser;
     setPriceAlerts((prev) => {
       const next = [newAlert, ...prev];
-      savePriceAlerts(next);
+      priceAlertsRef.current = next;
+      savePriceAlerts(next, activeUser?.email, nowTs);
+      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+        supabaseService.syncExtrasState(activeUser, {
+          priceAlerts: next,
+          followedStrategies: followedStrategiesRef.current,
+        });
+      }
       return next;
     });
     addNotification(
@@ -663,25 +690,55 @@ export default function App() {
   };
 
   const handleDeletePriceAlert = (id: string) => {
+    const nowTs = Date.now();
+    lastLocalExtrasUpdateRef.current = nowTs;
+    const activeUser = currentUserRef.current || currentUser;
     setPriceAlerts((prev) => {
       const next = prev.filter((a) => a.id !== id);
-      savePriceAlerts(next);
+      priceAlertsRef.current = next;
+      savePriceAlerts(next, activeUser?.email, nowTs);
+      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+        supabaseService.syncExtrasState(activeUser, {
+          priceAlerts: next,
+          followedStrategies: followedStrategiesRef.current,
+        });
+      }
       return next;
     });
   };
 
   const handleClearTriggeredAlerts = () => {
+    const nowTs = Date.now();
+    lastLocalExtrasUpdateRef.current = nowTs;
+    const activeUser = currentUserRef.current || currentUser;
     setPriceAlerts((prev) => {
       const next = prev.filter((a) => a.status === 'ACTIVE');
-      savePriceAlerts(next);
+      priceAlertsRef.current = next;
+      savePriceAlerts(next, activeUser?.email, nowTs);
+      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+        supabaseService.syncExtrasState(activeUser, {
+          priceAlerts: next,
+          followedStrategies: followedStrategiesRef.current,
+        });
+      }
       return next;
     });
   };
 
   const handleReArmAlert = (id: string) => {
+    const nowTs = Date.now();
+    lastLocalExtrasUpdateRef.current = nowTs;
+    const activeUser = currentUserRef.current || currentUser;
     setPriceAlerts((prev) => {
       const next = prev.map((a) => (a.id === id ? { ...a, status: 'ACTIVE' as const } : a));
-      savePriceAlerts(next);
+      priceAlertsRef.current = next;
+      savePriceAlerts(next, activeUser?.email, nowTs);
+      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+        supabaseService.syncExtrasState(activeUser, {
+          priceAlerts: next,
+          followedStrategies: followedStrategiesRef.current,
+        });
+      }
       return next;
     });
     addNotification('Price alert re-armed and actively monitoring.');
@@ -753,12 +810,29 @@ export default function App() {
     return [];
   };
 
+  const getNotificationsUpdatedStorageKey = (user?: UserAuthProfile | null) => {
+    const email = user?.email ? user.email.trim().toLowerCase() : 'guest';
+    return `vtm_notifications_updated_${email}`;
+  };
+
+  const getNotificationsUpdatedAt = (user?: UserAuthProfile | null): number => {
+    try {
+      const raw = localStorage.getItem(getNotificationsUpdatedStorageKey(user));
+      return raw ? Number(raw) || 0 : 0;
+    } catch {
+      return 0;
+    }
+  };
+
   const saveUserNotificationsToStorage = (
     user: UserAuthProfile | null | undefined,
-    list: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>
+    list: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>,
+    updatedAt?: number
   ) => {
     try {
+      const ts = updatedAt ?? Date.now();
       localStorage.setItem(getNotificationsStorageKey(user), JSON.stringify(list.slice(0, 200)));
+      localStorage.setItem(getNotificationsUpdatedStorageKey(user), String(ts));
     } catch {
       // ignore
     }
@@ -851,6 +925,8 @@ export default function App() {
     // Strict requirement: When an account opens or is logged in, wait for cloud hydration before syncing
     isCloudTradesLoadedRef.current = false;
     isCloudBotsLoadedRef.current = false;
+    isCloudExtrasLoadedRef.current = false;
+    setPriceAlerts(loadPriceAlerts(verifiedProfile.email));
     setPositions([]);
     setPendingOrders([]);
     try {
@@ -1136,35 +1212,29 @@ export default function App() {
           const quote = quotes.get(inst.symbol);
           if (!quote) return inst;
 
-          // Strict Market Closed Check: if market is closed, seed official closing quote once and freeze completely
           const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+          const oldBid = inst.bid;
+          const oldAsk = inst.ask;
+          const newBid = quote.bid;
+          const newAsk = quote.ask;
+
           if (!mStatus.isOpen) {
-            if (seededClosedSymbolsRef.current.has(inst.symbol)) {
-              return inst;
-            }
-            seededClosedSymbolsRef.current.add(inst.symbol);
             return {
               ...inst,
-              bid: quote.bid,
-              ask: quote.ask,
+              bid: newBid,
+              ask: newAsk,
               spread: quote.spread > 0 ? quote.spread : inst.spread,
               change24h: quote.change24h,
               high24h: quote.high24h,
               low24h: quote.low24h,
             };
-          } else {
-            seededClosedSymbolsRef.current.delete(inst.symbol);
           }
 
-          const oldBid = inst.bid;
-          const newBid = quote.bid;
-          const newAsk = quote.ask;
-
           let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-          if (newBid > oldBid) {
+          if (newBid > oldBid || (newBid === oldBid && newAsk > oldAsk)) {
             direction = 'UP';
             hasPriceChanged = true;
-          } else if (newBid < oldBid) {
+          } else if (newBid < oldBid || (newBid === oldBid && newAsk < oldAsk)) {
             direction = 'DOWN';
             hasPriceChanged = true;
           }
@@ -1226,9 +1296,19 @@ export default function App() {
             });
           }
 
+          // Keep sparkline anchored smoothly around live newBid so it never flattens due to old seed outlier values
+          const sparkStep = Math.pow(10, -inst.decimals) * (inst.decimals >= 4 ? 10 : inst.decimals === 3 ? 6 : 4);
+          const maxOutlierGap = Math.max(sparkStep * 25, newBid * 0.008);
+          const sanitizedSpark = inst.sparkline.map((val, sIdx) => {
+            if (!Number.isFinite(val) || Math.abs(val - newBid) > maxOutlierGap) {
+              const wave = Math.sin(sIdx * 1.35) * sparkStep * 2.2 + Math.cos(sIdx * 0.85) * sparkStep * 1.4;
+              return Number((newBid + wave).toFixed(inst.decimals));
+            }
+            return val;
+          });
           const sparkline = newBid !== oldBid
-            ? [...inst.sparkline.slice(1), newBid]
-            : inst.sparkline;
+            ? [...sanitizedSpark.slice(1), newBid]
+            : sanitizedSpark;
 
           return {
             ...inst,
@@ -1254,18 +1334,18 @@ export default function App() {
       });
     };
 
-    // 1. Subscribe to immediate real-time WebSocket ticks
+    // 1. Subscribe to immediate real-time WebSocket & SSE ticks
     const unsubscribeWs = tvService.subscribe((quotes) => {
       applyQuotes(quotes);
     });
 
-    // 2. High-speed poll from TradingView Scanner API every 500ms
+    // 2. High-speed poll from TradingView WebSocket Proxy API every 250ms
     const fetchTradingViewFeed = async () => {
       try {
         const quotes = await tvService.fetchRealPrices();
         applyQuotes(quotes);
-      } catch (err) {
-        console.warn('TradingView sync notice:', err);
+      } catch {
+        // Silent fallback
       }
     };
 
@@ -1273,55 +1353,62 @@ export default function App() {
     fetchTradingViewFeed();
 
     // Fast master live feed from TradingView - runs directly so all platform prices and movements match TradingView 1:1
-    const tvInterval = setInterval(fetchTradingViewFeed, 500);
+    const tvInterval = setInterval(fetchTradingViewFeed, 250);
 
     // Dedicated timeframe & live dynamic spread monitor (0.16 - 1.18, max 1.2)
+    // Strictly anchors Bid 1:1 to the real TradingView chart price (never adds artificial bidJitter so buttons never drift ahead or behind the chart)
     const candleCheckInterval = setInterval(() => {
       if (!isMounted) return;
 
-      // Gently fluctuate open-market instrument bid & ask spreads in [0.16, 1.18] (max 1.2) so live P/L and account equity move continuously in real time
       setInstruments((prevInsts) =>
         prevInsts.map((item) => {
           const ms = checkInstrumentMarketHours(item.symbol, item.category);
-          if (!ms.isOpen) return item;
-          const curSpread = item.spread > 0 && item.spread <= 1.2 ? item.spread : 0.42;
-          const step = (Math.random() - 0.49) * 0.14;
+          const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
+          if (!ms.isOpen) {
+            if (tvAuthQuote && (item.bid !== tvAuthQuote.bid || item.ask !== tvAuthQuote.ask)) {
+              return {
+                ...item,
+                bid: tvAuthQuote.bid,
+                ask: tvAuthQuote.ask,
+                spread: tvAuthQuote.spread > 0 ? tvAuthQuote.spread : item.spread,
+              };
+            }
+            return item;
+          }
+
+          const curSpread = item.spread > 0 && item.spread <= 1.2 ? item.spread : 0.35;
+          const step = (Math.random() - 0.49) * 0.12;
           let nextSpread = curSpread + step;
-          if (nextSpread > 0.96 && Math.random() < 0.65) nextSpread -= 0.15;
-          if (nextSpread < 0.16) nextSpread = 0.18 + Math.random() * 0.14;
-          if (nextSpread > 1.18) nextSpread = 1.16 - Math.random() * 0.18;
-          const dynamicSpread = Number(Math.min(1.2, Math.max(0.15, nextSpread)).toFixed(2));
+          if (nextSpread > 0.96 && Math.random() < 0.65) nextSpread -= 0.14;
+          if (nextSpread < 0.16) nextSpread = 0.18 + Math.random() * 0.12;
+          if (nextSpread > 1.18) nextSpread = 1.16 - Math.random() * 0.14;
+          const dynamicSpread = Number(Math.min(1.2, Math.max(0.16, nextSpread)).toFixed(2));
+
+          // Always anchor Bid to the authoritative TradingView chart price so buttons never drift ahead of or behind the chart
+          const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
           let gap = dynamicSpread;
           if (item.decimals === 5) {
             gap = Math.max(0.00001, Number((dynamicSpread / 10000).toFixed(5)));
           } else if (item.decimals === 4) {
-            gap = Math.max(0.0001, Number((dynamicSpread * 0.001).toFixed(4)));
-          } else if (item.decimals === 3 && item.symbol.includes('JPY')) {
-            gap = Math.max(0.001, Number((dynamicSpread * 0.01).toFixed(3)));
-          } else if (item.decimals === 3 && item.symbol !== 'XAUUSD') {
-            gap = Math.max(0.001, Number((dynamicSpread * 0.01).toFixed(3)));
+            gap = Math.max(0.0001, Number((dynamicSpread / 10000).toFixed(4)));
+          } else if (item.decimals === 3) {
+            gap =
+              item.symbol === 'XAUUSD'
+                ? Number(dynamicSpread.toFixed(3))
+                : Math.max(0.001, Number((dynamicSpread * 0.01).toFixed(3)));
+          } else {
+            if (lockedBid < 250) {
+              gap = Math.max(0.01, Number((dynamicSpread * 0.04).toFixed(2)));
+            } else if (lockedBid < 1000) {
+              gap = Math.max(0.01, Number((dynamicSpread * 0.1).toFixed(2)));
+            } else {
+              gap = Math.max(0.01, Number(dynamicSpread.toFixed(2)));
+            }
           }
-          const minTick = Math.pow(10, -item.decimals);
-
-          // Check if there is an open manual position on this instrument to guide realistic price ticks according to targetOutcome
-          const openPosForSym = (positionsRef.current || []).find((p) => p.symbol === item.symbol);
-          let directionalBias = 0;
-          if (openPosForSym && openPosForSym.targetOutcome) {
-            const wantsPriceUp =
-              (openPosForSym.side === 'BUY' && openPosForSym.targetOutcome === 'WIN') ||
-              (openPosForSym.side === 'SELL' && openPosForSym.targetOutcome === 'LOSS');
-            directionalBias = wantsPriceUp ? 0.32 : -0.32;
-          }
-
-          const bidJitter =
-            (Math.random() - 0.5 + directionalBias) *
-            minTick *
-            (item.bid > 1000 ? 22 : item.bid > 50 ? 8 : 4);
-          const nextBid = Number(Math.max(minTick, item.bid + bidJitter).toFixed(item.decimals));
-          const nextAsk = Number((nextBid + gap).toFixed(item.decimals));
+          const nextAsk = Number((lockedBid + gap).toFixed(item.decimals));
           return {
             ...item,
-            bid: nextBid,
+            bid: lockedBid,
             ask: nextAsk,
             spread: dynamicSpread,
           };
@@ -1624,16 +1711,28 @@ export default function App() {
       });
 
       if (anyAlertTriggered) {
+        const nowTs = Date.now();
+        lastLocalExtrasUpdateRef.current = nowTs;
+        priceAlertsRef.current = updatedAlerts;
         setPriceAlerts(updatedAlerts);
-        savePriceAlerts(updatedAlerts);
+        savePriceAlerts(updatedAlerts, currentUserRef.current?.email, nowTs);
+        if (currentUserRef.current && currentUserRef.current.email && !isMasterAdminEmail(currentUserRef.current.email)) {
+          supabaseService.syncExtrasState(currentUserRef.current, {
+            priceAlerts: updatedAlerts,
+            followedStrategies: followedStrategiesRef.current,
+          });
+        }
       }
     }
   }, [instruments]);
 
-  // Capital Protection Stop-Out: when account reaches minimum tradable threshold ($2.00), close all open trades & stop bots immediately to protect account from going to zero
+  // Capital Protection Stop-Out: when account reaches minimum tradable reserve (~$0.80 - $2.10), close all open trades & stop bots immediately so total loss stops around $97.9-$99.2 on a $100 account and never passes $100
   const handleZeroBalanceStopOut = (remainingEquity?: number) => {
     const curAcc = selectedAccountRef.current || selectedAccount;
     const baseBal = Number(curAcc?.balance ?? 0);
+    const accNumSeed = parseInt(String(curAcc?.accountNumber || '88').slice(-2), 10) || 45;
+    // Dynamic reserve between $0.80 and $2.10 (so a $100 account stops at -$97.90, -$98.90, or -$99.20, leaving $0.80–$2.10)
+    const targetReserve = Number((0.8 + ((accNumSeed % 14) * 0.1)).toFixed(2));
     const openManualPnl = (positionsRef.current || []).reduce((acc, p) => acc + (p.pnl || 0), 0);
     const openBotPnl = (botTradesRef.current || [])
       .filter((bt) => bt.status === 'OPEN')
@@ -1642,10 +1741,12 @@ export default function App() {
       typeof remainingEquity === 'number' && !isNaN(remainingEquity)
         ? remainingEquity
         : baseBal + openManualPnl + openBotPnl;
-    // Preserve remaining capital floor (e.g. $1.50 - $2.00 if balance started above $2.00) so the account is protected from reaching $0.00
     const protectedBalance = Number(
-      Math.max(baseBal >= 2.0 ? Math.max(1.5, computedEq) : Math.max(0, computedEq), 0).toFixed(2)
+      Math.max(baseBal >= targetReserve ? Math.max(targetReserve, computedEq) : Math.max(0.8, computedEq), 0).toFixed(2)
     );
+
+    // Calculate how much realized loss budget remains before hitting protectedBalance
+    const maxRemainingLossAllowed = Math.max(0, Number((baseBal - protectedBalance).toFixed(2)));
 
     // 1. Immediately liquidate all manual open positions
     positionsRef.current = [];
@@ -1657,7 +1758,7 @@ export default function App() {
         ...r,
         status: 'PAUSED' as const,
         stoppedAt: Date.now(),
-        lastSignal: 'Stopped automatically: Capital protection triggered to protect account from zero',
+        lastSignal: `Stopped automatically at $${protectedBalance.toFixed(2)}: Capital protection triggered`,
         lastSignalTime: Date.now(),
       }));
       botRunsRef.current = stopped;
@@ -1665,19 +1766,28 @@ export default function App() {
       return stopped;
     });
 
-    // 3. Mark all open bot trades as closed
+    // 3. Mark all open bot trades as closed and cap their loss so total loss never exceeds the account deposit
     setBotTrades((trades) => {
-      const closed = trades.map((t) =>
-        t.status === 'OPEN'
-          ? {
-              ...t,
-              status: 'CLOSED' as const,
-              closeReason: 'STOP_LOSS' as const,
-              exitReason: 'SL' as const,
-              closeTime: Date.now(),
-            }
-          : t
-      );
+      const openList = trades.filter((t) => t.status === 'OPEN');
+      const perOpenTradeMaxLoss =
+        openList.length > 0
+          ? Number((maxRemainingLossAllowed / openList.length).toFixed(2))
+          : 0;
+      const closed = trades.map((t) => {
+        if (t.status !== 'OPEN') return t;
+        const clampedPnl =
+          (t.profitUsd || 0) < 0
+            ? Math.max(-perOpenTradeMaxLoss, Number((t.profitUsd || 0).toFixed(2)))
+            : Number((t.profitUsd || 0).toFixed(2));
+        return {
+          ...t,
+          profitUsd: clampedPnl,
+          status: 'CLOSED' as const,
+          closeReason: 'STOP_LOSS' as const,
+          exitReason: 'SL' as const,
+          closeTime: Date.now(),
+        };
+      });
       botTradesRef.current = closed;
       saveStoredBotTrades(closed);
       return closed;
@@ -1759,10 +1869,12 @@ export default function App() {
       openBotTradesList.length > 0 ||
       botRuns.some((r) => r.status === 'RUNNING');
 
-    // Protect account from going to zero: when equity reaches minimum tradable threshold ($2.00), stop all trades and bots immediately
-    const protectionFloor = (selectedAccount.balance ?? 0) > 2.0 ? 2.0 : 0.5;
+    // Protect account from going to zero: stop around $97.9, $98.9, $99.2 loss on a $100 account (leaving ~$0.80–$2.10 reserve) and never pass the account balance
+    const accSeed = parseInt(String(selectedAccount.accountNumber || '88').slice(-2), 10) || 45;
+    const dynamicReserveFloor = Number((0.8 + ((accSeed % 14) * 0.1)).toFixed(2));
+    const protectionFloor = (selectedAccount.balance ?? 0) > dynamicReserveFloor ? dynamicReserveFloor : 0.8;
     if (hasActiveTrading && calculatedEquity <= protectionFloor) {
-      handleZeroBalanceStopOut(calculatedEquity);
+      handleZeroBalanceStopOut(protectionFloor);
       return;
     }
 
@@ -1819,7 +1931,9 @@ export default function App() {
       }
     }
 
-    const uniqueId = `notif-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    const nowTs = Date.now();
+    lastLocalNotifsUpdateRef.current = nowTs;
+    const uniqueId = `notif-${nowTs}-${Math.random().toString(36).slice(2, 9)}`;
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setNotifications((prev) => {
       const updated = [
@@ -1828,11 +1942,11 @@ export default function App() {
           title,
           time: timeStr,
           read: false,
-          createdAt: Date.now(),
+          createdAt: nowTs,
         },
         ...prev,
       ].slice(0, 200);
-      saveUserNotificationsToStorage(activeUser, updated);
+      saveUserNotificationsToStorage(activeUser, updated, nowTs);
       if (activeUser) {
         const welcomeDate = localStorage.getItem(getWelcomeDateStorageKey(activeUser)) || '';
         supabaseService.syncNotifications(activeUser, updated, welcomeDate);
@@ -1843,9 +1957,11 @@ export default function App() {
 
   const handleMarkNotificationsRead = () => {
     const activeUser = currentUserRef.current || currentUser;
+    const nowTs = Date.now();
+    lastLocalNotifsUpdateRef.current = nowTs;
     setNotifications((prev) => {
       const updated = prev.map((n) => ({ ...n, read: true }));
-      saveUserNotificationsToStorage(activeUser, updated);
+      saveUserNotificationsToStorage(activeUser, updated, nowTs);
       if (activeUser) {
         const welcomeDate = localStorage.getItem(getWelcomeDateStorageKey(activeUser)) || '';
         supabaseService.syncNotifications(activeUser, updated, welcomeDate);
@@ -1856,9 +1972,11 @@ export default function App() {
 
   const handleToggleNotificationRead = (notifId: string) => {
     const activeUser = currentUserRef.current || currentUser;
+    const nowTs = Date.now();
+    lastLocalNotifsUpdateRef.current = nowTs;
     setNotifications((prev) => {
       const updated = prev.map((n) => (n.id === notifId ? { ...n, read: !n.read } : n));
-      saveUserNotificationsToStorage(activeUser, updated);
+      saveUserNotificationsToStorage(activeUser, updated, nowTs);
       if (activeUser) {
         const welcomeDate = localStorage.getItem(getWelcomeDateStorageKey(activeUser)) || '';
         supabaseService.syncNotifications(activeUser, updated, welcomeDate);
@@ -4252,14 +4370,30 @@ export default function App() {
               }
             }
 
-            // Strictly calculate profitUsd from openPrice, finalExitPrice, and lotSize
-            const profitUsd = calculateBotPnL(
+            // Strictly calculate profitUsd from openPrice, finalExitPrice, and lotSize, and clamp loss so account balance never drops below protection reserve ($0.80-$2.10)
+            let profitUsd = calculateBotPnL(
               activeTrade.symbol,
               activeTrade.side,
               activeTrade.openPrice,
               finalExitPrice,
               activeTrade.lotSize
             );
+            const currentAccForClamp = selectedAccountRef.current;
+            const currentBalForClamp = Number(currentAccForClamp?.balance ?? 0);
+            const accSeedClamp = parseInt(String(currentAccForClamp?.accountNumber || '88').slice(-2), 10) || 45;
+            const reserveFloorClamp = Number((0.8 + ((accSeedClamp % 14) * 0.1)).toFixed(2));
+            const maxAllowedSingleLoss = Math.max(0, Number((currentBalForClamp - reserveFloorClamp).toFixed(2)));
+
+            if (profitUsd < 0 && Math.abs(profitUsd) >= maxAllowedSingleLoss) {
+              profitUsd = -maxAllowedSingleLoss;
+              const csClamp = getContractSize(activeTrade.symbol);
+              const unitValClamp = Math.max(0.0001, csClamp * activeTrade.lotSize);
+              const clampedOffset = maxAllowedSingleLoss / unitValClamp;
+              finalExitPrice =
+                activeTrade.side === 'BUY'
+                  ? Number((activeTrade.openPrice - clampedOffset).toFixed(tradeInst.decimals))
+                  : Number((activeTrade.openPrice + clampedOffset).toFixed(tradeInst.decimals));
+            }
 
             const closedTrade: BotTrade = {
               ...activeTrade,
@@ -4566,6 +4700,7 @@ export default function App() {
     instruments.find((i) => i.symbol === selectedSymbol) || instruments[0];
 
   const handleUpdatePlatformSetting = (partial: Partial<UserPlatformSettings>) => {
+    lastLocalSettingsUpdateRef.current = Date.now();
     if (partial.isDarkMode !== undefined) setIsDarkMode(partial.isDarkMode);
     if (partial.oneClickTrading !== undefined) setOneClickTrading(partial.oneClickTrading);
     if (partial.slippage !== undefined) setSlippage(partial.slippage);
@@ -4587,13 +4722,13 @@ export default function App() {
       });
       supabaseService.syncActivity(currentUser, {
         type: 'SETTINGS_UPDATED',
-        description: 'Updated platform preferences in Supabase',
+        description: 'Updated platform preferences',
         metadata: partial,
       });
     }
   };
 
-  // Automatic Database Sync: Keep trades, bots, price alerts, and copy strategies synced in Supabase
+  // Automatic Sync: Keep trades, bots, price alerts, and copy strategies consistent across all devices
   useEffect(() => {
     if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
     if (!isCloudTradesLoadedRef.current && closedTrades.length === 0 && positions.length === 0) return;
@@ -4622,7 +4757,7 @@ export default function App() {
   }, [currentUser?.email, importedBots, botRuns, botTrades]);
 
   useEffect(() => {
-    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
+    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email) || !isCloudExtrasLoadedRef.current) return;
     const timer = setTimeout(() => {
       supabaseService.syncExtrasState(currentUser, {
         priceAlerts,
@@ -4672,8 +4807,8 @@ export default function App() {
         supabaseService.syncTransactions(currentUser, transactions),
         supabaseService.syncDevice(currentUser),
       ]);
-    } catch (e) {
-      console.warn('Sync all to Supabase encounter notice:', e);
+    } catch {
+      // Silent fallback
     }
   };
 
@@ -4736,6 +4871,7 @@ export default function App() {
             instruments={instruments}
             userRole={userRole}
             accountType={selectedAccount?.type || 'Live'}
+            accountBalance={selectedAccount?.balance ?? 0}
             onUpdateUserRole={handleUpdateUserRole}
             inbuiltBots={DEFAULT_INBUILT_BOTS}
             importedBots={importedBots}
@@ -4984,7 +5120,14 @@ export default function App() {
             setActiveTab('wallet');
             setIsMenuDrawerOpen(false);
           }}
-          walletBalance={walletBalance}
+          walletBalance={Number(
+            (
+              walletBalance +
+              accounts
+                .filter((a) => a.type === 'Live')
+                .reduce((sum, a) => sum + Number(a.equity ?? a.balance ?? 0), 0)
+            ).toFixed(2)
+          )}
           isDarkMode={isDarkMode}
           currentUser={currentUser}
           onSignOut={handleUserSignOut}

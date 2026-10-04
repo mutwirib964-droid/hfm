@@ -184,7 +184,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     const chartWidth = width - priceScaleWidth;
     const mainChartHeight = height - timeScaleHeight - rsiHeight;
 
-    // Calculate price bounds
+    // Calculate price bounds from candles first
     let minPrice = Infinity;
     let maxPrice = -Infinity;
     let maxVolume = 0;
@@ -195,19 +195,23 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       if (c.volume > maxVolume) maxVolume = c.volume;
     });
 
-    // Also include active position prices
+    const rawCandleRange = Math.max(Math.pow(10, -decimals) * 20, maxPrice - minPrice || 0);
+
+    // Ensure current bid and ask are strictly inside chart bounds without squashing historical waves if symbol just switched
+    if (Math.abs(currentBid - minPrice) <= rawCandleRange * 4) {
+      if (currentBid < minPrice) minPrice = currentBid;
+      if (currentBid > maxPrice) maxPrice = currentBid;
+      if (currentAsk < minPrice) minPrice = currentAsk;
+      if (currentAsk > maxPrice) maxPrice = currentAsk;
+    }
+
+    // Also include active position prices only if within reasonable chart range so they never squash candles into a flat line
     positions.forEach((p) => {
-      if (p.symbol === symbol) {
+      if (p.symbol === symbol && Math.abs(p.openPrice - currentBid) <= rawCandleRange * 2.5) {
         if (p.openPrice < minPrice) minPrice = p.openPrice;
         if (p.openPrice > maxPrice) maxPrice = p.openPrice;
       }
     });
-
-    // Ensure current bid and ask are strictly inside chart bounds
-    if (currentBid < minPrice) minPrice = currentBid;
-    if (currentBid > maxPrice) maxPrice = currentBid;
-    if (currentAsk < minPrice) minPrice = currentAsk;
-    if (currentAsk > maxPrice) maxPrice = currentAsk;
 
     // Add padding to price range
     const priceRange = maxPrice - minPrice || 1;
@@ -353,19 +357,32 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         ctx.stroke();
       });
     } else if (chartType === 'line' || chartType === 'area') {
-      ctx.beginPath();
-      candles.forEach((c, i) => {
+      const pts = candles.map((c, i) => {
         const x = i * candleSpacing + candleSpacing / 2;
         const cClose = i === candles.length - 1 ? currentPrice : c.close;
         const y = priceToY(cClose);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+        return { x, y };
       });
 
-      if (chartType === 'area') {
-        const lastX = (candles.length - 1) * candleSpacing + candleSpacing / 2;
+      const traceSmoothCurve = () => {
+        if (pts.length === 0) return;
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 0; i < pts.length - 1; i++) {
+          const midX = (pts[i].x + pts[i + 1].x) / 2;
+          const midY = (pts[i].y + pts[i + 1].y) / 2;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
+        }
+        const lastPt = pts[pts.length - 1];
+        ctx.lineTo(lastPt.x, lastPt.y);
+      };
+
+      ctx.beginPath();
+      traceSmoothCurve();
+
+      if (chartType === 'area' && pts.length > 0) {
+        const lastX = pts[pts.length - 1].x;
         ctx.lineTo(lastX, mainChartHeight);
-        ctx.lineTo(candleSpacing / 2, mainChartHeight);
+        ctx.lineTo(pts[0].x, mainChartHeight);
         ctx.closePath();
 
         const gradient = ctx.createLinearGradient(0, 0, 0, mainChartHeight);
@@ -375,19 +392,13 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         ctx.fill();
 
         ctx.beginPath();
-        candles.forEach((c, i) => {
-          const x = i * candleSpacing + candleSpacing / 2;
-          const cClose = i === candles.length - 1 ? currentPrice : c.close;
-          const y = priceToY(cClose);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
+        traceSmoothCurve();
         ctx.strokeStyle = '#E51937';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.2;
         ctx.stroke();
       } else {
         ctx.strokeStyle = '#3B82F6';
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.2;
         ctx.stroke();
       }
     }
@@ -924,7 +935,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
                   ? 'bg-neutral-900 border-neutral-800 text-emerald-400'
                   : 'bg-emerald-50 border-emerald-200 text-emerald-700'
               }`}
-              title="VTM Pro Live Engine: Ultra-low latency canvas synchronized with Buy/Sell execution"
+              title="VTM Pro Live Engine: Ultra-low latency canvas with live Buy/Sell execution"
             >
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <span>VTM PRO LIVE</span>

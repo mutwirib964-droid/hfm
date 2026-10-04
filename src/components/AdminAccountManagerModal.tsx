@@ -481,7 +481,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               <RefreshCw
                 className={`w-3.5 h-3.5 text-emerald-500 ${isSyncingCloud ? 'animate-spin' : ''}`}
               />
-              <span className="hidden sm:inline">{isSyncingCloud ? 'Syncing...' : 'Refresh Data'}</span>
+              <span className="hidden sm:inline">{isSyncingCloud ? 'Refreshing...' : 'Refresh Data'}</span>
             </button>
 
             {onToggleTheme && (

@@ -454,6 +454,7 @@ export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | '
         email: cleanEmail,
         name: cleanEmail.split('@')[0],
         role: effectiveRole,
+        accountNumber: `VTM-${Math.floor(100000 + Math.random() * 900000)}`,
         isLoggedIn: false,
         createdAt: Date.now(),
       };
@@ -1327,7 +1328,9 @@ export function adminUpdateUserAccount(
       email: targetUserKey,
       name: targetUserKey.split('@')[0],
       role: 'normal',
+      accountNumber: state.accounts[0]?.accountNumber || 'VTM-000000',
       isLoggedIn: false,
+      createdAt: Date.now(),
     };
     supabaseService.syncUserFinancials(syncProfile, state).catch(() => {});
 

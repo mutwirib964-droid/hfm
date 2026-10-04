@@ -449,6 +449,19 @@ class SupabaseService {
         return true;
       }
 
+      // Fallback POST without uid column in case table schema only has password_hash (which already encodes uid:<uuid>|<password>)
+      const { uid: _omitUid, ...payloadWithoutUid } = payload;
+      const retryPostRes = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(payloadWithoutUid),
+        signal: AbortSignal.timeout(6000),
+      });
+
+      if (retryPostRes.ok) {
+        return true;
+      }
+
       // Fallback PATCH if row already exists
       const patchPayload: Record<string, any> = {
         name: isAdmin ? 'mutwiri' : profile.name,
@@ -783,7 +796,9 @@ class SupabaseService {
           email: emailKey,
           name: nameByEmail[emailKey] || emailKey.split('@')[0],
           role: 'normal',
+          accountNumber: fin.accounts[0]?.accountNumber || 'VTM-000000',
           isLoggedIn: false,
+          createdAt: Date.now(),
         };
         const swept = sweepIdleLiveAccountsSilently(dummyUser, fin);
         if (swept.changed) {
@@ -1509,6 +1524,7 @@ class SupabaseService {
   ): Promise<{
     priceAlerts?: any[];
     followedStrategies?: any[];
+    updatedAt?: number;
   } | null> {
     if (!this.config || !user?.email) return null;
     return await this.fetchCloudStateRecord(user.email, 'STATE_EXTRAS');
@@ -1731,11 +1747,16 @@ class SupabaseService {
     const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
 
     try {
+      const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
+      if (cleanEmail) {
+        orClauses.push(`user_email.eq.${encodeURIComponent(cleanEmail)}`);
+      }
+      if (user.id && this.isValidUuid(user.id)) {
+        orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
+      }
       const filter = isAdmin
         ? `or=(user_key.eq.mutwirib964@gmail.com,user_email.eq.mutwirib964@gmail.com)`
-        : cleanEmail
-        ? `or=(user_key.eq.${encodeURIComponent(userKey)},user_email.eq.${encodeURIComponent(cleanEmail)})`
-        : `user_key=eq.${encodeURIComponent(userKey)}`;
+        : `or=(${orClauses.join(',')})`;
 
       const res = await fetch(
         `${this.config.url}/rest/v1/vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
@@ -1752,17 +1773,16 @@ class SupabaseService {
       if (res.ok) {
         const rows = await res.json();
         if (Array.isArray(rows) && rows.length > 0) {
-          const row =
-            rows.find(
-              (r: any) =>
-                (Array.isArray(r.accounts) && r.accounts.length > 0) ||
-                Number(r.wallet_balance || 0) > 0 ||
-                (Array.isArray(r.transactions) && r.transactions.length > 0)
-            ) || rows[0];
+          const row = rows[0];
+          const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
+          const filteredAccounts = (Array.isArray(row.accounts) ? row.accounts : []).filter(
+            (acc: TradingAccount) =>
+              !acc?.accountNumber || !deletedAccountNums.has(String(acc.accountNumber))
+          );
 
           const rawState: UserFinancialState = {
             walletBalance: Number(row.wallet_balance || 0),
-            accounts: Array.isArray(row.accounts) ? row.accounts : [],
+            accounts: filteredAccounts,
             selectedAccountId: row.selected_account_id || null,
             transactions: sanitizeRealTransactions(Array.isArray(row.transactions) ? row.transactions : []),
             lastUpdated: row.last_updated ? new Date(row.last_updated).getTime() : Date.now(),
@@ -1847,16 +1867,19 @@ class SupabaseService {
   ): Promise<{
     notifications: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>;
     lastWelcomeDate?: string;
+    updatedAt?: number;
   } | null> {
     if (!this.config || !user?.email) return null;
     const state = await this.fetchCloudStateRecord<{
       notifications?: Array<{ id: string; title: string; time: string; read: boolean; createdAt?: number }>;
       lastWelcomeDate?: string;
+      updatedAt?: number;
     }>(user.email, 'STATE_NOTIFICATIONS');
     if (state && Array.isArray(state.notifications)) {
       return {
         notifications: state.notifications,
         lastWelcomeDate: state.lastWelcomeDate || '',
+        updatedAt: state.updatedAt || 0,
       };
     }
     return null;

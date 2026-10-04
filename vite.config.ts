@@ -4,492 +4,365 @@ import path from 'path';
 import fs from 'fs';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import WebSocket from 'ws';
+
+const TV_LIVE_SYMBOLS: Record<
+  string,
+  { ticker: string; decimals: number; pipMultiplier: number; baseSpread: number; category: string }
+> = {
+  // Forex
+  EURUSD: { ticker: 'FX:EURUSD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.30, category: 'Forex' },
+  GBPUSD: { ticker: 'FX:GBPUSD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.32, category: 'Forex' },
+  USDJPY: { ticker: 'FX:USDJPY', decimals: 3, pipMultiplier: 100, baseSpread: 0.30, category: 'Forex' },
+  AUDUSD: { ticker: 'FX:AUDUSD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.30, category: 'Forex' },
+  USDCAD: { ticker: 'FX:USDCAD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.35, category: 'Forex' },
+  USDCHF: { ticker: 'FX:USDCHF', decimals: 5, pipMultiplier: 10000, baseSpread: 0.32, category: 'Forex' },
+  GBPJPY: { ticker: 'FX:GBPJPY', decimals: 3, pipMultiplier: 100, baseSpread: 0.48, category: 'Forex' },
+  NZDUSD: { ticker: 'FX:NZDUSD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.28, category: 'Forex' },
+  EURGBP: { ticker: 'FX:EURGBP', decimals: 5, pipMultiplier: 10000, baseSpread: 0.34, category: 'Forex' },
+  EURJPY: { ticker: 'FX:EURJPY', decimals: 3, pipMultiplier: 100, baseSpread: 0.44, category: 'Forex' },
+  AUDJPY: { ticker: 'FX:AUDJPY', decimals: 3, pipMultiplier: 100, baseSpread: 0.42, category: 'Forex' },
+
+  // Commodities & Metals
+  XAUUSD: { ticker: 'OANDA:XAUUSD', decimals: 3, pipMultiplier: 10, baseSpread: 0.45, category: 'Commodities' },
+  XAGUSD: { ticker: 'TVC:SILVER', decimals: 3, pipMultiplier: 100, baseSpread: 0.32, category: 'Commodities' },
+  USOIL: { ticker: 'FX:USOIL', decimals: 2, pipMultiplier: 100, baseSpread: 0.32, category: 'Commodities' },
+  UKOIL: { ticker: 'FX:UKOIL', decimals: 2, pipMultiplier: 100, baseSpread: 0.34, category: 'Commodities' },
+  NGAS: { ticker: 'OANDA:NATGASUSD', decimals: 3, pipMultiplier: 1000, baseSpread: 0.30, category: 'Commodities' },
+  COPPER: { ticker: 'COMEX:HG1!', decimals: 3, pipMultiplier: 1000, baseSpread: 0.28, category: 'Commodities' },
+  XPTUSD: { ticker: 'TVC:PLATINUM', decimals: 2, pipMultiplier: 10, baseSpread: 0.55, category: 'Commodities' },
+
+  // Indices
+  US500: { ticker: 'SP:SPX', decimals: 2, pipMultiplier: 10, baseSpread: 0.45, category: 'Indices' },
+  NAS100: { ticker: 'TVC:IXIC', decimals: 2, pipMultiplier: 1, baseSpread: 0.68, category: 'Indices' },
+  US30: { ticker: 'OANDA:US30USD', decimals: 2, pipMultiplier: 1, baseSpread: 0.75, category: 'Indices' },
+  GER40: { ticker: 'OANDA:DE30EUR', decimals: 2, pipMultiplier: 1, baseSpread: 0.65, category: 'Indices' },
+  UK100: { ticker: 'OANDA:UK100GBP', decimals: 2, pipMultiplier: 1, baseSpread: 0.65, category: 'Indices' },
+  JPN225: { ticker: 'INDEX:NKY', decimals: 2, pipMultiplier: 1, baseSpread: 0.78, category: 'Indices' },
+
+  // Stocks
+  AAPL: { ticker: 'NASDAQ:AAPL', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  NVDA: { ticker: 'NASDAQ:NVDA', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  TSLA: { ticker: 'NASDAQ:TSLA', decimals: 2, pipMultiplier: 100, baseSpread: 0.32, category: 'Stocks' },
+  MSFT: { ticker: 'NASDAQ:MSFT', decimals: 2, pipMultiplier: 100, baseSpread: 0.30, category: 'Stocks' },
+  AMZN: { ticker: 'NASDAQ:AMZN', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  GOOGL: { ticker: 'NASDAQ:GOOGL', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  META: { ticker: 'NASDAQ:META', decimals: 2, pipMultiplier: 100, baseSpread: 0.32, category: 'Stocks' },
+  AMD: { ticker: 'NASDAQ:AMD', decimals: 2, pipMultiplier: 100, baseSpread: 0.30, category: 'Stocks' },
+  NFLX: { ticker: 'NASDAQ:NFLX', decimals: 2, pipMultiplier: 100, baseSpread: 0.26, category: 'Stocks' },
+  COIN: { ticker: 'NASDAQ:COIN', decimals: 2, pipMultiplier: 100, baseSpread: 0.32, category: 'Stocks' },
+  PLTR: { ticker: 'NASDAQ:PLTR', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  BABA: { ticker: 'NYSE:BABA', decimals: 2, pipMultiplier: 100, baseSpread: 0.26, category: 'Stocks' },
+  MSTR: { ticker: 'NASDAQ:MSTR', decimals: 2, pipMultiplier: 100, baseSpread: 0.34, category: 'Stocks' },
+  DIS: { ticker: 'NYSE:DIS', decimals: 2, pipMultiplier: 100, baseSpread: 0.26, category: 'Stocks' },
+  UBER: { ticker: 'NYSE:UBER', decimals: 2, pipMultiplier: 100, baseSpread: 0.25, category: 'Stocks' },
+  INTC: { ticker: 'NASDAQ:INTC', decimals: 2, pipMultiplier: 100, baseSpread: 0.26, category: 'Stocks' },
+  JPM: { ticker: 'NYSE:JPM', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  V: { ticker: 'NYSE:V', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Stocks' },
+  WMT: { ticker: 'NASDAQ:WMT', decimals: 2, pipMultiplier: 100, baseSpread: 0.26, category: 'Stocks' },
+
+  // ETFs & Bonds
+  SPY: { ticker: 'AMEX:SPY', decimals: 2, pipMultiplier: 100, baseSpread: 0.25, category: 'ETFs' },
+  XLE: { ticker: 'AMEX:XLE', decimals: 2, pipMultiplier: 100, baseSpread: 0.24, category: 'ETFs' },
+  'EUBUND.F': { ticker: 'EUREX:FGBL1!', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Bonds' },
+  'UKGILT.F': { ticker: 'ICEEUR:R1!', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Bonds' },
+  'US10YR.F': { ticker: 'CBOT:ZN1!', decimals: 2, pipMultiplier: 100, baseSpread: 0.28, category: 'Bonds' },
+
+  // Crypto 24/7
+  BTCUSD: { ticker: 'BINANCE:BTCUSDT', decimals: 2, pipMultiplier: 1, baseSpread: 0.48, category: 'Crypto' },
+  ETHUSD: { ticker: 'BINANCE:ETHUSDT', decimals: 2, pipMultiplier: 1, baseSpread: 0.36, category: 'Crypto' },
+  SOLUSD: { ticker: 'BINANCE:SOLUSDT', decimals: 2, pipMultiplier: 10, baseSpread: 0.26, category: 'Crypto' },
+  XRPUSD: { ticker: 'BINANCE:XRPUSDT', decimals: 4, pipMultiplier: 10000, baseSpread: 0.30, category: 'Crypto' },
+  BNBUSD: { ticker: 'BINANCE:BNBUSDT', decimals: 2, pipMultiplier: 10, baseSpread: 0.30, category: 'Crypto' },
+  DOGEUSD: { ticker: 'BINANCE:DOGEUSDT', decimals: 4, pipMultiplier: 10000, baseSpread: 0.26, category: 'Crypto' },
+  ADAUSD: { ticker: 'BINANCE:ADAUSDT', decimals: 4, pipMultiplier: 10000, baseSpread: 0.28, category: 'Crypto' },
+  AVAXUSD: { ticker: 'BINANCE:AVAXUSDT', decimals: 2, pipMultiplier: 10, baseSpread: 0.25, category: 'Crypto' },
+  LINKUSD: { ticker: 'BINANCE:LINKUSDT', decimals: 2, pipMultiplier: 100, baseSpread: 0.24, category: 'Crypto' },
+  DOTUSD: { ticker: 'BINANCE:DOTUSDT', decimals: 2, pipMultiplier: 100, baseSpread: 0.22, category: 'Crypto' },
+  NEARUSD: { ticker: 'BINANCE:NEARUSDT', decimals: 2, pipMultiplier: 100, baseSpread: 0.24, category: 'Crypto' },
+  SUIUSD: { ticker: 'BINANCE:SUIUSDT', decimals: 2, pipMultiplier: 100, baseSpread: 0.24, category: 'Crypto' },
+};
+
+const TICKER_TO_SYMBOL: Record<string, string> = {};
+Object.entries(TV_LIVE_SYMBOLS).forEach(([sym, cfg]) => {
+  TICKER_TO_SYMBOL[cfg.ticker] = sym;
+});
+
+function isServerInstrumentMarketOpen(symbol: string, category: string): boolean {
+  if (category === 'Crypto') return true;
+  const now = new Date();
+  const utcDay = now.getUTCDay();
+  const timeVal = now.getUTCHours() + now.getUTCMinutes() / 60;
+
+  if (category === 'Stocks' || category === 'ETFs') {
+    if (utcDay === 6 || utcDay === 0) return false;
+    return timeVal >= 13.5 && timeVal < 20.0;
+  }
+  if (utcDay === 6) return false;
+  if (utcDay === 0 && timeVal < 22.0) return false;
+  if (utcDay === 5) {
+    const closeHour = category === 'Commodities' || category === 'Indices' || category === 'Bonds' ? 21.0 : 22.0;
+    if (timeVal >= closeHour) return false;
+  }
+  if (utcDay >= 1 && utcDay <= 4) {
+    if ((category === 'Commodities' || category === 'Indices' || category === 'Bonds') && timeVal >= 21.0 && timeVal < 22.0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function computeAlignedBidAsk(
+  symbol: string,
+  chartPrice: number,
+  decimals: number,
+  baseSpread: number,
+  isOpen: boolean,
+  prevSpread?: number
+): { bid: number; ask: number; spread: number } {
+  let spread = baseSpread;
+  if (isOpen) {
+    const startSpr = prevSpread && prevSpread >= 0.15 && prevSpread <= 1.2 ? prevSpread : baseSpread;
+    let nextSpr = startSpr + (Math.random() - 0.49) * 0.14;
+    if (nextSpr > 0.96 && Math.random() < 0.65) nextSpr -= 0.14;
+    if (nextSpr < 0.16) nextSpr = 0.18 + Math.random() * 0.12;
+    if (nextSpr > 1.18) nextSpr = 1.16 - Math.random() * 0.14;
+    spread = Number(Math.min(1.2, Math.max(0.16, nextSpr)).toFixed(2));
+  } else {
+    spread = Number(Math.min(1.2, Math.max(0.16, baseSpread)).toFixed(2));
+  }
+
+  // Anchor bid 1:1 to TradingView's exact chart price (lp) so buttons and chart move hand-in-hand
+  const bid = Number(chartPrice.toFixed(decimals));
+  let priceGap = spread;
+
+  if (decimals === 5) {
+    priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
+  } else if (decimals === 4) {
+    priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
+  } else if (decimals === 3) {
+    priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+  } else {
+    // 2 decimals
+    if (bid < 250) {
+      priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+    } else if (bid < 1000) {
+      priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+    } else {
+      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+    }
+  }
+
+  const ask = Number((bid + priceGap).toFixed(decimals));
+  return { bid, ask, spread };
+}
 
 function marketPricesPlugin() {
-  let cachedData: any = null;
-  let lastFetch = 0;
+  const liveQuotes: Record<string, any> = {};
+  const rawTvFields: Record<string, Record<string, any>> = {};
+  const sseClients = new Set<any>();
+  let tvWs: WebSocket | null = null;
+  let reconnectTimer: any = null;
+  let broadcastTimer: any = null;
+  let dirtyQuotes = false;
+
+  const scheduleBroadcast = () => {
+    dirtyQuotes = true;
+    if (broadcastTimer) return;
+    broadcastTimer = setTimeout(() => {
+      broadcastTimer = null;
+      if (!dirtyQuotes || sseClients.size === 0) return;
+      dirtyQuotes = false;
+      const payload = `data: ${JSON.stringify({ timestamp: Date.now(), quotes: liveQuotes })}\n\n`;
+      sseClients.forEach((clientRes) => {
+        try {
+          clientRes.write(payload);
+        } catch {
+          sseClients.delete(clientRes);
+        }
+      });
+    }, 60);
+  };
+
+  const updateSymbolFromTv = (symbol: string, raw: Record<string, any>) => {
+    const cfg = TV_LIVE_SYMBOLS[symbol];
+    if (!cfg) return;
+    const lp = typeof raw.lp === 'number' && raw.lp > 0 ? raw.lp : typeof raw.bid === 'number' && raw.bid > 0 ? raw.bid : null;
+    if (!lp || lp <= 0) return;
+
+    const isOpen = isServerInstrumentMarketOpen(symbol, cfg.category);
+    const existing = liveQuotes[symbol];
+    const { bid, ask, spread } = computeAlignedBidAsk(
+      symbol,
+      lp,
+      cfg.decimals,
+      cfg.baseSpread,
+      isOpen,
+      existing?.spread
+    );
+
+    const change24h =
+      typeof raw.chp === 'number'
+        ? Number(raw.chp.toFixed(2))
+        : existing?.change24h ?? 0;
+    const high24h =
+      typeof raw.high_price === 'number' && raw.high_price > 0
+        ? Number(raw.high_price.toFixed(cfg.decimals))
+        : existing?.high24h || ask;
+    const low24h =
+      typeof raw.low_price === 'number' && raw.low_price > 0
+        ? Number(raw.low_price.toFixed(cfg.decimals))
+        : existing?.low24h || bid;
+
+    liveQuotes[symbol] = {
+      bid,
+      ask,
+      close: bid,
+      change24h,
+      high24h,
+      low24h,
+      spread,
+      timestamp: Date.now(),
+    };
+    scheduleBroadcast();
+  };
+
+  const connectTradingViewWs = () => {
+    if (tvWs) {
+      try {
+        tvWs.removeAllListeners();
+        tvWs.close();
+      } catch {}
+      tvWs = null;
+    }
+
+    try {
+      const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket?from=chart%2F&type=chart', {
+        headers: {
+          Origin: 'https://www.tradingview.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      });
+      tvWs = ws;
+
+      const sendTvPacket = (func: string, args: any[]) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const msg = JSON.stringify({ m: func, p: args });
+        ws.send(`~m~${msg.length}~m~${msg}`);
+      };
+
+      const session = 'qs_vtm_' + Math.random().toString(36).slice(2, 12);
+
+      ws.on('open', () => {
+        sendTvPacket('set_auth_token', ['unauthorized_user_token']);
+        sendTvPacket('quote_create_session', [session]);
+        sendTvPacket('quote_set_fields', [
+          session,
+          'lp',
+          'ch',
+          'chp',
+          'high_price',
+          'low_price',
+          'bid',
+          'ask',
+          'open_price',
+          'prev_close_price',
+        ]);
+        const allTickers = Object.values(TV_LIVE_SYMBOLS).map((s) => s.ticker);
+        sendTvPacket('quote_add_symbols', [session, ...allTickers]);
+      });
+
+      ws.on('message', (data: any) => {
+        const str = data.toString();
+        const frames = str.split(/~m~\d+~m~/).filter(Boolean);
+        for (const frame of frames) {
+          if (frame.startsWith('~h~')) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(`~m~${frame.length}~m~${frame}`);
+            }
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(frame);
+            if (parsed.m === 'qsd' && Array.isArray(parsed.p) && parsed.p[1]) {
+              const { n: ticker, v: values } = parsed.p[1];
+              const sym = TICKER_TO_SYMBOL[ticker];
+              if (sym && values && typeof values === 'object') {
+                rawTvFields[sym] = { ...(rawTvFields[sym] || {}), ...values };
+                updateSymbolFromTv(sym, rawTvFields[sym]);
+              }
+            }
+          } catch {
+            // ignore non-JSON frame
+          }
+        }
+      });
+
+      ws.on('close', () => {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connectTradingViewWs, 1500);
+      });
+
+      ws.on('error', () => {
+        try {
+          ws.close();
+        } catch {}
+      });
+    } catch {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connectTradingViewWs, 2000);
+    }
+  };
 
   return {
     name: 'market-prices-api',
     configureServer(server: any) {
-      server.middlewares.use('/api/market-prices', async (_req: any, res: any) => {
-        const now = Date.now();
-        if (cachedData && now - lastFetch < 300) {
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(cachedData));
-          return;
+      // Start persistent TradingView WebSocket only when dev server runs
+      connectTradingViewWs();
+
+      // Gentle spread breather for open markets so spread moves naturally while bid stays 100% locked to TradingView lp
+      const breatherInterval = setInterval(() => {
+        let anyUpdated = false;
+        Object.entries(TV_LIVE_SYMBOLS).forEach(([sym, cfg]) => {
+          const raw = rawTvFields[sym];
+          if (!raw) return;
+          const isOpen = isServerInstrumentMarketOpen(sym, cfg.category);
+          if (!isOpen) return;
+          updateSymbolFromTv(sym, raw);
+          anyUpdated = true;
+        });
+        if (anyUpdated) {
+          scheduleBroadcast();
         }
+      }, 900);
+      breatherInterval.unref?.();
 
-        try {
-          const timeoutSignal = (ms: number) => AbortSignal.timeout(ms);
-          const t = Date.now();
+      // Real-time Server-Sent Events stream for zero-lag chart-to-button synchronization
+      server.middlewares.use('/api/market-stream', (req: any, res: any) => {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        res.write(`data: ${JSON.stringify({ timestamp: Date.now(), quotes: liveQuotes })}\n\n`);
+        sseClients.add(res);
+        req.on('close', () => {
+          sseClients.delete(res);
+        });
+      });
 
-          const [cfdRes, forexRes, stocksRes, cryptoRes, binanceRes] = await Promise.allSettled([
-            fetch(`https://scanner.tradingview.com/cfd/scan?t=${t}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-              signal: timeoutSignal(2500),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'OANDA:XAUUSD',
-                    'TVC:SILVER',
-                    'FX:USOIL',
-                    'FX:UKOIL',
-                    'OANDA:NATGASUSD',
-                    'OANDA:US30USD',
-                    'OANDA:DE30EUR',
-                    'SP:SPX',
-                    'TVC:IXIC',
-                    'COMEX:HG1!',
-                    'TVC:PLATINUM',
-                    'INDEX:FTSE',
-                    'INDEX:NKY',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-            fetch(`https://scanner.tradingview.com/forex/scan?t=${t}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-              signal: timeoutSignal(2500),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'FX:EURUSD',
-                    'FX:GBPUSD',
-                    'FX:USDJPY',
-                    'FX:USDCHF',
-                    'FX:AUDUSD',
-                    'FX:USDCAD',
-                    'FX:GBPJPY',
-                    'FX:NZDUSD',
-                    'FX:EURGBP',
-                    'FX:EURJPY',
-                    'FX:AUDJPY',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-            fetch(`https://scanner.tradingview.com/america/scan?t=${t}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-              signal: timeoutSignal(2500),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'NASDAQ:AAPL',
-                    'NASDAQ:TSLA',
-                    'NASDAQ:NVDA',
-                    'NASDAQ:MSFT',
-                    'NASDAQ:AMZN',
-                    'NASDAQ:GOOGL',
-                    'NASDAQ:META',
-                    'NASDAQ:AMD',
-                    'NASDAQ:NFLX',
-                    'NASDAQ:COIN',
-                    'NYSE:PLTR',
-                    'NYSE:BABA',
-                    'NASDAQ:MSTR',
-                    'NYSE:DIS',
-                    'NYSE:UBER',
-                    'NASDAQ:INTC',
-                    'NYSE:JPM',
-                    'NYSE:V',
-                    'NYSE:WMT',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-            fetch(`https://scanner.tradingview.com/crypto/scan?t=${t}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-              signal: timeoutSignal(2500),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'BINANCE:BTCUSDT',
-                    'BINANCE:ETHUSDT',
-                    'BINANCE:SOLUSDT',
-                    'BINANCE:XRPUSDT',
-                    'BINANCE:BNBUSDT',
-                    'BINANCE:DOGEUSDT',
-                    'BINANCE:ADAUSDT',
-                    'BINANCE:AVAXUSDT',
-                    'BINANCE:LINKUSDT',
-                    'BINANCE:DOTUSDT',
-                    'BINANCE:NEARUSDT',
-                    'BINANCE:SUIUSDT',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-            fetch(
-              'https://api.binance.com/api/v3/ticker/price?symbols=%5B%22BTCUSDT%22,%22ETHUSDT%22,%22SOLUSDT%22,%22XRPUSDT%22,%22BNBUSDT%22,%22DOGEUSDT%22,%22ADAUSDT%22,%22AVAXUSDT%22%5D',
-              { signal: timeoutSignal(2500) }
-            ).then((r) => r.json()),
-          ]);
-
-          const results: Record<string, any> = cachedData?.quotes ? { ...cachedData.quotes } : {};
-
-          // 1. Crypto from TradingView scanner
-          if (cryptoRes.status === 'fulfilled' && cryptoRes.value?.data) {
-            const cryptoMap: Record<string, { sym: string; dec: number }> = {
-              'BINANCE:BTCUSDT': { sym: 'BTCUSD', dec: 2 },
-              'BINANCE:ETHUSDT': { sym: 'ETHUSD', dec: 2 },
-              'BINANCE:SOLUSDT': { sym: 'SOLUSD', dec: 2 },
-              'BINANCE:XRPUSDT': { sym: 'XRPUSD', dec: 4 },
-              'BINANCE:BNBUSDT': { sym: 'BNBUSD', dec: 2 },
-              'BINANCE:DOGEUSDT': { sym: 'DOGEUSD', dec: 4 },
-              'BINANCE:ADAUSDT': { sym: 'ADAUSD', dec: 4 },
-              'BINANCE:AVAXUSDT': { sym: 'AVAXUSD', dec: 2 },
-              'BINANCE:LINKUSDT': { sym: 'LINKUSD', dec: 2 },
-              'BINANCE:DOTUSDT': { sym: 'DOTUSD', dec: 2 },
-              'BINANCE:NEARUSDT': { sym: 'NEARUSD', dec: 2 },
-              'BINANCE:SUIUSDT': { sym: 'SUIUSD', dec: 2 },
-            };
-            const cryptoSpreads: Record<string, number> = {
-              'BTCUSD': 0.58,
-              'ETHUSD': 0.35,
-              'SOLUSD': 0.24,
-              'XRPUSD': 0.32,
-              'BNBUSD': 0.28,
-              'DOGEUSD': 0.25,
-              'ADAUSD': 0.30,
-              'AVAXUSD': 0.26,
-              'LINKUSD': 0.22,
-              'DOTUSD': 0.24,
-              'NEARUSD': 0.22,
-              'SUIUSD': 0.25,
-            };
-            cryptoRes.value.data.forEach((row: any) => {
-              const conf = cryptoMap[row.s];
-              if (conf) {
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const decimals = conf.dec;
-                const baseSpr = cryptoSpreads[conf.sym] || 0.38;
-                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.26)).toFixed(2));
-                const priceDiff = decimals >= 4 ? dynamicSpread * 0.0001 : dynamicSpread;
-                const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + priceDiff).toFixed(decimals));
-                results[conf.sym] = {
-                  bid,
-                  ask,
-                  close: bid,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || close).toFixed(decimals)),
-                  low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: dynamicSpread,
-                };
-              }
-            });
-          }
-
-          // Binance live ticker for crypto (real-time price updates)
-          if (binanceRes.status === 'fulfilled' && Array.isArray(binanceRes.value)) {
-            binanceRes.value.forEach((item: any) => {
-              const price = parseFloat(item.price);
-              const sym = item.symbol.replace('USDT', 'USD');
-              if (price > 0) {
-                const dec = sym.includes('XRP') || sym.includes('DOGE') || sym.includes('ADA') ? 4 : 2;
-                const existing = results[sym];
-                const baseSpr = existing?.spread && existing.spread <= 1.2 ? existing.spread : 0.52;
-                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.22)).toFixed(2));
-                const priceDiff = dec >= 4 ? dynamicSpread * 0.0001 : dynamicSpread;
-                const bid = Number(price.toFixed(dec));
-                const ask = Number((bid + priceDiff).toFixed(dec));
-                results[sym] = {
-                  bid,
-                  ask,
-                  close: bid,
-                  change24h: existing?.change24h !== undefined ? existing.change24h : 0,
-                  high24h: existing?.high24h || Number((price * 1.01).toFixed(dec)),
-                  low24h: existing?.low24h || Number((price * 0.99).toFixed(dec)),
-                  spread: dynamicSpread,
-                };
-              }
-            });
-          }
-
-          // 2. CFDs, Metals, Commodities, and Indices from TradingView scanner
-          if (cfdRes.status === 'fulfilled' && cfdRes.value?.data) {
-            const cfdMap: Record<string, { sym: string; dec: number }> = {
-              'OANDA:XAUUSD': { sym: 'XAUUSD', dec: 3 },
-              'TVC:SILVER': { sym: 'XAGUSD', dec: 3 },
-              'FX:USOIL': { sym: 'USOIL', dec: 2 },
-              'FX:UKOIL': { sym: 'UKOIL', dec: 2 },
-              'OANDA:NATGASUSD': { sym: 'NGAS', dec: 3 },
-              'OANDA:US30USD': { sym: 'US30', dec: 2 },
-              'OANDA:DE30EUR': { sym: 'GER40', dec: 2 },
-              'SP:SPX': { sym: 'US500', dec: 2 },
-              'TVC:IXIC': { sym: 'NAS100', dec: 2 },
-              'COMEX:HG1!': { sym: 'COPPER', dec: 3 },
-              'TVC:PLATINUM': { sym: 'XPTUSD', dec: 2 },
-              'INDEX:FTSE': { sym: 'UK100', dec: 2 },
-              'INDEX:NKY': { sym: 'JPN225', dec: 2 },
-            };
-
-            const cfdSpreads: Record<string, number> = {
-              'XAUUSD': 0.49,
-              'XAGUSD': 0.25,
-              'USOIL': 0.32,
-              'UKOIL': 0.34,
-              'NGAS': 0.28,
-              'US30': 0.85,
-              'GER40': 0.72,
-              'US500': 0.45,
-              'NAS100': 0.78,
-              'COPPER': 0.30,
-              'XPTUSD': 0.65,
-              'UK100': 0.74,
-              'JPN225': 0.88,
-            };
-
-            const utcDay = new Date().getUTCDay();
-            const utcHour = new Date().getUTCHours();
-            const isCfdClosed =
-              utcDay === 6 ||
-              (utcDay === 0 && utcHour < 22) ||
-              (utcDay === 5 && utcHour >= 21) ||
-              (utcDay >= 1 && utcDay <= 4 && utcHour === 21);
-
-            cfdRes.value.data.forEach((row: any) => {
-              const conf = cfdMap[row.s];
-              if (conf) {
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const decimals = conf.dec;
-                const baseSpr = cfdSpreads[conf.sym] || 0.45;
-                const dynamicSpread = isCfdClosed
-                  ? Number(baseSpr.toFixed(2))
-                  : Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.24)).toFixed(2));
-                const priceDiff = decimals === 3 ? dynamicSpread * 0.01 : dynamicSpread;
-                const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + priceDiff).toFixed(decimals));
-
-                results[conf.sym] = {
-                  bid,
-                  ask,
-                  close: bid,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || close).toFixed(decimals)),
-                  low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: dynamicSpread,
-                };
-              }
-            });
-          }
-
-          // 3. Forex from TradingView scanner
-          if (forexRes.status === 'fulfilled' && forexRes.value?.data) {
-            const symMap: Record<string, string> = {
-              'FX:EURUSD': 'EURUSD',
-              'FX:GBPUSD': 'GBPUSD',
-              'FX:USDJPY': 'USDJPY',
-              'FX:USDCHF': 'USDCHF',
-              'FX:AUDUSD': 'AUDUSD',
-              'FX:USDCAD': 'USDCAD',
-              'FX:GBPJPY': 'GBPJPY',
-              'FX:NZDUSD': 'NZDUSD',
-              'FX:EURGBP': 'EURGBP',
-              'FX:EURJPY': 'EURJPY',
-              'FX:AUDJPY': 'AUDJPY',
-            };
-
-            const forexSpreads: Record<string, number> = {
-              'EURUSD': 0.00003, // 0.3 pips (3 points)
-              'GBPUSD': 0.00004, // 0.4 pips
-              'USDJPY': 0.005,   // 0.5 pips
-              'USDCHF': 0.00004,
-              'AUDUSD': 0.00003,
-              'USDCAD': 0.00004,
-              'GBPJPY': 0.008,
-              'NZDUSD': 0.00004,
-              'EURGBP': 0.00004,
-              'EURJPY': 0.006,
-              'AUDJPY': 0.006,
-            };
-
-            forexRes.value.data.forEach((row: any) => {
-              const sym = symMap[row.s];
-              if (sym) {
-                const isJpy = sym.includes('JPY');
-                const decimals = isJpy ? 3 : 5;
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const spread = forexSpreads[sym] || (isJpy ? 0.006 : 0.00004);
-                const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + spread).toFixed(decimals));
-                const pipMultiplier = isJpy ? 100 : 10000;
-                const finalSpread = Number((Math.abs(ask - bid) * pipMultiplier).toFixed(1));
-
-                results[sym] = {
-                  bid,
-                  ask,
-                  close: bid,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || close).toFixed(decimals)),
-                  low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: finalSpread > 0 ? finalSpread : 0.3,
-                };
-              }
-            });
-          }
-
-          // 4. US Stocks from TradingView scanner
-          if (stocksRes.status === 'fulfilled' && stocksRes.value?.data) {
-            const symMap: Record<string, string> = {
-              'NASDAQ:AAPL': 'AAPL',
-              'NASDAQ:TSLA': 'TSLA',
-              'NASDAQ:NVDA': 'NVDA',
-              'NASDAQ:MSFT': 'MSFT',
-              'NASDAQ:AMZN': 'AMZN',
-              'NASDAQ:GOOGL': 'GOOGL',
-              'NASDAQ:META': 'META',
-              'NASDAQ:AMD': 'AMD',
-              'NASDAQ:NFLX': 'NFLX',
-              'NASDAQ:COIN': 'COIN',
-              'NYSE:PLTR': 'PLTR',
-              'NYSE:BABA': 'BABA',
-              'NASDAQ:MSTR': 'MSTR',
-              'NYSE:DIS': 'DIS',
-              'NYSE:UBER': 'UBER',
-              'NASDAQ:INTC': 'INTC',
-              'NYSE:JPM': 'JPM',
-              'NYSE:V': 'V',
-              'NYSE:WMT': 'WMT',
-            };
-            stocksRes.value.data.forEach((row: any) => {
-              const sym = symMap[row.s];
-              if (sym) {
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const decimals = 2;
-                const spread = 0.04;
-                const bid = Number(close.toFixed(decimals));
-                const ask = Number((bid + spread).toFixed(decimals));
-                results[sym] = {
-                  bid,
-                  ask,
-                  close: bid,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || close).toFixed(decimals)),
-                  low24h: Number((row.d[5] || close).toFixed(decimals)),
-                  spread: 0.04,
-                };
-              }
-            });
-          }
-
-          // Fallback to high-speed Yahoo Finance chart API for any Forex, CFD, or Stock symbol not returned by scanner
-          const fallbackList = [
-            { sym: 'EURUSD', ticker: 'EURUSD=X', dec: 5, mult: 10000, spread: 0.00008 },
-            { sym: 'GBPUSD', ticker: 'GBPUSD=X', dec: 5, mult: 10000, spread: 0.00009 },
-            { sym: 'USDJPY', ticker: 'JPY=X', dec: 3, mult: 100, spread: 0.009 },
-            { sym: 'AUDUSD', ticker: 'AUDUSD=X', dec: 5, mult: 10000, spread: 0.00009 },
-            { sym: 'USDCAD', ticker: 'CAD=X', dec: 5, mult: 10000, spread: 0.00011 },
-            { sym: 'USDCHF', ticker: 'CHF=X', dec: 5, mult: 10000, spread: 0.00012 },
-            { sym: 'GBPJPY', ticker: 'GBPJPY=X', dec: 3, mult: 100, spread: 0.015 },
-            { sym: 'NZDUSD', ticker: 'NZDUSD=X', dec: 5, mult: 10000, spread: 0.00012 },
-            { sym: 'EURGBP', ticker: 'EURGBP=X', dec: 5, mult: 10000, spread: 0.0001 },
-            { sym: 'EURJPY', ticker: 'EURJPY=X', dec: 3, mult: 100, spread: 0.013 },
-            { sym: 'AUDJPY', ticker: 'AUDJPY=X', dec: 3, mult: 100, spread: 0.014 },
-            { sym: 'XAUUSD', ticker: 'GC=F', dec: 2, mult: 10, spread: 0.49 },
-            { sym: 'XAGUSD', ticker: 'SI=F', dec: 3, mult: 100, spread: 0.025 },
-            { sym: 'XPTUSD', ticker: 'PL=F', dec: 2, mult: 10, spread: 0.8 },
-            { sym: 'USOIL', ticker: 'CL=F', dec: 2, mult: 100, spread: 0.03 },
-            { sym: 'UKOIL', ticker: 'BZ=F', dec: 2, mult: 100, spread: 0.03 },
-            { sym: 'NGAS', ticker: 'NG=F', dec: 3, mult: 1000, spread: 0.005 },
-            { sym: 'US500', ticker: '%5EGSPC', dec: 2, mult: 10, spread: 0.45 },
-            { sym: 'NAS100', ticker: '%5EIXIC', dec: 2, mult: 1, spread: 1.2 },
-            { sym: 'US30', ticker: '%5EDJI', dec: 2, mult: 1, spread: 2.4 },
-            { sym: 'GER40', ticker: '%5EGDAXI', dec: 2, mult: 1, spread: 1.4 },
-            { sym: 'UK100', ticker: '%5EFTSE', dec: 2, mult: 1, spread: 1.5 },
-            { sym: 'JPN225', ticker: '%5EN225', dec: 2, mult: 1, spread: 5.0 },
-            { sym: 'COPPER', ticker: 'HG=F', dec: 3, mult: 1000, spread: 0.003 },
-            { sym: 'AAPL', ticker: 'AAPL', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'TSLA', ticker: 'TSLA', dec: 2, mult: 100, spread: 0.06 },
-            { sym: 'NVDA', ticker: 'NVDA', dec: 2, mult: 100, spread: 0.05 },
-            { sym: 'MSFT', ticker: 'MSFT', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'AMZN', ticker: 'AMZN', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'GOOGL', ticker: 'GOOGL', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'META', ticker: 'META', dec: 2, mult: 100, spread: 0.05 },
-            { sym: 'AMD', ticker: 'AMD', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'NFLX', ticker: 'NFLX', dec: 2, mult: 100, spread: 0.08 },
-            { sym: 'COIN', ticker: 'COIN', dec: 2, mult: 100, spread: 0.06 },
-            { sym: 'PLTR', ticker: 'PLTR', dec: 2, mult: 100, spread: 0.03 },
-            { sym: 'BABA', ticker: 'BABA', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'MSTR', ticker: 'MSTR', dec: 2, mult: 100, spread: 0.12 },
-            { sym: 'DIS', ticker: 'DIS', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'UBER', ticker: 'UBER', dec: 2, mult: 100, spread: 0.04 },
-            { sym: 'INTC', ticker: 'INTC', dec: 2, mult: 100, spread: 0.03 },
-            { sym: 'JPM', ticker: 'JPM', dec: 2, mult: 100, spread: 0.05 },
-            { sym: 'V', ticker: 'V', dec: 2, mult: 100, spread: 0.05 },
-            { sym: 'WMT', ticker: 'WMT', dec: 2, mult: 100, spread: 0.04 },
-          ];
-
-          const missingItems = fallbackList.filter((item) => !results[item.sym]);
-          if (missingItems.length > 0) {
-            await Promise.allSettled(
-              missingItems.map(async (item) => {
-                try {
-                  const yRes = await fetch(
-                    `https://query1.finance.yahoo.com/v8/finance/chart/${item.ticker}?interval=1m&range=1d`,
-                    {
-                      signal: timeoutSignal(2000),
-                      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                    }
-                  );
-                  if (yRes.ok) {
-                    const json = await yRes.json();
-                    const meta = json?.chart?.result?.[0]?.meta;
-                    if (meta && meta.regularMarketPrice) {
-                      const price = meta.regularMarketPrice;
-                      const prevClose = meta.chartPreviousClose || price;
-                      const change24h = Number((((price - prevClose) / prevClose) * 100).toFixed(2));
-                      const dec = item.dec;
-                      const spread = item.spread;
-                      const halfSpread = spread / 2;
-                      const bid = Number((price - halfSpread).toFixed(dec));
-                      const ask = Number((price + halfSpread).toFixed(dec));
-                      const spreadPips = Number((spread * item.mult).toFixed(1));
-                      results[item.sym] = {
-                        bid,
-                        ask,
-                        close: Number(price.toFixed(dec)),
-                        change24h,
-                        high24h: Number((meta.regularMarketDayHigh || price * 1.005).toFixed(dec)),
-                        low24h: Number((meta.regularMarketDayLow || price * 0.995).toFixed(dec)),
-                        spread: spreadPips > 0 ? spreadPips : 0.8,
-                      };
-                    }
-                  }
-                } catch (e) {
-                  // Ignore individual fetch failure
-                }
-              })
-            );
-          }
-
-          cachedData = { success: true, timestamp: now, quotes: results };
-          lastFetch = now;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify(cachedData));
-        } catch (err: any) {
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              success: false,
-              error: err?.message || 'Unknown error',
-              quotes: cachedData?.quotes || {},
-            })
-          );
-        }
+      // Instantaneous JSON snapshot endpoint served directly from live TradingView WebSocket memory
+      server.middlewares.use('/api/market-prices', (_req: any, res: any) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(
+          JSON.stringify({
+            success: true,
+            timestamp: Date.now(),
+            quotes: liveQuotes,
+          })
+        );
       });
 
       // ForexFactory Calendar API endpoint

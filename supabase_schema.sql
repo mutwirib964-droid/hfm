@@ -268,6 +268,7 @@ CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_email ON public.vtm_user_financ
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
   email VARCHAR(255) PRIMARY KEY,
+  uid UUID DEFAULT gen_random_uuid(),
   password_hash TEXT NOT NULL,
   name VARCHAR(255) NOT NULL,
   phone_number VARCHAR(64),
@@ -279,6 +280,8 @@ CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
   last_login_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS uid UUID DEFAULT gen_random_uuid();
 
 CREATE INDEX IF NOT EXISTS idx_vtm_registered_users_account_no ON public.vtm_registered_users(account_number);
 

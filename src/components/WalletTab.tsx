@@ -29,7 +29,6 @@ import {
   USD_KES_RATE,
   USD_KES_WITHDRAW_RATE,
   WELL_KNOWN_AFRICAN_BANKS,
-  HASHBACK_ACCOUNT_ID,
   hashbackService,
 } from '../services/hashbackService';
 
@@ -80,6 +79,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
   const liveAccounts = accounts.filter((a) => a.type === 'Live');
   const demoAccounts = accounts.filter((a) => a.type === 'Demo');
+  const totalLiveAccountsEquity = liveAccounts.reduce(
+    (sum, a) => sum + Number(a.equity ?? a.balance ?? 0),
+    0
+  );
+  const totalCombinedAvailableUsd = Number((walletBalance + totalLiveAccountsEquity).toFixed(2));
   const [, setSecretsVersion] = useState(0);
 
   useEffect(() => {
@@ -427,14 +431,23 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               </div>
             </div>
 
-            {/* Big Balance Number */}
+            {/* Big Balance Number (Combined Wallet + Live Accounts) */}
             <div className="mt-4">
               <span className="text-xs text-neutral-400 block font-medium">Available for Trading / Withdrawal</span>
               <div className="flex items-baseline gap-2 mt-1">
                 <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono tracking-tight">
-                  ${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  ${totalCombinedAvailableUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
                 <span className="text-xs text-neutral-400 font-bold">USD</span>
+              </div>
+              <div className="flex items-center gap-3 mt-1.5 text-[11px] font-mono text-neutral-400">
+                <span>
+                  Wallet: <strong className="text-neutral-200">${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  Live Accounts: <strong className="text-emerald-400">${totalLiveAccountsEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                </span>
               </div>
             </div>
 

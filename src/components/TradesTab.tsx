@@ -291,7 +291,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between px-1 mb-3">
                 <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                  Latest {Math.min(20, closedTrades.length)} Closed Trades (Stored in Supabase)
+                  Latest {Math.min(20, closedTrades.length)} Closed Trades
                 </span>
                 <button
                   onClick={() => setActiveSubTab('closed')}
@@ -411,11 +411,6 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           <div className="flex items-center justify-between px-1 mb-3">
             <span className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
               Showing Latest {Math.min(20, closedTrades.length)} Closed Trades
-            </span>
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${
-              isDarkMode ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-            }`}>
-              Synced with Cloud Database
             </span>
           </div>
           {closedTrades.length === 0 ? (

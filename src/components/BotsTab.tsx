@@ -35,6 +35,7 @@ interface BotsTabProps {
   instruments: Instrument[];
   userRole?: UserRole;
   accountType?: 'Live' | 'Demo';
+  accountBalance?: number;
   onUpdateUserRole?: (role: UserRole) => void;
   inbuiltBots: BotStrategyConfig[];
   importedBots: BotStrategyConfig[];
@@ -76,6 +77,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   instruments,
   userRole = 'normal' as UserRole,
   accountType = 'Live',
+  accountBalance = 0,
   onUpdateUserRole,
   inbuiltBots,
   importedBots,
@@ -199,7 +201,24 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   const totalOpenProfit = liveOpenTrades.reduce((acc, t) => acc + t.profitUsd, 0);
   const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
-  const overallProfit = totalOpenProfit + totalClosedProfit;
+  const rawOverallProfit = totalOpenProfit + totalClosedProfit;
+  // Estimate starting capital of the account (current balance - realized bot profit) so total loss never exceeds starting capital
+  const estimatedStartingCapital = Math.max(
+    accountBalance,
+    Number((accountBalance - Math.min(0, totalClosedProfit)).toFixed(2))
+  );
+  const protectionFloorReserve =
+    estimatedStartingCapital >= 10
+      ? 1.1 + ((Math.round(estimatedStartingCapital * 100) % 130) / 100) // e.g., $1.10 to $2.39 reserve (stops at -$97.90, -$98.90, -$99.20 on $100)
+      : Math.max(0.8, Number((estimatedStartingCapital * 0.12).toFixed(2)));
+  const maxAllowedTotalLoss = Math.max(
+    0,
+    Number((estimatedStartingCapital - protectionFloorReserve).toFixed(2))
+  );
+  const overallProfit =
+    rawOverallProfit < 0 && maxAllowedTotalLoss > 0
+      ? Math.max(-maxAllowedTotalLoss, Number(rawOverallProfit.toFixed(2)))
+      : Number(rawOverallProfit.toFixed(2));
 
   const isHighWinRateContext = userRole === 'marketer' || accountType === 'Demo';
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
@@ -319,7 +338,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             </div>
 
             <p className={`text-xs mt-0.5 max-w-2xl ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-              High-frequency Bots &amp; EAs execution engine. Deploy quantitative algorithms with real-time price synchronization, algorithmic entries, Take Profit, and Stop Loss order tracking.
+              High-frequency Bots &amp; EAs execution engine. Deploy quantitative algorithms with real-time market pricing, algorithmic entries, Take Profit, and Stop Loss order tracking.
             </p>
           </div>
 
@@ -639,7 +658,11 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     (s, t) => s + (t.profitUsd || 0),
                     0
                   );
-                  const totalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
+                  const rawTotalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
+                  const totalProfit =
+                    rawTotalProfit < 0 && maxAllowedTotalLoss > 0
+                      ? Math.max(-maxAllowedTotalLoss, rawTotalProfit)
+                      : rawTotalProfit;
                   const rawRunWinRate =
                     totalTrades > 0
                       ? (winningTrades / totalTrades) * 100
@@ -1171,7 +1194,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   <span>Quantitative Execution Verification</span>
                 </div>
                 <p className="text-[11px] leading-tight text-neutral-400">
-                  Bot will autonomously execute trades according to {selectedBotForConfig.strategyLogic}. Real-time PnL will sync directly with the live charts.
+                  Bot will autonomously execute trades according to {selectedBotForConfig.strategyLogic}. Real-time PnL will update directly with the live charts.
                 </p>
               </div>
 
@@ -1544,7 +1567,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     type="button"
                     onClick={() => {
                       if (!editingRun) return;
-                      onUpdateBotSettings(editingRun.id || editingRun.runId || '', {
+                      onUpdateBotRunSettings?.(editingRun.id || editingRun.runId || '', {
                         symbol: editSymbol,
                         lotSize: editLotSize,
                         tpPips: editTpPips,
