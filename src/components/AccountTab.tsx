@@ -53,6 +53,7 @@ interface AccountTabProps {
   userRole?: UserRole;
   onUpdateUserRole?: (role: UserRole) => void;
   currentUser?: UserAuthProfile | null;
+  onOpenAdminManager?: () => void;
   onSignOut?: () => void;
 }
 
@@ -68,6 +69,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   userRole = 'marketer',
   onUpdateUserRole,
   currentUser,
+  onOpenAdminManager,
   onSignOut,
 }) => {
   const [activeSubView, setActiveSubView] = useState<
@@ -441,9 +443,6 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                         </span>
                         <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                           #{acc.accountNumber}
-                        </span>
-                        <span className={`text-xs font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                          ({acc.tier})
                         </span>
                       </div>
 
@@ -987,28 +986,6 @@ export const AccountTab: React.FC<AccountTabProps> = ({
               )}
             </div>
 
-            {/* Account Tier */}
-            <div>
-              <label className={`font-semibold block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
-                Account Tier / Type
-              </label>
-              <select
-                value={newAccTier}
-                onChange={(e) => setNewAccTier(e.target.value as AccountTier)}
-                className={`w-full rounded-lg p-2.5 border transition-colors ${
-                  isDarkMode
-                    ? 'bg-neutral-900 border-neutral-700 text-white'
-                    : 'bg-white border-slate-300 text-slate-900'
-                }`}
-              >
-                <option value="Premium">VTM Premium (Zero Commission, Spreads from 1.2)</option>
-                <option value="Pro">VTM Pro (Raw Spreads from 0.5, Low Commission)</option>
-                <option value="Zero Spread">VTM Zero Spread (0.0 Spreads for Scalpers & EAs)</option>
-                <option value="Cent">VTM Cent (Micro Lots for Strategy Testing)</option>
-                <option value="HFcopy">VTM Copy Follower Account</option>
-              </select>
-            </div>
-
             {/* Leverage */}
             <div>
               <label className={`font-semibold block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
@@ -1036,194 +1013,6 @@ export const AccountTab: React.FC<AccountTabProps> = ({
             >
               Confirm & Open Account
             </button>
-          </div>
-        </div>
-      )}
-
-      {/* Discreet Admin Portal Entry (Restricted strictly to Platform Admin only) */}
-      {currentUser?.role === 'admin' && (
-        <div className="pt-6 pb-2 flex items-center justify-center">
-          <button
-            onClick={() => {
-              setAdminPinError('');
-              setShowAdminRoleModal(true);
-            }}
-            className="text-[10px] text-neutral-500 hover:text-neutral-400 flex items-center gap-1 transition-colors cursor-pointer"
-            title="Restricted Admin Control"
-          >
-            <Lock className="w-3 h-3" />
-            <span>Admin Role Desk</span>
-          </button>
-        </div>
-      )}
-
-      {/* Hidden Admin Role Assignment Modal */}
-      {showAdminRoleModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-fadeIn">
-          <div
-            className={`w-full max-w-md rounded-2xl border p-5 shadow-2xl relative ${
-              isDarkMode ? 'bg-[#181B22] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
-            }`}
-          >
-            <button
-              onClick={() => {
-                setShowAdminRoleModal(false);
-                setAdminPinInput('');
-                setAdminPinError('');
-              }}
-              className="absolute top-4 right-4 text-neutral-400 hover:text-white cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-3">
-              <div className="p-2 rounded-xl bg-red-600/20 text-[#E51937]">
-                <Lock className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold">Administrator Role Desk</h3>
-                <p className="text-[11px] text-neutral-400">Restricted assignment of client & staff roles</p>
-              </div>
-            </div>
-
-            {!isAdminUnlocked ? (
-              <div className="space-y-3 pt-2">
-                <p className="text-xs text-neutral-400">
-                  Enter Admin Security Passcode to access role assignments. Regular users cannot view or assign roles.
-                </p>
-                <div>
-                  <input
-                    type="password"
-                    placeholder="Enter Admin PIN (Default: 8842)"
-                    value={adminPinInput}
-                    onChange={(e) => {
-                      setAdminPinInput(e.target.value);
-                      setAdminPinError('');
-                    }}
-                    className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-neutral-700 text-white'
-                        : 'bg-slate-100 border-slate-300 text-slate-900'
-                    }`}
-                  />
-                  {adminPinError && (
-                    <span className="text-[11px] text-rose-400 font-semibold block mt-1">
-                      {adminPinError}
-                    </span>
-                  )}
-                </div>
-                <button
-                  onClick={() => {
-                    if (adminPinInput === '8842' || adminPinInput === 'admin' || adminPinInput === 'vtm8842') {
-                      setIsAdminUnlocked(true);
-                      setAdminPinError('');
-                    } else {
-                      setAdminPinError('Invalid Admin Passcode. Access denied.');
-                    }
-                  }}
-                  className="w-full py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer"
-                >
-                  Authorize Admin Session
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-4 pt-2">
-                <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  <span>Admin Session Verified: {selectedAccount?.accountNumber || currentUser?.accountNumber || 'Primary Session'}</span>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-neutral-300 mb-1.5">
-                    Select Role to Assign to Client Account:
-                  </label>
-                  <div className="space-y-2">
-                    {[
-                      {
-                        role: 'normal' as UserRole,
-                        title: 'Retail Client (Normal)',
-                        desc: 'Standard retail trading environment with default market volatility and standard bot risk.',
-                        disabled: false,
-                      },
-                      {
-                        role: 'admin' as UserRole,
-                        title: 'Platform Administrator / Staff',
-                        desc: 'Administrative control over trade routing, execution rules, and security policies.',
-                        disabled: false,
-                      },
-                      {
-                        role: 'marketer' as UserRole,
-                        title: 'Institutional Marketer (Locked - Super Admin Only)',
-                        desc: 'Direct affiliate partner status. Strictly cannot be assigned or self-assigned by clients. Guaranteed profitable trade execution.',
-                        disabled: currentUser?.role !== 'admin',
-                      },
-                    ].map((opt) => (
-                      <label
-                        key={opt.role}
-                        onClick={() => {
-                          if (opt.disabled) return;
-                          setAssignedRoleValue(opt.role);
-                        }}
-                        className={`p-3 rounded-xl border flex items-start gap-3 transition-all ${
-                          opt.disabled
-                            ? 'opacity-40 cursor-not-allowed bg-neutral-900/50 border-neutral-800'
-                            : assignedRoleValue === opt.role
-                            ? 'bg-[#E51937]/10 border-[#E51937] cursor-pointer'
-                            : isDarkMode
-                            ? 'bg-neutral-900 border-neutral-800 hover:border-neutral-700 cursor-pointer'
-                            : 'bg-slate-50 border-slate-200 hover:border-slate-300 cursor-pointer'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="assignedRole"
-                          disabled={opt.disabled}
-                          checked={assignedRoleValue === opt.role}
-                          onChange={() => {
-                            if (!opt.disabled) setAssignedRoleValue(opt.role);
-                          }}
-                          className="mt-0.5"
-                        />
-                        <div>
-                          <div className="text-xs font-bold text-white dark:text-white flex items-center gap-2">
-                            <span>{opt.title}</span>
-                            {opt.disabled && (
-                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 border border-neutral-700">
-                                Restricted
-                              </span>
-                            )}
-                            {userRole === opt.role && (
-                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-600 text-white">Current</span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-neutral-400 mt-0.5">{opt.desc}</div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    onClick={() => {
-                      if (onUpdateUserRole) {
-                        onUpdateUserRole(assignedRoleValue);
-                      }
-                      setShowAdminRoleModal(false);
-                    }}
-                    className="flex-1 py-2.5 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all cursor-pointer"
-                  >
-                    Assign & Save Role
-                  </button>
-                  <button
-                    onClick={() => setShowAdminRoleModal(false)}
-                    className="px-4 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       )}

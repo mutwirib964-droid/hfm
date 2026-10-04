@@ -490,7 +490,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 .filter((a) => a.type === 'Live')
                 .map((a) => (
                   <option key={a.id} value={`Account #${a.accountNumber}`}>
-                    Live Account #{a.accountNumber} ({a.tier} - Balance: ${a.balance.toFixed(2)})
+                    Live Account #{a.accountNumber} (Balance: ${a.balance.toFixed(2)})
                   </option>
                 ))}
             </select>

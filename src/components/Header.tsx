@@ -186,41 +186,33 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             id="account-selector-btn"
             onClick={() => setShowAccountMenu(!showAccountMenu)}
-            className={`w-full flex items-center justify-between gap-1 sm:gap-2 px-1.5 sm:px-3 py-1 sm:py-1.5 border rounded-lg sm:rounded-xl text-left transition-all active:scale-[0.98] min-w-0 overflow-hidden ${
+            className={`w-full flex items-center justify-between gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 sm:py-1.5 border rounded-lg sm:rounded-xl text-left transition-all active:scale-[0.98] min-w-0 cursor-pointer ${
               isDarkMode
                 ? 'bg-[#1A1D23] hover:bg-[#22262E] border-neutral-700/80 text-white'
                 : 'bg-slate-100 hover:bg-slate-200/90 border-slate-300 text-slate-900 shadow-xs'
             }`}
           >
-            <div className="flex flex-col min-w-0 leading-tight flex-1">
-              <div className="flex items-center gap-1">
-                <span
-                  className={`text-[8px] sm:text-[10px] font-black px-1 sm:px-1.5 py-0.5 rounded leading-none shrink-0 ${
-                    selectedAccount.type === 'Live'
-                      ? 'bg-[#E51937] text-white shadow-xs'
-                      : 'bg-amber-500 text-black font-extrabold'
-                  }`}
-                >
-                  {selectedAccount.type}
-                </span>
-                <span className="text-[10px] sm:text-xs font-bold font-mono tracking-tight truncate">
-                  #{selectedAccount.accountNumber}
-                </span>
-                <span className="text-[10px] text-neutral-400 hidden md:inline">
-                  ({selectedAccount.tier})
-                </span>
-              </div>
-              <div className="flex items-baseline gap-0.5 sm:gap-1 mt-0.5 truncate">
-                <span className="text-[11px] sm:text-sm font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400 truncate">
+            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+              <span
+                className={`text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded leading-none shrink-0 ${
+                  selectedAccount.type === 'Live'
+                    ? 'bg-[#E51937] text-white shadow-xs'
+                    : 'bg-amber-500 text-black font-extrabold'
+                }`}
+              >
+                {selectedAccount.type}
+              </span>
+              <div className="flex items-baseline gap-1 min-w-0 truncate">
+                <span className="text-xs sm:text-sm font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400 truncate">
                   ${selectedAccount.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
-                <span className="text-[8px] sm:text-[10px] text-neutral-400 font-sans font-semibold shrink-0">
+                <span className="text-[9px] sm:text-[10px] text-neutral-400 font-sans font-semibold shrink-0">
                   {selectedAccount.currency}
                 </span>
               </div>
             </div>
             <ChevronDown
-              className={`w-3 h-3 sm:w-4 sm:h-4 text-neutral-400 shrink-0 transition-transform duration-200 ${
+              className={`w-3.5 h-3.5 text-neutral-400 shrink-0 transition-transform duration-200 ${
                 showAccountMenu ? 'rotate-180' : ''
               }`}
             />
@@ -282,7 +274,6 @@ export const Header: React.FC<HeaderProps> = ({
                           {acc.type}
                         </span>
                         <span className="font-semibold">#{acc.accountNumber}</span>
-                        <span className="text-[10px] text-slate-500 dark:text-neutral-400">({acc.tier})</span>
                       </div>
                       {isSelected && <CheckCircle2 className="w-4 h-4 text-[#E51937]" />}
                     </div>
@@ -301,24 +292,6 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div className="mt-2 pt-2 border-t border-neutral-200 dark:border-neutral-700/50 space-y-1.5">
-              {onOpenAdminManager && currentUser?.role === 'admin' && (
-                <button
-                  id="btn-admin-manage-accounts"
-                  onClick={() => {
-                    setShowAccountMenu(false);
-                    onOpenAdminManager();
-                  }}
-                  className={`w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer border ${
-                    isDarkMode
-                      ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/30'
-                      : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border-amber-300'
-                  }`}
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Edit Wallet &amp; Accounts</span>
-                </button>
-              )}
-
               {selectedAccount?.type === 'Demo' && (
                 <button
                   id="reset-demo-balance-btn"

@@ -418,7 +418,7 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
               <div>
                 <span className="text-[10px] text-neutral-400 block">Copying from Account:</span>
                 <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                  {currentAccount ? `#${currentAccount.accountNumber} (${currentAccount.tier})` : 'No Active Account'}
+                  {currentAccount ? `${currentAccount.type} #${currentAccount.accountNumber}` : 'No Active Account'}
                 </span>
               </div>
               <span className="font-mono text-neutral-400">

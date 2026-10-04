@@ -72,6 +72,10 @@ import {
   logUserActivity,
   wipeAllPlatformUsersAndData,
   findRegisteredUser,
+  MASTER_ADMIN_EMAIL,
+  MASTER_ADMIN_UID,
+  isMasterAdminEmail,
+  isValidUserUid,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
 
@@ -115,7 +119,14 @@ export default function App() {
   // App Navigation & View Modes
   const [activeTab, setActiveTab] = useState<ActiveTab>('markets');
   const [isMobileFrame, setIsMobileFrame] = useState<boolean>(false);
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('vtm_theme_mode');
+      return saved ? saved === 'dark' : true;
+    } catch {
+      return true;
+    }
+  });
   const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState<boolean>(false);
   const [oneClickTrading, setOneClickTrading] = useState<boolean>(true);
   const [slippage, setSlippage] = useState<number>(0.5);
@@ -159,7 +170,7 @@ export default function App() {
   // Real-time Tick States for Green / Red Highlights: Map of symbol -> 'UP' | 'DOWN' | 'NEUTRAL'
   const [tickStates, setTickStates] = useState<Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>>({});
 
-  // User Authentication & Session - STRICT SECURITY: NEVER log in if account was never opened
+  // User Authentication & Session - STRICT SECURITY: NEVER log in without verified UID & Supabase registration
   const [currentUser, setCurrentUser] = useState<UserAuthProfile | null>(() => {
     try {
       const saved = localStorage.getItem('vtm_auth_user');
@@ -169,15 +180,36 @@ export default function App() {
         localStorage.removeItem('vtm_auth_user');
         return null;
       }
-      // Verify account actually exists in registered users registry
+
+      // Exclusive Master Admin check (mutwirib964@gmail.com -> UID 84a1e1db-f302-4dac-a077-291128ae0cea)
+      if (isMasterAdminEmail(parsed.email)) {
+        return {
+          ...parsed,
+          id: MASTER_ADMIN_UID,
+          email: MASTER_ADMIN_EMAIL,
+          name: 'mutwiri',
+          role: 'admin',
+          isLoggedIn: true,
+        };
+      }
+
+      // Verify account actually exists in registered users registry AND has a valid UID
       const registered = findRegisteredUser(parsed.email);
-      if (!registered) {
-        // User was never registered or platform was wiped to zero users - NEVER log in!
-        console.warn('[Security] Refused auto-login: user not found in registered accounts:', parsed.email);
+      const effectiveUid = registered?.id || parsed.id;
+      if (!registered || !isValidUserUid(effectiveUid)) {
+        console.warn('[Security] Refused auto-login: user missing verified UID or registration:', parsed.email);
         localStorage.removeItem('vtm_auth_user');
         return null;
       }
-      return registered;
+
+      // Strictly forbid any non-admin email from holding 'admin' role
+      const safeRole: UserRole = registered.role === 'marketer' ? 'marketer' : 'normal';
+      return {
+        ...registered,
+        id: effectiveUid,
+        role: safeRole,
+        isLoggedIn: true,
+      };
     } catch (e) {
       console.error('Failed to verify vtm_auth_user', e);
       localStorage.removeItem('vtm_auth_user');
@@ -185,55 +217,123 @@ export default function App() {
     }
   });
 
-  // Verify session and load complete synchronized data from Supabase database on mount
+  // Verify session with Supabase & poll for immediate Admin role/account edits
   useEffect(() => {
-    // Also ensure server Supabase configuration is loaded on mount
     supabaseService.initServerConfig().catch(() => {});
 
     if (!currentUser) return;
-    if (supabaseService.isConfigured()) {
-      supabaseService.findUserInDatabase(currentUser.email).then((remote) => {
-        if (!remote) {
-          const locallyRegistered = findRegisteredUser(currentUser.email);
-          if (!locallyRegistered) {
-            console.warn('[Security] User does not exist in Supabase database. Signing out immediately.');
-            localStorage.removeItem('vtm_auth_user');
-            setCurrentUser(null);
-            return;
-          }
-          // Self-heal: sync registered user to database
-          supabaseService.registerUserInDatabase(currentUser);
-        }
 
-        // 1. Fetch Remote Financials
-        supabaseService.fetchUserFinancials(currentUser).then((remoteFin) => {
-          if (remoteFin) {
-            setWalletBalance(remoteFin.walletBalance);
-            if (remoteFin.accounts && remoteFin.accounts.length > 0) {
-              setAccounts(remoteFin.accounts);
-              const sel =
-                remoteFin.accounts.find((a) => a.id === remoteFin.selectedAccountId) ||
-                remoteFin.accounts[0];
-              setSelectedAccount(sel);
-            }
-            if (remoteFin.transactions && remoteFin.transactions.length > 0) {
-              setTransactions(remoteFin.transactions);
-            }
-          }
+    // Master Admin does not use the market terminal; sync their confirmed UID to Supabase
+    if (isMasterAdminEmail(currentUser.email)) {
+      if (supabaseService.isConfigured()) {
+        supabaseService.registerUserInDatabase({
+          ...currentUser,
+          id: MASTER_ADMIN_UID,
+          role: 'admin',
         });
+      }
+      return;
+    }
 
-        // 2. Fetch Remote Trading Accounts
-        supabaseService.fetchTradingAccounts(currentUser).then((remoteAccs) => {
-          if (remoteAccs && remoteAccs.length > 0) {
-            setAccounts(remoteAccs);
+    // Strict UID check for non-admin users
+    if (!isValidUserUid(currentUser.id)) {
+      console.warn('[Security] Non-admin user has no valid UID. Signing out immediately.');
+      localStorage.removeItem('vtm_auth_user');
+      setCurrentUser(null);
+      return;
+    }
+
+    const syncUserWithSupabase = async (isInitialMount: boolean) => {
+      if (!supabaseService.isConfigured()) return;
+
+      const remote = await supabaseService.findUserInDatabase(currentUser.email);
+      if (!remote || !isValidUserUid(remote.profile?.id)) {
+        console.warn('[Security] User not saved in Supabase or missing UID in Supabase. Signing out immediately.');
+        localStorage.removeItem('vtm_auth_user');
+        setCurrentUser(null);
+        return;
+      }
+
+      // Immediately apply any Marketer/Normal role assignment made by Admin
+      const remoteRole: UserRole = remote.profile.role === 'marketer' ? 'marketer' : 'normal';
+      setUserRole((prevRole) => {
+        if (prevRole !== remoteRole) {
+          localStorage.setItem('vtm_user_role', remoteRole);
+        }
+        return remoteRole;
+      });
+      setCurrentUser((prevUser) => {
+        if (!prevUser) return null;
+        if (prevUser.role !== remoteRole || prevUser.id !== remote.profile.id) {
+          const updated = { ...prevUser, id: remote.profile.id, role: remoteRole };
+          localStorage.setItem('vtm_auth_user', JSON.stringify(updated));
+          return updated;
+        }
+        return prevUser;
+      });
+
+      // Immediately apply any Live Account or Wallet edits made by Admin in Supabase
+      // (while protecting any local trade/withdrawal/deposit made within the last 8 seconds from stale poll overwrites)
+      const remoteFin = await supabaseService.fetchUserFinancials(remote.profile);
+      if (remoteFin) {
+        const localFin = loadUserFinancials(remote.profile);
+        const isRecentLocalWrite = Date.now() - lastLocalFinancialUpdateRef.current < 8000;
+        const remoteIsNewer =
+          isInitialMount ||
+          (!isRecentLocalWrite && (remoteFin.lastUpdated || 0) > (localFin?.lastUpdated || 0) + 1000);
+
+        if (remoteIsNewer) {
+          // Preserve any local PENDING withdrawal that is still in its 3-second window
+          const localPendingWithdrawals = (transactionsRef.current || []).filter(
+            (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING' && Date.now() - t.timestamp < 5000
+          );
+          const mergedTransactions =
+            localPendingWithdrawals.length > 0
+              ? [
+                  ...localPendingWithdrawals,
+                  ...(remoteFin.transactions || []).filter(
+                    (rt) => !localPendingWithdrawals.some((lp) => lp.id === rt.id || lp.reference === rt.reference)
+                  ),
+                ]
+              : remoteFin.transactions || transactionsRef.current;
+
+          const stateToApply = {
+            ...remoteFin,
+            transactions: mergedTransactions,
+          };
+
+          saveUserFinancials(remote.profile, stateToApply);
+          walletBalanceRef.current = stateToApply.walletBalance;
+          setWalletBalance(stateToApply.walletBalance);
+
+          if (stateToApply.accounts) {
+            accountsRef.current = stateToApply.accounts;
+            setAccounts(stateToApply.accounts);
             setSelectedAccount((curr) => {
-              if (!curr) return remoteAccs[0];
-              return remoteAccs.find((a) => a.id === curr.id) || remoteAccs[0];
+              if (stateToApply.accounts.length === 0) {
+                selectedAccountRef.current = null;
+                return null;
+              }
+              const nextSel = !curr
+                ? stateToApply.accounts.find((a) => a.id === stateToApply.selectedAccountId) ||
+                  stateToApply.accounts[0]
+                : stateToApply.accounts.find((a) => a.id === curr.id || a.accountNumber === curr.accountNumber) ||
+                  stateToApply.accounts[0];
+              selectedAccountRef.current = nextSel;
+              return nextSel;
             });
           }
-        });
+          if (mergedTransactions && mergedTransactions.length > 0) {
+            transactionsRef.current = mergedTransactions;
+            setTransactions(mergedTransactions);
+          }
+        } else if (localFin && (localFin.lastUpdated || 0) > (remoteFin.lastUpdated || 0)) {
+          // Local state is newer (e.g. from a recent trade or withdrawal) - push it to Supabase
+          supabaseService.syncUserFinancials(remote.profile, localFin).catch(() => {});
+        }
+      }
 
-        // 3. Fetch Remote Trades (Positions, Pending Orders, Closed Trades)
+      if (isInitialMount) {
         supabaseService.fetchUserTrades(currentUser).then((remoteTrades) => {
           if (remoteTrades) {
             if (remoteTrades.positions.length > 0) setPositions(remoteTrades.positions);
@@ -242,7 +342,35 @@ export default function App() {
           }
         });
 
-        // 4. Fetch Remote User Settings & Preferences
+        supabaseService.fetchBotState(currentUser).then((remoteBots) => {
+          if (remoteBots) {
+            if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
+              setImportedBots(remoteBots.importedBots);
+              saveStoredImportedBots(remoteBots.importedBots);
+            }
+            if (Array.isArray(remoteBots.botRuns) && remoteBots.botRuns.length > 0) {
+              setBotRuns(remoteBots.botRuns);
+              saveStoredBotRuns(remoteBots.botRuns);
+            }
+            if (Array.isArray(remoteBots.botTrades) && remoteBots.botTrades.length > 0) {
+              setBotTrades(remoteBots.botTrades);
+              saveStoredBotTrades(remoteBots.botTrades);
+            }
+          }
+        });
+
+        supabaseService.fetchExtrasState(currentUser).then((remoteExtras) => {
+          if (remoteExtras) {
+            if (Array.isArray(remoteExtras.priceAlerts) && remoteExtras.priceAlerts.length > 0) {
+              setPriceAlerts(remoteExtras.priceAlerts);
+              savePriceAlerts(remoteExtras.priceAlerts);
+            }
+            if (Array.isArray(remoteExtras.followedStrategies) && remoteExtras.followedStrategies.length > 0) {
+              setFollowedStrategies(remoteExtras.followedStrategies);
+            }
+          }
+        });
+
         supabaseService.fetchUserSettings(currentUser).then((settings) => {
           if (settings) {
             setIsDarkMode(settings.isDarkMode);
@@ -255,11 +383,43 @@ export default function App() {
           }
         });
 
-        // 5. Update last login & active device in Supabase
         supabaseService.updateUserLastLoginInDatabase(currentUser.email);
         supabaseService.syncDevice(currentUser);
-      });
-    }
+      }
+    };
+
+    syncUserWithSupabase(true);
+
+    // Poll every 4 seconds so Admin edits to Marketer Role or Live Accounts take effect immediately
+    const pollInterval = setInterval(() => {
+      syncUserWithSupabase(false);
+    }, 4000);
+
+    // Also listen for localStorage updates in case Admin is open in another tab on the same browser
+    const handleStorageEvent = () => {
+      const updatedReg = findRegisteredUser(currentUser.email);
+      if (updatedReg) {
+        const nextRole: UserRole = updatedReg.role === 'marketer' ? 'marketer' : 'normal';
+        setUserRole(nextRole);
+        setCurrentUser((prev) => (prev ? { ...prev, role: nextRole } : null));
+      }
+      const localFin = loadUserFinancials(currentUser);
+      if (localFin) {
+        setWalletBalance(localFin.walletBalance);
+        setAccounts(localFin.accounts);
+        setSelectedAccount((curr) => {
+          if (localFin.accounts.length === 0) return null;
+          if (!curr) return localFin.accounts[0];
+          return localFin.accounts.find((a) => a.id === curr.id) || localFin.accounts[0];
+        });
+      }
+    };
+    window.addEventListener('storage', handleStorageEvent);
+
+    return () => {
+      clearInterval(pollInterval);
+      window.removeEventListener('storage', handleStorageEvent);
+    };
   }, [currentUser?.email]);
 
   // Admin Account & Wallet Management Modal
@@ -436,15 +596,41 @@ export default function App() {
   ]);
 
   const handleUserSignIn = (profile: UserAuthProfile) => {
-    setCurrentUser(profile);
+    const isMaster = isMasterAdminEmail(profile.email);
+    const verifiedProfile: UserAuthProfile = isMaster
+      ? {
+          ...profile,
+          id: MASTER_ADMIN_UID,
+          name: 'mutwiri',
+          role: 'admin',
+          isLoggedIn: true,
+        }
+      : {
+          ...profile,
+          role: profile.role === 'marketer' ? 'marketer' : 'normal',
+          isLoggedIn: true,
+        };
+
+    // Strict guard: Non-admin user without a valid UID is NEVER allowed to sign in
+    if (!isMaster && !isValidUserUid(verifiedProfile.id)) {
+      console.error('[Security] Blocked sign-in for user without verified UID:', verifiedProfile.email);
+      return;
+    }
+
+    setCurrentUser({ ...verifiedProfile, isNewRegistration: false });
     try {
-      localStorage.setItem('vtm_auth_user', JSON.stringify(profile));
+      localStorage.setItem('vtm_auth_user', JSON.stringify({ ...verifiedProfile, isNewRegistration: false }));
     } catch (e) {
       console.error('Failed to save vtm_auth_user', e);
     }
-    if (profile.role) {
-      setUserRole(profile.role);
-      localStorage.setItem('vtm_user_role', profile.role);
+    if (verifiedProfile.role) {
+      setUserRole(verifiedProfile.role);
+      localStorage.setItem('vtm_user_role', verifiedProfile.role);
+    }
+
+    // If Master Admin signs in, they go directly to the Exclusive Admin Control Center (never to the market side)
+    if (isMaster) {
+      return;
     }
 
     // Strict requirement: When an account opens or is logged in, no running trades, no active bots
@@ -508,14 +694,22 @@ export default function App() {
   };
 
   const handleUserSignOut = () => {
-    // Save current user financials before logging out
+    // Save current user financials (merging selectedAccount into accounts) before logging out
     if (currentUser) {
       logUserActivity(currentUser, 'LOGOUT', 'Trader signed out');
+      const currentSel = selectedAccountRef.current || selectedAccount;
+      const baseAccounts = accountsRef.current.length > 0 ? accountsRef.current : accounts;
+      const syncedAccounts = currentSel
+        ? baseAccounts.map((a) =>
+            a.id === currentSel.id || a.accountNumber === currentSel.accountNumber ? currentSel : a
+          )
+        : baseAccounts;
+
       saveUserFinancials(currentUser, {
-        walletBalance,
-        accounts,
-        selectedAccountId: selectedAccount?.id,
-        transactions,
+        walletBalance: walletBalanceRef.current ?? walletBalance,
+        accounts: syncedAccounts,
+        selectedAccountId: currentSel?.id,
+        transactions: transactionsRef.current ?? transactions,
       });
     }
     setCurrentUser(null);
@@ -528,10 +722,12 @@ export default function App() {
     });
   };
 
-  // Automated Trading Bots & Role Management (Default is normal client; users cannot self-assign marketer)
+  // Automated Trading Bots & Role Management (Default is normal client; non-admins can never have 'admin' role)
   const [userRole, setUserRole] = useState<UserRole>(() => {
+    if (currentUser && isMasterAdminEmail(currentUser.email)) return 'admin';
+    if (currentUser?.role === 'marketer') return 'marketer';
     const saved = localStorage.getItem('vtm_user_role') as UserRole;
-    return saved === 'marketer' || saved === 'admin' ? saved : 'normal';
+    return saved === 'marketer' ? 'marketer' : 'normal';
   });
   const [importedBots, setImportedBots] = useState<BotStrategyConfig[]>(() =>
     loadStoredImportedBots()
@@ -552,6 +748,101 @@ export default function App() {
   const userRoleRef = useRef<UserRole>(userRole);
   userRoleRef.current = userRole;
 
+  const accountsRef = useRef<TradingAccount[]>(accounts);
+  accountsRef.current = accounts;
+
+  const selectedAccountRef = useRef<TradingAccount | null>(selectedAccount);
+  selectedAccountRef.current = selectedAccount;
+
+  const walletBalanceRef = useRef<number>(walletBalance);
+  walletBalanceRef.current = walletBalance;
+
+  const transactionsRef = useRef<Transaction[]>(transactions);
+  transactionsRef.current = transactions;
+
+  const currentUserRef = useRef<UserAuthProfile | null>(currentUser);
+  currentUserRef.current = currentUser;
+
+  const positionsRef = useRef<Position[]>(positions);
+  positionsRef.current = positions;
+
+  const lastLocalFinancialUpdateRef = useRef<number>(0);
+  const closingPositionIdsRef = useRef<Set<string>>(new Set());
+
+  // Authoritative helper: updates account balance after any trade (manual or bot),
+  // keeps selectedAccount and accounts array 100% in sync, and persists immediately to localStorage & Supabase.
+  const commitAccountBalanceChange = useCallback(
+    (pnlDelta: number, targetAccountId?: string | null): TradingAccount | null => {
+      const currentSelected = selectedAccountRef.current;
+      const currentAccounts = accountsRef.current;
+      const targetId = targetAccountId || currentSelected?.id || currentAccounts[0]?.id;
+      if (!targetId && !currentSelected) return null;
+
+      let updatedTarget: TradingAccount | null = null;
+      const nextAccounts = currentAccounts.map((acc) => {
+        if (
+          acc.id === targetId ||
+          acc.accountNumber === targetId ||
+          (currentSelected && (acc.id === currentSelected.id || acc.accountNumber === currentSelected.accountNumber))
+        ) {
+          const newBal = Math.max(0, Number((acc.balance + pnlDelta).toFixed(2)));
+          const newEq = Math.max(0, Number(newBal.toFixed(2)));
+          const newFree = Math.max(0, Number((newEq - (acc.margin || 0)).toFixed(2)));
+          updatedTarget = {
+            ...acc,
+            balance: newBal,
+            equity: newEq,
+            freeMargin: newFree,
+          };
+          return updatedTarget;
+        }
+        return acc;
+      });
+
+      if (!updatedTarget && currentSelected) {
+        const newBal = Math.max(0, Number((currentSelected.balance + pnlDelta).toFixed(2)));
+        const newEq = Math.max(0, Number(newBal.toFixed(2)));
+        const newFree = Math.max(0, Number((newEq - (currentSelected.margin || 0)).toFixed(2)));
+        updatedTarget = {
+          ...currentSelected,
+          balance: newBal,
+          equity: newEq,
+          freeMargin: newFree,
+        };
+        nextAccounts.push(updatedTarget);
+      }
+
+      if (!updatedTarget) return null;
+
+      accountsRef.current = nextAccounts;
+      setAccounts(nextAccounts);
+
+      if (
+        !currentSelected ||
+        currentSelected.id === updatedTarget.id ||
+        currentSelected.accountNumber === updatedTarget.accountNumber
+      ) {
+        selectedAccountRef.current = updatedTarget;
+        setSelectedAccount(updatedTarget);
+      }
+
+      lastLocalFinancialUpdateRef.current = Date.now();
+
+      if (currentUserRef.current) {
+        saveUserFinancials(currentUserRef.current, {
+          walletBalance: walletBalanceRef.current,
+          accounts: nextAccounts,
+          selectedAccountId: selectedAccountRef.current?.id || updatedTarget.id,
+          transactions: transactionsRef.current,
+        });
+        supabaseService.syncTradingAccounts(currentUserRef.current, nextAccounts).catch(() => {});
+      }
+
+      return updatedTarget;
+    },
+    []
+  );
+
   // Synchronize dark mode class to document element for Tailwind CSS
   useEffect(() => {
     if (isDarkMode) {
@@ -560,6 +851,11 @@ export default function App() {
     } else {
       document.documentElement.classList.remove('dark');
       document.body.classList.remove('dark');
+    }
+    try {
+      localStorage.setItem('vtm_theme_mode', isDarkMode ? 'dark' : 'light');
+    } catch {
+      // ignore
     }
   }, [isDarkMode]);
 
@@ -580,305 +876,155 @@ export default function App() {
     let isMounted = true;
     let highlightTimeout: any = null;
 
-    // 1. Master sync: Fetch exact real prices from TradingView Scanner API
-    const fetchTradingViewFeed = async () => {
-      try {
-        const quotes = await tvService.fetchRealPrices();
-        if (!isMounted || quotes.size === 0) return;
+    // Core quote applicator - updates instruments, ticks, and chart candles instantaneously
+    const applyQuotes = (quotes: Map<string, TVQuote>) => {
+      if (!isMounted || quotes.size === 0) return;
 
-        quotes.forEach((q, sym) => {
-          realTVQuotesRef.current.set(sym, q);
-        });
+      quotes.forEach((q, sym) => {
+        realTVQuotesRef.current.set(sym, q);
+      });
 
-        setInstruments((prevInstruments) => {
-          const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
-          let hasPriceChanged = false;
-          const activeSym = selectedSymbolRef.current;
+      setInstruments((prevInstruments) => {
+        const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
+        let hasPriceChanged = false;
+        const activeSym = selectedSymbolRef.current;
 
-          const updated = prevInstruments.map((inst) => {
-            const quote = quotes.get(inst.symbol);
-            if (!quote) return inst;
+        const updated = prevInstruments.map((inst) => {
+          const quote = quotes.get(inst.symbol);
+          if (!quote) return inst;
 
-            // Strict Market Closed Check: if market is closed, update quote to TradingView official close but do not tick
-            const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-            if (!mStatus.isOpen) {
-              return {
-                ...inst,
-                bid: quote.bid,
-                ask: quote.ask,
-                spread: quote.spread > 0 ? quote.spread : inst.spread,
-                change24h: quote.change24h,
-                high24h: quote.high24h,
-                low24h: quote.low24h,
-              };
-            }
-
-            const oldBid = inst.bid;
-            const newBid = quote.bid;
-            const newAsk = quote.ask;
-
-            let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-            if (newBid > oldBid) {
-              direction = 'UP';
-              hasPriceChanged = true;
-            } else if (newBid < oldBid) {
-              direction = 'DOWN';
-              hasPriceChanged = true;
-            }
-            if (direction !== 'NEUTRAL') {
-              nextTickStates[inst.symbol] = direction;
-            }
-
-            // Immediately update chart candle when master TradingView feed updates active pair
-            // Guaranteed to never be above or below TradingView by more than 1.5 - 2 points
-            // Forms a new candle when selected timeframe interval elapses
-            if (inst.symbol === activeSym && (newBid !== oldBid || newAsk !== inst.ask)) {
-              const activeChartPrice = direction === 'UP' ? newAsk : newBid;
-              const now = Date.now();
-              const currentTf = timeframeRef.current || '15M';
-              const intervalMs = getTimeframeDurationMs(currentTf);
-
-              setCandles((prev) => {
-                if (prev.length === 0) return prev;
-                const last = prev[prev.length - 1];
-
-                // If time selected is over, form a brand new candle!
-                if (now >= last.time + intervalMs) {
-                  const newSlot = Math.floor(now / intervalMs) * intervalMs;
-                  const newCandle: Candle = {
-                    time: newSlot,
-                    open: last.close,
-                    high: Math.max(last.close, activeChartPrice),
-                    low: Math.min(last.close, activeChartPrice),
-                    close: activeChartPrice,
-                    volume: 1,
-                  };
-                  const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
-                  return [...trimmed, newCandle];
-                }
-
-                // Natural realistic candle wicks (like real TradingView candlesticks)
-                const bodyTop = Math.max(last.open, activeChartPrice);
-                const bodyBottom = Math.min(last.open, activeChartPrice);
-                const bodySize = bodyTop - bodyBottom;
-                const minStep = Math.pow(10, -inst.decimals);
-                const maxWick = Math.max(minStep * 2, bodySize * 0.25);
-
-                const safeHigh = Math.min(Math.max(last.high, activeChartPrice), bodyTop + maxWick);
-                const safeLow = Math.max(Math.min(last.low, activeChartPrice), bodyBottom - maxWick);
-
-                const updatedLast: Candle = {
-                  ...last,
-                  close: activeChartPrice,
-                  high: Number(safeHigh.toFixed(inst.decimals)),
-                  low: Number(safeLow.toFixed(inst.decimals)),
-                  volume: (last.volume || 1) + 1,
-                };
-                return [...prev.slice(0, prev.length - 1), updatedLast];
-              });
-            }
-
-            const sparkline = newBid !== oldBid
-              ? [...inst.sparkline.slice(1), newBid]
-              : inst.sparkline;
-
+          // Strict Market Closed Check: if market is closed, update quote to TradingView official close but do not tick
+          const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+          if (!mStatus.isOpen) {
             return {
               ...inst,
-              bid: newBid,
-              ask: newAsk,
+              bid: quote.bid,
+              ask: quote.ask,
               spread: quote.spread > 0 ? quote.spread : inst.spread,
               change24h: quote.change24h,
               high24h: quote.high24h,
               low24h: quote.low24h,
-              sparkline,
             };
-          });
-
-          if (hasPriceChanged) {
-            setTickStates((prev) => ({ ...prev, ...nextTickStates }));
-            if (highlightTimeout) clearTimeout(highlightTimeout);
-            highlightTimeout = setTimeout(() => {
-              if (isMounted) setTickStates({});
-            }, 700);
           }
 
-          return updated;
-        });
-      } catch (err) {
-        console.warn('TradingView sync notice:', err);
-      }
-    };
+          const oldBid = inst.bid;
+          const newBid = quote.bid;
+          const newAsk = quote.ask;
 
-    // 2. Continuous High-Frequency Micro-Tick Stream (Auction Flutter)
-    // Ensures buy/sell buttons, charts, and market lists tick dynamically like an institutional terminal
-    const runLiveMicroTicks = () => {
-      if (!isMounted) return;
-
-      setInstruments((prevInstruments) => {
-        const activeSym = selectedSymbolRef.current;
-        const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
-        let changed = false;
-
-        // Choose 3 to 6 other random open instruments to tick along with the active symbol
-        const candidates = prevInstruments.filter((i) => i.symbol !== activeSym);
-        const randomPicks = new Set<string>();
-        if (candidates.length > 0) {
-          const numPicks = Math.min(5, candidates.length);
-          for (let i = 0; i < numPicks; i++) {
-            const idx = Math.floor(Math.random() * candidates.length);
-            randomPicks.add(candidates[idx].symbol);
+          let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
+          if (newBid > oldBid) {
+            direction = 'UP';
+            hasPriceChanged = true;
+          } else if (newBid < oldBid) {
+            direction = 'DOWN';
+            hasPriceChanged = true;
           }
-        }
-
-        const updated = prevInstruments.map((inst) => {
-          // 1. Check if market is closed for this instrument:
-          // If closed: strictly FROZEN, no price movement underneath!
-          const marketStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-          if (!marketStatus.isOpen) {
-            return inst;
+          if (direction !== 'NEUTRAL') {
+            nextTickStates[inst.symbol] = direction;
           }
 
-          const isTarget = inst.symbol === activeSym || randomPicks.has(inst.symbol);
-          if (!isTarget) return inst;
+          // Immediately update chart candle when master TradingView feed updates active pair
+          if (inst.symbol === activeSym && (newBid !== oldBid || newAsk !== inst.ask)) {
+            const activeChartPrice = newBid;
+            const now = Date.now();
+            const currentTf = timeframeRef.current || '15M';
+            const intervalMs = getTimeframeDurationMs(currentTf);
 
-          // 2. Bound micro-tick fluctuations tightly to master TradingView anchor (within 1-2 pipettes)
-          const anchor = realTVQuotesRef.current.get(inst.symbol);
-          const baseBid = anchor ? anchor.bid : inst.bid;
-          const baseAsk = anchor ? anchor.ask : inst.ask;
-          const baseMid = (baseBid + baseAsk) / 2;
-          const currentMid = (inst.bid + inst.ask) / 2;
-          const drift = currentMid - baseMid;
+            setCandles((prev) => {
+              if (prev.length === 0) {
+                return generateCandles(activeChartPrice, currentTf, 75, inst.decimals);
+              }
+              const last = prev[prev.length - 1];
 
-          // Sub-pip micro tick step based on asset decimals
-          let step = 0.00001;
-          let maxDrift = 0.00003;
+              // If previous candles were seeded from initial static mock prices and differ from the live feed by >0.25%, rebase the chart candles around the real live price so the chart and Buy/Sell buttons match 1:1
+              if (last.open > 0 && Math.abs(activeChartPrice - last.open) / last.open > 0.0025) {
+                return generateCandles(activeChartPrice, currentTf, 75, inst.decimals);
+              }
 
-          if (inst.decimals >= 5) {
-            step = 0.00001;
-            maxDrift = 0.00003;
-          } else if (inst.decimals === 3) {
-            step = 0.001;
-            maxDrift = 0.003;
-          } else if (inst.decimals === 2) {
-            if (inst.symbol === 'XAUUSD') {
-              step = 0.02;
-              maxDrift = 0.08;
-            } else if (inst.symbol.includes('OIL')) {
-              step = 0.01;
-              maxDrift = 0.03;
-            } else {
-              step = 0.02;
-              maxDrift = 0.06;
-            }
-          } else {
-            step = 0.1;
-            maxDrift = 0.4;
-          }
-
-          let dir: 'UP' | 'DOWN';
-          if (drift >= maxDrift) {
-            dir = 'DOWN';
-          } else if (drift <= -maxDrift) {
-            dir = 'UP';
-          } else {
-            dir = Math.random() > 0.49 ? 'UP' : 'DOWN';
-          }
-
-          const multiplier = inst.pipMultiplier || (inst.decimals >= 4 ? 10000 : inst.decimals === 3 ? 100 : 10);
-          // Actual price spread (in dollars/currency)
-          const currentSpreadPrice = Math.abs(inst.ask - inst.bid);
-          const anchorSpreadPrice = anchor ? Math.abs(anchor.ask - anchor.bid) : 0;
-          const priceSpread = anchorSpreadPrice > 0 ? anchorSpreadPrice : (currentSpreadPrice > 0 ? currentSpreadPrice : Math.pow(10, -inst.decimals) * 3);
-          const halfSpread = priceSpread / 2;
-
-          const newMid = dir === 'UP' ? currentMid + step : currentMid - step;
-          const newBid = Number((newMid - halfSpread).toFixed(inst.decimals));
-          const newAsk = Number((newMid + halfSpread).toFixed(inst.decimals));
-          const liveSpreadPips = Number((Math.abs(newAsk - newBid) * multiplier).toFixed(1));
-
-          if (newBid !== inst.bid) {
-            changed = true;
-            nextTickStates[inst.symbol] = dir;
-
-            // When active trading symbol ticks, immediately update chart candle and form new candle when timeframe elapses
-            if (inst.symbol === activeSym) {
-              const exactChartPrice = dir === 'UP' ? newAsk : newBid;
-              const now = Date.now();
-              const currentTf = timeframeRef.current || '15M';
-              const intervalMs = getTimeframeDurationMs(currentTf);
-
-              setCandles((prev) => {
-                if (prev.length === 0) return prev;
-                const last = prev[prev.length - 1];
-
-                // If timeframe period is over, form a brand new candle!
-                if (now >= last.time + intervalMs) {
-                  const newSlot = Math.floor(now / intervalMs) * intervalMs;
-                  const newCandle: Candle = {
-                    time: newSlot,
-                    open: last.close,
-                    high: Math.max(last.close, exactChartPrice),
-                    low: Math.min(last.close, exactChartPrice),
-                    close: exactChartPrice,
-                    volume: 1,
-                  };
-                  const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
-                  return [...trimmed, newCandle];
-                }
-
-                // Natural realistic candle wicks (like real TradingView candlesticks)
-                const bodyTop = Math.max(last.open, exactChartPrice);
-                const bodyBottom = Math.min(last.open, exactChartPrice);
-                const bodySize = bodyTop - bodyBottom;
-                const minStep = Math.pow(10, -inst.decimals);
-                const maxWick = Math.max(minStep * 2, bodySize * 0.25);
-
-                const safeHigh = Math.max(bodyTop, Math.min(Math.max(last.high, exactChartPrice), bodyTop + maxWick));
-                const safeLow = Math.min(bodyBottom, Math.max(Math.min(last.low, exactChartPrice), bodyBottom - maxWick));
-
-                const lastUpdated: Candle = {
-                  ...last,
-                  close: exactChartPrice,
-                  high: Number(safeHigh.toFixed(inst.decimals)),
-                  low: Number(safeLow.toFixed(inst.decimals)),
-                  volume: (last.volume || 1) + 1,
+              // If time selected is over, form a brand new candle!
+              if (now >= last.time + intervalMs) {
+                const newSlot = Math.floor(now / intervalMs) * intervalMs;
+                const newCandle: Candle = {
+                  time: newSlot,
+                  open: last.close,
+                  high: Math.max(last.close, activeChartPrice),
+                  low: Math.min(last.close, activeChartPrice),
+                  close: activeChartPrice,
+                  volume: 1,
                 };
-                return [...prev.slice(0, prev.length - 1), lastUpdated];
-              });
-            }
+                const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
+                return [...trimmed, newCandle];
+              }
+
+              // Natural realistic candle wicks (like real TradingView candlesticks)
+              const bodyTop = Math.max(last.open, activeChartPrice);
+              const bodyBottom = Math.min(last.open, activeChartPrice);
+              const bodySize = bodyTop - bodyBottom;
+              const minStep = Math.pow(10, -inst.decimals);
+              const maxWick = Math.max(minStep * 2, bodySize * 0.25);
+
+              const safeHigh = Math.max(bodyTop, Math.min(Math.max(last.high, activeChartPrice), bodyTop + maxWick));
+              const safeLow = Math.min(bodyBottom, Math.max(Math.min(last.low, activeChartPrice), bodyBottom - maxWick));
+
+              const updatedLast: Candle = {
+                ...last,
+                close: activeChartPrice,
+                high: Number(safeHigh.toFixed(inst.decimals)),
+                low: Number(safeLow.toFixed(inst.decimals)),
+                volume: (last.volume || 1) + 1,
+              };
+              return [...prev.slice(0, prev.length - 1), updatedLast];
+            });
           }
 
-          const sparkline = newBid !== inst.bid ? [...inst.sparkline.slice(1), newBid] : inst.sparkline;
+          const sparkline = newBid !== oldBid
+            ? [...inst.sparkline.slice(1), newBid]
+            : inst.sparkline;
 
           return {
             ...inst,
             bid: newBid,
             ask: newAsk,
-            spread: liveSpreadPips > 0 ? liveSpreadPips : inst.spread,
+            spread: quote.spread > 0 ? quote.spread : inst.spread,
+            change24h: quote.change24h,
+            high24h: quote.high24h,
+            low24h: quote.low24h,
             sparkline,
           };
         });
 
-        if (changed) {
+        if (hasPriceChanged) {
           setTickStates((prev) => ({ ...prev, ...nextTickStates }));
           if (highlightTimeout) clearTimeout(highlightTimeout);
           highlightTimeout = setTimeout(() => {
             if (isMounted) setTickStates({});
-          }, 900);
+          }, 800);
         }
 
         return updated;
       });
     };
 
+    // 1. Subscribe to immediate real-time WebSocket ticks
+    const unsubscribeWs = tvService.subscribe((quotes) => {
+      applyQuotes(quotes);
+    });
+
+    // 2. High-speed poll from TradingView Scanner API every 500ms
+    const fetchTradingViewFeed = async () => {
+      try {
+        const quotes = await tvService.fetchRealPrices();
+        applyQuotes(quotes);
+      } catch (err) {
+        console.warn('TradingView sync notice:', err);
+      }
+    };
+
     // Initial immediate fetch
     fetchTradingViewFeed();
 
-    // Fast master anchor poll every 1200ms
-    const tvInterval = setInterval(fetchTradingViewFeed, 1200);
-
-    // High-frequency micro-ticks every 420ms for smooth live movement
-    const tickInterval = setInterval(runLiveMicroTicks, 420);
+    // Fast master live feed from TradingView - runs directly so all platform prices and movements match TradingView 1:1
+    const tvInterval = setInterval(fetchTradingViewFeed, 500);
 
     // Dedicated timeframe monitor - ensures new candle forms precisely when timeframe period expires
     const candleCheckInterval = setInterval(() => {
@@ -916,8 +1062,8 @@ export default function App() {
 
     return () => {
       isMounted = false;
+      unsubscribeWs();
       clearInterval(tvInterval);
-      clearInterval(tickInterval);
       clearInterval(candleCheckInterval);
       if (highlightTimeout) clearTimeout(highlightTimeout);
     };
@@ -927,7 +1073,9 @@ export default function App() {
   useEffect(() => {
     const currentInstMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
 
-    // Recalculate floating P&L
+    // Recalculate floating P&L and collect any positions that hit SL / TP
+    const triggeredClosures: Array<{ id: string; reason: 'TP' | 'SL'; price: number }> = [];
+
     setPositions((prev) =>
       prev.map((pos) => {
         const inst = currentInstMap.get(pos.symbol);
@@ -955,13 +1103,17 @@ export default function App() {
           ((pos.side === 'BUY' && currentPrice >= pos.tp) ||
             (pos.side === 'SELL' && currentPrice <= pos.tp))
         ) {
-          closePositionById(pos.id, 'TP', currentPrice);
+          triggeredClosures.push({ id: pos.id, reason: 'TP', price: currentPrice });
         } else if (
           pos.sl &&
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl))
         ) {
-          closePositionById(pos.id, userRole === 'marketer' ? 'TP' : 'SL', currentPrice);
+          triggeredClosures.push({
+            id: pos.id,
+            reason: userRole === 'marketer' ? 'TP' : 'SL',
+            price: currentPrice,
+          });
         }
 
         return {
@@ -971,6 +1123,12 @@ export default function App() {
         };
       })
     );
+
+    if (triggeredClosures.length > 0) {
+      triggeredClosures.forEach((tc) => {
+        closePositionById(tc.id, tc.reason, tc.price);
+      });
+    }
 
     // Recalculate floating P&L on bot open trades to match instruments in real-time
     setBotTrades((prevBotTrades) => {
@@ -999,16 +1157,7 @@ export default function App() {
     if (activeInst) {
       const marketStatus = checkInstrumentMarketHours(activeInst.symbol, activeInst.category);
       if (marketStatus.isOpen) {
-        const dir = tickStates[selectedSymbol] || 'NEUTRAL';
-        let executionPrice: number;
-        if (dir === 'UP') {
-          executionPrice = activeInst.ask; // Matches BUY button price exactly
-        } else if (dir === 'DOWN') {
-          executionPrice = activeInst.bid; // Matches SELL button price exactly
-        } else {
-          executionPrice = activeInst.bid;
-        }
-
+        const executionPrice = activeInst.bid;
         const now = Date.now();
         const currentTf = timeframeRef.current || '15M';
         const intervalMs = getTimeframeDurationMs(currentTf);
@@ -1016,6 +1165,10 @@ export default function App() {
         setCandles((prevCandles) => {
           if (prevCandles.length === 0) return prevCandles;
           const last = prevCandles[prevCandles.length - 1];
+
+          if (last.open > 0 && Math.abs(executionPrice - last.open) / last.open > 0.0025) {
+            return generateCandles(executionPrice, currentTf, 75, activeInst.decimals);
+          }
 
           // If time selected is over, form a brand new candle!
           if (now >= last.time + intervalMs) {
@@ -1146,6 +1299,7 @@ export default function App() {
   // Zero-balance safety mechanism: account NEVER goes negative; closes all open trades & bots immediately
   const handleZeroBalanceStopOut = () => {
     // 1. Immediately liquidate all manual open positions
+    positionsRef.current = [];
     setPositions([]);
 
     // 2. Immediately stop all active algorithmic bots
@@ -1162,23 +1316,39 @@ export default function App() {
       return closed;
     });
 
-    // 4. Force clamp account to 0 (never negative)
-    setSelectedAccount((acc) => (!acc ? null : {
-      ...acc,
-      balance: 0,
-      equity: 0,
-      margin: 0,
-      freeMargin: 0,
-      marginLevel: 0,
-    }));
-
-    setAccounts((prev) =>
-      prev.map((a) =>
-        a.id === selectedAccount?.id
-          ? { ...a, balance: 0, equity: 0, margin: 0, freeMargin: 0, marginLevel: 0 }
-          : a
-      )
+    // 4. Force clamp account to 0 (never negative) and persist to localStorage & Supabase
+    const targetId = selectedAccountRef.current?.id || selectedAccount?.id;
+    const nextAccounts = accountsRef.current.map((a) =>
+      a.id === targetId
+        ? { ...a, balance: 0, equity: 0, margin: 0, freeMargin: 0, marginLevel: 0 }
+        : a
     );
+    accountsRef.current = nextAccounts;
+    setAccounts(nextAccounts);
+
+    setSelectedAccount((acc) => {
+      if (!acc) return null;
+      const zeroed = {
+        ...acc,
+        balance: 0,
+        equity: 0,
+        margin: 0,
+        freeMargin: 0,
+        marginLevel: 0,
+      };
+      selectedAccountRef.current = zeroed;
+      return zeroed;
+    });
+
+    lastLocalFinancialUpdateRef.current = Date.now();
+    if (currentUserRef.current) {
+      saveUserFinancials(currentUserRef.current, {
+        walletBalance: walletBalanceRef.current,
+        accounts: nextAccounts,
+        selectedAccountId: targetId,
+        transactions: transactionsRef.current,
+      });
+    }
 
     playOrderSound(false);
     addNotification('Balance reached zero: all open trades and bots closed immediately.');
@@ -1191,11 +1361,16 @@ export default function App() {
   // Recalculate Account Equity & Margins + Zero Balance Protection
   useEffect(() => {
     if (!selectedAccount) return;
-    const totalPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+    const manualPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+    const openBotPnl = botTrades
+      .filter((bt) => bt.status === 'OPEN')
+      .reduce((acc, bt) => acc + (bt.profitUsd || 0), 0);
+    const totalPnl = manualPnl + openBotPnl;
+
     const totalMargin = positions.reduce((acc, p) => {
       const inst = instruments.find((i) => i.symbol === p.symbol);
       const contractSize = inst?.category === 'Forex' ? 100000 : 100;
-      const lev = parseInt(selectedAccount.leverage?.split(':')[1] || '500', 10);
+      const lev = parseInt(selectedAccount.leverage?.split(':')[1] || '500', 10) || 500;
       return acc + (p.lots * contractSize * (inst?.bid || 1)) / lev;
     }, 0);
 
@@ -1208,17 +1383,40 @@ export default function App() {
     }
 
     const newEquity = Math.max(0, calculatedEquity);
-    const freeMargin = Number(Math.max(0, newEquity - totalMargin).toFixed(2));
-    const marginLevel = totalMargin > 0 ? Number(((newEquity / totalMargin) * 100).toFixed(1)) : 0;
+    const roundedMargin = Number(totalMargin.toFixed(2));
+    const freeMargin = Number(Math.max(0, newEquity - roundedMargin).toFixed(2));
+    const marginLevel = roundedMargin > 0 ? Number(((newEquity / roundedMargin) * 100).toFixed(1)) : 0;
 
-    setSelectedAccount((prev) => (!prev ? null : ({
-      ...prev,
-      equity: newEquity,
-      margin: Number(totalMargin.toFixed(2)),
-      freeMargin,
-      marginLevel,
-    })));
-  }, [positions, instruments, selectedAccount?.balance, selectedAccount?.leverage]);
+    setSelectedAccount((prev) => {
+      if (!prev) return null;
+      const updated = {
+        ...prev,
+        equity: newEquity,
+        margin: roundedMargin,
+        freeMargin,
+        marginLevel,
+      };
+      selectedAccountRef.current = updated;
+      return updated;
+    });
+
+    setAccounts((prev) => {
+      const next = prev.map((a) =>
+        a.id === selectedAccount.id
+          ? {
+              ...a,
+              balance: selectedAccount.balance,
+              equity: newEquity,
+              margin: roundedMargin,
+              freeMargin,
+              marginLevel,
+            }
+          : a
+      );
+      accountsRef.current = next;
+      return next;
+    });
+  }, [positions, botTrades, instruments, selectedAccount?.balance, selectedAccount?.leverage]);
 
   // Helper to add notification with guaranteed unique key
   const addNotification = (title: string) => {
@@ -1432,10 +1630,12 @@ export default function App() {
     reason: 'MANUAL' | 'TP' | 'SL' = 'MANUAL',
     customClosePrice?: number
   ) => {
-    const pos = positions.find((p) => p.id === id);
+    if (closingPositionIdsRef.current.has(id)) return;
+    const pos = positionsRef.current.find((p) => p.id === id) || positions.find((p) => p.id === id);
     if (!pos) return;
+    closingPositionIdsRef.current.add(id);
 
-    const inst = instruments.find((i) => i.symbol === pos.symbol);
+    const inst = instrumentsRef.current.find((i) => i.symbol === pos.symbol);
     const closePrice =
       customClosePrice ||
       (pos.side === 'BUY'
@@ -1443,10 +1643,16 @@ export default function App() {
         : inst?.ask || pos.currentPrice);
 
     let finalClosePrice = closePrice;
-    let finalPnl = pos.pnl;
+    const contractSize = inst?.category === 'Forex' ? 100000 : 100;
+    const priceDiff =
+      pos.side === 'BUY'
+        ? finalClosePrice - pos.openPrice
+        : pos.openPrice - finalClosePrice;
+    const calculatedPnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+    let finalPnl = customClosePrice !== undefined ? calculatedPnl : pos.pnl ?? calculatedPnl;
 
     // For Marketers: Ensure their trades will ALWAYS end up on profits!
-    if (userRole === 'marketer') {
+    if (userRoleRef.current === 'marketer') {
       if (finalPnl <= 0) {
         finalPnl = Math.max(28.5, Number((pos.lots * 65.0 + 18.5).toFixed(2)));
         const favorableOffset = 0.0035;
@@ -1456,8 +1662,10 @@ export default function App() {
       }
     }
 
+    finalPnl = Number(finalPnl.toFixed(2));
+
     const closed: ClosedTrade = {
-      id: `cl-${Date.now()}`,
+      id: `cl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       ticket: pos.ticket,
       symbol: pos.symbol,
       side: pos.side,
@@ -1467,18 +1675,26 @@ export default function App() {
       pnl: finalPnl,
       openTime: pos.openTime,
       closeTime: Date.now(),
-      reason: userRole === 'marketer' && finalPnl > 0 && reason === 'SL' ? 'TP' : reason,
+      reason: userRoleRef.current === 'marketer' && finalPnl > 0 && reason === 'SL' ? 'TP' : reason,
     };
 
+    const nextPositions = positionsRef.current.filter((p) => p.id !== id);
+    positionsRef.current = nextPositions;
+    setPositions(nextPositions);
     setClosedTrades((prev) => [closed, ...prev]);
-    setPositions((prev) => prev.filter((p) => p.id !== id));
+
+    // Immediately update account balance in BOTH selectedAccount and accounts array, and persist to localStorage & Supabase!
+    const updatedAcc = commitAccountBalanceChange(finalPnl, selectedAccountRef.current?.id);
+    if (updatedAcc && updatedAcc.balance <= 0) {
+      setTimeout(handleZeroBalanceStopOut, 0);
+    }
 
     // Save closed trade to Supabase cloud database
-    if (currentUser) {
-      supabaseService.saveTrade(currentUser, {
+    if (currentUserRef.current) {
+      supabaseService.saveTrade(currentUserRef.current, {
         id: closed.id,
         ticket: closed.ticket,
-        accountNumber: selectedAccount?.accountNumber,
+        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
         symbol: closed.symbol,
         side: closed.side,
         orderType: 'MARKET',
@@ -1494,29 +1710,21 @@ export default function App() {
         closeTime: closed.closeTime,
         closeReason: closed.reason,
       });
-      supabaseService.syncActivity(currentUser, {
+      supabaseService.syncActivity(currentUserRef.current, {
         type: 'TRADE_CLOSED',
-        description: `Closed #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)})`,
-        metadata: { ticket: closed.ticket, symbol: closed.symbol, pnl: closed.pnl },
+        description: `Closed #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)}) • New Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`,
+        metadata: {
+          ticket: closed.ticket,
+          symbol: closed.symbol,
+          pnl: closed.pnl,
+          newBalance: updatedAcc?.balance ?? 0,
+        },
       });
     }
 
-    // Update balance - NEVER let balance go negative!
-    setSelectedAccount((acc) => {
-      if (!acc) return null;
-      const newBal = Math.max(0, Number((acc.balance + finalPnl).toFixed(2)));
-      if (newBal <= 0) {
-        setTimeout(handleZeroBalanceStopOut, 0);
-      }
-      return {
-        ...acc,
-        balance: newBal,
-      };
-    });
-
     playOrderSound(finalPnl >= 0);
     addNotification(
-      `Closed #${pos.ticket} ${pos.symbol} (${finalPnl >= 0 ? '+' : ''}$${finalPnl.toFixed(2)})`
+      `Closed #${pos.ticket} ${pos.symbol} (${finalPnl >= 0 ? '+' : ''}$${finalPnl.toFixed(2)}) • Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`
     );
 
     triggerActionPopup({
@@ -1529,7 +1737,7 @@ export default function App() {
         ticket: pos.ticket,
         price: finalClosePrice,
         pnl: finalPnl,
-        accountNumber: selectedAccount?.accountNumber,
+        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
       },
     });
   };
@@ -1695,19 +1903,24 @@ export default function App() {
     }
 
     const ref = params.reference || `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    const amountUsd = Number(params.amount.toFixed(2));
     const newTx: Transaction = {
-      id: `tx-${Date.now()}`,
+      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       type: 'DEPOSIT',
       method: params.method,
-      amount: params.amount,
+      amount: amountUsd,
       currency: 'USD',
       status: 'COMPLETED',
       timestamp: Date.now(),
       reference: ref,
+      accountNumber: params.targetAccount,
       details: `Funded to ${params.targetAccount}`,
     };
 
-    setTransactions((prev) => [newTx, ...prev]);
+    const nextTransactions = [newTx, ...transactionsRef.current];
+    transactionsRef.current = nextTransactions;
+    setTransactions(nextTransactions);
+    lastLocalFinancialUpdateRef.current = Date.now();
 
     if (
       params.targetAccount === 'HF Wallet' ||
@@ -1715,69 +1928,76 @@ export default function App() {
       params.targetAccount === 'VTM One Wallet' ||
       params.targetAccount.toLowerCase().includes('wallet')
     ) {
-      const nextWallet = walletBalance + params.amount;
+      const nextWallet = Number((walletBalanceRef.current + amountUsd).toFixed(2));
+      walletBalanceRef.current = nextWallet;
       setWalletBalance(nextWallet);
       if (currentUser) {
         saveUserFinancials(currentUser, {
           walletBalance: nextWallet,
-          accounts,
-          selectedAccountId: selectedAccount?.id,
-          transactions: [newTx, ...transactions],
+          accounts: accountsRef.current,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTransactions,
         });
       }
     } else {
-      const nextAccounts = accounts.map((acc) =>
+      const cleanTarget = params.targetAccount.replace(/^Account\s*#/i, '').trim();
+      const nextAccounts = accountsRef.current.map((acc) =>
+        acc.accountNumber === cleanTarget ||
         acc.accountNumber === params.targetAccount ||
         `Account #${acc.accountNumber}` === params.targetAccount ||
         acc.id === params.targetAccount
           ? {
               ...acc,
-              balance: acc.balance + params.amount,
-              equity: acc.equity + params.amount,
-              freeMargin: acc.freeMargin + params.amount,
+              balance: Number((acc.balance + amountUsd).toFixed(2)),
+              equity: Number((acc.equity + amountUsd).toFixed(2)),
+              freeMargin: Number((acc.freeMargin + amountUsd).toFixed(2)),
             }
           : acc
       );
+      accountsRef.current = nextAccounts;
       setAccounts(nextAccounts);
-      setSelectedAccount((acc) =>
-        !acc ? null : nextAccounts.find((a) => a.id === acc.id) || acc
-      );
+      setSelectedAccount((acc) => {
+        if (!acc) return null;
+        const found = nextAccounts.find((a) => a.id === acc.id || a.accountNumber === acc.accountNumber) || acc;
+        selectedAccountRef.current = found;
+        return found;
+      });
       if (currentUser) {
         saveUserFinancials(currentUser, {
-          walletBalance,
+          walletBalance: walletBalanceRef.current,
           accounts: nextAccounts,
-          selectedAccountId: selectedAccount?.id,
-          transactions: [newTx, ...transactions],
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTransactions,
         });
       }
     }
 
-    addNotification(`Deposit of $${params.amount.toFixed(2)} received successfully!`);
+    addNotification(`Deposit of $${amountUsd.toFixed(2)} received successfully!`);
 
     // Save deposit to Supabase cloud database
     if (currentUser) {
       supabaseService.saveDeposit(currentUser, {
         id: newTx.id,
         targetAccount: params.targetAccount,
-        amountUsd: params.amount,
+        amountUsd,
         method: params.method,
         reference: ref,
         status: 'COMPLETED',
       });
-      supabaseService.syncTransactions(currentUser, [newTx, ...transactions]);
+      supabaseService.syncTransactions(currentUser, nextTransactions);
       supabaseService.syncActivity(currentUser, {
         type: 'DEPOSIT',
-        description: `Funded $${params.amount.toFixed(2)} to ${params.targetAccount} via ${params.method}`,
-        metadata: { amount: params.amount, targetAccount: params.targetAccount, reference: ref },
+        description: `Funded $${amountUsd.toFixed(2)} to ${params.targetAccount} via ${params.method}`,
+        metadata: { amount: amountUsd, targetAccount: params.targetAccount, reference: ref },
       });
     }
 
     triggerActionPopup({
       type: 'DEPOSIT_SUCCESS',
-      title: `Deposit of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
+      title: `Deposit of $${amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
       subtitle: `Instant payment received via ${params.method} and credited to ${params.targetAccount}. Ref: ${ref}`,
       details: {
-        amount: params.amount,
+        amount: amountUsd,
         method: params.method,
         reference: ref,
         accountNumber: params.targetAccount,
@@ -1785,67 +2005,150 @@ export default function App() {
     });
   };
 
-  // Withdrawal Handlers - Minimum withdrawal is strictly $35
+  // Helper to complete a PENDING withdrawal transaction automatically after 3 seconds
+  const finalizePendingWithdrawal = useCallback((txId: string, reference: string) => {
+    const existingTx = transactionsRef.current.find(
+      (t) => (t.id === txId || (reference && t.reference === reference)) && t.type === 'WITHDRAWAL'
+    );
+    if (!existingTx || existingTx.status === 'COMPLETED') return;
+
+    const updatedTransactions = transactionsRef.current.map((t) =>
+      t.id === existingTx.id
+        ? {
+            ...t,
+            status: 'COMPLETED' as const,
+            details: `${t.details || `Withdrawal from ${t.accountNumber || 'Account'}`} • Disbursed`,
+          }
+        : t
+    );
+
+    transactionsRef.current = updatedTransactions;
+    setTransactions(updatedTransactions);
+    lastLocalFinancialUpdateRef.current = Date.now();
+
+    const activeUser = currentUserRef.current;
+    if (activeUser) {
+      saveUserFinancials(activeUser, {
+        walletBalance: walletBalanceRef.current,
+        accounts: accountsRef.current,
+        selectedAccountId: selectedAccountRef.current?.id,
+        transactions: updatedTransactions,
+      });
+      supabaseService.saveWithdrawal(activeUser, {
+        id: existingTx.id,
+        sourceAccount: existingTx.accountNumber || 'VTM Wallet',
+        amountUsd: existingTx.amount,
+        method: existingTx.method,
+        reference: existingTx.reference,
+        status: 'COMPLETED',
+      });
+      supabaseService.syncTransactions(activeUser, updatedTransactions);
+      supabaseService.syncActivity(activeUser, {
+        type: 'WITHDRAWAL_COMPLETED',
+        description: `Withdrawal of $${existingTx.amount.toFixed(2)} from ${existingTx.accountNumber || 'Account'} completed via ${existingTx.method}. Ref: ${existingTx.reference}`,
+        metadata: {
+          amount: existingTx.amount,
+          sourceAccount: existingTx.accountNumber,
+          reference: existingTx.reference,
+          status: 'COMPLETED',
+        },
+      });
+    }
+
+    addNotification(
+      `Withdrawal of $${existingTx.amount.toFixed(2)} completed successfully! (Ref: ${existingTx.reference})`
+    );
+    triggerActionPopup({
+      type: 'WITHDRAWAL_SUCCESS',
+      title: `Withdrawal of $${existingTx.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
+      subtitle: `Instant payout disbursed from ${existingTx.accountNumber || 'Account'} via ${existingTx.method}. Ref: ${existingTx.reference}`,
+      details: {
+        amount: existingTx.amount,
+        method: existingTx.method,
+        reference: existingTx.reference,
+        accountNumber: existingTx.accountNumber || 'VTM Wallet',
+      },
+    });
+  }, []);
+
+  // Safety Watcher: Ensure any PENDING withdrawal transaction automatically shifts to COMPLETED (SUCCESSFUL) after 3 seconds without fail
+  useEffect(() => {
+    const pendingWithdrawals = transactions.filter(
+      (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING'
+    );
+    if (pendingWithdrawals.length === 0) return;
+
+    const timers = pendingWithdrawals.map((tx) => {
+      const elapsed = Date.now() - (tx.timestamp || Date.now());
+      const remainingMs = Math.max(300, 3000 - elapsed);
+      return setTimeout(() => {
+        finalizePendingWithdrawal(tx.id, tx.reference);
+      }, remainingMs);
+    });
+
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+    };
+  }, [transactions, finalizePendingWithdrawal]);
+
+  // Withdrawal Handlers - Minimum withdrawal is strictly $35 ($50 for Crypto)
+  // Deducts immediately from account, stores new balance for next trades/transactions,
+  // records as PENDING for 3 seconds, then shifts automatically to COMPLETED (SUCCESSFUL) without fail.
   const handleWithdraw = (params: {
     method: string;
     amount: number;
     sourceAccount: string;
     reference?: string;
-    status?: 'COMPLETED' | 'PENDING';
+    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
   }) => {
-    if (params.amount < 35) {
-      const failRef = `FAIL-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    const amountUsd = Number((params.amount || 0).toFixed(2));
+
+    if (params.status === 'FAILED' || amountUsd < 35) {
+      const failRef = params.reference || `FAIL-WTH-${Math.floor(10000000 + Math.random() * 90000000)}`;
       const failedTx: Transaction = {
-        id: `tx-${Date.now()}`,
+        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         type: 'WITHDRAWAL',
         method: params.method,
-        amount: params.amount,
+        amount: amountUsd,
         currency: 'USD',
         status: 'FAILED',
         timestamp: Date.now(),
         reference: failRef,
-        details: `Withdrawal below $35.00 USD minimum threshold`,
+        accountNumber: params.sourceAccount,
+        details: amountUsd < 35 ? `Withdrawal below $35.00 USD minimum threshold` : `Failed withdrawal from ${params.sourceAccount}`,
       };
-      setTransactions((prev) => [failedTx, ...prev]);
+      const nextTxs = [failedTx, ...transactionsRef.current];
+      transactionsRef.current = nextTxs;
+      setTransactions(nextTxs);
+      lastLocalFinancialUpdateRef.current = Date.now();
       if (currentUser) {
         saveUserFinancials(currentUser, {
-          walletBalance,
-          accounts,
-          selectedAccountId: selectedAccount?.id,
-          transactions: [failedTx, ...transactions],
+          walletBalance: walletBalanceRef.current,
+          accounts: accountsRef.current,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTxs,
         });
       }
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
         title: 'Withdrawal Unsuccessful',
-        subtitle: 'Minimum withdrawal requirement is $35.00 USD.',
+        subtitle: amountUsd < 35 ? 'Minimum withdrawal requirement is $35.00 USD.' : 'Insufficient withdrawable funds in selected source.',
         details: {
-          amount: params.amount,
+          amount: amountUsd,
           method: params.method,
-          reason: 'Minimum withdrawal amount is $35.00 USD.',
+          reason: amountUsd < 35 ? 'Minimum withdrawal amount is $35.00 USD.' : 'Insufficient funds.',
         },
       });
       return;
     }
 
     const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
-    const txStatus = params.status || 'COMPLETED';
-    const newTx: Transaction = {
-      id: `tx-${Date.now()}`,
-      type: 'WITHDRAWAL',
-      method: params.method,
-      amount: params.amount,
-      currency: 'USD',
-      status: txStatus,
-      timestamp: Date.now(),
-      reference: ref,
-      details: `Withdrawal from ${params.sourceAccount}`,
-    };
+    const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    setTransactions((prev) => [newTx, ...prev]);
-
-    let nextWallet = walletBalance;
-    let nextAccounts = accounts;
+    // 1. Immediately deduct amount from the source account/wallet and store the new balance for next trades & transactions
+    let nextWallet = walletBalanceRef.current;
+    let nextAccounts = [...accountsRef.current];
+    let resultingBalance = 0;
 
     if (
       params.sourceAccount === 'VTM Wallet' ||
@@ -1853,71 +2156,92 @@ export default function App() {
       params.sourceAccount === 'HF Wallet' ||
       params.sourceAccount.toLowerCase().includes('wallet')
     ) {
-      nextWallet = Math.max(0, walletBalance - params.amount);
+      nextWallet = Math.max(0, Number((walletBalanceRef.current - amountUsd).toFixed(2)));
+      resultingBalance = nextWallet;
+      walletBalanceRef.current = nextWallet;
       setWalletBalance(nextWallet);
     } else {
-      nextAccounts = accounts.map((acc) =>
-        acc.accountNumber === params.sourceAccount ||
-        `Account #${acc.accountNumber}` === params.sourceAccount ||
-        acc.id === params.sourceAccount
-          ? {
-              ...acc,
-              balance: Math.max(0, acc.balance - params.amount),
-              equity: Math.max(0, acc.equity - params.amount),
-              freeMargin: Math.max(0, acc.freeMargin - params.amount),
-            }
-          : acc
-      );
+      const cleanSource = params.sourceAccount.replace(/^Account\s*#/i, '').trim();
+      nextAccounts = accountsRef.current.map((acc) => {
+        if (
+          acc.accountNumber === cleanSource ||
+          acc.accountNumber === params.sourceAccount ||
+          `Account #${acc.accountNumber}` === params.sourceAccount ||
+          acc.id === params.sourceAccount
+        ) {
+          const newBal = Math.max(0, Number((acc.balance - amountUsd).toFixed(2)));
+          const newEq = Math.max(0, Number((acc.equity - amountUsd).toFixed(2)));
+          const newFree = Math.max(0, Number((acc.freeMargin - amountUsd).toFixed(2)));
+          resultingBalance = newBal;
+          return {
+            ...acc,
+            balance: newBal,
+            equity: newEq,
+            freeMargin: newFree,
+          };
+        }
+        return acc;
+      });
+      accountsRef.current = nextAccounts;
       setAccounts(nextAccounts);
-      setSelectedAccount((acc) =>
-        !acc ? null : nextAccounts.find((a) => a.id === acc.id) || acc
-      );
+      setSelectedAccount((acc) => {
+        if (!acc) return null;
+        const found = nextAccounts.find((a) => a.id === acc.id || a.accountNumber === acc.accountNumber) || acc;
+        selectedAccountRef.current = found;
+        return found;
+      });
     }
+
+    // 2. Always start as PENDING for 3 seconds so it is recorded immediately in transactions & Supabase
+    const newTx: Transaction = {
+      id: txId,
+      type: 'WITHDRAWAL',
+      method: params.method,
+      amount: amountUsd,
+      currency: 'USD',
+      status: 'PENDING',
+      timestamp: Date.now(),
+      reference: ref,
+      accountNumber: params.sourceAccount,
+      details: `Withdrawal from ${params.sourceAccount} (New Bal: $${resultingBalance.toFixed(2)})`,
+    };
+
+    const nextTransactions = [newTx, ...transactionsRef.current];
+    transactionsRef.current = nextTransactions;
+    setTransactions(nextTransactions);
+    lastLocalFinancialUpdateRef.current = Date.now();
 
     if (currentUser) {
       saveUserFinancials(currentUser, {
         walletBalance: nextWallet,
         accounts: nextAccounts,
-        selectedAccountId: selectedAccount?.id,
-        transactions: [newTx, ...transactions],
+        selectedAccountId: selectedAccountRef.current?.id,
+        transactions: nextTransactions,
+      });
+      supabaseService.saveWithdrawal(currentUser, {
+        id: newTx.id,
+        sourceAccount: params.sourceAccount,
+        amountUsd,
+        method: params.method,
+        reference: ref,
+        status: 'PENDING',
+      });
+      supabaseService.syncTransactions(currentUser, nextTransactions);
+      supabaseService.syncActivity(currentUser, {
+        type: 'WITHDRAWAL_PENDING',
+        description: `Withdrawal of $${amountUsd.toFixed(2)} initiated from ${params.sourceAccount} via ${params.method} (Pending 3s verification)`,
+        metadata: { amount: amountUsd, sourceAccount: params.sourceAccount, reference: ref, status: 'PENDING' },
       });
     }
 
     addNotification(
-      txStatus === 'COMPLETED'
-        ? `Safaricom B2C payout of $${params.amount.toFixed(2)} completed successfully!`
-        : `Withdrawal request of $${params.amount.toFixed(2)} is pending approval`
+      `Withdrawal of $${amountUsd.toFixed(2)} from ${params.sourceAccount} is PENDING (processing 3s)...`
     );
 
-    // Save withdrawal to Supabase cloud database
-    if (currentUser) {
-      supabaseService.saveWithdrawal(currentUser, {
-        id: newTx.id,
-        sourceAccount: params.sourceAccount,
-        amountUsd: params.amount,
-        method: params.method,
-        reference: ref,
-        status: txStatus,
-      });
-      supabaseService.syncTransactions(currentUser, [newTx, ...transactions]);
-      supabaseService.syncActivity(currentUser, {
-        type: txStatus === 'COMPLETED' ? 'WITHDRAWAL_COMPLETED' : 'WITHDRAWAL_REQUESTED',
-        description: `Safaricom B2C payout of $${params.amount.toFixed(2)} from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
-        metadata: { amount: params.amount, sourceAccount: params.sourceAccount, reference: ref, status: txStatus },
-      });
-    }
-
-    triggerActionPopup({
-      type: 'WITHDRAWAL_SUCCESS',
-      title: `Withdrawal of $${params.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
-      subtitle: `Safaricom B2C instant payout disbursed from ${params.sourceAccount} via ${params.method}. Ref: ${ref}`,
-      details: {
-        amount: params.amount,
-        method: params.method,
-        reference: ref,
-        accountNumber: params.sourceAccount,
-      },
-    });
+    // 3. Automatically shift from PENDING to COMPLETED (SUCCESSFUL) after 3 seconds without fail
+    setTimeout(() => {
+      finalizePendingWithdrawal(txId, ref);
+    }, 3000);
   };
 
   const handleTransfer = (params: { fromAccount: string; toAccount: string; amount: number }) => {
@@ -1954,14 +2278,19 @@ export default function App() {
     }
 
     setWalletBalance(result.newWalletBalance);
+    walletBalanceRef.current = result.newWalletBalance;
     setAccounts(result.newAccounts);
+    accountsRef.current = result.newAccounts;
     setTransactions(result.newTransactions);
+    transactionsRef.current = result.newTransactions;
+    lastLocalFinancialUpdateRef.current = Date.now();
 
     if (selectedAccount) {
       const refreshed = result.newAccounts.find(
         (a) => a.id === selectedAccount.id || a.accountNumber === selectedAccount.accountNumber
       );
       if (refreshed) {
+        selectedAccountRef.current = refreshed;
         setSelectedAccount(refreshed);
       }
     }
@@ -2024,15 +2353,18 @@ export default function App() {
       leverage: params.leverage,
     };
 
-    const nextAccounts = [...accounts, newAcc];
+    const nextAccounts = [...accountsRef.current, newAcc];
+    accountsRef.current = nextAccounts;
+    selectedAccountRef.current = newAcc;
+    lastLocalFinancialUpdateRef.current = Date.now();
     setAccounts(nextAccounts);
     setSelectedAccount(newAcc);
     if (currentUser) {
       saveUserFinancials(currentUser, {
-        walletBalance,
+        walletBalance: walletBalanceRef.current,
         accounts: nextAccounts,
         selectedAccountId: newAcc.id,
-        transactions,
+        transactions: transactionsRef.current,
       });
     }
     addNotification(`Opened new ${params.type} #${num} (${params.tier})`);
@@ -2407,17 +2739,20 @@ export default function App() {
       const trade = prev.find((t) => t.id === tradeId);
       if (!trade || trade.status !== 'OPEN') return prev;
 
-      const inst = instruments.find((i) => i.symbol === trade.symbol);
+      const inst = instrumentsRef.current.find((i) => i.symbol === trade.symbol);
       const exitPrice =
         trade.side === 'BUY'
           ? inst?.bid || trade.currentPrice
           : inst?.ask || trade.currentPrice;
-      const profitUsd = calculateBotPnL(
-        trade.symbol,
-        trade.side,
-        trade.openPrice,
-        exitPrice,
-        trade.lotSize
+      const profitUsd = Number(
+        calculateBotPnL(
+          trade.symbol,
+          trade.side,
+          trade.openPrice,
+          exitPrice,
+          trade.lotSize,
+          userRoleRef.current
+        ).toFixed(2)
       );
 
       const updatedTrade: BotTrade = {
@@ -2429,20 +2764,49 @@ export default function App() {
         closeTime: Date.now(),
       };
 
-      // Credit or debit account - NEVER let balance go negative!
-      setSelectedAccount((acc) => {
-        if (!acc) return null;
-        const newBal = Math.max(0, Number((acc.balance + profitUsd).toFixed(2)));
-        const newEq = Math.max(0, Number((acc.equity + profitUsd).toFixed(2)));
-        if (newBal <= 0) {
-          setTimeout(handleZeroBalanceStopOut, 0);
-        }
-        return {
-          ...acc,
-          balance: newBal,
-          equity: newEq,
-        };
-      });
+      // Credit or debit account in BOTH selectedAccount and accounts array, and persist immediately to localStorage & Supabase!
+      const updatedAcc = commitAccountBalanceChange(profitUsd, selectedAccountRef.current?.id);
+      if (updatedAcc && updatedAcc.balance <= 0) {
+        setTimeout(handleZeroBalanceStopOut, 0);
+      }
+
+      // Also record in closedTrades history & Supabase
+      const closedRecord: ClosedTrade = {
+        id: `cl-bot-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        ticket: trade.ticket,
+        symbol: trade.symbol,
+        side: trade.side,
+        lots: trade.lotSize,
+        openPrice: trade.openPrice,
+        closePrice: exitPrice,
+        pnl: profitUsd,
+        openTime: trade.openTime,
+        closeTime: Date.now(),
+        reason: 'MANUAL',
+      };
+      setClosedTrades((ct) => [closedRecord, ...ct]);
+
+      if (currentUserRef.current) {
+        supabaseService.saveTrade(currentUserRef.current, {
+          id: closedRecord.id,
+          ticket: closedRecord.ticket,
+          accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+          symbol: closedRecord.symbol,
+          side: closedRecord.side,
+          orderType: 'BOT',
+          lots: closedRecord.lots,
+          openPrice: closedRecord.openPrice,
+          currentPrice: exitPrice,
+          closePrice: exitPrice,
+          sl: trade.sl ?? null,
+          tp: trade.tp ?? null,
+          pnl: profitUsd,
+          status: 'CLOSED',
+          openTime: closedRecord.openTime,
+          closeTime: closedRecord.closeTime,
+          closeReason: 'MANUAL',
+        });
+      }
 
       // Update run stats
       setBotRuns((runs) => {
@@ -2467,7 +2831,7 @@ export default function App() {
 
       playOrderSound(profitUsd >= 0);
       addNotification(
-        `Bot trade #${trade.ticket} closed (${profitUsd >= 0 ? '+' : ''}$${profitUsd.toFixed(2)})`
+        `Bot trade #${trade.ticket} closed (${profitUsd >= 0 ? '+' : ''}$${profitUsd.toFixed(2)}) • Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`
       );
 
       triggerActionPopup({
@@ -2480,7 +2844,7 @@ export default function App() {
           price: exitPrice,
           pnl: profitUsd,
           ticket: trade.ticket,
-          accountNumber: selectedAccount?.accountNumber,
+          accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
         },
       });
 
@@ -2690,20 +3054,49 @@ export default function App() {
             );
             tradesChanged = true;
 
-            // Sync balance and equity immediately - NEVER let balance go negative!
-            setSelectedAccount((acc) => {
-              if (!acc) return null;
-              const newBal = Math.max(0, Number((acc.balance + profitUsd).toFixed(2)));
-              const newEq = Math.max(0, Number((acc.equity + profitUsd).toFixed(2)));
-              if (newBal <= 0) {
-                setTimeout(handleZeroBalanceStopOut, 0);
-              }
-              return {
-                ...acc,
-                balance: newBal,
-                equity: newEq,
-              };
-            });
+            // Sync balance and equity immediately in BOTH selectedAccount and accounts array, and persist to localStorage & Supabase!
+            const roundedProfit = Number(profitUsd.toFixed(2));
+            const updatedAcc = commitAccountBalanceChange(roundedProfit, selectedAccountRef.current?.id);
+            if (updatedAcc && updatedAcc.balance <= 0) {
+              setTimeout(handleZeroBalanceStopOut, 0);
+            }
+
+            const closedRecord: ClosedTrade = {
+              id: `cl-bot-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              ticket: activeTrade.ticket,
+              symbol: activeTrade.symbol,
+              side: activeTrade.side,
+              lots: activeTrade.lotSize,
+              openPrice: activeTrade.openPrice,
+              closePrice: finalExitPrice,
+              pnl: roundedProfit,
+              openTime: activeTrade.openTime,
+              closeTime: Date.now(),
+              reason: shouldTakeProfit ? 'TP' : 'SL',
+            };
+            setClosedTrades((ct) => [closedRecord, ...ct]);
+
+            if (currentUserRef.current) {
+              supabaseService.saveTrade(currentUserRef.current, {
+                id: closedRecord.id,
+                ticket: closedRecord.ticket,
+                accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+                symbol: closedRecord.symbol,
+                side: closedRecord.side,
+                orderType: 'BOT',
+                lots: closedRecord.lots,
+                openPrice: closedRecord.openPrice,
+                currentPrice: finalExitPrice,
+                closePrice: finalExitPrice,
+                sl: activeTrade.sl ?? null,
+                tp: activeTrade.tp ?? null,
+                pnl: roundedProfit,
+                status: 'CLOSED',
+                openTime: closedRecord.openTime,
+                closeTime: closedRecord.closeTime,
+                closeReason: closedRecord.reason,
+              });
+            }
 
             // Update run stats with wins/losses/profit
             nextRuns = nextRuns.map((r) => {
@@ -2811,6 +3204,43 @@ export default function App() {
     }
   };
 
+  // Automatic Database Sync: Keep trades, bots, price alerts, and copy strategies synced in Supabase
+  useEffect(() => {
+    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
+    const timer = setTimeout(() => {
+      supabaseService.syncTrades(currentUser, {
+        positions,
+        pendingOrders,
+        closedTrades,
+        accountNumber: selectedAccount?.accountNumber,
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [currentUser?.email, positions.length, pendingOrders.length, closedTrades.length, selectedAccount?.accountNumber]);
+
+  useEffect(() => {
+    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
+    const timer = setTimeout(() => {
+      supabaseService.syncBotState(currentUser, {
+        importedBots,
+        botRuns,
+        botTrades,
+      });
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [currentUser?.email, importedBots.length, botRuns.length, botTrades.length]);
+
+  useEffect(() => {
+    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
+    const timer = setTimeout(() => {
+      supabaseService.syncExtrasState(currentUser, {
+        priceAlerts,
+        followedStrategies,
+      });
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [currentUser?.email, priceAlerts, followedStrategies]);
+
   const handleSyncAllToSupabase = async () => {
     if (!currentUser) return;
     try {
@@ -2828,6 +3258,15 @@ export default function App() {
           pendingOrders,
           closedTrades,
           accountNumber: selectedAccount?.accountNumber,
+        }),
+        supabaseService.syncBotState(currentUser, {
+          importedBots,
+          botRuns,
+          botTrades,
+        }),
+        supabaseService.syncExtrasState(currentUser, {
+          priceAlerts,
+          followedStrategies,
         }),
         supabaseService.saveUserSettings(currentUser, {
           isDarkMode,
@@ -3015,6 +3454,7 @@ export default function App() {
             userRole={userRole}
             onUpdateUserRole={handleUpdateUserRole}
             currentUser={currentUser}
+            onOpenAdminManager={() => setIsAdminManagerOpen(true)}
             onSignOut={handleUserSignOut}
           />
         );
@@ -3043,6 +3483,29 @@ export default function App() {
         onSignIn={handleUserSignIn}
         isDarkMode={isDarkMode}
         onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+      />
+    );
+  }
+
+  // EXCLUSIVE MASTER ADMIN ROUTING:
+  // Admin (mutwrib@gmail.com | UID: 84a1e1db-f302-4dac-a077-291128ae0cea) is NEVER directed to the market/trading side.
+  // Admin is directed exclusively to the Website Administration & Executive Control Center.
+  if (isMasterAdminEmail(currentUser.email) && currentUser.id === MASTER_ADMIN_UID) {
+    return (
+      <AdminAccountManagerModal
+        isOpen={true}
+        isFullPage={true}
+        onClose={() => {}}
+        onSignOut={handleUserSignOut}
+        currentUser={currentUser}
+        currentAccounts={accounts}
+        currentWalletBalance={walletBalance}
+        onApplyChanges={(updatedWallet, updatedAccounts) => {
+          setWalletBalance(updatedWallet);
+          setAccounts(updatedAccounts);
+        }}
+        isDarkMode={isDarkMode}
+        onToggleTheme={() => setIsDarkMode((prev) => !prev)}
       />
     );
   }
@@ -3094,7 +3557,6 @@ export default function App() {
           onSignOut={handleUserSignOut}
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
-          onOpenAdminManager={() => setIsAdminManagerOpen(true)}
           priceAlerts={priceAlerts}
           onOpenPriceAlerts={() => handleOpenPriceAlertModal(selectedSymbol)}
         />
@@ -3134,39 +3596,6 @@ export default function App() {
           onSignOut={handleUserSignOut}
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
-        />
-
-        {/* Master Admin Financial & Account Manager Modal */}
-        <AdminAccountManagerModal
-          isOpen={isAdminManagerOpen}
-          onClose={() => setIsAdminManagerOpen(false)}
-          currentUser={currentUser}
-          currentAccounts={accounts}
-          currentWalletBalance={walletBalance}
-          onApplyChanges={(updatedWallet, updatedAccounts) => {
-            setWalletBalance(updatedWallet);
-            setAccounts(updatedAccounts);
-            if (updatedAccounts.length > 0) {
-              if (!selectedAccount || !updatedAccounts.some((a) => a.id === selectedAccount.id)) {
-                setSelectedAccount(updatedAccounts[0]);
-              } else {
-                const refreshed = updatedAccounts.find((a) => a.id === selectedAccount.id);
-                if (refreshed) setSelectedAccount(refreshed);
-              }
-            } else {
-              setSelectedAccount(null);
-            }
-            if (currentUser) {
-              saveUserFinancials(currentUser, {
-                walletBalance: updatedWallet,
-                accounts: updatedAccounts,
-                selectedAccountId: selectedAccount?.id,
-                transactions,
-              });
-            }
-            addNotification('Admin financial updates saved and applied successfully');
-          }}
-          isDarkMode={isDarkMode}
         />
 
         {/* PWA Native Installation Engine Dialogs */}

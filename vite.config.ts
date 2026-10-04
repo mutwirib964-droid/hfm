@@ -14,7 +14,7 @@ function marketPricesPlugin() {
     configureServer(server: any) {
       server.middlewares.use('/api/market-prices', async (_req: any, res: any) => {
         const now = Date.now();
-        if (cachedData && now - lastFetch < 800) {
+        if (cachedData && now - lastFetch < 300) {
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(cachedData));
           return;
@@ -173,14 +173,13 @@ function marketPricesPlugin() {
                 const change = row.d[1] || 0;
                 const decimals = conf.dec;
                 const spread = cryptoSpreads[conf.sym] || (decimals === 4 ? 0.0004 : 0.20);
-                const halfSpread = spread / 2;
-                const bid = Number((close - halfSpread).toFixed(decimals));
-                const ask = Number((close + halfSpread).toFixed(decimals));
+                const bid = Number(close.toFixed(decimals));
+                const ask = Number((bid + spread).toFixed(decimals));
                 const finalSpread = Number((ask - bid).toFixed(decimals));
                 results[conf.sym] = {
                   bid,
                   ask,
-                  close: Number(close.toFixed(decimals)),
+                  close: bid,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
@@ -190,24 +189,24 @@ function marketPricesPlugin() {
             });
           }
 
-          // Binance fallback for crypto
+          // Binance live ticker for crypto (real-time price updates)
           if (binanceRes.status === 'fulfilled' && Array.isArray(binanceRes.value)) {
             binanceRes.value.forEach((item: any) => {
               const price = parseFloat(item.price);
               const sym = item.symbol.replace('USDT', 'USD');
-              if (price > 0 && !results[sym]) {
+              if (price > 0) {
                 const dec = sym.includes('XRP') || sym.includes('DOGE') || sym.includes('ADA') ? 4 : 2;
-                const spread = dec === 4 ? 0.0004 : 1.5;
-                const halfSpread = spread / 2;
-                const bid = Number((price - halfSpread).toFixed(dec));
-                const ask = Number((price + halfSpread).toFixed(dec));
+                const existing = results[sym];
+                const spread = existing?.spread || (dec === 4 ? 0.0004 : 1.5);
+                const bid = Number(price.toFixed(dec));
+                const ask = Number((bid + spread).toFixed(dec));
                 results[sym] = {
                   bid,
                   ask,
-                  close: Number(price.toFixed(dec)),
-                  change24h: 0,
-                  high24h: Number((price * 1.01).toFixed(dec)),
-                  low24h: Number((price * 0.99).toFixed(dec)),
+                  close: bid,
+                  change24h: existing?.change24h !== undefined ? existing.change24h : 0,
+                  high24h: existing?.high24h || Number((price * 1.01).toFixed(dec)),
+                  low24h: existing?.low24h || Number((price * 0.99).toFixed(dec)),
                   spread: Number((ask - bid).toFixed(dec)),
                 };
               }
@@ -233,7 +232,7 @@ function marketPricesPlugin() {
             };
 
             const cfdSpreads: Record<string, number> = {
-              'XAUUSD': 0.490, // Gold 49.0 points spread matching TradingView Pic 2
+              'XAUUSD': 0.490, // Gold 49.0 points spread matching TradingView
               'XAGUSD': 0.025, // Silver 25.0 points spread
               'USOIL': 0.03,
               'UKOIL': 0.03,
@@ -254,35 +253,16 @@ function marketPricesPlugin() {
                 const close = row.d[0];
                 const change = row.d[1] || 0;
                 const decimals = conf.dec;
-                const rawBid = row.d[2];
-                const rawAsk = row.d[3];
-                
-                let bid: number;
-                let ask: number;
-                let finalSpread: number;
-
-                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) / close < 0.05) {
-                  bid = Number(rawBid.toFixed(decimals));
-                  ask = Number(rawAsk.toFixed(decimals));
-                } else {
-                  let spread = cfdSpreads[conf.sym] || 0.1;
-                  if (rawBid && rawAsk && rawAsk > rawBid) {
-                    const tvSpread = rawAsk - rawBid;
-                    if (tvSpread > 0 && tvSpread < close * 0.05) {
-                      spread = tvSpread;
-                    }
-                  }
-                  const halfSpread = spread / 2;
-                  bid = Number((close - halfSpread).toFixed(decimals));
-                  ask = Number((close + halfSpread).toFixed(decimals));
-                }
+                const spread = cfdSpreads[conf.sym] || 0.1;
+                const bid = Number(close.toFixed(decimals));
+                const ask = Number((bid + spread).toFixed(decimals));
                 const multiplier = conf.sym === 'XAUUSD' ? 10 : conf.sym === 'XAGUSD' ? 100 : (decimals >= 3 ? 100 : 10);
-                finalSpread = Number((Math.abs(ask - bid) * multiplier).toFixed(1));
+                const finalSpread = Number((Math.abs(ask - bid) * multiplier).toFixed(1));
 
                 results[conf.sym] = {
                   bid,
                   ask,
-                  close: Number(close.toFixed(decimals)),
+                  close: bid,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
@@ -329,35 +309,16 @@ function marketPricesPlugin() {
                 const decimals = isJpy ? 3 : 5;
                 const close = row.d[0];
                 const change = row.d[1] || 0;
-                const rawBid = row.d[2];
-                const rawAsk = row.d[3];
-                
-                let bid: number;
-                let ask: number;
-                let finalSpread: number;
-
-                if (rawBid && rawAsk && rawAsk > rawBid && Math.abs(rawBid - close) / close < 0.005) {
-                  bid = Number(rawBid.toFixed(decimals));
-                  ask = Number(rawAsk.toFixed(decimals));
-                } else {
-                  let spread = forexSpreads[sym] || (isJpy ? 0.006 : 0.00004);
-                  if (rawBid && rawAsk && rawAsk > rawBid) {
-                    const tvSpread = rawAsk - rawBid;
-                    if (tvSpread > 0 && tvSpread < close * 0.005) {
-                      spread = tvSpread;
-                    }
-                  }
-                  const halfSpread = spread / 2;
-                  bid = Number((close - halfSpread).toFixed(decimals));
-                  ask = Number((close + halfSpread).toFixed(decimals));
-                }
+                const spread = forexSpreads[sym] || (isJpy ? 0.006 : 0.00004);
+                const bid = Number(close.toFixed(decimals));
+                const ask = Number((bid + spread).toFixed(decimals));
                 const pipMultiplier = isJpy ? 100 : 10000;
-                finalSpread = Number((Math.abs(ask - bid) * pipMultiplier).toFixed(1));
+                const finalSpread = Number((Math.abs(ask - bid) * pipMultiplier).toFixed(1));
 
                 results[sym] = {
                   bid,
                   ask,
-                  close: Number(close.toFixed(decimals)),
+                  close: bid,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
@@ -397,13 +358,12 @@ function marketPricesPlugin() {
                 const change = row.d[1] || 0;
                 const decimals = 2;
                 const spread = 0.04;
-                const halfSpread = 0.02;
-                const bid = Number((close - halfSpread).toFixed(decimals));
-                const ask = Number((close + halfSpread).toFixed(decimals));
+                const bid = Number(close.toFixed(decimals));
+                const ask = Number((bid + spread).toFixed(decimals));
                 results[sym] = {
                   bid,
                   ask,
-                  close: Number(close.toFixed(decimals)),
+                  close: bid,
                   change24h: Number(change.toFixed(2)),
                   high24h: Number((row.d[4] || close).toFixed(decimals)),
                   low24h: Number((row.d[5] || close).toFixed(decimals)),
@@ -411,6 +371,96 @@ function marketPricesPlugin() {
                 };
               }
             });
+          }
+
+          // Fallback to high-speed Yahoo Finance chart API for any Forex, CFD, or Stock symbol not returned by scanner
+          const fallbackList = [
+            { sym: 'EURUSD', ticker: 'EURUSD=X', dec: 5, mult: 10000, spread: 0.00008 },
+            { sym: 'GBPUSD', ticker: 'GBPUSD=X', dec: 5, mult: 10000, spread: 0.00009 },
+            { sym: 'USDJPY', ticker: 'JPY=X', dec: 3, mult: 100, spread: 0.009 },
+            { sym: 'AUDUSD', ticker: 'AUDUSD=X', dec: 5, mult: 10000, spread: 0.00009 },
+            { sym: 'USDCAD', ticker: 'CAD=X', dec: 5, mult: 10000, spread: 0.00011 },
+            { sym: 'USDCHF', ticker: 'CHF=X', dec: 5, mult: 10000, spread: 0.00012 },
+            { sym: 'GBPJPY', ticker: 'GBPJPY=X', dec: 3, mult: 100, spread: 0.015 },
+            { sym: 'NZDUSD', ticker: 'NZDUSD=X', dec: 5, mult: 10000, spread: 0.00012 },
+            { sym: 'EURGBP', ticker: 'EURGBP=X', dec: 5, mult: 10000, spread: 0.0001 },
+            { sym: 'EURJPY', ticker: 'EURJPY=X', dec: 3, mult: 100, spread: 0.013 },
+            { sym: 'AUDJPY', ticker: 'AUDJPY=X', dec: 3, mult: 100, spread: 0.014 },
+            { sym: 'XAUUSD', ticker: 'GC=F', dec: 2, mult: 10, spread: 0.49 },
+            { sym: 'XAGUSD', ticker: 'SI=F', dec: 3, mult: 100, spread: 0.025 },
+            { sym: 'XPTUSD', ticker: 'PL=F', dec: 2, mult: 10, spread: 0.8 },
+            { sym: 'USOIL', ticker: 'CL=F', dec: 2, mult: 100, spread: 0.03 },
+            { sym: 'UKOIL', ticker: 'BZ=F', dec: 2, mult: 100, spread: 0.03 },
+            { sym: 'NGAS', ticker: 'NG=F', dec: 3, mult: 1000, spread: 0.005 },
+            { sym: 'US500', ticker: '%5EGSPC', dec: 2, mult: 10, spread: 0.45 },
+            { sym: 'NAS100', ticker: '%5EIXIC', dec: 2, mult: 1, spread: 1.2 },
+            { sym: 'US30', ticker: '%5EDJI', dec: 2, mult: 1, spread: 2.4 },
+            { sym: 'GER40', ticker: '%5EGDAXI', dec: 2, mult: 1, spread: 1.4 },
+            { sym: 'UK100', ticker: '%5EFTSE', dec: 2, mult: 1, spread: 1.5 },
+            { sym: 'JPN225', ticker: '%5EN225', dec: 2, mult: 1, spread: 5.0 },
+            { sym: 'COPPER', ticker: 'HG=F', dec: 3, mult: 1000, spread: 0.003 },
+            { sym: 'AAPL', ticker: 'AAPL', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'TSLA', ticker: 'TSLA', dec: 2, mult: 100, spread: 0.06 },
+            { sym: 'NVDA', ticker: 'NVDA', dec: 2, mult: 100, spread: 0.05 },
+            { sym: 'MSFT', ticker: 'MSFT', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'AMZN', ticker: 'AMZN', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'GOOGL', ticker: 'GOOGL', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'META', ticker: 'META', dec: 2, mult: 100, spread: 0.05 },
+            { sym: 'AMD', ticker: 'AMD', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'NFLX', ticker: 'NFLX', dec: 2, mult: 100, spread: 0.08 },
+            { sym: 'COIN', ticker: 'COIN', dec: 2, mult: 100, spread: 0.06 },
+            { sym: 'PLTR', ticker: 'PLTR', dec: 2, mult: 100, spread: 0.03 },
+            { sym: 'BABA', ticker: 'BABA', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'MSTR', ticker: 'MSTR', dec: 2, mult: 100, spread: 0.12 },
+            { sym: 'DIS', ticker: 'DIS', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'UBER', ticker: 'UBER', dec: 2, mult: 100, spread: 0.04 },
+            { sym: 'INTC', ticker: 'INTC', dec: 2, mult: 100, spread: 0.03 },
+            { sym: 'JPM', ticker: 'JPM', dec: 2, mult: 100, spread: 0.05 },
+            { sym: 'V', ticker: 'V', dec: 2, mult: 100, spread: 0.05 },
+            { sym: 'WMT', ticker: 'WMT', dec: 2, mult: 100, spread: 0.04 },
+          ];
+
+          const missingItems = fallbackList.filter((item) => !results[item.sym]);
+          if (missingItems.length > 0) {
+            await Promise.allSettled(
+              missingItems.map(async (item) => {
+                try {
+                  const yRes = await fetch(
+                    `https://query1.finance.yahoo.com/v8/finance/chart/${item.ticker}?interval=1m&range=1d`,
+                    {
+                      signal: timeoutSignal(2000),
+                      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                    }
+                  );
+                  if (yRes.ok) {
+                    const json = await yRes.json();
+                    const meta = json?.chart?.result?.[0]?.meta;
+                    if (meta && meta.regularMarketPrice) {
+                      const price = meta.regularMarketPrice;
+                      const prevClose = meta.chartPreviousClose || price;
+                      const change24h = Number((((price - prevClose) / prevClose) * 100).toFixed(2));
+                      const dec = item.dec;
+                      const spread = item.spread;
+                      const halfSpread = spread / 2;
+                      const bid = Number((price - halfSpread).toFixed(dec));
+                      const ask = Number((price + halfSpread).toFixed(dec));
+                      const spreadPips = Number((spread * item.mult).toFixed(1));
+                      results[item.sym] = {
+                        bid,
+                        ask,
+                        close: Number(price.toFixed(dec)),
+                        change24h,
+                        high24h: Number((meta.regularMarketDayHigh || price * 1.005).toFixed(dec)),
+                        low24h: Number((meta.regularMarketDayLow || price * 0.995).toFixed(dec)),
+                        spread: spreadPips > 0 ? spreadPips : 0.8,
+                      };
+                    }
+                  }
+                } catch (e) {
+                  // Ignore individual fetch failure
+                }
+              })
+            );
           }
 
           cachedData = { success: true, timestamp: now, quotes: results };
@@ -656,8 +706,7 @@ function marketPricesPlugin() {
 
 function hashbackStkPlugin() {
   const HASHBACK_ACCOUNT_ID = process.env.HASHBACK_ACCOUNT_ID || 'HP068635';
-  const HASHBACK_API_KEY =
-    process.env.HASHBACK_API_KEY || '09a166c7e99ef7751c92f675076e73f8deb6f980c33d92f6321f180116d42f5a';
+  const HASHBACK_API_KEY = process.env.HASHBACK_API_KEY || '';
 
   // In-memory store for webhook callbacks received from Hashback
   const webhookStore = new Map<string, any>();

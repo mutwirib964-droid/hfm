@@ -91,6 +91,101 @@ export class TradingViewPriceService {
   private lastQuotes: Map<string, TVQuote> = new Map();
   private isFetching = false;
   private lastFetchTime = 0;
+  private ws: WebSocket | null = null;
+  private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
+
+  constructor() {
+    this.initLiveWebSocket();
+  }
+
+  public subscribe(callback: (quotes: Map<string, TVQuote>) => void): () => void {
+    this.listeners.add(callback);
+    if (this.lastQuotes.size > 0) {
+      callback(new Map(this.lastQuotes));
+    }
+    return () => {
+      this.listeners.delete(callback);
+    };
+  }
+
+  private notifyListeners() {
+    if (this.listeners.size === 0) return;
+    const snapshot = new Map(this.lastQuotes);
+    this.listeners.forEach((listener) => {
+      try {
+        listener(snapshot);
+      } catch (err) {
+        console.error('Error in price listener:', err);
+      }
+    });
+  }
+
+  private initLiveWebSocket() {
+    if (typeof window === 'undefined') return;
+    try {
+      // Connect to official Binance miniTicker WebSocket stream (real-time ticks matching TradingView BINANCE feeds)
+      const wsUrl = 'wss://stream.binance.com:9443/ws/!miniTicker@arr';
+      const ws = new WebSocket(wsUrl);
+
+      ws.onmessage = (event) => {
+        try {
+          const list = JSON.parse(event.data);
+          if (Array.isArray(list)) {
+            let hasChanged = false;
+            const now = Date.now();
+            list.forEach((item: any) => {
+              if (!item.s || !item.c) return;
+              const sym = item.s.replace('USDT', 'USD');
+              const conf = TV_INSTRUMENT_MAP[sym];
+              if (conf) {
+                const price = parseFloat(item.c);
+                if (price > 0) {
+                  const dec = conf.decimals;
+                  const spread = dec === 4 ? 0.0004 : dec === 3 ? 0.01 : 1.5;
+                  const bid = Number(price.toFixed(dec));
+                  const ask = Number((bid + spread).toFixed(dec));
+                  const spreadPips = Number((spread * conf.pipMultiplier).toFixed(1));
+
+                  this.lastQuotes.set(sym, {
+                    symbol: sym,
+                    tvTicker: conf.ticker,
+                    bid,
+                    ask,
+                    spread: spreadPips > 0 ? spreadPips : 1.0,
+                    change24h: 0,
+                    high24h: parseFloat(item.h) || price,
+                    low24h: parseFloat(item.l) || price,
+                    timestamp: now,
+                  });
+                  hasChanged = true;
+                }
+              }
+            });
+
+            if (hasChanged) {
+              this.notifyListeners();
+            }
+          }
+        } catch (e) {
+          // Ignore parse errors on individual frames
+        }
+      };
+
+      ws.onclose = () => {
+        setTimeout(() => this.initLiveWebSocket(), 3000);
+      };
+
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch (e) {}
+      };
+
+      this.ws = ws;
+    } catch (e) {
+      console.warn('Live WebSocket initialization notice:', e);
+    }
+  }
 
   // Fetch quotes from proxy API, TradingView public scanners, and Binance API
   public async fetchRealPrices(): Promise<Map<string, TVQuote>> {
@@ -103,7 +198,7 @@ export class TradingViewPriceService {
       let gotProxyQuotes = false;
       // 1. Try our internal server endpoint first (has exact real TradingView quotes)
       try {
-        const proxyRes = await fetch('/api/market-prices', { signal: AbortSignal.timeout(2500) });
+        const proxyRes = await fetch('/api/market-prices', { signal: AbortSignal.timeout(1500) });
         if (proxyRes.ok) {
           const json = await proxyRes.json();
           if (json.quotes && Object.keys(json.quotes).length > 0) {
@@ -128,6 +223,7 @@ export class TradingViewPriceService {
                 });
               }
             });
+            this.notifyListeners();
           }
         }
       } catch (e) {

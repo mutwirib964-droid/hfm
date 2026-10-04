@@ -37,6 +37,32 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   const [iframeKey, setIframeKey] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Live real-time tick detection for top badges
+  const prevBidRef = React.useRef(bid);
+  const prevAskRef = React.useRef(ask);
+  const [bidTick, setBidTick] = useState<'UP' | 'DOWN' | null>(null);
+  const [askTick, setAskTick] = useState<'UP' | 'DOWN' | null>(null);
+
+  React.useEffect(() => {
+    if (bid !== undefined && prevBidRef.current !== undefined && bid !== prevBidRef.current) {
+      setBidTick(bid > prevBidRef.current ? 'UP' : 'DOWN');
+      const t = setTimeout(() => setBidTick(null), 650);
+      prevBidRef.current = bid;
+      return () => clearTimeout(t);
+    }
+    prevBidRef.current = bid;
+  }, [bid]);
+
+  React.useEffect(() => {
+    if (ask !== undefined && prevAskRef.current !== undefined && ask !== prevAskRef.current) {
+      setAskTick(ask > prevAskRef.current ? 'UP' : 'DOWN');
+      const t = setTimeout(() => setAskTick(null), 650);
+      prevAskRef.current = ask;
+      return () => clearTimeout(t);
+    }
+    prevAskRef.current = ask;
+  }, [ask]);
+
   // Map timeframe to TradingView interval string
   const tvInterval = useMemo(() => {
     switch (timeframe) {
@@ -162,15 +188,25 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
                   </span>
                 )}
 
-                {/* SELL / Bid Badge (Red) - Solid red, price number changes cleanly */}
+                {/* SELL / Bid Badge (Red) - Animated reaction on price change */}
                 <div
                   title="SELL (Bid) Price - Synchronized with SELL button"
-                  className="flex items-center rounded overflow-hidden shadow-xs border border-red-800/80 bg-[#1A1215]"
+                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
+                    bidTick === 'UP'
+                      ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'
+                      : bidTick === 'DOWN'
+                      ? 'border-rose-400 ring-1 ring-rose-400 scale-105'
+                      : 'border-red-800/80'
+                  } bg-[#1A1215]`}
                 >
-                  <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
+                  <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
                     SELL
+                    {bidTick === 'UP' && <span className="text-emerald-300 text-[10px]">▲</span>}
+                    {bidTick === 'DOWN' && <span className="text-rose-300 text-[10px]">▼</span>}
                   </span>
-                  <span className="bg-[#E51937] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white transition-all ${
+                    bidTick === 'UP' ? 'bg-[#00C076]' : bidTick === 'DOWN' ? 'bg-[#FF2E4D]' : 'bg-[#E51937]'
+                  }`}>
                     {bid.toFixed(decimals)}
                   </span>
                 </div>
@@ -198,15 +234,25 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
                   </span>
                 </div>
 
-                {/* BUY / Ask Badge (Green) - Solid green, price number changes cleanly */}
+                {/* BUY / Ask Badge (Green) - Animated reaction on price change */}
                 <div
                   title="BUY (Ask) Price - Synchronized with BUY button"
-                  className="flex items-center rounded overflow-hidden shadow-xs border border-emerald-800/80 bg-[#121A15]"
+                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
+                    askTick === 'UP'
+                      ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'
+                      : askTick === 'DOWN'
+                      ? 'border-rose-400 ring-1 ring-rose-400 scale-105'
+                      : 'border-emerald-800/80'
+                  } bg-[#121A15]`}
                 >
-                  <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
+                  <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
                     BUY
+                    {askTick === 'UP' && <span className="text-emerald-300 text-[10px]">▲</span>}
+                    {askTick === 'DOWN' && <span className="text-rose-300 text-[10px]">▼</span>}
                   </span>
-                  <span className="bg-[#00C076] text-white px-1.5 py-0.5 text-[10px] font-bold">
+                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white transition-all ${
+                    askTick === 'UP' ? 'bg-[#00E58D] text-black font-extrabold' : askTick === 'DOWN' ? 'bg-[#FF2E4D]' : 'bg-[#00C076]'
+                  }`}>
                     {ask.toFixed(decimals)}
                   </span>
                 </div>

@@ -10,7 +10,6 @@ import {
   TradingAccount,
 } from '../types';
 import { TradingViewWidget } from './TradingViewWidget';
-import { TradingChart } from './TradingChart';
 import {
   TrendingUp,
   TrendingDown,
@@ -116,7 +115,71 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   >('positions');
   const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
-  const [chartEngine, setChartEngine] = useState<'custom' | 'tradingview'>('custom');
+
+  // Live real-time tick detection for instantaneous button & pips movement
+  const prevBidRef = React.useRef(currentInstrument.bid);
+  const prevAskRef = React.useRef(currentInstrument.ask);
+  const currentSymbolRef = React.useRef(currentInstrument.symbol);
+  const [bidTick, setBidTick] = useState<'UP' | 'DOWN' | null>(null);
+  const [askTick, setAskTick] = useState<'UP' | 'DOWN' | null>(null);
+  const bidTimerRef = React.useRef<any>(null);
+  const askTimerRef = React.useRef<any>(null);
+
+  // When symbol switches, synchronize refs immediately without triggering fake tick
+  React.useEffect(() => {
+    if (currentSymbolRef.current !== currentInstrument.symbol) {
+      currentSymbolRef.current = currentInstrument.symbol;
+      prevBidRef.current = currentInstrument.bid;
+      prevAskRef.current = currentInstrument.ask;
+      setBidTick(null);
+      setAskTick(null);
+      if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
+      if (askTimerRef.current) clearTimeout(askTimerRef.current);
+    }
+  }, [currentInstrument.symbol]);
+
+  // Immediate reaction when bid price changes
+  React.useEffect(() => {
+    if (currentInstrument.bid !== prevBidRef.current) {
+      const direction: 'UP' | 'DOWN' = currentInstrument.bid > prevBidRef.current ? 'UP' : 'DOWN';
+      prevBidRef.current = currentInstrument.bid;
+      setBidTick(direction);
+      if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
+      bidTimerRef.current = setTimeout(() => setBidTick(null), 700);
+    }
+  }, [currentInstrument.bid]);
+
+  // Immediate reaction when ask price changes
+  React.useEffect(() => {
+    if (currentInstrument.ask !== prevAskRef.current) {
+      const direction: 'UP' | 'DOWN' = currentInstrument.ask > prevAskRef.current ? 'UP' : 'DOWN';
+      prevAskRef.current = currentInstrument.ask;
+      setAskTick(direction);
+      if (askTimerRef.current) clearTimeout(askTimerRef.current);
+      askTimerRef.current = setTimeout(() => setAskTick(null), 700);
+    }
+  }, [currentInstrument.ask]);
+
+  // Synchronize with external tickDirection if provided
+  React.useEffect(() => {
+    if (tickDirection === 'UP' || tickDirection === 'DOWN') {
+      setAskTick(tickDirection);
+      setBidTick(tickDirection);
+      if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
+      if (askTimerRef.current) clearTimeout(askTimerRef.current);
+      const timer = setTimeout(() => {
+        setAskTick(null);
+        setBidTick(null);
+      }, 700);
+      bidTimerRef.current = timer;
+      askTimerRef.current = timer;
+    }
+  }, [tickDirection]);
+
+  // Live spread calculation in exact pips
+  const liveSpreadPips = (
+    Math.abs(currentInstrument.ask - currentInstrument.bid) * currentInstrument.pipMultiplier
+  ).toFixed(1);
 
   // Calculate Pip value and required margin
   const leverageNum = parseInt(account?.leverage ? account.leverage.split(':')[1] || '500' : '500', 10);
@@ -374,95 +437,22 @@ export const TradeTab: React.FC<TradeTabProps> = ({
         </div>
       )}
 
-      {/* Main Trading Area: 2-column responsive layout on desktop (Chart Area + Order Pad) */}
+      {/* Main Trading Area: 2-column responsive layout on desktop (Chart + Order Pad) */}
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] xl:grid-cols-[1fr_390px] gap-3.5 items-start">
-        {/* Left: Chart Section with High-Visibility Engine Selector */}
-        <div className="w-full flex flex-col space-y-2">
-          {/* Chart Engine Switcher - Lets user switch between Our Real-Time Chart and TradingView Chart */}
-          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-400">
-                Chart Engine:
-              </span>
-              <div
-                className={`flex rounded-lg p-0.5 border ${
-                  isDarkMode
-                    ? 'bg-neutral-900 border-neutral-800'
-                    : 'bg-slate-100 border-slate-200'
-                }`}
-              >
-                <button
-                  type="button"
-                  id="btn-engine-custom"
-                  onClick={() => setChartEngine('custom')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                    chartEngine === 'custom'
-                      ? 'bg-[#E51937] text-white shadow-md'
-                      : isDarkMode
-                      ? 'text-neutral-400 hover:text-white'
-                      : 'text-neutral-600 hover:text-neutral-900'
-                  }`}
-                >
-                  <Activity className="w-3.5 h-3.5" />
-                  <span>Our Real-Time Chart</span>
-                </button>
-                <button
-                  type="button"
-                  id="btn-engine-tradingview"
-                  onClick={() => setChartEngine('tradingview')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                    chartEngine === 'tradingview'
-                      ? 'bg-[#E51937] text-white shadow-md'
-                      : isDarkMode
-                      ? 'text-neutral-400 hover:text-white'
-                      : 'text-neutral-600 hover:text-neutral-900'
-                  }`}
-                >
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  <span>TradingView Chart</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold border border-emerald-500/20">
-                ● Live Equinix LD4 Feed
-              </span>
-            </div>
-          </div>
-
-          {/* Active Chart Container */}
-          <div className="w-full h-[520px] sm:h-[580px] lg:h-[640px] rounded-xl overflow-hidden shadow-lg border border-neutral-800/80 bg-black/40">
-            {chartEngine === 'custom' ? (
-              <TradingChart
-                candles={candles}
-                symbol={currentInstrument.symbol}
-                decimals={currentInstrument.decimals}
-                currentBid={currentInstrument.bid}
-                currentAsk={currentInstrument.ask}
-                timeframe={timeframe}
-                onTimeframeChange={onTimeframeChange}
-                positions={positions}
-                chartType={chartType}
-                onChartTypeChange={onChartTypeChange}
-                isDarkMode={isDarkMode}
-                tickDirection={tickDirection}
-              />
-            ) : (
-              <TradingViewWidget
-                symbol={currentInstrument.symbol}
-                timeframe={timeframe}
-                onTimeframeChange={onTimeframeChange}
-                isDarkMode={isDarkMode}
-                bid={currentInstrument.bid}
-                ask={currentInstrument.ask}
-                spread={currentInstrument.spread}
-                decimals={currentInstrument.decimals}
-                pipMultiplier={currentInstrument.pipMultiplier}
-                tickDirection={tickDirection}
-              />
-            )}
-          </div>
+        {/* Left: Interactive Live Chart Alone */}
+        <div className="w-full h-[520px] sm:h-[580px] lg:h-[640px] rounded-xl overflow-hidden shadow-lg border border-neutral-800/80 bg-black/40">
+          <TradingViewWidget
+            symbol={currentInstrument.symbol}
+            timeframe={timeframe}
+            onTimeframeChange={onTimeframeChange}
+            isDarkMode={isDarkMode}
+            bid={currentInstrument.bid}
+            ask={currentInstrument.ask}
+            spread={currentInstrument.spread}
+            decimals={currentInstrument.decimals}
+            pipMultiplier={currentInstrument.pipMultiplier}
+            tickDirection={tickDirection}
+          />
         </div>
 
         {/* Right: HFM Signature Order Execution Pad */}
@@ -794,57 +784,81 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           </div>
         )}
 
-        {/* Dual Execution Buttons: Stable Red and Green buttons without pulse or movement */}
+        {/* Dual Execution Buttons: Real-time dynamic response with live price ticks & spread */}
         <div className="grid grid-cols-2 gap-3 pt-1">
-          {/* Sell Button - Solid Red, stable and does not highlight or move */}
+          {/* Sell Button - Real-time animated reaction on price change */}
           <button
             id="trade-btn-sell"
             onClick={() => handleExecute('SELL')}
-            disabled={!curMarketStatus.isOpen}
-            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-colors border select-none ${
-              !curMarketStatus.isOpen
+            disabled={!curMarketStatus.isOpen && currentInstrument.category !== 'Crypto'}
+            className={`py-3 px-3 rounded-xl text-white flex flex-col items-center justify-center transition-all duration-150 select-none cursor-pointer ${
+              !curMarketStatus.isOpen && currentInstrument.category !== 'Crypto'
                 ? 'bg-[#C5192D]/75 border-red-900/80 opacity-75 cursor-not-allowed shadow-none'
-                : 'bg-gradient-to-b from-[#E51937] to-[#B30F24] hover:from-[#f02040] hover:to-[#c01227] border-red-700/60 shadow-lg shadow-red-950/30 cursor-pointer'
+                : bidTick === 'DOWN'
+                ? 'bg-gradient-to-b from-[#FF2E4D] to-[#B30F24] ring-2 ring-rose-400 border-rose-300 shadow-xl shadow-rose-900/60 scale-[1.02]'
+                : bidTick === 'UP'
+                ? 'bg-gradient-to-b from-[#00C076] to-[#008050] ring-2 ring-emerald-400 border-emerald-300 shadow-xl shadow-emerald-900/60 scale-[1.02]'
+                : 'bg-gradient-to-b from-[#E51937] to-[#B30F24] hover:from-[#f02040] hover:to-[#c01227] border-red-700/60 shadow-lg shadow-red-950/30'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-red-100">
-              {!curMarketStatus.isOpen ? (
+              {!curMarketStatus.isOpen && currentInstrument.category !== 'Crypto' ? (
                 <span className="flex items-center gap-1 text-red-200"><Lock className="w-3 h-3" /> Closed</span>
               ) : (
-                <span>{orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}</span>
+                <span className="flex items-center gap-1">
+                  {orderType === 'MARKET' ? 'SELL by Market' : `SELL (${orderType})`}
+                  {bidTick === 'DOWN' && <span className="text-white animate-bounce text-xs">▼</span>}
+                  {bidTick === 'UP' && <span className="text-white animate-bounce text-xs">▲</span>}
+                </span>
               )}
             </div>
-            <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
-              {currentInstrument.bid.toFixed(currentInstrument.decimals)}
-            </span>
-            <span className="text-[10px] text-red-200/90 font-mono mt-0.5">
-              Spread: -{currentInstrument.spread.toFixed(1)} pips
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className={`font-mono text-lg font-black tracking-tight text-white transition-all ${
+                bidTick ? 'scale-105 font-extrabold' : ''
+              }`}>
+                {currentInstrument.bid.toFixed(currentInstrument.decimals)}
+              </span>
+            </div>
+            <span className="text-[10px] text-red-200/90 font-mono mt-0.5 font-semibold">
+              Spread: -{liveSpreadPips} pips
             </span>
           </button>
 
-          {/* Buy Button - Solid Green, stable and does not highlight or move */}
+          {/* Buy Button - Real-time animated reaction on price change */}
           <button
             id="trade-btn-buy"
             onClick={() => handleExecute('BUY')}
-            disabled={!curMarketStatus.isOpen}
-            className={`py-3 px-3 active:scale-[0.98] rounded-xl text-white flex flex-col items-center justify-center transition-colors border select-none ${
-              !curMarketStatus.isOpen
+            disabled={!curMarketStatus.isOpen && currentInstrument.category !== 'Crypto'}
+            className={`py-3 px-3 rounded-xl text-white flex flex-col items-center justify-center transition-all duration-150 select-none cursor-pointer ${
+              !curMarketStatus.isOpen && currentInstrument.category !== 'Crypto'
                 ? 'bg-[#007A4A]/75 border-emerald-900/80 opacity-75 cursor-not-allowed shadow-none'
-                : 'bg-gradient-to-b from-[#00A86B] to-[#008050] hover:from-[#00b875] hover:to-[#008f59] border-emerald-600/60 shadow-lg shadow-emerald-950/30 cursor-pointer'
+                : askTick === 'UP'
+                ? 'bg-gradient-to-b from-[#00E58D] to-[#008050] ring-2 ring-emerald-300 border-emerald-200 shadow-xl shadow-emerald-900/60 scale-[1.02]'
+                : askTick === 'DOWN'
+                ? 'bg-gradient-to-b from-[#FF2E4D] to-[#B30F24] ring-2 ring-rose-400 border-rose-300 shadow-xl shadow-rose-900/60 scale-[1.02]'
+                : 'bg-gradient-to-b from-[#00A86B] to-[#008050] hover:from-[#00b875] hover:to-[#008f59] border-emerald-600/60 shadow-lg shadow-emerald-950/30'
             }`}
           >
             <div className="flex items-center gap-1 text-[11px] uppercase tracking-wider font-extrabold text-emerald-100">
-              {!curMarketStatus.isOpen ? (
+              {!curMarketStatus.isOpen && currentInstrument.category !== 'Crypto' ? (
                 <span className="flex items-center gap-1 text-emerald-200"><Lock className="w-3 h-3" /> Closed</span>
               ) : (
-                <span>{orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}</span>
+                <span className="flex items-center gap-1">
+                  {orderType === 'MARKET' ? 'BUY by Market' : `BUY (${orderType})`}
+                  {askTick === 'UP' && <span className="text-white animate-bounce text-xs">▲</span>}
+                  {askTick === 'DOWN' && <span className="text-white animate-bounce text-xs">▼</span>}
+                </span>
               )}
             </div>
-            <span className="font-mono text-lg font-black tracking-tight text-white mt-0.5">
-              {currentInstrument.ask.toFixed(currentInstrument.decimals)}
-            </span>
-            <span className="text-[10px] text-emerald-200/90 font-mono mt-0.5">
-              Spread: +{currentInstrument.spread.toFixed(1)} pips
+            <div className="flex items-center gap-1 mt-0.5">
+              <span className={`font-mono text-lg font-black tracking-tight text-white transition-all ${
+                askTick ? 'scale-105 font-extrabold' : ''
+              }`}>
+                {currentInstrument.ask.toFixed(currentInstrument.decimals)}
+              </span>
+            </div>
+            <span className="text-[10px] text-emerald-200/90 font-mono mt-0.5 font-semibold">
+              Spread: +{liveSpreadPips} pips
             </span>
           </button>
         </div>

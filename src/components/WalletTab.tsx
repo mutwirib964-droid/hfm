@@ -122,12 +122,19 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   // Calculate withdrawable balance for currently selected source
   const getWithdrawableBalance = (source: string) => {
     if (source === 'VTM Wallet' || source === 'VTM One Wallet' || source === 'HF Wallet') {
-      return walletBalance;
+      return Number(walletBalance.toFixed(2));
     }
+    const cleanSource = source.replace(/^Account\s*#/i, '').trim();
     const liveAcc = liveAccounts.find(
-      (a) => a.accountNumber === source || `Account #${a.accountNumber}` === source || a.id === source
+      (a) =>
+        a.accountNumber === cleanSource ||
+        a.accountNumber === source ||
+        `Account #${a.accountNumber}` === source ||
+        a.id === source
     );
-    return liveAcc ? Math.max(0, liveAcc.freeMargin || liveAcc.balance) : 0;
+    if (!liveAcc) return 0;
+    const usedMargin = liveAcc.margin || 0;
+    return Number(Math.max(0, liveAcc.balance - usedMargin).toFixed(2));
   };
 
   const currentWithdrawable = getWithdrawableBalance(withdrawSource);
@@ -135,17 +142,24 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   // Calculate transferable balance for currently selected fromAccount
   const getTransferableBalance = (source: string) => {
     if (source === 'VTM Wallet' || source === 'VTM One Wallet' || source === 'HF Wallet') {
-      return walletBalance;
+      return Number(walletBalance.toFixed(2));
     }
+    const cleanSource = source.replace(/^Account\s*#/i, '').trim();
     const liveAcc = liveAccounts.find(
-      (a) => a.accountNumber === source || `Account #${a.accountNumber}` === source || a.id === source
+      (a) =>
+        a.accountNumber === cleanSource ||
+        a.accountNumber === source ||
+        `Account #${a.accountNumber}` === source ||
+        a.id === source
     );
-    return liveAcc ? Math.max(0, liveAcc.freeMargin || liveAcc.balance) : 0;
+    if (!liveAcc) return 0;
+    const usedMargin = liveAcc.margin || 0;
+    return Number(Math.max(0, liveAcc.balance - usedMargin).toFixed(2));
   };
 
   const currentTransferable = getTransferableBalance(transferFrom);
 
-  // 5-second countdown timer for withdrawal disbursement
+  // 3-second countdown timer for withdrawal pending -> automatic success transition
   useEffect(() => {
     let timer: any;
     if (withdrawStep === 'PROCESSING') {
@@ -154,14 +168,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
           if (prev <= 1) {
             clearInterval(timer);
             setWithdrawStep('SUCCESS');
-            // Execute payout credit & deduction
-            onWithdraw({
-              method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
-              amount: withdrawAmount,
-              sourceAccount: withdrawSource,
-              reference: withdrawReceipt,
-              status: 'COMPLETED',
-            });
             return 0;
           }
           return prev - 1;
@@ -171,16 +177,29 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     return () => {
       if (timer) clearInterval(timer);
     };
-  }, [withdrawStep, withdrawAmount, withdrawSource, withdrawReceipt, withdrawMethod, withdrawCryptoCoin, onWithdraw]);
+  }, [withdrawStep]);
 
-  // Open Withdraw Modal with reset state
+  // Open Withdraw Modal with smart source selection
   const handleOpenWithdraw = (source?: string, method: 'mpesa' | 'crypto' = 'mpesa') => {
-    if (source) setWithdrawSource(source);
+    let resolvedSource = source || 'VTM Wallet';
+    // If default VTM Wallet has insufficient funds (< $35) and a Live Account has funds, auto-select the funded Live Account
+    if (!source || source === 'VTM Wallet') {
+      if (walletBalance < 35 && liveAccounts.length > 0) {
+        const fundedSelected =
+          selectedAccount && selectedAccount.type === 'Live' && selectedAccount.balance >= 35
+            ? selectedAccount
+            : liveAccounts.find((a) => a.balance >= 35) || liveAccounts[0];
+        if (fundedSelected && fundedSelected.balance > walletBalance) {
+          resolvedSource = `Account #${fundedSelected.accountNumber}`;
+        }
+      }
+    }
+    setWithdrawSource(resolvedSource);
     setWithdrawMethod(method);
     setWithdrawAmount(method === 'crypto' ? 50 : 35);
     setWithdrawError(null);
     setWithdrawStep('FORM');
-    setWithdrawCountdown(5);
+    setWithdrawCountdown(3);
     setActiveModal('withdraw');
   };
 
@@ -191,7 +210,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     setActiveModal(null);
   };
 
-  // Trigger Withdrawal (Validates min $35 for M-PESA, min $50 for Crypto)
+  // Trigger Withdrawal (Validates min $35 for M-PESA, min $50 for Crypto; records PENDING for 3s then shifts to SUCCESSFUL automatically)
   const handleStartWithdrawal = () => {
     setWithdrawError(null);
     const maxAvailable = getWithdrawableBalance(withdrawSource);
@@ -202,7 +221,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED',
+        status: 'FAILED' as any,
       });
       return;
     }
@@ -214,7 +233,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED',
+        status: 'FAILED' as any,
       });
       return;
     }
@@ -225,7 +244,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED',
+        status: 'FAILED' as any,
       });
       return;
     }
@@ -238,8 +257,17 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       ? `TX-${withdrawCryptoCoin}-${Math.floor(100000000 + Math.random() * 900000000)}`
       : `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
     setWithdrawReceipt(receipt);
-    setWithdrawCountdown(5);
+    setWithdrawCountdown(3);
     setWithdrawStep('PROCESSING');
+
+    // Immediately deduct from account and record as PENDING; App.tsx automatically transitions it to COMPLETED (SUCCESSFUL) after 3 seconds
+    onWithdraw({
+      method: withdrawMethod === 'crypto' ? `Crypto Payout (${withdrawCryptoCoin})` : 'Safaricom M-PESA B2C',
+      amount: Number(withdrawAmount.toFixed(2)),
+      sourceAccount: withdrawSource,
+      reference: receipt,
+      status: 'PENDING',
+    });
   };
 
   const handleProcessTransfer = () => {
@@ -504,9 +532,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                           #{acc.accountNumber}
                         </span>
-                        <span className={`text-[10px] font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                          ({acc.tier})
-                        </span>
                       </div>
                       <span className={`text-[10px] font-mono mt-0.5 block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                         {acc.server} | {acc.leverage}
@@ -630,16 +655,17 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                               {tx.method || tx.type}
                             </span>
                             <span
-                              className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-black tracking-tight ${
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-black tracking-tight inline-flex items-center gap-1 ${
                                 isSuccess
                                   ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                                   : isFailed
                                   ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
                                   : isCancelled
                                   ? 'bg-neutral-800 text-neutral-400 border border-neutral-700'
-                                  : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                                  : 'bg-amber-500/15 text-amber-400 border border-amber-500/30 animate-pulse'
                               }`}
                             >
+                              {isPending && <RefreshCw className="w-2.5 h-2.5 animate-spin" />}
                               {isSuccess ? 'SUCCESSFUL' : isFailed ? 'FAILED' : isCancelled ? 'CANCELLED' : 'PENDING'}
                             </span>
                           </div>
@@ -813,7 +839,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     <option value="VTM Wallet">VTM One Wallet (${walletBalance.toFixed(2)})</option>
                     {liveAccounts.map((a) => (
                       <option key={a.id} value={`Account #${a.accountNumber}`}>
-                        Live Account #{a.accountNumber} ({a.tier} - ${a.balance.toFixed(2)})
+                        Live Account #{a.accountNumber} (${a.balance.toFixed(2)})
                       </option>
                     ))}
                   </select>
@@ -1052,18 +1078,18 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </span>
                 </div>
 
-                {/* Progress bar filling over 5 seconds */}
+                {/* Progress bar filling over 3 seconds */}
                 <div className="w-full bg-slate-200 dark:bg-neutral-800 rounded-full h-2 overflow-hidden">
                   <div
                     className={`h-2 transition-all duration-1000 ease-linear ${
                       withdrawMethod === 'crypto' ? 'bg-amber-500' : 'bg-[#00A34F]'
                     }`}
-                    style={{ width: `${((5 - withdrawCountdown) / 5) * 100}%` }}
+                    style={{ width: `${((3 - withdrawCountdown) / 3) * 100}%` }}
                   />
                 </div>
 
                 <span className="text-[11px] text-slate-400 dark:text-neutral-500 font-mono">
-                  Disbursement in progress... ({withdrawCountdown}s)
+                  Pending verification &amp; disbursement... ({withdrawCountdown}s)
                 </span>
               </div>
             )}
@@ -1197,7 +1223,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <option value="VTM Wallet">VTM Wallet (${walletBalance.toFixed(2)})</option>
                 {liveAccounts.map((a) => (
                   <option key={a.id} value={a.accountNumber}>
-                    Live #{a.accountNumber} ({a.tier} - ${a.balance.toFixed(2)})
+                    Live #{a.accountNumber} (${a.balance.toFixed(2)})
                   </option>
                 ))}
               </select>
@@ -1234,7 +1260,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <option value="VTM Wallet">VTM Wallet (${walletBalance.toFixed(2)})</option>
                 {liveAccounts.map((a) => (
                   <option key={a.id} value={a.accountNumber}>
-                    Live #{a.accountNumber} ({a.tier} - ${a.balance.toFixed(2)})
+                    Live #{a.accountNumber} (${a.balance.toFixed(2)})
                   </option>
                 ))}
               </select>

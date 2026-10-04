@@ -280,10 +280,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       });
     }
 
-    // Draw Candles or Line
+    // Draw Candles or Line (anchored to currentBid to match SELL button and TradingView close 1:1)
     const bullColor = '#00C076'; // HFM Emerald
     const bearColor = '#FF334B'; // HFM Red
-    const currentPrice = tickDirection === 'UP' ? currentAsk : currentBid;
+    const currentPrice = currentBid;
 
     if (chartType === 'candles') {
       candles.forEach((c, i) => {
@@ -489,24 +489,34 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     ctx.fillStyle = isDarkMode ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.06)';
     ctx.fillRect(0, spreadTopY, chartWidth, spreadH);
 
-    // 4. Exact Currency Price Pills on Right Y-Axis
+    // 4. Exact Currency Price Pills on Right Y-Axis (auto-separated so BUY and SELL never overlap)
+    const minPillGap = 17;
+    const rawGap = bidY - askY; // Usually positive since ask > bid => askY < bidY
+    let displayAskY = askY;
+    let displayBidY = bidY;
+    if (Math.abs(rawGap) < minPillGap) {
+      const midY = (bidY + askY) / 2;
+      displayAskY = midY - minPillGap / 2;
+      displayBidY = midY + minPillGap / 2;
+    }
+
     // Bid Pill (Red - SELL)
     ctx.fillStyle = '#EF4444';
     ctx.beginPath();
-    ctx.roundRect(chartWidth + 1, bidY - 8, priceScaleWidth - 3, 16, 3);
+    ctx.roundRect(chartWidth + 1, displayBidY - 8, priceScaleWidth - 3, 16, 3);
     ctx.fill();
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 9px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(currentBid.toFixed(decimals), chartWidth + (priceScaleWidth - 3) / 2, bidY + 3.5);
+    ctx.fillText(currentBid.toFixed(decimals), chartWidth + (priceScaleWidth - 3) / 2, displayBidY + 3.5);
 
     // Ask Pill (Green - BUY)
     ctx.fillStyle = '#10B981';
     ctx.beginPath();
-    ctx.roundRect(chartWidth + 1, askY - 8, priceScaleWidth - 3, 16, 3);
+    ctx.roundRect(chartWidth + 1, displayAskY - 8, priceScaleWidth - 3, 16, 3);
     ctx.fill();
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(currentAsk.toFixed(decimals), chartWidth + (priceScaleWidth - 3) / 2, askY + 3.5);
+    ctx.fillText(currentAsk.toFixed(decimals), chartWidth + (priceScaleWidth - 3) / 2, displayAskY + 3.5);
 
     // Spread Badge between Bid and Ask on axis
     const midSpreadY = (bidY + askY) / 2;
@@ -692,9 +702,9 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     : candles.length > 0
     ? {
         ...candles[candles.length - 1],
-        close: tickDirection === 'UP' ? currentAsk : currentBid,
-        high: Math.max(candles[candles.length - 1].high, tickDirection === 'UP' ? currentAsk : currentBid),
-        low: Math.min(candles[candles.length - 1].low, tickDirection === 'UP' ? currentAsk : currentBid),
+        close: currentBid,
+        high: Math.max(candles[candles.length - 1].high, currentBid),
+        low: Math.min(candles[candles.length - 1].low, currentBid),
       }
     : null;
 

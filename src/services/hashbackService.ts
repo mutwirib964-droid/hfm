@@ -6,7 +6,7 @@
  */
 
 export const HASHBACK_ACCOUNT_ID = 'HP068635';
-export const HASHBACK_API_KEY = '09a166c7e99ef7751c92f675076e73f8deb6f980c33d92f6321f180116d42f5a';
+export const HASHBACK_API_KEY = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_HASHBACK_API_KEY) || '';
 export const USD_KES_RATE = 125.67;
 
 export interface MpesaPaymentRequest {

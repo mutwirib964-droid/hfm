@@ -221,15 +221,48 @@ class SupabaseService {
   // 1. ACCOUNT CREATION & PROFILES (vtm_registered_users & Supabase Auth)
   // =========================================================================
 
+  private isMasterAdminEmail(email?: string | null): boolean {
+    if (!email) return false;
+    const clean = email.trim().toLowerCase();
+    return (
+      clean === 'mutwrib@gmail.com' ||
+      clean === 'mutwirib964@gmail.com' ||
+      clean === 'mutwirib@gmail.com'
+    );
+  }
+
+  private isValidUuid(val?: string | null): boolean {
+    if (!val || typeof val !== 'string') return false;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+  }
+
+  private parseStoredPasswordAndUid(rawHash?: string | null): { uid?: string; password?: string } {
+    if (!rawHash) return {};
+    if (rawHash.startsWith('uid:')) {
+      const pipeIdx = rawHash.indexOf('|');
+      if (pipeIdx > 4) {
+        const uid = rawHash.slice(4, pipeIdx).trim();
+        const password = rawHash.slice(pipeIdx + 1);
+        return { uid: this.isValidUuid(uid) ? uid : undefined, password };
+      }
+    }
+    return { password: rawHash };
+  }
+
   public async findUserInDatabase(
     email: string
-  ): Promise<{ profile: UserAuthProfile; password?: string } | null> {
+  ): Promise<{ profile: UserAuthProfile; password?: string; hasVerifiedUid: boolean } | null> {
     if (!this.config || !email) return null;
     const cleanEmail = email.trim().toLowerCase();
+    const isAdmin = this.isMasterAdminEmail(cleanEmail);
 
     try {
+      const queryFilter = isAdmin
+        ? `or=(email.eq.mutwrib@gmail.com,email.eq.mutwirib964@gmail.com,email.eq.mutwirib@gmail.com)`
+        : `email=eq.${encodeURIComponent(cleanEmail)}`;
+
       const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}&select=*`,
+        `${this.config.url}/rest/v1/vtm_registered_users?${queryFilter}&select=*`,
         {
           method: 'GET',
           headers: {
@@ -244,20 +277,63 @@ class SupabaseService {
         const rows = await res.json();
         if (Array.isArray(rows) && rows.length > 0) {
           const row = rows[0];
+          const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
+          let resolvedUid = row.uid || parsedHash.uid || '';
+
+          if (isAdmin) {
+            resolvedUid = '84a1e1db-f302-4dac-a077-291128ae0cea';
+          }
+
+          // Also check vtm_user_finances if uid wasn't in row yet
+          if (!this.isValidUuid(resolvedUid) && !isAdmin) {
+            try {
+              const finRes = await fetch(
+                `${this.config.url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(cleanEmail)}&select=user_key`,
+                {
+                  method: 'GET',
+                  headers: {
+                    apikey: this.config.anonKey,
+                    Authorization: `Bearer ${this.config.anonKey}`,
+                  },
+                  signal: AbortSignal.timeout(3000),
+                }
+              );
+              if (finRes.ok) {
+                const finRows = await finRes.json();
+                if (Array.isArray(finRows)) {
+                  const uuidRow = finRows.find((r: any) => this.isValidUuid(r.user_key));
+                  if (uuidRow) {
+                    resolvedUid = uuidRow.user_key;
+                  }
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+
+          const hasVerifiedUid = isAdmin || this.isValidUuid(resolvedUid);
+          // Strict rule: No other email ever gets 'admin' role
+          const safeRole = isAdmin
+            ? 'admin'
+            : row.role === 'marketer'
+            ? 'marketer'
+            : 'normal';
+
           const profile: UserAuthProfile = {
-            id: `usr-${row.account_number || Date.now()}`,
-            name: row.name || 'Trader',
-            email: row.email,
+            id: hasVerifiedUid ? resolvedUid : '',
+            name: isAdmin ? 'mutwiri' : row.name || 'Trader',
+            email: isAdmin ? cleanEmail : row.email,
             phoneNumber: row.phone_number || '',
             phone: row.phone_number || '',
-            countryCode: row.country_code || '+1',
-            countryName: row.country_name || 'United States',
-            accountNumber: row.account_number,
-            role: row.role || 'normal',
+            countryCode: row.country_code || '+254',
+            countryName: row.country_name || 'Kenya',
+            accountNumber: row.account_number || '27330648',
+            role: safeRole,
             isLoggedIn: true,
             createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
           };
-          return { profile, password: row.password_hash };
+          return { profile, password: parsedHash.password, hasVerifiedUid };
         }
       }
     } catch (e) {
@@ -271,30 +347,80 @@ class SupabaseService {
     password?: string
   ): Promise<boolean> {
     if (!this.config || !profile.email) return false;
+    const cleanEmail = profile.email.trim().toLowerCase();
+    const isAdmin = this.isMasterAdminEmail(cleanEmail);
+    const verifiedUid = isAdmin
+      ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+      : this.isValidUuid(profile.id)
+      ? profile.id.trim()
+      : '';
+
+    // Strict rule: user without a valid UID can NEVER be saved or sign in
+    if (!verifiedUid) {
+      console.warn('Blocked registration in database: missing valid UID');
+      return false;
+    }
+
+    // Strict rule: only Master Admin email can ever have role 'admin'
+    const safeRole = isAdmin
+      ? 'admin'
+      : profile.role === 'marketer'
+      ? 'marketer'
+      : 'normal';
+
+    const encodedPasswordHash = `uid:${verifiedUid}|${password || ''}`;
 
     try {
-      const payload = {
-        email: profile.email.trim().toLowerCase(),
-        password_hash: password || '',
-        name: profile.name,
+      // First attempt with explicit uid column (works once SQL migration is applied)
+      const payloadWithUid = {
+        uid: verifiedUid,
+        email: cleanEmail,
+        password_hash: encodedPasswordHash,
+        name: isAdmin ? 'mutwiri' : profile.name,
         phone_number: profile.phoneNumber || profile.phone || '',
-        country_code: profile.countryCode || '+1',
-        country_name: profile.countryName || 'United States',
+        country_code: profile.countryCode || '+254',
+        country_name: profile.countryName || 'Kenya',
         account_number: profile.accountNumber,
-        role: profile.role || 'normal',
+        role: safeRole,
         created_at: new Date(profile.createdAt || Date.now()).toISOString(),
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
 
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_registered_users`, {
+      const resWithUid = await fetch(`${this.config.url}/rest/v1/vtm_registered_users`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(payloadWithUid),
         signal: AbortSignal.timeout(4000),
       });
 
-      return res.ok;
+      if (resWithUid.ok) {
+        return true;
+      }
+
+      // Fallback if 'uid' column not yet created in table: store uid inside password_hash & vtm_user_finances
+      const payloadFallback = {
+        email: cleanEmail,
+        password_hash: encodedPasswordHash,
+        name: isAdmin ? 'mutwiri' : profile.name,
+        phone_number: profile.phoneNumber || profile.phone || '',
+        country_code: profile.countryCode || '+254',
+        country_name: profile.countryName || 'Kenya',
+        account_number: profile.accountNumber,
+        role: safeRole,
+        created_at: new Date(profile.createdAt || Date.now()).toISOString(),
+        last_login_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      const resFallback = await fetch(`${this.config.url}/rest/v1/vtm_registered_users`, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(payloadFallback),
+        signal: AbortSignal.timeout(4000),
+      });
+
+      return resFallback.ok;
     } catch (e) {
       console.warn('Failed to save registered user to Supabase', e);
       return false;
@@ -325,6 +451,176 @@ class SupabaseService {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  public async updateUserRoleInDatabase(email: string, role: string): Promise<boolean> {
+    if (!this.config || !email) return false;
+
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const isAdmin = this.isMasterAdminEmail(cleanEmail);
+      // Strictly forbid any other email from having 'admin' role in Supabase
+      const safeRole = isAdmin ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
+
+      const res = await fetch(
+        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          body: JSON.stringify({
+            role: safeRole,
+            updated_at: new Date().toISOString(),
+          }),
+          signal: AbortSignal.timeout(4000),
+        }
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Super Admin Cloud Sync: Fetches ALL registered users and ALL user financial states
+   * directly from Supabase so the Admin Portal displays exact real-time platform users & money in.
+   */
+  public async fetchAllPlatformUsersAndFinances(): Promise<{
+    users: UserAuthProfile[];
+    financesByEmail: Record<string, UserFinancialState>;
+  } | null> {
+    if (!this.config) return null;
+
+    try {
+      const [usersRes, finRes] = await Promise.all([
+        fetch(`${this.config.url}/rest/v1/vtm_registered_users?select=*&order=created_at.desc`, {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        }),
+        fetch(`${this.config.url}/rest/v1/vtm_user_finances?select=*&order=last_updated.desc`, {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        }),
+      ]);
+
+      const usersRows = usersRes.ok ? await usersRes.json() : [];
+      const finRows = finRes.ok ? await finRes.json() : [];
+
+      const financesByEmail: Record<string, UserFinancialState> = {};
+      const uidByEmail: Record<string, string> = {};
+
+      if (Array.isArray(finRows)) {
+        finRows.forEach((r: any) => {
+          const emailKey = (r.user_email || r.user_key || '').trim().toLowerCase();
+          if (!emailKey) return;
+
+          if (this.isValidUuid(r.user_key)) {
+            uidByEmail[emailKey] = r.user_key.trim();
+          }
+
+          const canonicalEmail = this.isMasterAdminEmail(emailKey)
+            ? 'mutwirib964@gmail.com'
+            : emailKey;
+
+          // Keep the row with non-empty accounts/transactions or newest timestamp
+          const existing = financesByEmail[canonicalEmail];
+          const incomingState: UserFinancialState = {
+            walletBalance: Number(r.wallet_balance || 0),
+            accounts: Array.isArray(r.accounts) ? r.accounts : [],
+            selectedAccountId: r.selected_account_id || null,
+            transactions: Array.isArray(r.transactions) ? r.transactions : [],
+            lastUpdated: r.last_updated ? new Date(r.last_updated).getTime() : Date.now(),
+          };
+
+          if (
+            !existing ||
+            (existing.accounts.length === 0 && incomingState.accounts.length > 0) ||
+            ((existing.transactions?.length || 0) === 0 && (incomingState.transactions?.length || 0) > 0)
+          ) {
+            financesByEmail[canonicalEmail] = incomingState;
+            if (canonicalEmail !== emailKey) {
+              financesByEmail[emailKey] = incomingState;
+            }
+          }
+        });
+      }
+
+      const usersMap = new Map<string, UserAuthProfile>();
+
+      if (Array.isArray(usersRows)) {
+        usersRows.forEach((row: any) => {
+          if (!row || !row.email) return;
+          const rawEmail = row.email.trim().toLowerCase();
+          const isAdmin = this.isMasterAdminEmail(rawEmail);
+          const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+          const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
+          const resolvedUid = isAdmin
+            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+            : row.uid || parsedHash.uid || uidByEmail[rawEmail] || '';
+
+          // Strictly skip any non-admin user that does not have a valid Supabase UID
+          if (!isAdmin && !this.isValidUuid(resolvedUid)) {
+            return;
+          }
+
+          const safeRole = isAdmin
+            ? 'admin'
+            : row.role === 'marketer'
+            ? 'marketer'
+            : 'normal';
+
+          usersMap.set(canonicalEmail, {
+            id: resolvedUid,
+            name: isAdmin ? 'mutwiri' : row.name || 'Trader',
+            email: canonicalEmail,
+            phoneNumber: row.phone_number || '',
+            phone: row.phone_number || '',
+            countryCode: row.country_code || '+254',
+            countryName: row.country_name || 'Kenya',
+            accountNumber: row.account_number || '27330648',
+            role: safeRole,
+            isLoggedIn: false,
+            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+          });
+        });
+      }
+
+      // Guarantee Master Admin is always present with confirmed UID
+      if (!usersMap.has('mutwirib964@gmail.com')) {
+        usersMap.set('mutwirib964@gmail.com', {
+          id: '84a1e1db-f302-4dac-a077-291128ae0cea',
+          name: 'mutwiri',
+          email: 'mutwirib964@gmail.com',
+          phoneNumber: '+254 741114162',
+          phone: '+254 741114162',
+          countryCode: '+254',
+          countryName: 'Kenya',
+          accountNumber: '27330648',
+          role: 'admin',
+          isLoggedIn: true,
+          createdAt: 1790257470000,
+        });
+      }
+
+      return {
+        users: Array.from(usersMap.values()),
+        financesByEmail,
+      };
+    } catch (e) {
+      console.warn('Failed to fetch all platform users and finances from Supabase', e);
+      return null;
     }
   }
 
@@ -416,7 +712,124 @@ class SupabaseService {
   }
 
   // =========================================================================
-  // 2. TRADING ACCOUNTS (vtm_trading_accounts)
+  // HELPER: RELIABLE CLOUD STATE STORAGE IN SUPABASE (user_activities JSONB)
+  // =========================================================================
+
+  private async saveCloudStateRecord(
+    userEmail: string,
+    stateType: string,
+    description: string,
+    metadata: any
+  ): Promise<boolean> {
+    if (!this.config || !userEmail) return false;
+    const cleanEmail = this.isMasterAdminEmail(userEmail)
+      ? 'mutwirib964@gmail.com'
+      : userEmail.trim().toLowerCase();
+
+    try {
+      // 1. Check if state record already exists for this user + stateType
+      const getRes = await fetch(
+        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+          cleanEmail
+        )}&activity_type=eq.${encodeURIComponent(stateType)}&select=id&order=created_at.desc&limit=1`,
+        {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+
+      if (getRes.ok) {
+        const rows = await getRes.json();
+        if (Array.isArray(rows) && rows.length > 0 && rows[0].id) {
+          const patchRes = await fetch(
+            `${this.config.url}/rest/v1/user_activities?id=eq.${encodeURIComponent(rows[0].id)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              body: JSON.stringify({
+                description,
+                metadata,
+                created_at: new Date().toISOString(),
+              }),
+              signal: AbortSignal.timeout(5000),
+            }
+          );
+          if (patchRes.ok) return true;
+        }
+      }
+
+      // 2. Insert new state record if none existed yet
+      const postRes = await fetch(`${this.config.url}/rest/v1/user_activities`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: this.config.anonKey,
+          Authorization: `Bearer ${this.config.anonKey}`,
+        },
+        body: JSON.stringify({
+          user_email: cleanEmail,
+          activity_type: stateType,
+          description,
+          device_id: typeof navigator !== 'undefined' ? `${navigator.platform || 'web'}` : 'web',
+          metadata,
+          created_at: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(5000),
+      });
+
+      return postRes.ok;
+    } catch (e) {
+      console.warn(`Supabase cloud state save (${stateType}) notice:`, e);
+      return false;
+    }
+  }
+
+  private async fetchCloudStateRecord<T = any>(
+    userEmail: string,
+    stateType: string
+  ): Promise<T | null> {
+    if (!this.config || !userEmail) return null;
+    const cleanEmail = this.isMasterAdminEmail(userEmail)
+      ? 'mutwirib964@gmail.com'
+      : userEmail.trim().toLowerCase();
+
+    try {
+      const res = await fetch(
+        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+          cleanEmail
+        )}&activity_type=eq.${encodeURIComponent(stateType)}&select=metadata&order=created_at.desc&limit=1`,
+        {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows) && rows.length > 0 && rows[0].metadata) {
+          return rows[0].metadata as T;
+        }
+      }
+    } catch (e) {
+      console.warn(`Supabase cloud state fetch (${stateType}) notice:`, e);
+    }
+    return null;
+  }
+
+  // =========================================================================
+  // 2. TRADING ACCOUNTS (Backed directly by vtm_user_finances in Supabase)
   // =========================================================================
 
   public async syncTradingAccount(
@@ -425,31 +838,22 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!this.config || !user || !account) return false;
     try {
-      const payload = {
-        account_id: account.id,
-        user_email: user.email || '',
-        account_number: account.accountNumber,
-        server: account.server,
-        account_type: account.type,
-        tier: account.tier,
-        balance: account.balance,
-        equity: account.equity,
-        margin: account.margin,
-        free_margin: account.freeMargin,
-        margin_level: account.marginLevel,
-        currency: account.currency,
-        leverage: account.leverage,
-        is_default: !!account.isDefault,
-        updated_at: new Date().toISOString(),
-      };
+      const currentFin = await this.fetchUserFinancials(user);
+      const existingAccounts = currentFin?.accounts || [];
+      const exists = existingAccounts.some((a) => a.id === account.id || a.accountNumber === account.accountNumber);
+      const nextAccounts = exists
+        ? existingAccounts.map((a) =>
+            a.id === account.id || a.accountNumber === account.accountNumber ? account : a
+          )
+        : [...existingAccounts, account];
 
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_trading_accounts`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
+      return await this.syncUserFinancials(user, {
+        walletBalance: currentFin?.walletBalance ?? 0,
+        accounts: nextAccounts,
+        selectedAccountId: currentFin?.selectedAccountId || account.id,
+        transactions: currentFin?.transactions || [],
+        lastUpdated: Date.now(),
       });
-      return res.ok;
     } catch (e) {
       console.warn('Could not sync trading account to Supabase:', e);
       return false;
@@ -462,31 +866,14 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!this.config || !user || !accounts) return false;
     try {
-      const records = accounts.map((account) => ({
-        account_id: account.id,
-        user_email: user.email || '',
-        account_number: account.accountNumber,
-        server: account.server,
-        account_type: account.type,
-        tier: account.tier,
-        balance: account.balance,
-        equity: account.equity,
-        margin: account.margin,
-        free_margin: account.freeMargin,
-        margin_level: account.marginLevel,
-        currency: account.currency,
-        leverage: account.leverage,
-        is_default: !!account.isDefault,
-        updated_at: new Date().toISOString(),
-      }));
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_trading_accounts`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(records),
-        signal: AbortSignal.timeout(5000),
+      const currentFin = await this.fetchUserFinancials(user);
+      return await this.syncUserFinancials(user, {
+        walletBalance: currentFin?.walletBalance ?? 0,
+        accounts,
+        selectedAccountId: currentFin?.selectedAccountId || accounts[0]?.id || null,
+        transactions: currentFin?.transactions || [],
+        lastUpdated: Date.now(),
       });
-      return res.ok;
     } catch (e) {
       console.warn('Failed to bulk sync trading accounts to Supabase:', e);
       return false;
@@ -497,48 +884,12 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined
   ): Promise<TradingAccount[] | null> {
     if (!this.config || !user?.email) return null;
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_trading_accounts?user_email=eq.${encodeURIComponent(
-          user.email.toLowerCase()
-        )}&select=*`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length > 0) {
-          return rows.map((r: any) => ({
-            id: r.account_id || `acc-${r.account_number}`,
-            accountNumber: r.account_number,
-            server: r.server || 'VTM-Live-MT5',
-            type: r.account_type || 'Live',
-            tier: r.tier || 'Premium',
-            balance: Number(r.balance || 0),
-            equity: Number(r.equity || 0),
-            margin: Number(r.margin || 0),
-            freeMargin: Number(r.free_margin || 0),
-            marginLevel: Number(r.margin_level || 0),
-            currency: r.currency || 'USD',
-            leverage: r.leverage || '1:500',
-            isDefault: !!r.is_default,
-          }));
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to fetch trading accounts from Supabase:', e);
-    }
-    return null;
+    const fin = await this.fetchUserFinancials(user);
+    return fin?.accounts || null;
   }
 
   // =========================================================================
-  // 3. TRADES & ORDERS (vtm_trades)
+  // 3. TRADES, POSITIONS, BOTS & ALERTS (Backed by user_activities JSONB)
   // =========================================================================
 
   public async saveTrade(
@@ -564,40 +915,11 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const payload = {
-        trade_id: trade.id,
-        user_email: user.email.toLowerCase(),
-        account_number: trade.accountNumber || user.accountNumber || '',
-        ticket: trade.ticket,
-        symbol: trade.symbol,
-        side: trade.side,
-        order_type: trade.orderType || 'MARKET',
-        lots: trade.lots,
-        open_price: trade.openPrice,
-        current_price: trade.currentPrice ?? trade.openPrice,
-        close_price: trade.closePrice ?? null,
-        sl: trade.sl,
-        tp: trade.tp,
-        pnl: trade.pnl ?? 0,
-        status: trade.status,
-        open_time: new Date(trade.openTime).toISOString(),
-        close_time: trade.closeTime ? new Date(trade.closeTime).toISOString() : null,
-        close_reason: trade.closeReason || null,
-        updated_at: new Date().toISOString(),
-      };
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_trades`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to save trade to Supabase:', e);
-      return false;
-    }
+    return await this.syncActivity(user, {
+      type: `TRADE_${trade.status}`,
+      description: `${trade.side} ${trade.lots} ${trade.symbol} @ ${trade.openPrice} (${trade.status})`,
+      metadata: trade,
+    });
   }
 
   public async syncTrades(
@@ -610,99 +932,18 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const records: any[] = [];
-      const userEmail = user.email.toLowerCase();
-      const accNum = data.accountNumber || user.accountNumber || '';
-
-      // Open positions
-      data.positions.forEach((p) => {
-        records.push({
-          trade_id: p.id,
-          user_email: userEmail,
-          account_number: accNum,
-          ticket: p.ticket,
-          symbol: p.symbol,
-          side: p.side,
-          order_type: 'MARKET',
-          lots: p.lots,
-          open_price: p.openPrice,
-          current_price: p.currentPrice,
-          close_price: null,
-          sl: p.sl,
-          tp: p.tp,
-          pnl: p.pnl,
-          status: 'OPEN',
-          open_time: new Date(p.openTime).toISOString(),
-          close_time: null,
-          close_reason: null,
-          updated_at: new Date().toISOString(),
-        });
-      });
-
-      // Pending orders
-      data.pendingOrders.forEach((o) => {
-        records.push({
-          trade_id: o.id,
-          user_email: userEmail,
-          account_number: accNum,
-          ticket: o.ticket,
-          symbol: o.symbol,
-          side: o.side,
-          order_type: o.type,
-          lots: o.lots,
-          open_price: o.targetPrice,
-          current_price: o.targetPrice,
-          close_price: null,
-          sl: o.sl,
-          tp: o.tp,
-          pnl: 0,
-          status: o.status === 'TRIGGERED' ? 'TRIGGERED' : 'PENDING',
-          open_time: new Date(o.createdAt).toISOString(),
-          close_time: null,
-          close_reason: null,
-          updated_at: new Date().toISOString(),
-        });
-      });
-
-      // Closed trades (last 50)
-      data.closedTrades.slice(0, 50).forEach((c) => {
-        records.push({
-          trade_id: c.id,
-          user_email: userEmail,
-          account_number: accNum,
-          ticket: c.ticket,
-          symbol: c.symbol,
-          side: c.side,
-          order_type: 'MARKET',
-          lots: c.lots,
-          open_price: c.openPrice,
-          current_price: c.closePrice,
-          close_price: c.closePrice,
-          sl: null,
-          tp: null,
-          pnl: c.pnl,
-          status: 'CLOSED',
-          open_time: new Date(c.openTime).toISOString(),
-          close_time: new Date(c.closeTime).toISOString(),
-          close_reason: c.reason,
-          updated_at: new Date().toISOString(),
-        });
-      });
-
-      if (records.length === 0) return true;
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_trades`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(records),
-        signal: AbortSignal.timeout(5000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to sync trades to Supabase:', e);
-      return false;
-    }
+    return await this.saveCloudStateRecord(
+      user.email,
+      'STATE_TRADES',
+      `Synchronized ${data.positions.length} open positions, ${data.pendingOrders.length} pending orders, ${data.closedTrades.length} closed trades`,
+      {
+        positions: data.positions,
+        pendingOrders: data.pendingOrders,
+        closedTrades: data.closedTrades.slice(0, 100),
+        accountNumber: data.accountNumber || user.accountNumber || '',
+        updatedAt: Date.now(),
+      }
+    );
   }
 
   public async fetchUserTrades(
@@ -713,87 +954,85 @@ class SupabaseService {
     closedTrades: ClosedTrade[];
   } | null> {
     if (!this.config || !user?.email) return null;
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_trades?user_email=eq.${encodeURIComponent(
-          user.email.toLowerCase()
-        )}&select=*&order=open_time.desc&limit=100`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
+    const data = await this.fetchCloudStateRecord<{
+      positions?: Position[];
+      pendingOrders?: PendingOrder[];
+      closedTrades?: ClosedTrade[];
+    }>(user.email, 'STATE_TRADES');
 
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows)) {
-          const positions: Position[] = [];
-          const pendingOrders: PendingOrder[] = [];
-          const closedTrades: ClosedTrade[] = [];
+    if (!data) return null;
+    return {
+      positions: Array.isArray(data.positions) ? data.positions : [],
+      pendingOrders: Array.isArray(data.pendingOrders) ? data.pendingOrders : [],
+      closedTrades: Array.isArray(data.closedTrades) ? data.closedTrades : [],
+    };
+  }
 
-          rows.forEach((r: any) => {
-            if (r.status === 'OPEN') {
-              positions.push({
-                id: r.trade_id || `pos-${r.ticket}`,
-                ticket: Number(r.ticket),
-                symbol: r.symbol,
-                side: r.side,
-                lots: Number(r.lots),
-                openPrice: Number(r.open_price),
-                currentPrice: Number(r.current_price || r.open_price),
-                sl: r.sl != null ? Number(r.sl) : null,
-                tp: r.tp != null ? Number(r.tp) : null,
-                pnl: Number(r.pnl || 0),
-                swap: 0,
-                commission: 0,
-                openTime: new Date(r.open_time).getTime(),
-              });
-            } else if (r.status === 'PENDING') {
-              pendingOrders.push({
-                id: r.trade_id || `ord-${r.ticket}`,
-                ticket: Number(r.ticket),
-                symbol: r.symbol,
-                side: r.side,
-                type: r.order_type || 'BUY_LIMIT',
-                targetPrice: Number(r.open_price),
-                lots: Number(r.lots),
-                sl: r.sl != null ? Number(r.sl) : null,
-                tp: r.tp != null ? Number(r.tp) : null,
-                status: 'PENDING',
-                createdAt: new Date(r.open_time).getTime(),
-              });
-            } else if (r.status === 'CLOSED') {
-              closedTrades.push({
-                id: r.trade_id || `cl-${r.ticket}`,
-                ticket: Number(r.ticket),
-                symbol: r.symbol,
-                side: r.side,
-                lots: Number(r.lots),
-                openPrice: Number(r.open_price),
-                closePrice: Number(r.close_price || r.open_price),
-                pnl: Number(r.pnl || 0),
-                openTime: new Date(r.open_time).getTime(),
-                closeTime: r.close_time ? new Date(r.close_time).getTime() : Date.now(),
-                reason: (r.close_reason as any) || 'MANUAL',
-              });
-            }
-          });
-
-          return { positions, pendingOrders, closedTrades };
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to fetch trades from Supabase:', e);
+  public async syncBotState(
+    user: UserAuthProfile | null | undefined,
+    botState: {
+      importedBots: any[];
+      botRuns: any[];
+      botTrades: any[];
     }
-    return null;
+  ): Promise<boolean> {
+    if (!this.config || !user?.email) return false;
+    return await this.saveCloudStateRecord(
+      user.email,
+      'STATE_BOTS',
+      `Synchronized ${botState.botRuns.length} bot runs and ${botState.botTrades.length} bot trades`,
+      {
+        importedBots: botState.importedBots || [],
+        botRuns: botState.botRuns || [],
+        botTrades: (botState.botTrades || []).slice(0, 100),
+        updatedAt: Date.now(),
+      }
+    );
+  }
+
+  public async fetchBotState(
+    user: UserAuthProfile | null | undefined
+  ): Promise<{
+    importedBots: any[];
+    botRuns: any[];
+    botTrades: any[];
+  } | null> {
+    if (!this.config || !user?.email) return null;
+    return await this.fetchCloudStateRecord(user.email, 'STATE_BOTS');
+  }
+
+  public async syncExtrasState(
+    user: UserAuthProfile | null | undefined,
+    extras: {
+      priceAlerts?: any[];
+      followedStrategies?: any[];
+    }
+  ): Promise<boolean> {
+    if (!this.config || !user?.email) return false;
+    return await this.saveCloudStateRecord(
+      user.email,
+      'STATE_EXTRAS',
+      'Synchronized price alerts and copy trading strategies',
+      {
+        priceAlerts: extras.priceAlerts || [],
+        followedStrategies: extras.followedStrategies || [],
+        updatedAt: Date.now(),
+      }
+    );
+  }
+
+  public async fetchExtrasState(
+    user: UserAuthProfile | null | undefined
+  ): Promise<{
+    priceAlerts?: any[];
+    followedStrategies?: any[];
+  } | null> {
+    if (!this.config || !user?.email) return null;
+    return await this.fetchCloudStateRecord(user.email, 'STATE_EXTRAS');
   }
 
   // =========================================================================
-  // 4. DEPOSITS (vtm_deposits)
+  // 4. DEPOSITS & WITHDRAWALS (Backed by vtm_user_finances & user_activities)
   // =========================================================================
 
   public async saveDeposit(
@@ -811,80 +1050,32 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const depositId = deposit.id || deposit.reference || `dep-${Date.now()}`;
-      const payload = {
-        deposit_id: depositId,
-        user_email: user.email.toLowerCase(),
-        target_account: deposit.targetAccount,
-        amount_usd: deposit.amountUsd,
-        amount_kes: deposit.amountKes || 0,
-        payment_method: deposit.method,
-        phone_number: deposit.phone || '',
-        reference: deposit.reference || depositId,
-        checkout_id: deposit.checkoutId || '',
-        status: deposit.status || 'COMPLETED',
-        created_at: new Date().toISOString(),
-      };
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_deposits`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to save deposit to Supabase:', e);
-      return false;
-    }
+    return await this.syncActivity(user, {
+      type: 'DEPOSIT',
+      description: `Deposited $${deposit.amountUsd.toFixed(2)} via ${deposit.method} to ${deposit.targetAccount}`,
+      metadata: deposit,
+    });
   }
 
   public async fetchUserDeposits(
     user: UserAuthProfile | null | undefined
   ): Promise<DepositRecord[] | null> {
     if (!this.config || !user?.email) return null;
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_deposits?user_email=eq.${encodeURIComponent(
-          user.email.toLowerCase()
-        )}&select=*&order=created_at.desc&limit=50`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows)) {
-          return rows.map((r: any) => ({
-            id: r.deposit_id,
-            userEmail: r.user_email,
-            targetAccount: r.target_account,
-            amountUsd: Number(r.amount_usd),
-            amountKes: Number(r.amount_kes || 0),
-            method: r.payment_method,
-            phone: r.phone_number,
-            reference: r.reference,
-            checkoutId: r.checkout_id,
-            status: r.status,
-            createdAt: new Date(r.created_at).getTime(),
-          }));
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to fetch deposits from Supabase:', e);
-    }
-    return null;
+    const fin = await this.fetchUserFinancials(user);
+    if (!fin || !Array.isArray(fin.transactions)) return [];
+    return fin.transactions
+      .filter((t) => t.type === 'DEPOSIT')
+      .map((t) => ({
+        id: t.id,
+        userEmail: user.email,
+        targetAccount: t.accountNumber || 'VTM Wallet',
+        amountUsd: Math.abs(t.amount),
+        method: t.method || 'M-PESA',
+        reference: t.reference || t.id,
+        status: t.status === 'FAILED' ? 'FAILED' : t.status === 'PENDING' ? 'PENDING' : 'COMPLETED',
+        createdAt: t.timestamp || Date.now(),
+      }));
   }
-
-  // =========================================================================
-  // 5. WITHDRAWALS (vtm_withdrawals)
-  // =========================================================================
 
   public async saveWithdrawal(
     user: UserAuthProfile | null | undefined,
@@ -898,73 +1089,35 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const withdrawalId = withdrawal.id || withdrawal.reference || `wth-${Date.now()}`;
-      const payload = {
-        withdrawal_id: withdrawalId,
-        user_email: user.email.toLowerCase(),
-        source_account: withdrawal.sourceAccount,
-        amount_usd: withdrawal.amountUsd,
-        payment_method: withdrawal.method,
-        reference: withdrawal.reference || withdrawalId,
-        status: withdrawal.status || 'PENDING',
-        created_at: new Date().toISOString(),
-      };
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_withdrawals`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to save withdrawal to Supabase:', e);
-      return false;
-    }
+    return await this.syncActivity(user, {
+      type: 'WITHDRAWAL',
+      description: `Withdrawal of $${withdrawal.amountUsd.toFixed(2)} via ${withdrawal.method} from ${withdrawal.sourceAccount}`,
+      metadata: withdrawal,
+    });
   }
 
   public async fetchUserWithdrawals(
     user: UserAuthProfile | null | undefined
   ): Promise<WithdrawalRecord[] | null> {
     if (!this.config || !user?.email) return null;
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_withdrawals?user_email=eq.${encodeURIComponent(
-          user.email.toLowerCase()
-        )}&select=*&order=created_at.desc&limit=50`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows)) {
-          return rows.map((r: any) => ({
-            id: r.withdrawal_id,
-            userEmail: r.user_email,
-            sourceAccount: r.source_account,
-            amountUsd: Number(r.amount_usd),
-            method: r.payment_method,
-            reference: r.reference,
-            status: r.status,
-            createdAt: new Date(r.created_at).getTime(),
-          }));
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to fetch withdrawals from Supabase:', e);
-    }
-    return null;
+    const fin = await this.fetchUserFinancials(user);
+    if (!fin || !Array.isArray(fin.transactions)) return [];
+    return fin.transactions
+      .filter((t) => t.type === 'WITHDRAWAL')
+      .map((t) => ({
+        id: t.id,
+        userEmail: user.email,
+        sourceAccount: t.accountNumber || 'VTM Wallet',
+        amountUsd: Math.abs(t.amount),
+        method: t.method || 'M-PESA',
+        reference: t.reference || t.id,
+        status: (t.status as any) || 'COMPLETED',
+        createdAt: t.timestamp || Date.now(),
+      }));
   }
 
   // =========================================================================
-  // 6. SETTINGS & PREFERENCES (vtm_user_settings)
+  // 6. SETTINGS & PREFERENCES (Backed by user_activities JSONB)
   // =========================================================================
 
   public async saveUserSettings(
@@ -972,83 +1125,26 @@ class SupabaseService {
     settings: UserPlatformSettings
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const payload = {
-        user_email: user.email.toLowerCase(),
-        is_dark_mode: !!settings.isDarkMode,
-        one_click_trading: !!settings.oneClickTrading,
-        slippage: settings.slippage,
-        sound_enabled: !!settings.soundEnabled,
-        show_spread_brackets: !!settings.showSpreadBrackets,
-        drawdown_protection: !!settings.drawdownProtection,
-        two_factor_enabled: !!settings.twoFactorEnabled,
-        two_factor_secret: settings.twoFactorSecret || null,
-        default_leverage: settings.defaultLeverage || '1:500',
-        favorite_symbols: settings.favoriteSymbols || [],
-        active_account_id: settings.activeAccountId || null,
-        updated_at: new Date().toISOString(),
-      };
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_user_settings`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to save settings to Supabase:', e);
-      return false;
-    }
+    return await this.saveCloudStateRecord(
+      user.email,
+      'STATE_SETTINGS',
+      'Updated user platform settings',
+      {
+        ...settings,
+        updatedAt: Date.now(),
+      }
+    );
   }
 
   public async fetchUserSettings(
     user: UserAuthProfile | null | undefined
   ): Promise<UserPlatformSettings | null> {
     if (!this.config || !user?.email) return null;
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_user_settings?user_email=eq.${encodeURIComponent(
-          user.email.toLowerCase()
-        )}&select=*`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length > 0) {
-          const row = rows[0];
-          return {
-            isDarkMode: row.is_dark_mode ?? true,
-            oneClickTrading: !!row.one_click_trading,
-            slippage: Number(row.slippage ?? 0.5),
-            soundEnabled: row.sound_enabled ?? true,
-            showSpreadBrackets: row.show_spread_brackets ?? true,
-            drawdownProtection: row.drawdown_protection ?? true,
-            twoFactorEnabled: !!row.two_factor_enabled,
-            twoFactorSecret: row.two_factor_secret || undefined,
-            defaultLeverage: row.default_leverage || '1:500',
-            favoriteSymbols: Array.isArray(row.favorite_symbols) ? row.favorite_symbols : [],
-            activeAccountId: row.active_account_id || undefined,
-            updatedAt: row.updated_at ? new Date(row.updated_at).getTime() : Date.now(),
-          };
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load user settings from Supabase:', e);
-    }
-    return null;
+    return await this.fetchCloudStateRecord<UserPlatformSettings>(user.email, 'STATE_SETTINGS');
   }
 
   // =========================================================================
-  // 7. INTERNAL TRANSFERS (vtm_transfers)
+  // 7. INTERNAL TRANSFERS
   // =========================================================================
 
   public async saveTransfer(
@@ -1060,52 +1156,39 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    try {
-      const transferId = `trf-${Date.now()}`;
-      const payload = {
-        transfer_id: transferId,
-        user_email: user.email.toLowerCase(),
-        from_account: transfer.fromAccount,
-        to_account: transfer.toAccount,
-        amount_usd: transfer.amountUsd,
-        status: 'COMPLETED',
-        created_at: new Date().toISOString(),
-      };
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_transfers`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to record transfer in Supabase:', e);
-      return false;
-    }
+    return await this.syncActivity(user, {
+      type: 'TRANSFER',
+      description: `Internal transfer of $${transfer.amountUsd.toFixed(2)} from ${transfer.fromAccount} to ${transfer.toAccount}`,
+      metadata: transfer,
+    });
   }
 
   // =========================================================================
-  // 8. TRANSACTIONS & FINANCIAL STATE (vtm_user_finances & vtm_transactions)
+  // 8. TRANSACTIONS & FINANCIAL STATE (vtm_user_finances)
   // =========================================================================
 
   public async syncUserFinancials(
     user: UserAuthProfile | null | undefined,
     state: UserFinancialState
   ): Promise<boolean> {
-    const userKey = getUserStorageKey(user);
-    if (!this.config) return false;
+    if (!this.config || !user) return false;
+    const isAdmin = this.isMasterAdminEmail(user.email);
+    const cleanEmail = isAdmin
+      ? 'mutwirib964@gmail.com'
+      : (user.email || getUserStorageKey(user)).trim().toLowerCase();
+    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
 
     try {
+      const nowIso = new Date().toISOString();
       const payload = {
         user_key: userKey,
-        user_email: user?.email || '',
-        user_name: user?.name || '',
-        wallet_balance: state.walletBalance,
-        accounts: state.accounts,
+        user_email: cleanEmail,
+        user_name: isAdmin ? 'mutwiri' : user.name || '',
+        wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
+        accounts: Array.isArray(state.accounts) ? state.accounts : [],
         selected_account_id: state.selectedAccountId || null,
-        transactions: (state.transactions || []).slice(0, 100),
-        last_updated: new Date().toISOString(),
+        transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
+        last_updated: nowIso,
       };
 
       const res = await fetch(`${this.config.url}/rest/v1/vtm_user_finances`, {
@@ -1114,6 +1197,33 @@ class SupabaseService {
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(6000),
       });
+
+      // Always patch any rows matching user_email or user_key so all rows stay in sync
+      if (cleanEmail) {
+        await fetch(
+          `${this.config.url}/rest/v1/vtm_user_finances?or=(user_key.eq.${encodeURIComponent(
+            userKey
+          )},user_email.eq.${encodeURIComponent(cleanEmail)})`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            body: JSON.stringify({
+              user_email: cleanEmail,
+              user_name: isAdmin ? 'mutwiri' : user.name || '',
+              wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
+              accounts: Array.isArray(state.accounts) ? state.accounts : [],
+              selected_account_id: state.selectedAccountId || null,
+              transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
+              last_updated: nowIso,
+            }),
+            signal: AbortSignal.timeout(5000),
+          }
+        ).catch(() => {});
+      }
 
       return res.ok;
     } catch (err) {
@@ -1125,12 +1235,22 @@ class SupabaseService {
   public async fetchUserFinancials(
     user: UserAuthProfile | null | undefined
   ): Promise<UserFinancialState | null> {
-    const userKey = getUserStorageKey(user);
-    if (!this.config) return null;
+    if (!this.config || !user) return null;
+    const isAdmin = this.isMasterAdminEmail(user.email);
+    const cleanEmail = isAdmin
+      ? 'mutwirib964@gmail.com'
+      : (user.email || getUserStorageKey(user)).trim().toLowerCase();
+    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
 
     try {
+      const filter = isAdmin
+        ? `or=(user_key.eq.mutwirib964@gmail.com,user_email.eq.mutwirib964@gmail.com)`
+        : cleanEmail
+        ? `or=(user_key.eq.${encodeURIComponent(userKey)},user_email.eq.${encodeURIComponent(cleanEmail)})`
+        : `user_key=eq.${encodeURIComponent(userKey)}`;
+
       const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_user_finances?user_key=eq.${encodeURIComponent(userKey)}&select=*`,
+        `${this.config.url}/rest/v1/vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
         {
           method: 'GET',
           headers: {
@@ -1144,13 +1264,20 @@ class SupabaseService {
       if (res.ok) {
         const rows = await res.json();
         if (Array.isArray(rows) && rows.length > 0) {
-          const row = rows[0];
+          const row =
+            rows.find(
+              (r: any) =>
+                (Array.isArray(r.accounts) && r.accounts.length > 0) ||
+                Number(r.wallet_balance || 0) > 0 ||
+                (Array.isArray(r.transactions) && r.transactions.length > 0)
+            ) || rows[0];
+
           return {
             walletBalance: Number(row.wallet_balance || 0),
             accounts: Array.isArray(row.accounts) ? row.accounts : [],
             selectedAccountId: row.selected_account_id || null,
             transactions: Array.isArray(row.transactions) ? row.transactions : [],
-            lastUpdated: Date.now(),
+            lastUpdated: row.last_updated ? new Date(row.last_updated).getTime() : Date.now(),
           };
         }
       }
@@ -1165,31 +1292,14 @@ class SupabaseService {
     transactions: Transaction[]
   ): Promise<boolean> {
     if (!this.config || !user?.email || !transactions) return false;
-    try {
-      const records = transactions.slice(0, 50).map((t) => ({
-        transaction_id: t.id,
-        user_email: user.email!.toLowerCase(),
-        type: t.type,
-        method: t.method || '',
-        amount: t.amount,
-        currency: t.currency || 'USD',
-        status: t.status,
-        reference: t.reference || '',
-        details: t.details || '',
-        created_at: new Date(t.timestamp).toISOString(),
-      }));
-
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_transactions`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(records),
-        signal: AbortSignal.timeout(5000),
-      });
-      return res.ok;
-    } catch (e) {
-      console.warn('Failed to sync transactions to Supabase:', e);
-      return false;
-    }
+    const currentFin = await this.fetchUserFinancials(user);
+    return await this.syncUserFinancials(user, {
+      walletBalance: currentFin?.walletBalance ?? 0,
+      accounts: currentFin?.accounts || [],
+      selectedAccountId: currentFin?.selectedAccountId || null,
+      transactions,
+      lastUpdated: Date.now(),
+    });
   }
 
   // =========================================================================
@@ -1261,18 +1371,22 @@ class SupabaseService {
 
   public getDatabaseSchemaSQL(): string {
     return `-- =========================================================================
--- VTM MARKETS WEBTRADER COMPLETE SUPABASE POSTGRESQL SCHEMA
--- RUN THIS IN YOUR SUPABASE PROJECT -> SQL EDITOR
+-- VTM MARKETS COMPLETE SUPABASE SQL SCHEMA (STRICT UID & SINGLE ADMIN LOCK)
+-- COPY & RUN THIS ENTIRE SCRIPT IN SUPABASE -> SQL EDITOR -> NEW QUERY
 -- =========================================================================
 
--- 1. Registered Users Table
+-- Enable UUID generation extension
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- 1. Registered Users Table (Strict UID Required)
 CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
   email TEXT PRIMARY KEY,
+  uid UUID,
   password_hash TEXT,
   name TEXT,
   phone_number TEXT,
-  country_code TEXT,
-  country_name TEXT,
+  country_code TEXT DEFAULT '+254',
+  country_name TEXT DEFAULT 'Kenya',
   account_number TEXT,
   role TEXT DEFAULT 'normal',
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -1280,7 +1394,138 @@ CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 2. User Financials & Wallet Table
+-- Ensure uid column exists if table was created previously
+ALTER TABLE public.vtm_registered_users
+  ADD COLUMN IF NOT EXISTS uid UUID;
+
+-- Backfill uid from auth.users for any existing registered email
+UPDATE public.vtm_registered_users r
+SET uid = a.id
+FROM auth.users a
+WHERE LOWER(r.email) = LOWER(a.email)
+  AND r.uid IS NULL;
+
+-- Assign a valid UUID to any remaining existing registered user so they are not locked out
+UPDATE public.vtm_registered_users
+SET uid = gen_random_uuid()
+WHERE uid IS NULL
+  AND LOWER(email) NOT IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com');
+
+-- 2. Confirm Exclusive Master Admin (Email: mutwrib@gmail.com / mutwirib964@gmail.com, UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
+INSERT INTO public.vtm_registered_users (
+  email, uid, name, phone_number, country_code, country_name, account_number, role, created_at, last_login_at, updated_at
+) VALUES (
+  'mutwrib@gmail.com',
+  '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid,
+  'mutwiri',
+  '+254 741114162',
+  '+254',
+  'Kenya',
+  '884201',
+  'admin',
+  now(),
+  now(),
+  now()
+)
+ON CONFLICT (email) DO UPDATE SET
+  uid = '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid,
+  role = 'admin',
+  updated_at = now();
+
+UPDATE public.vtm_registered_users
+SET role = 'admin',
+    uid = '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid
+WHERE LOWER(email) IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com');
+
+-- Revoke admin role from EVERY other email in the database
+UPDATE public.vtm_registered_users
+SET role = 'normal'
+WHERE LOWER(email) NOT IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com')
+  AND role = 'admin';
+
+-- 3. Strict Trigger: Enforce Valid UID & Exclusive Single Admin (mutwrib@gmail.com / 84a1e1db-f302-4dac-a077-291128ae0cea)
+CREATE OR REPLACE FUNCTION public.enforce_strict_uid_and_single_admin()
+RETURNS TRIGGER AS $$
+BEGIN
+  -- Normalize email
+  NEW.email := LOWER(TRIM(NEW.email));
+
+  -- If this is the Master Admin email, always lock UID to 84a1e1db-f302-4dac-a077-291128ae0cea and role to 'admin'
+  IF NEW.email IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com') THEN
+    NEW.uid := '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid;
+    NEW.role := 'admin';
+  ELSE
+    -- Strictly forbid any other email from ever becoming 'admin'
+    IF NEW.role = 'admin' THEN
+      NEW.role := 'normal';
+    END IF;
+    -- Ensure role is only 'normal' or 'marketer'
+    IF NEW.role NOT IN ('normal', 'marketer') OR NEW.role IS NULL THEN
+      NEW.role := 'normal';
+    END IF;
+  END IF;
+
+  -- Strictly require a non-null UID for every user saved in Supabase
+  IF NEW.uid IS NULL THEN
+    RAISE EXCEPTION 'Access Denied: User cannot be saved or sign in without a valid Supabase UID.';
+  END IF;
+
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS trg_enforce_strict_uid_and_single_admin ON public.vtm_registered_users;
+CREATE TRIGGER trg_enforce_strict_uid_and_single_admin
+BEFORE INSERT OR UPDATE ON public.vtm_registered_users
+FOR EACH ROW EXECUTE FUNCTION public.enforce_strict_uid_and_single_admin();
+
+-- 4. Automatic Sync Trigger from Supabase Auth (auth.users -> public.vtm_registered_users)
+CREATE OR REPLACE FUNCTION public.handle_auth_user_sync_vtm()
+RETURNS TRIGGER AS $$
+DECLARE
+  v_role TEXT;
+  v_uid UUID;
+BEGIN
+  IF LOWER(NEW.email) IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com') THEN
+    v_role := 'admin';
+    v_uid := '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid;
+  ELSE
+    v_role := COALESCE(NEW.raw_user_meta_data->>'role', 'normal');
+    IF v_role = 'admin' THEN v_role := 'normal'; END IF;
+    v_uid := NEW.id;
+  END IF;
+
+  INSERT INTO public.vtm_registered_users (
+    email, uid, name, phone_number, country_code, country_name, account_number, role, created_at, last_login_at, updated_at
+  ) VALUES (
+    LOWER(NEW.email),
+    v_uid,
+    COALESCE(NEW.raw_user_meta_data->>'name', NEW.raw_user_meta_data->>'display_name', split_part(NEW.email, '@', 1)),
+    COALESCE(NEW.raw_user_meta_data->>'phone', ''),
+    '+254',
+    COALESCE(NEW.raw_user_meta_data->>'country_name', 'Kenya'),
+    COALESCE(NEW.raw_user_meta_data->>'account_number', LPAD(FLOOR(RANDOM() * 90000000 + 10000000)::TEXT, 8, '0')),
+    v_role,
+    now(),
+    now(),
+    now()
+  )
+  ON CONFLICT (email) DO UPDATE SET
+    uid = EXCLUDED.uid,
+    last_login_at = now(),
+    updated_at = now();
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created_vtm ON auth.users;
+CREATE TRIGGER on_auth_user_created_vtm
+AFTER INSERT ON auth.users
+FOR EACH ROW EXECUTE FUNCTION public.handle_auth_user_sync_vtm();
+
+-- 5. User Financials & Live Accounts Table
 CREATE TABLE IF NOT EXISTS public.vtm_user_finances (
   user_key TEXT PRIMARY KEY,
   user_email TEXT,
@@ -1292,7 +1537,7 @@ CREATE TABLE IF NOT EXISTS public.vtm_user_finances (
   last_updated TIMESTAMPTZ DEFAULT now()
 );
 
--- 3. Trading Accounts Table
+-- 6. Trading Accounts Table
 CREATE TABLE IF NOT EXISTS public.vtm_trading_accounts (
   account_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1311,7 +1556,7 @@ CREATE TABLE IF NOT EXISTS public.vtm_trading_accounts (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 4. Trades & Orders Table (Open positions, pending orders, closed trades)
+-- 7. Trades, Deposits, Withdrawals, Transfers, Settings & Activity Tables
 CREATE TABLE IF NOT EXISTS public.vtm_trades (
   trade_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1327,14 +1572,13 @@ CREATE TABLE IF NOT EXISTS public.vtm_trades (
   sl NUMERIC(15, 5),
   tp NUMERIC(15, 5),
   pnl NUMERIC(15, 2) DEFAULT 0.00,
-  status TEXT NOT NULL, -- 'OPEN', 'PENDING', 'CLOSED', 'CANCELLED'
+  status TEXT NOT NULL,
   open_time TIMESTAMPTZ DEFAULT now(),
   close_time TIMESTAMPTZ,
   close_reason TEXT,
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 5. Deposits Table (Hashback M-PESA & gateways)
 CREATE TABLE IF NOT EXISTS public.vtm_deposits (
   deposit_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1349,7 +1593,6 @@ CREATE TABLE IF NOT EXISTS public.vtm_deposits (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 6. Withdrawals Table
 CREATE TABLE IF NOT EXISTS public.vtm_withdrawals (
   withdrawal_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1361,7 +1604,6 @@ CREATE TABLE IF NOT EXISTS public.vtm_withdrawals (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 7. Internal Transfers Table
 CREATE TABLE IF NOT EXISTS public.vtm_transfers (
   transfer_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1372,7 +1614,6 @@ CREATE TABLE IF NOT EXISTS public.vtm_transfers (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 8. User Settings & Preferences Table
 CREATE TABLE IF NOT EXISTS public.vtm_user_settings (
   user_email TEXT PRIMARY KEY,
   is_dark_mode BOOLEAN DEFAULT true,
@@ -1389,7 +1630,6 @@ CREATE TABLE IF NOT EXISTS public.vtm_user_settings (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 9. Transactions Ledger Table
 CREATE TABLE IF NOT EXISTS public.vtm_transactions (
   transaction_id TEXT PRIMARY KEY,
   user_email TEXT NOT NULL,
@@ -1403,9 +1643,8 @@ CREATE TABLE IF NOT EXISTS public.vtm_transactions (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 10. Audit Activity & Device Tables
 CREATE TABLE IF NOT EXISTS public.user_activities (
-  id BIGSERIAL PRIMARY KEY,
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_email TEXT NOT NULL,
   activity_type TEXT NOT NULL,
   description TEXT,
@@ -1423,7 +1662,7 @@ CREATE TABLE IF NOT EXISTS public.user_devices (
   last_active_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Enable RLS and public access policies for anon key
+-- 8. Row Level Security (RLS) Policies for Immediate Cloud Sync
 ALTER TABLE public.vtm_registered_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vtm_user_finances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vtm_trading_accounts ENABLE ROW LEVEL SECURITY;
@@ -1437,16 +1676,37 @@ ALTER TABLE public.user_activities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
 
 DO $$ BEGIN
+  DROP POLICY IF EXISTS "Allow public all access on vtm_registered_users" ON public.vtm_registered_users;
   CREATE POLICY "Allow public all access on vtm_registered_users" ON public.vtm_registered_users FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_user_finances" ON public.vtm_user_finances;
   CREATE POLICY "Allow public all access on vtm_user_finances" ON public.vtm_user_finances FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_trading_accounts" ON public.vtm_trading_accounts;
   CREATE POLICY "Allow public all access on vtm_trading_accounts" ON public.vtm_trading_accounts FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_trades" ON public.vtm_trades;
   CREATE POLICY "Allow public all access on vtm_trades" ON public.vtm_trades FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_deposits" ON public.vtm_deposits;
   CREATE POLICY "Allow public all access on vtm_deposits" ON public.vtm_deposits FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_withdrawals" ON public.vtm_withdrawals;
   CREATE POLICY "Allow public all access on vtm_withdrawals" ON public.vtm_withdrawals FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_transfers" ON public.vtm_transfers;
   CREATE POLICY "Allow public all access on vtm_transfers" ON public.vtm_transfers FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_user_settings" ON public.vtm_user_settings;
   CREATE POLICY "Allow public all access on vtm_user_settings" ON public.vtm_user_settings FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on vtm_transactions" ON public.vtm_transactions;
   CREATE POLICY "Allow public all access on vtm_transactions" ON public.vtm_transactions FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on user_activities" ON public.user_activities;
   CREATE POLICY "Allow public all access on user_activities" ON public.user_activities FOR ALL USING (true) WITH CHECK (true);
+
+  DROP POLICY IF EXISTS "Allow public all access on user_devices" ON public.user_devices;
   CREATE POLICY "Allow public all access on user_devices" ON public.user_devices FOR ALL USING (true) WITH CHECK (true);
 EXCEPTION WHEN OTHERS THEN
   NULL;

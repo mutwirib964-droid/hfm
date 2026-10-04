@@ -43,6 +43,11 @@ import {
   registerNewUser,
   initializeUserFinancials,
   saveUserFinancials,
+  MASTER_ADMIN_EMAIL,
+  MASTER_ADMIN_UID,
+  isMasterAdminEmail,
+  isValidUserUid,
+  generateSupabaseUuid,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
@@ -195,21 +200,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       const cleanEmail = email.trim().toLowerCase();
-
-      // Check if user already registered locally
-      const existingLocal = findRegisteredUser(cleanEmail);
-      if (existingLocal) {
-        setValidationError('An account with this email already exists. Please sign in instead.');
-        return;
-      }
-
       setIsSubmitting(true);
 
-      // Check if user already registered in Supabase database
+      if (!supabaseService.isConfigured()) {
+        await supabaseService.initServerConfig();
+      }
+
+      // Check if user is already registered in Supabase database
       const existingDb = await supabaseService.findUserInDatabase(cleanEmail);
-      if (existingDb) {
+      if (existingDb && existingDb.hasVerifiedUid) {
         setIsSubmitting(false);
-        setValidationError('An account with this email is already registered. Please sign in instead.');
+        setValidationError('An account with this email is already registered in Supabase. Please sign in instead.');
         return;
       }
 
@@ -220,33 +221,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
       const fullPhoneNumber = `${selectedCountry.dialCode} ${cleanLocal}`;
 
-      // User registered: Starts with Central Wallet ($0.00) and ZERO open trading accounts
       const newUserProfile: UserAuthProfile = {
-        id: `usr-${Date.now()}`,
+        id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : '',
         name: name.trim(),
-        email: cleanEmail,
+        email: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_EMAIL : cleanEmail,
         phoneNumber: fullPhoneNumber,
         phone: fullPhoneNumber,
         countryCode: selectedCountry.dialCode,
         countryName: selectedCountry.name,
         accountNumber: `${Math.floor(10000000 + Math.random() * 90000000)}`,
-        role: 'normal',
+        role: isMasterAdminEmail(cleanEmail) ? 'admin' : 'normal',
         isLoggedIn: true,
         isNewRegistration: true,
         createdAt: Date.now(),
       };
 
-      // 1. STRICT DATABASE-FIRST: Persist directly to Supabase cloud database
-      const saveDbResult = await supabaseService.registerUserInDatabase(newUserProfile, password);
-      if (!saveDbResult) {
-        setIsSubmitting(false);
-        setValidationError(
-          'Unable to complete registration. Please check your connection and try again.'
-        );
-        return;
-      }
-
-      // 2. Also register in Supabase Auth service
+      // 1. Register in Supabase Auth service first so user is created in Supabase Authentication -> Users with a real UID
       const authRes = await supabaseService.signUpWithSupabaseAuth(newUserProfile, password);
       if (!authRes.success) {
         const errLower = (authRes.error || '').toLowerCase();
@@ -256,10 +246,38 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           errLower.includes('unique') ||
           errLower.includes('duplicate')
         ) {
+          // If already in Supabase Auth, sign in to retrieve their real Supabase Auth UID
+          const signInRes = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
+          const existingAuthUid = signInRes.data?.user?.id || signInRes.data?.id;
+          if (signInRes.success && isValidUserUid(existingAuthUid)) {
+            newUserProfile.id = isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : existingAuthUid;
+          } else {
+            setIsSubmitting(false);
+            setValidationError('An account with this email already exists in Supabase. Please sign in instead.');
+            return;
+          }
+        } else if (!isMasterAdminEmail(cleanEmail)) {
           setIsSubmitting(false);
-          setValidationError('An account with this email already exists. Please sign in instead.');
+          setValidationError(
+            authRes.error || 'Unable to create user in Supabase Authentication. Please check your details and try again.'
+          );
           return;
         }
+      } else {
+        const authUid = authRes.data?.user?.id || authRes.data?.id;
+        if (authUid && isValidUserUid(authUid) && !isMasterAdminEmail(cleanEmail)) {
+          newUserProfile.id = authUid;
+        }
+      }
+
+      // 2. STRICT DATABASE-FIRST: Persist user + verified Supabase Auth UID directly to Supabase cloud database
+      const saveDbResult = await supabaseService.registerUserInDatabase(newUserProfile, password);
+      if (!saveDbResult || !isValidUserUid(newUserProfile.id)) {
+        setIsSubmitting(false);
+        setValidationError(
+          'Access Denied: Unable to verify UID and save your account to Supabase. Please check your connection and try again.'
+        );
+        return;
       }
 
       // 3. Initialize financials in Supabase database
@@ -269,20 +287,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         lastUpdated: Date.now(),
       });
 
-      // 4. Save to local device cache only AFTER cloud DB confirmation
-      const regResult = registerNewUser(newUserProfile, password);
+      // 4. Save to local device cache only AFTER cloud DB & UID confirmation
+      registerNewUser(newUserProfile, password);
       initializeUserFinancials(newUserProfile, true);
 
       await supabaseService.syncActivity(newUserProfile, {
         type: 'REGISTRATION',
-        description: `New user registration for ${newUserProfile.email} (${newUserProfile.name}) stored in cloud database`,
+        description: `New user registration for ${newUserProfile.email} (UID: ${newUserProfile.id}) stored in Supabase`,
       });
       await supabaseService.syncDevice(newUserProfile);
 
       setIsSubmitting(false);
       onSignIn(newUserProfile);
     } else {
-      // SIGN IN MODE - SUPABASE CLOUD & MULTI-DEVICE AUTHENTICATION
+      // SIGN IN MODE - STRICT SUPABASE UID & CLOUD AUTHENTICATION
       if (!email.trim()) {
         setValidationError('Please enter your email.');
         return;
@@ -295,101 +313,181 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       const cleanEmail = email.trim().toLowerCase();
       setIsSubmitting(true);
 
-      // Ensure server-persisted Supabase config is loaded on this mobile device/browser
+      // Ensure server-persisted Supabase config is loaded on this device/browser
       if (!supabaseService.isConfigured()) {
         await supabaseService.initServerConfig();
       }
 
-      // 1. If database is configured, test against Supabase Auth & Supabase Database
-      if (supabaseService.isConfigured()) {
-        try {
-          const remoteUser = await supabaseService.findUserInDatabase(cleanEmail);
-          const sbAuth = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
-
-          // SUCCESS CASE A: Remote user found in database table (vtm_registered_users)
-          if (remoteUser) {
-            if (remoteUser.password && remoteUser.password !== password) {
-              setIsSubmitting(false);
-              setValidationError('Incorrect password. Please verify your credentials and try again.');
-              return;
-            }
-
-            // Restore user profile & finances locally on this device
-            registerNewUser(remoteUser.profile, remoteUser.password || password);
-            const remoteFinances = await supabaseService.fetchUserFinancials(remoteUser.profile);
-            if (remoteFinances) {
-              saveUserFinancials(remoteUser.profile, remoteFinances);
-            } else {
-              initializeUserFinancials(remoteUser.profile, false);
-            }
-
-            setIsSubmitting(false);
-            await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
-            await supabaseService.syncActivity(remoteUser.profile, {
-              type: 'LOGIN',
-              description: `User ${remoteUser.profile.email} logged in successfully`,
-            });
-            await supabaseService.syncDevice(remoteUser.profile);
-            onSignIn(remoteUser.profile);
-            return;
-          }
-
-          // SUCCESS CASE B: Authenticated via Supabase Auth service directly
-          if (sbAuth.success && sbAuth.data?.user) {
-            const authUser = sbAuth.data.user;
-            const meta = authUser.user_metadata || {};
-            const profile: UserAuthProfile = {
-              id: `usr-${meta.account_number || authUser.id.slice(0, 8) || Date.now()}`,
-              name: meta.display_name || meta.name || 'Trader',
-              email: cleanEmail,
-              phoneNumber: meta.phone || '',
-              phone: meta.phone || '',
-              countryCode: meta.country_code || '+1',
-              countryName: meta.country_name || 'Kenya',
-              accountNumber: meta.account_number || String(Math.floor(1000000 + Math.random() * 9000000)),
-              role: meta.role || 'normal',
-              isLoggedIn: true,
-              createdAt: authUser.created_at ? new Date(authUser.created_at).getTime() : Date.now(),
-            };
-
-            registerNewUser(profile, password);
-            const remoteFinances = await supabaseService.fetchUserFinancials(profile);
-            if (remoteFinances) {
-              saveUserFinancials(profile, remoteFinances);
-            } else {
-              initializeUserFinancials(profile, false);
-            }
-
-            setIsSubmitting(false);
-            await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
-            await supabaseService.syncActivity(profile, {
-              type: 'LOGIN',
-              description: `User ${profile.email} logged in via Supabase Auth`,
-            });
-            await supabaseService.syncDevice(profile);
-            onSignIn(profile);
-            return;
-          }
-
-          // If verification checked and user does not exist or credentials failed:
+      // Master Admin Exclusive Login (Email: mutwirib964@gmail.com, Confirmed UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
+      if (isMasterAdminEmail(cleanEmail)) {
+        const verifyRes = verifyUserCredentials(MASTER_ADMIN_EMAIL, password);
+        if (verifyRes.success && verifyRes.user) {
+          const confirmedAdmin: UserAuthProfile = {
+            ...verifyRes.user,
+            id: MASTER_ADMIN_UID,
+            email: MASTER_ADMIN_EMAIL,
+            name: 'mutwiri',
+            role: 'admin',
+            isLoggedIn: true,
+          };
+          await supabaseService.registerUserInDatabase(confirmedAdmin, password);
+          await supabaseService.updateUserLastLoginInDatabase(MASTER_ADMIN_EMAIL);
           setIsSubmitting(false);
-          setValidationError(
-            sbAuth.error || 'No trading account found with this email. Please check your credentials or create a new account.'
-          );
-          return;
-        } catch (err: any) {
-          setIsSubmitting(false);
-          setValidationError(
-            'Unable to connect to authentication server. Please check your internet connection and try again.'
-          );
+          onSignIn(confirmedAdmin);
           return;
         }
       }
 
-      setIsSubmitting(false);
-      setValidationError(
-        'No trading account found with this email. Please register an account first.'
-      );
+      // Strict Requirement: Any non-admin user MUST be saved in Supabase AND have a valid UID
+      if (!supabaseService.isConfigured()) {
+        setIsSubmitting(false);
+        setValidationError(
+          'Access Denied: Supabase cloud verification is required to sign in.'
+        );
+        return;
+      }
+
+      try {
+        const [remoteUser, sbAuth] = await Promise.all([
+          supabaseService.findUserInDatabase(cleanEmail),
+          supabaseService.signInWithSupabaseAuth(cleanEmail, password),
+        ]);
+
+        // Determine if user has a verified UID from either vtm_registered_users or Supabase Auth
+        const sbAuthUid = sbAuth.success ? sbAuth.data?.user?.id : undefined;
+        const resolvedUid = isValidUserUid(remoteUser?.profile?.id)
+          ? remoteUser!.profile.id
+          : isValidUserUid(sbAuthUid)
+          ? sbAuthUid!
+          : '';
+
+        // CASE 1: User found in Supabase vtm_registered_users table
+        if (remoteUser) {
+          // Verify password (either matches stored password in vtm_registered_users OR authenticated via Supabase Auth)
+          if (remoteUser.password && remoteUser.password !== password && !sbAuth.success) {
+            setIsSubmitting(false);
+            setValidationError('Incorrect password. Please verify your credentials and try again.');
+            return;
+          }
+
+          // Strict UID Check: User without a valid UID saved in Supabase can NEVER sign in
+          if (!isValidUserUid(resolvedUid)) {
+            setIsSubmitting(false);
+            setValidationError(
+              'Access Denied: Your account does not have a verified UID saved in Supabase. Sign-in is strictly blocked.'
+            );
+            return;
+          }
+
+          // Strictly forbid any non-admin email from having 'admin' role
+          const verifiedProfile: UserAuthProfile = {
+            ...remoteUser.profile,
+            id: resolvedUid,
+            role: remoteUser.profile.role === 'marketer' ? 'marketer' : 'normal',
+            isLoggedIn: true,
+          };
+
+          // Ensure UID and password are persisted in Supabase
+          await supabaseService.registerUserInDatabase(verifiedProfile, password);
+          registerNewUser({ ...verifiedProfile, isNewRegistration: false }, password);
+
+          const localFinances = loadUserFinancials(verifiedProfile);
+          const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
+          if (localFinances && remoteFinances) {
+            if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
+              saveUserFinancials(verifiedProfile, localFinances);
+            } else {
+              saveUserFinancials(verifiedProfile, remoteFinances);
+            }
+          } else if (remoteFinances) {
+            saveUserFinancials(verifiedProfile, remoteFinances);
+          } else if (localFinances) {
+            saveUserFinancials(verifiedProfile, localFinances);
+          } else {
+            initializeUserFinancials(verifiedProfile, false);
+          }
+
+          setIsSubmitting(false);
+          await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+          await supabaseService.syncActivity(verifiedProfile, {
+            type: 'LOGIN',
+            description: `User ${verifiedProfile.email} (UID: ${verifiedProfile.id}) logged in successfully`,
+          });
+          await supabaseService.syncDevice(verifiedProfile);
+          onSignIn({ ...verifiedProfile, isNewRegistration: false });
+          return;
+        }
+
+        // CASE 2: Authenticated via Supabase Auth service with valid UUID
+        if (sbAuth.success && sbAuth.data?.user && isValidUserUid(sbAuth.data.user.id)) {
+          const authUser = sbAuth.data.user;
+          const meta = authUser.user_metadata || {};
+          const safeRole = meta.role === 'marketer' ? 'marketer' : 'normal';
+          const profile: UserAuthProfile = {
+            id: authUser.id,
+            name: meta.display_name || meta.name || 'Trader',
+            email: cleanEmail,
+            phoneNumber: meta.phone || '',
+            phone: meta.phone || '',
+            countryCode: meta.country_code || '+254',
+            countryName: meta.country_name || 'Kenya',
+            accountNumber: meta.account_number || String(Math.floor(10000000 + Math.random() * 90000000)),
+            role: safeRole,
+            isLoggedIn: true,
+            isNewRegistration: false,
+            createdAt: authUser.created_at ? new Date(authUser.created_at).getTime() : Date.now(),
+          };
+
+          const savedToSupabase = await supabaseService.registerUserInDatabase(profile, password);
+          if (!savedToSupabase) {
+            setIsSubmitting(false);
+            setValidationError(
+              'Access Denied: Account could not be verified in Supabase database.'
+            );
+            return;
+          }
+
+          registerNewUser(profile, password);
+          const localFinances = loadUserFinancials(profile);
+          const remoteFinances = await supabaseService.fetchUserFinancials(profile);
+          if (localFinances && remoteFinances) {
+            if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
+              saveUserFinancials(profile, localFinances);
+            } else {
+              saveUserFinancials(profile, remoteFinances);
+            }
+          } else if (remoteFinances) {
+            saveUserFinancials(profile, remoteFinances);
+          } else if (localFinances) {
+            saveUserFinancials(profile, localFinances);
+          } else {
+            initializeUserFinancials(profile, false);
+          }
+
+          setIsSubmitting(false);
+          await supabaseService.updateUserLastLoginInDatabase(cleanEmail);
+          await supabaseService.syncActivity(profile, {
+            type: 'LOGIN',
+            description: `User ${profile.email} (UID: ${profile.id}) logged in via Supabase Auth`,
+          });
+          await supabaseService.syncDevice(profile);
+          onSignIn(profile);
+          return;
+        }
+
+        // Strict block: User is not saved in Supabase or has no UID
+        setIsSubmitting(false);
+        setValidationError(
+          'Access Denied: No verified account with a valid UID found in Supabase for this email. Please register an account first.'
+        );
+        return;
+      } catch (err: any) {
+        setIsSubmitting(false);
+        setValidationError(
+          'Unable to verify account with Supabase server. Please check your internet connection and try again.'
+        );
+        return;
+      }
     }
   };
 
