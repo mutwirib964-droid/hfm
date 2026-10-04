@@ -21,6 +21,7 @@ import {
   Coins,
   Check,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types';
 import { MpesaDepositModal } from './MpesaDepositModal';
@@ -46,6 +47,7 @@ interface WalletTabProps {
   onTransfer: (params: { fromAccount: string; toAccount: string; amount: number }) => void;
   selectedAccount?: TradingAccount | null;
   onSelectAccount?: (account: TradingAccount) => void;
+  onDeleteAccount?: (accountIdOrNumber: string) => void;
   isDarkMode?: boolean;
   currentUser?: UserAuthProfile | null;
 }
@@ -59,6 +61,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   onTransfer,
   selectedAccount,
   onSelectAccount,
+  onDeleteAccount,
   isDarkMode = false,
   currentUser,
 }) => {
@@ -327,7 +330,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const userPhone =
     currentUser?.phoneNumber ||
     (currentUser as any)?.phone ||
-    '0712345678';
+    'Not linked';
 
   const exactKesToDisburse = Number((withdrawAmount * USD_KES_WITHDRAW_RATE).toFixed(2));
 
@@ -416,9 +419,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   ${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
                 <span className="text-xs text-neutral-400 font-bold">USD</span>
-                <span className="text-xs text-emerald-400 font-mono font-semibold ml-2">
-                  (≈ KES {(walletBalance * USD_KES_RATE).toLocaleString(undefined, { maximumFractionDigits: 0 })})
-                </span>
               </div>
             </div>
 
@@ -525,7 +525,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           className="text-[#0066FF] hover:underline font-bold flex items-center gap-1 cursor-pointer"
                         >
                           <ArrowDownToLine className="w-3 h-3" />
-                          <span>Deposit (Min $16)</span>
+                          <span>Deposit</span>
                         </button>
                         <button
                           type="button"
@@ -533,13 +533,37 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           className="text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
                         >
                           <ArrowUpFromLine className="w-3 h-3" />
-                          <span>Withdraw (Min $35)</span>
+                          <span>Withdraw</span>
                         </button>
+                        {onDeleteAccount && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteAccount(acc.id)}
+                            className="text-rose-500 hover:text-rose-400 flex items-center gap-1 cursor-pointer font-bold"
+                            title={`Delete Live Account #${acc.accountNumber}${acc.balance > 0 ? ' (Balance transfers to Wallet)' : ''}`}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Delete</span>
+                          </button>
+                        )}
                       </>
                     ) : (
-                      <span className="text-amber-500/80 font-medium text-[10px]">
-                        Virtual practice credit (Simulated)
-                      </span>
+                      <div className="w-full flex items-center justify-between">
+                        <span className="text-amber-500/80 font-medium text-[10px]">
+                          Virtual practice credit (Simulated)
+                        </span>
+                        {onDeleteAccount && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteAccount(acc.id)}
+                            className="text-rose-500 hover:text-rose-400 flex items-center gap-1 cursor-pointer font-bold text-[10px]"
+                            title={`Delete Demo Account #${acc.accountNumber}`}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Delete</span>
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -658,7 +682,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           {isDeposit ? '+' : isWithdrawal ? '-' : ''}${tx.amount.toFixed(2)}
                         </span>
                         <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                          {tx.details || (isWithdrawal ? 'Safaricom B2C' : 'Funded')}
+                          {tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')}
                         </span>
                       </div>
                     </div>
@@ -695,12 +719,16 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-sm">
-                    {withdrawMethod === 'crypto' ? 'Cryptocurrency Payout' : 'Safaricom M-PESA Payout'}
+                    {withdrawMethod === 'crypto'
+                      ? 'Cryptocurrency Payout'
+                      : withdrawMethod === 'bank'
+                      ? 'Global & African Bank Payout'
+                      : 'Mobile Money / M-PESA Payout'}
                   </h3>
                   <span className="text-[10px] text-emerald-500 font-bold">
                     {withdrawMethod === 'crypto'
                       ? 'Fast Blockchain Processing • Minimum: $50.00'
-                      : `Instant Disbursement • Rate: 1 USD = ${USD_KES_RATE} KES`}
+                      : 'Instant Automated Disbursement • Minimum: $35.00'}
                   </span>
                 </div>
               </div>
@@ -870,7 +898,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     <div className="flex items-center justify-between text-[11px]">
                       <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1">
                         <Lock className="w-3 h-3 text-amber-500" />
-                        <span>Safaricom Recipient Phone:</span>
+                        <span>Registered Mobile Number:</span>
                       </span>
                       <span className="font-mono font-bold text-slate-900 dark:text-white">
                         {userPhone}

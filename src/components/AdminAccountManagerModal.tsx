@@ -144,6 +144,9 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const syncFromSupabaseCloud = useCallback(async () => {
     setIsSyncingCloud(true);
     try {
+      if (!supabaseService.isConfigured()) {
+        await supabaseService.initServerConfig();
+      }
       const cloudData = await supabaseService.fetchAllPlatformUsersAndFinances();
       if (cloudData) {
         replaceLocalRegistryWithSupabase(cloudData.users, cloudData.financesByEmail);
@@ -171,7 +174,11 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     if (!isOpen) return;
     loadLocalAdminMetrics();
     syncFromSupabaseCloud();
-  }, [isOpen]);
+    const interval = setInterval(() => {
+      syncFromSupabaseCloud();
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [isOpen, loadLocalAdminMetrics, syncFromSupabaseCloud]);
 
   // Create a new Live Trading Account for the selected user immediately
   const handleAddLiveAccountForUser = () => {
@@ -255,26 +262,67 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       assignUserRole(cleanEmail, effectiveRole);
       await supabaseService.updateUserRoleInDatabase(cleanEmail, effectiveRole);
 
-      // 2. Preserve user's existing transactions
+      // 2. Preserve user's existing transactions and record any newly credited deposit to database
       const existingFin = loadUserFinancials(existingProfile);
+      const prevWallet = existingFin?.walletBalance || 0;
+      const prevLiveTotal = (existingFin?.accounts || [])
+        .filter((a) => a.type === 'Live')
+        .reduce((sum, a) => sum + (a.balance || 0), 0);
+      const newWallet = Number(editableWallet.toFixed(2));
+      const newLiveTotal = editableAccounts
+        .filter((a) => a.type === 'Live')
+        .reduce((sum, a) => sum + (a.balance || 0), 0);
+
+      const nextTransactions = [...(existingFin?.transactions || [])];
+      const netCreditedUsd = Number((newWallet + newLiveTotal - (prevWallet + prevLiveTotal)).toFixed(2));
+
+      if (netCreditedUsd > 0) {
+        const targetAcc =
+          newLiveTotal > prevLiveTotal
+            ? `Account #${editableAccounts.find((a) => a.type === 'Live')?.accountNumber || 'Live'}`
+            : 'VTM Wallet';
+        const depRef = `DB-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+        const depTx = {
+          id: `tx-${Date.now()}`,
+          type: 'DEPOSIT' as const,
+          method: 'Direct Account Deposit',
+          amount: netCreditedUsd,
+          currency: 'USD',
+          status: 'COMPLETED' as const,
+          timestamp: Date.now(),
+          reference: depRef,
+          accountNumber: targetAcc,
+          details: `Deposited to ${targetAcc}`,
+        };
+        nextTransactions.unshift(depTx);
+        await supabaseService
+          .saveDeposit(existingProfile, {
+            id: depTx.id,
+            targetAccount: targetAcc,
+            amountUsd: netCreditedUsd,
+            amountKes: Number((netCreditedUsd * 125.67).toFixed(2)),
+            method: 'Direct Account Deposit',
+            reference: depRef,
+            status: 'COMPLETED',
+          })
+          .catch(() => {});
+      }
+
       const updatedFinState = {
-        walletBalance: Number(editableWallet.toFixed(2)),
+        walletBalance: newWallet,
         accounts: editableAccounts,
         selectedAccountId:
           editableAccounts[selectedAccIndex]?.id ||
           editableAccounts[0]?.id ||
           existingFin?.selectedAccountId ||
           null,
-        transactions: existingFin?.transactions || [],
+        transactions: nextTransactions,
         lastUpdated: Date.now(),
       };
 
       // 3. Save locally and push immediately to cloud database
       saveUserFinancials(existingProfile, updatedFinState);
-      await Promise.all([
-        supabaseService.syncUserFinancials(existingProfile, updatedFinState),
-        supabaseService.syncTradingAccounts(existingProfile, editableAccounts),
-      ]);
+      await supabaseService.syncUserFinancials(existingProfile, updatedFinState);
 
       // 4. If editing current active user session, apply immediately
       if (currentUser && currentUser.email.toLowerCase() === cleanEmail) {

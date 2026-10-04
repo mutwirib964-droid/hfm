@@ -125,6 +125,11 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   const bidTimerRef = React.useRef<any>(null);
   const askTimerRef = React.useRef<any>(null);
 
+  const curMarketStatus = checkInstrumentMarketHours(
+    currentInstrument.symbol,
+    currentInstrument.category
+  );
+
   // When symbol switches, synchronize refs immediately without triggering fake tick
   React.useEffect(() => {
     if (currentSymbolRef.current !== currentInstrument.symbol) {
@@ -138,8 +143,13 @@ export const TradeTab: React.FC<TradeTabProps> = ({
     }
   }, [currentInstrument.symbol]);
 
-  // Immediate reaction when bid price changes
+  // Immediate reaction when bid price changes (only when market is open)
   React.useEffect(() => {
+    if (!curMarketStatus.isOpen) {
+      prevBidRef.current = currentInstrument.bid;
+      setBidTick(null);
+      return;
+    }
     if (currentInstrument.bid !== prevBidRef.current) {
       const direction: 'UP' | 'DOWN' = currentInstrument.bid > prevBidRef.current ? 'UP' : 'DOWN';
       prevBidRef.current = currentInstrument.bid;
@@ -147,10 +157,15 @@ export const TradeTab: React.FC<TradeTabProps> = ({
       if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
       bidTimerRef.current = setTimeout(() => setBidTick(null), 700);
     }
-  }, [currentInstrument.bid]);
+  }, [currentInstrument.bid, curMarketStatus.isOpen]);
 
-  // Immediate reaction when ask price changes
+  // Immediate reaction when ask price changes (only when market is open)
   React.useEffect(() => {
+    if (!curMarketStatus.isOpen) {
+      prevAskRef.current = currentInstrument.ask;
+      setAskTick(null);
+      return;
+    }
     if (currentInstrument.ask !== prevAskRef.current) {
       const direction: 'UP' | 'DOWN' = currentInstrument.ask > prevAskRef.current ? 'UP' : 'DOWN';
       prevAskRef.current = currentInstrument.ask;
@@ -158,10 +173,15 @@ export const TradeTab: React.FC<TradeTabProps> = ({
       if (askTimerRef.current) clearTimeout(askTimerRef.current);
       askTimerRef.current = setTimeout(() => setAskTick(null), 700);
     }
-  }, [currentInstrument.ask]);
+  }, [currentInstrument.ask, curMarketStatus.isOpen]);
 
-  // Synchronize with external tickDirection if provided
+  // Synchronize with external tickDirection if provided (only when market is open)
   React.useEffect(() => {
+    if (!curMarketStatus.isOpen) {
+      setAskTick(null);
+      setBidTick(null);
+      return;
+    }
     if (tickDirection === 'UP' || tickDirection === 'DOWN') {
       setAskTick(tickDirection);
       setBidTick(tickDirection);
@@ -174,7 +194,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
       bidTimerRef.current = timer;
       askTimerRef.current = timer;
     }
-  }, [tickDirection]);
+  }, [tickDirection, curMarketStatus.isOpen]);
 
   // Live spread calculation in exact pips (dynamic 0.something up to max 1.2)
   const liveSpreadPips = (
@@ -252,14 +272,10 @@ export const TradeTab: React.FC<TradeTabProps> = ({
 
   // Open positions total floating PnL
   const totalFloatingPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
-  const curMarketStatus = checkInstrumentMarketHours(
-    currentInstrument.symbol,
-    currentInstrument.category
-  );
 
   // Dynamic Highlight Styling for Buy / Sell boxes based on tick direction and user action
-  const isPriceUp = tickDirection === 'UP';
-  const isPriceDown = tickDirection === 'DOWN';
+  const isPriceUp = curMarketStatus.isOpen && tickDirection === 'UP';
+  const isPriceDown = curMarketStatus.isOpen && tickDirection === 'DOWN';
 
   return (
     <div
@@ -353,7 +369,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
               title={`Closed: ${curMarketStatus.reason}. Continuous trading on 24/7 Crypto.`}
             >
               <Clock className="w-3 h-3" />
-              <span>Closed ({curMarketStatus.nextSession})</span>
+              <span>Closed ({curMarketStatus.nextSession || curMarketStatus.nextOpenText || 'Market Closed'})</span>
             </span>
           )}
 
@@ -478,14 +494,22 @@ export const TradeTab: React.FC<TradeTabProps> = ({
             {/* Live tick badge */}
             <span
               className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
-                isPriceUp
+                !curMarketStatus.isOpen
+                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                  : isPriceUp
                   ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
                   : isPriceDown
                   ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
                   : 'text-neutral-400'
               }`}
             >
-              {isPriceUp ? '▲ Price Rising' : isPriceDown ? '▼ Price Dropping' : '• Steady'}
+              {!curMarketStatus.isOpen
+                ? '• Market Closed'
+                : isPriceUp
+                ? '▲ Price Rising'
+                : isPriceDown
+                ? '▼ Price Dropping'
+                : '• Steady'}
             </span>
           </div>
 

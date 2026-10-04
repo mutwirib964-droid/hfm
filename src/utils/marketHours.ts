@@ -131,6 +131,7 @@ export const checkInstrumentMarketHours = (
       reason: 'Market Closed for Weekend. Crypto remains 24/7 active.',
       category: (category || 'Forex') as any,
       nextOpenTime: 'Sunday 22:00 UTC',
+      nextSession: 'Reopens Sun 22:00 UTC',
       sessionText: 'Weekend Market Closure',
       nextOpenText: 'Reopens Sunday 22:00 UTC',
     };
@@ -169,6 +170,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Weekend Market Closure. US Stock Exchanges (NYSE/NASDAQ) closed.',
         category: 'Stocks',
         nextOpenTime: 'Mon 13:30 UTC',
+        nextSession: 'Reopens Mon 13:30 UTC',
         sessionText: 'US Equities Weekend Closure',
         nextOpenText: 'Reopens Mon 13:30 UTC',
       };
@@ -182,6 +184,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Weekend Market Closure. US Stock Exchanges closed.',
         category: 'Stocks',
         nextOpenTime: 'Mon 13:30 UTC',
+        nextSession: 'Reopens Mon 13:30 UTC',
         sessionText: 'US Equities Closed for Weekend',
         nextOpenText: 'Reopens Mon 13:30 UTC',
       };
@@ -195,6 +198,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Pre-market. US Regular Trading Session opens at 13:30 UTC (09:30 AM EST).',
         category: 'Stocks',
         nextOpenTime: 'Today 13:30 UTC',
+        nextSession: 'Opens Today 13:30 UTC',
         sessionText: 'Pre-Market Hours',
         nextOpenText: 'Opens Today 13:30 UTC',
       };
@@ -208,6 +212,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Market Closed. US Regular Trading Session ended at 20:00 UTC (04:00 PM EST).',
         category: 'Stocks',
         nextOpenTime: utcDay === 5 ? 'Mon 13:30 UTC' : 'Tomorrow 13:30 UTC',
+        nextSession: utcDay === 5 ? 'Reopens Mon 13:30 UTC' : 'Reopens Tomorrow 13:30 UTC',
         sessionText: 'After-Hours Closed',
         nextOpenText: utcDay === 5 ? 'Reopens Mon 13:30 UTC' : 'Reopens Tomorrow 13:30 UTC',
       };
@@ -235,6 +240,7 @@ export const checkInstrumentMarketHours = (
       reason: 'Weekend Market Closure (Saturday). Reopens Sunday 22:00 UTC.',
       category: (category || 'Forex') as any,
       nextOpenTime: 'Sun 22:00 UTC',
+      nextSession: 'Reopens Sun 22:00 UTC',
       sessionText: 'Weekend Market Closure',
       nextOpenText: 'Reopens Sun 22:00 UTC',
     };
@@ -249,6 +255,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Weekend Market Closure (Sunday). Reopens Sunday 22:00 UTC.',
         category: (category || 'Forex') as any,
         nextOpenTime: 'Today 22:00 UTC',
+        nextSession: 'Reopens 22:00 UTC',
         sessionText: 'Weekend Market Closure',
         nextOpenText: 'Reopens Today 22:00 UTC',
       };
@@ -258,6 +265,7 @@ export const checkInstrumentMarketHours = (
         status: 'OPEN',
         reason: 'Tokyo & Sydney Asian Trading Session Open',
         category: (category || 'Forex') as any,
+        nextSession: 'Open Now',
         sessionText: 'Asian Session Active',
         nextOpenText: 'Open Now',
       };
@@ -279,6 +287,7 @@ export const checkInstrumentMarketHours = (
         reason: 'Friday Weekend Settlement Close. Reopens Sunday 22:00 UTC.',
         category: (category || 'Forex') as any,
         nextOpenTime: 'Sun 22:00 UTC',
+        nextSession: 'Reopens Sun 22:00 UTC',
         sessionText: 'Weekend Settlement Close',
         nextOpenText: 'Reopens Sun 22:00 UTC',
       };

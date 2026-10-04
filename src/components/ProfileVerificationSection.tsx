@@ -19,6 +19,13 @@ import {
   CreditCard,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types/botTypes';
+import {
+  COUNTRY_OPTIONS,
+  getCountryByCode,
+  getCountryByName,
+  formatLocalPhoneInput,
+  validatePhoneForCountry,
+} from '../utils/countryPhoneConfig';
 
 interface ProfileVerificationSectionProps {
   isDarkMode: boolean;
@@ -45,20 +52,33 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
   currentUser,
 }) => {
   // Personal Details dynamically sourced from user account profile
+  const initialCountryCfg = getCountryByCode(currentUser?.countryCode) || getCountryByName(currentUser?.countryName);
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>(initialCountryCfg.code);
+  const activeCountryCfg = getCountryByCode(selectedCountryCode);
+
   const [fullName, setFullName] = useState(() => currentUser?.name || 'Trader');
   const [email] = useState(() => currentUser?.email || '');
-  const [phone, setPhone] = useState(() => currentUser?.phoneNumber || (currentUser as any)?.phone || '');
-  const [country] = useState(() =>
+  const [phone, setPhone] = useState(() => {
+    const raw = currentUser?.phoneNumber || (currentUser as any)?.phone || '';
+    if (!raw) return '';
+    return raw;
+  });
+  const [address, setAddress] = useState(() =>
     currentUser?.countryName
-      ? `${currentUser.countryName} ${currentUser.countryCode ? `(${currentUser.countryCode})` : ''}`
-      : 'Kenya 🇰🇪'
+      ? `${initialCountryCfg.defaultCity}, ${currentUser.countryName}`
+      : `${initialCountryCfg.defaultCity}, ${initialCountryCfg.name}`
   );
-  const [address, setAddress] = useState('Kimathi Street, Nairobi Central, Kenya');
   const [dob] = useState('14 August 1993');
 
   useEffect(() => {
     if (currentUser) {
       if (currentUser.name) setFullName(currentUser.name);
+      if (currentUser.countryCode) {
+        setSelectedCountryCode(currentUser.countryCode);
+      } else if (currentUser.countryName) {
+        const cfg = getCountryByName(currentUser.countryName);
+        setSelectedCountryCode(cfg.code);
+      }
       if (currentUser.phoneNumber || (currentUser as any)?.phone) {
         setPhone(currentUser.phoneNumber || (currentUser as any)?.phone || '');
       }
@@ -67,9 +87,9 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
   // Document upload selections
   const [idType, setIdType] = useState<'ID' | 'DRIVING_LICENCE'>('ID');
-  const [residencyType, setResidencyType] = useState<'KRA' | 'UTILITY_BILL'>('KRA');
-  const [idNumber, setIdNumber] = useState('31849201');
-  const [kraPin, setKraPin] = useState('A009284192P');
+  const [residencyType, setResidencyType] = useState<'KRA' | 'UTILITY_BILL'>('UTILITY_BILL');
+  const [idNumber, setIdNumber] = useState('');
+  const [kraPin, setKraPin] = useState('');
 
   const [idFile, setIdFile] = useState<File | null>(null);
   const [residencyFile, setResidencyFile] = useState<File | null>(null);
@@ -89,9 +109,9 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
       submittedAt: 0,
       isVerified: false,
       idType: 'ID',
-      residencyType: 'KRA',
-      idNumber: '31849201',
-      kraPin: 'A009284192P',
+      residencyType: 'UTILITY_BILL',
+      idNumber: '',
+      kraPin: '',
     };
   });
 
@@ -243,12 +263,12 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
               <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                 {kycRecord.isVerified
-                  ? 'Identity (ID/Licence) and Proof of Residence (KRA/Utility) verified and locked. Unlimited trading & withdrawal limits active.'
+                  ? 'Identity (ID/Passport/Licence) and Proof of Residence verified and locked. Unlimited trading & withdrawal limits active.'
                   : kycRecord.submitted
                   ? `Your documents were submitted. Under automatic security verification policy, your account will be auto-verified automatically in ${formatTime(
                       secondsRemaining
                     )}.`
-                  : 'Upload your National ID or Driving Licence and KRA PIN or Utility Bill to verify residency and identity.'}
+                  : 'Upload your National ID, Passport, or Driving Licence and Tax Certificate or Utility Bill to verify residency and identity.'}
               </p>
             </div>
           </div>
@@ -338,9 +358,37 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
             }`}
           >
             <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
-              Phone Number
+              Phone Number ({activeCountryCfg.flag} {activeCountryCfg.code})
             </span>
-            <span className={`font-mono text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>{phone}</span>
+            <div className="flex items-center gap-1.5">
+              <select
+                value={selectedCountryCode}
+                onChange={(e) => {
+                  const newCode = e.target.value;
+                  setSelectedCountryCode(newCode);
+                  const cfg = getCountryByCode(newCode);
+                  setAddress(`${cfg.defaultCity}, ${cfg.name}`);
+                }}
+                className={`text-[11px] font-bold rounded px-1 py-0.5 border focus:outline-none ${
+                  isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                }`}
+              >
+                {COUNTRY_OPTIONS.map((c) => (
+                  <option key={`${c.iso}-${c.code}`} value={c.code}>
+                    {c.flag} {c.code}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(formatLocalPhoneInput(e.target.value, activeCountryCfg))}
+                placeholder={activeCountryCfg.placeholder}
+                className={`w-full font-mono text-xs bg-transparent focus:outline-none ${
+                  isDarkMode ? 'text-neutral-200' : 'text-slate-800'
+                }`}
+              />
+            </div>
           </div>
 
           <div
@@ -351,7 +399,9 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
             <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
               Country of Residence
             </span>
-            <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{country}</span>
+            <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+              {activeCountryCfg.flag} {activeCountryCfg.name} ({activeCountryCfg.code})
+            </span>
           </div>
 
           <div
@@ -451,10 +501,10 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                     <FileCheck className="w-4 h-4 text-emerald-500" />
                     <div>
                       <span className={`text-[10px] block font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                        Proof of Residence ({kycRecord.residencyType === 'KRA' ? 'KRA PIN' : 'Utility Bill'})
+                        Proof of Residence ({kycRecord.residencyType === 'KRA' ? 'Tax Certificate / PIN' : 'Utility Bill'})
                       </span>
                       <span className={`font-mono text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                        PIN: {kycRecord.kraPin}
+                        Ref: {kycRecord.kraPin}
                       </span>
                     </div>
                   </div>
@@ -593,7 +643,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                         : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
-                    KRA Certificate / PIN
+                    Tax ID / Certificate
                   </button>
                   <button
                     type="button"
@@ -612,14 +662,14 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
                 <div>
                   <label className={`text-[10px] block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                    {residencyType === 'KRA' ? 'KRA PIN Number' : 'Utility Account / Reference No'}
+                    {residencyType === 'KRA' ? 'Tax Identification Number (TIN / PIN)' : 'Utility Account / Reference No'}
                   </label>
                   <input
                     type="text"
                     required
                     value={kraPin}
                     onChange={(e) => setKraPin(e.target.value)}
-                    placeholder={residencyType === 'KRA' ? 'e.g. A009284192P' : 'e.g. KPLC-8491029'}
+                    placeholder={residencyType === 'KRA' ? 'e.g. TIN-90284192' : 'e.g. UTIL-8491029'}
                     className={`w-full border rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#E51937] ${
                       isDarkMode
                         ? 'bg-neutral-950 border-neutral-700 text-white'

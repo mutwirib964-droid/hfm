@@ -22,6 +22,7 @@ import {
   Download,
   Maximize2,
   Minimize2,
+  Trash2,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types/botTypes';
 
@@ -32,6 +33,7 @@ interface HeaderProps {
   onSelectAccount: (acc: TradingAccount) => void;
   onOpenDeposit: () => void;
   onOpenNewAccount: () => void;
+  onDeleteAccount?: (accountIdOrNumber: string) => void;
   onResetDemo: () => void;
   isMobileFrame: boolean;
   onToggleMobileFrame: () => void;
@@ -61,6 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectAccount,
   onOpenDeposit,
   onOpenNewAccount,
+  onDeleteAccount,
   onResetDemo,
   isMobileFrame,
   onToggleMobileFrame,
@@ -277,7 +280,22 @@ export const Header: React.FC<HeaderProps> = ({
                         </span>
                         <span className="font-semibold">#{acc.accountNumber}</span>
                       </div>
-                      {isSelected && <CheckCircle2 className="w-4 h-4 text-[#E51937]" />}
+                      <div className="flex items-center gap-1.5">
+                        {isSelected && <CheckCircle2 className="w-4 h-4 text-[#E51937]" />}
+                        {onDeleteAccount && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onDeleteAccount(acc.id);
+                            }}
+                            className="p-1 rounded-md text-rose-500 hover:bg-rose-500/15 transition-colors cursor-pointer"
+                            title={`Delete ${acc.type} Account #${acc.accountNumber}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex items-center justify-between mt-1 text-[11px]">

@@ -32,6 +32,195 @@ const STORAGE_PREFIX = 'vtm_finances_';
 const ACTIVE_FINANCES_KEY = 'vtm_active_finances';
 const USER_REGISTRY_KEY = 'vtm_user_registry';
 const USER_CREDENTIALS_KEY = 'vtm_user_credentials';
+const DELETED_ACCOUNTS_KEY = 'vtm_deleted_live_accounts';
+
+// 2 Weeks (14 days) in milliseconds for silent background idle Live account cleanup
+export const TWO_WEEKS_IDLE_MS = 14 * 24 * 60 * 60 * 1000;
+
+export function markAccountDeletedLocally(userEmail: string | undefined | null, accountNumber: string): void {
+  if (!accountNumber) return;
+  const cleanEmail = (userEmail || 'default').trim().toLowerCase();
+  try {
+    const raw = localStorage.getItem(DELETED_ACCOUNTS_KEY);
+    const map: Record<string, string[]> = raw ? JSON.parse(raw) : {};
+    const list = Array.isArray(map[cleanEmail]) ? map[cleanEmail] : [];
+    if (!list.includes(accountNumber)) {
+      list.push(accountNumber);
+    }
+    map[cleanEmail] = list;
+    const globalList = Array.isArray(map['*']) ? map['*'] : [];
+    if (!globalList.includes(accountNumber)) {
+      globalList.push(accountNumber);
+    }
+    map['*'] = globalList;
+    localStorage.setItem(DELETED_ACCOUNTS_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+export function getDeletedAccountNumbers(userEmail?: string | null): Set<string> {
+  const set = new Set<string>();
+  try {
+    const raw = localStorage.getItem(DELETED_ACCOUNTS_KEY);
+    if (!raw) return set;
+    const map: Record<string, string[]> = JSON.parse(raw);
+    if (Array.isArray(map['*'])) {
+      map['*'].forEach((n) => set.add(String(n)));
+    }
+    if (userEmail) {
+      const cleanEmail = userEmail.trim().toLowerCase();
+      if (Array.isArray(map[cleanEmail])) {
+        map[cleanEmail].forEach((n) => set.add(String(n)));
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return set;
+}
+
+export function extractAccountCreatedAt(acc: TradingAccount, fallbackTime?: number): number {
+  if (typeof acc.createdAt === 'number' && Number.isFinite(acc.createdAt) && acc.createdAt > 1000000000000) {
+    return acc.createdAt;
+  }
+  if (typeof acc.id === 'string') {
+    const m = acc.id.match(/^acc-(\d{12,14})$/);
+    if (m) {
+      const parsed = Number(m[1]);
+      if (Number.isFinite(parsed) && parsed > 1000000000000) {
+        return parsed;
+      }
+    }
+  }
+  return fallbackTime && fallbackTime > 1000000000000 ? fallbackTime : Date.now();
+}
+
+/**
+ * Silent Platform Cleanup for Idle Live Accounts (Never shown to users):
+ * 1. If a Live account stays idle with $0.00 (no deposit) for 2 weeks -> deleted automatically.
+ * 2. If a user opens a Live account, deposits funds (balance > 0), and does not trade on it for 2 weeks ->
+ *    deleted automatically by platform and its full balance is transferred back to the user's Central Wallet.
+ */
+export function sweepIdleLiveAccountsSilently(
+  user: UserAuthProfile | null | undefined,
+  state: UserFinancialState,
+  hasOpenPositionsOnAccount?: (acc: TradingAccount) => boolean
+): {
+  state: UserFinancialState;
+  sweptAccountNumbers: string[];
+  transferredToWalletUsd: number;
+  changed: boolean;
+} {
+  if (!state || !Array.isArray(state.accounts) || state.accounts.length === 0) {
+    return { state, sweptAccountNumbers: [], transferredToWalletUsd: 0, changed: false };
+  }
+
+  const now = Date.now();
+  const deletedSet = getDeletedAccountNumbers(user?.email);
+  let walletDelta = 0;
+  let changed = false;
+  const sweptAccountNumbers: string[] = [];
+  const nextTransactions = Array.isArray(state.transactions) ? [...state.transactions] : [];
+
+  const survivingAccounts: TradingAccount[] = [];
+
+  for (const acc of state.accounts) {
+    if (!acc) continue;
+
+    // If already tombstoned as deleted, strip it out
+    if (acc.accountNumber && deletedSet.has(String(acc.accountNumber))) {
+      changed = true;
+      continue;
+    }
+
+    if (acc.type !== 'Live') {
+      survivingAccounts.push(acc);
+      continue;
+    }
+
+    const createdAt = extractAccountCreatedAt(acc, state.lastUpdated || user?.createdAt);
+    const hasOpenPos =
+      (acc.margin || 0) > 0 || (hasOpenPositionsOnAccount ? hasOpenPositionsOnAccount(acc) : false);
+
+    if (hasOpenPos) {
+      survivingAccounts.push({
+        ...acc,
+        createdAt,
+        lastTradeAt: acc.lastTradeAt || now,
+        lastActivityAt: now,
+      });
+      continue;
+    }
+
+    const balance = Number(acc.balance || 0);
+    const lastTradeAt = acc.lastTradeAt || 0;
+    const lastDepositAt = acc.lastDepositAt || 0;
+
+    // Case 1: Live account with NO deposit (balance <= 0) idle for >= 2 weeks
+    if (balance <= 0) {
+      const referenceTime = Math.max(createdAt, lastTradeAt, lastDepositAt, acc.lastActivityAt || 0);
+      if (now - referenceTime >= TWO_WEEKS_IDLE_MS) {
+        changed = true;
+        sweptAccountNumbers.push(acc.accountNumber);
+        markAccountDeletedLocally(user?.email, acc.accountNumber);
+        continue;
+      }
+    }
+
+    // Case 2: Live account with deposit (balance > 0) where user did NOT trade for >= 2 weeks
+    if (balance > 0) {
+      const hasTradedSinceFunding = lastTradeAt > 0 && lastTradeAt >= (lastDepositAt || createdAt);
+      const idleReferenceTime = hasTradedSinceFunding
+        ? lastTradeAt
+        : Math.max(createdAt, lastDepositAt);
+
+      if (now - idleReferenceTime >= TWO_WEEKS_IDLE_MS) {
+        changed = true;
+        walletDelta = Number((walletDelta + balance).toFixed(2));
+        sweptAccountNumbers.push(acc.accountNumber);
+        markAccountDeletedLocally(user?.email, acc.accountNumber);
+        continue;
+      }
+    }
+
+    if (!acc.createdAt) {
+      changed = true;
+      survivingAccounts.push({
+        ...acc,
+        createdAt,
+      });
+    } else {
+      survivingAccounts.push(acc);
+    }
+  }
+
+  if (!changed) {
+    return { state, sweptAccountNumbers: [], transferredToWalletUsd: 0, changed: false };
+  }
+
+  const nextWalletBalance = Number(((state.walletBalance || 0) + walletDelta).toFixed(2));
+  const nextSelectedId =
+    state.selectedAccountId && survivingAccounts.some((a) => a.id === state.selectedAccountId)
+      ? state.selectedAccountId
+      : survivingAccounts[0]?.id || null;
+
+  const updatedState: UserFinancialState = {
+    ...state,
+    walletBalance: nextWalletBalance,
+    accounts: survivingAccounts,
+    selectedAccountId: nextSelectedId,
+    transactions: nextTransactions,
+    lastUpdated: now,
+  };
+
+  return {
+    state: updatedState,
+    sweptAccountNumbers,
+    transferredToWalletUsd: walletDelta,
+    changed: true,
+  };
+}
 
 // Master Super Administrator Identity (Strictly Exclusive)
 export const MASTER_ADMIN_EMAIL = 'mutwirib964@gmail.com';
@@ -177,7 +366,7 @@ export function verifyUserCredentials(
   if (!existingUser) {
     return {
       success: false,
-      error: 'Access Denied: Account not found in Supabase or missing verified UID.',
+      error: 'Invalid email or password. Please try again.',
     };
   }
 
@@ -207,7 +396,7 @@ export function verifyUserCredentials(
     if (!isValidUserUid(existingUser.id)) {
       return {
         success: false,
-        error: 'Access Denied: Your account does not have a valid UID saved in Supabase. Sign-in is strictly prohibited.',
+        error: 'Invalid email or password. Please try again.',
       };
     }
 
@@ -693,10 +882,20 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (raw) {
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
-        return {
+        const sanitized: UserFinancialState = {
           ...parsed,
           transactions: sanitizeRealTransactions(parsed.transactions),
         };
+        const swept = sweepIdleLiveAccountsSilently(user, sanitized);
+        if (swept.changed) {
+          localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(swept.state));
+          supabaseService.syncUserFinancials(user, swept.state).catch(() => {});
+          swept.sweptAccountNumbers.forEach((accNum) => {
+            supabaseService.deleteTradingAccountFromDatabase(user, accNum, true).catch(() => {});
+          });
+          return swept.state;
+        }
+        return sanitized;
       }
     }
 
@@ -849,6 +1048,8 @@ export function executeInternalTransfer(
           balance: newBal,
           equity: newEq,
           freeMargin: newFree,
+          lastDepositAt: Date.now(),
+          lastActivityAt: Date.now(),
         };
       }
       return acc;
@@ -981,24 +1182,83 @@ export function adminUpdateUserAccount(
     const raw = localStorage.getItem(STORAGE_PREFIX + targetUserKey);
     let state: UserFinancialState = raw
       ? JSON.parse(raw)
-      : { walletBalance: 0, accounts: [], lastUpdated: Date.now() };
+      : { walletBalance: 0, accounts: [], transactions: [], lastUpdated: Date.now() };
+    if (!Array.isArray(state.transactions)) {
+      state.transactions = [];
+    }
+
+    let addedDepositUsd = 0;
+    let depositTargetLabel = 'VTM Wallet';
 
     if (accountUpdates.walletBalance !== undefined) {
-      state.walletBalance = Number(accountUpdates.walletBalance.toFixed(2));
+      const nextWal = Number(accountUpdates.walletBalance.toFixed(2));
+      const diff = nextWal - (state.walletBalance || 0);
+      if (diff > 0) {
+        addedDepositUsd += diff;
+        depositTargetLabel = 'VTM Wallet';
+      }
+      state.walletBalance = nextWal;
     }
 
     if (accountUpdates.accountId && accountUpdates.newBalance !== undefined) {
+      const nextBal = Number(accountUpdates.newBalance.toFixed(2));
       state.accounts = state.accounts.map((acc) => {
         if (acc.id === accountUpdates.accountId || acc.accountNumber === accountUpdates.accountId) {
+          if (acc.type === 'Live') {
+            const diff = nextBal - (acc.balance || 0);
+            if (diff > 0) {
+              addedDepositUsd += diff;
+              depositTargetLabel = `Account #${acc.accountNumber}`;
+            }
+          }
           return {
             ...acc,
-            balance: Number(accountUpdates.newBalance!.toFixed(2)),
-            equity: accountUpdates.newEquity !== undefined ? Number(accountUpdates.newEquity.toFixed(2)) : Number(accountUpdates.newBalance!.toFixed(2)),
+            balance: nextBal,
+            equity:
+              accountUpdates.newEquity !== undefined
+                ? Number(accountUpdates.newEquity.toFixed(2))
+                : nextBal,
+            freeMargin:
+              accountUpdates.newEquity !== undefined
+                ? Number(accountUpdates.newEquity.toFixed(2))
+                : nextBal,
             leverage: accountUpdates.newLeverage || acc.leverage,
           };
         }
         return acc;
       });
+    }
+
+    const targetUser = findRegisteredUser(targetUserKey);
+
+    if (addedDepositUsd > 0) {
+      const ref = `ADM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+      const newTx: Transaction = {
+        id: `tx-${Date.now()}`,
+        type: 'DEPOSIT',
+        method: 'Institutional Direct Deposit',
+        amount: Number(addedDepositUsd.toFixed(2)),
+        currency: 'USD',
+        status: 'COMPLETED',
+        timestamp: Date.now(),
+        reference: ref,
+        accountNumber: depositTargetLabel,
+        details: `Credited to ${depositTargetLabel}`,
+      };
+      state.transactions = [newTx, ...(state.transactions || [])];
+      if (targetUser) {
+        supabaseService
+          .saveDeposit(targetUser, {
+            id: newTx.id,
+            targetAccount: depositTargetLabel,
+            amountUsd: Number(addedDepositUsd.toFixed(2)),
+            amountKes: Number((addedDepositUsd * 125.67).toFixed(2)),
+            method: 'Institutional Direct Deposit',
+            reference: ref,
+            status: 'COMPLETED',
+          })
+          .catch(() => {});
+      }
     }
 
     state.lastUpdated = Date.now();
@@ -1012,6 +1272,16 @@ export function adminUpdateUserAccount(
         localStorage.setItem(ACTIVE_FINANCES_KEY, JSON.stringify({ ...state, _key: targetUserKey }));
       }
     }
+
+    // Immediately sync updated financials to Supabase database
+    const syncProfile: UserAuthProfile = targetUser || {
+      id: generateSupabaseUuid(),
+      email: targetUserKey,
+      name: targetUserKey.split('@')[0],
+      role: 'normal',
+      isLoggedIn: false,
+    };
+    supabaseService.syncUserFinancials(syncProfile, state).catch(() => {});
 
     return true;
   } catch (e) {
@@ -1083,15 +1353,53 @@ export function getAllUserActivities(): UserActivityLog[] {
   return [];
 }
 
+export interface PlatformLiveAccountRecord {
+  account: TradingAccount;
+  user: UserAuthProfile;
+  walletBalance: number;
+  lastUpdated?: number;
+}
+
+export function getAllPlatformLiveAccounts(): PlatformLiveAccountRecord[] {
+  const users = getAllRegisteredUsers();
+  const records: PlatformLiveAccountRecord[] = [];
+  const seenAccountNumbers = new Set<string>();
+
+  users.forEach((u) => {
+    const fin = loadUserFinancials(u);
+    if (fin && Array.isArray(fin.accounts)) {
+      fin.accounts.forEach((acc) => {
+        if (acc && acc.type === 'Live') {
+          const dedupKey = `${u.email?.toLowerCase()}-${acc.accountNumber || acc.id}`;
+          if (!seenAccountNumbers.has(dedupKey)) {
+            seenAccountNumbers.add(dedupKey);
+            records.push({
+              account: acc,
+              user: u,
+              walletBalance: fin.walletBalance || 0,
+              lastUpdated: fin.lastUpdated || u.createdAt,
+            });
+          }
+        }
+      });
+    }
+  });
+
+  records.sort((a, b) => (b.account.balance || 0) - (a.account.balance || 0));
+  return records;
+}
+
 export function getPlatformFinancialSummary(): {
   totalDepositedUsd: number;
   totalDepositedKes: number;
   totalUsers: number;
   totalWalletBalancesUsd: number;
   totalTradingBalancesUsd: number;
+  totalLiveAccountsCount: number;
 } {
   let totalWalletBalancesUsd = 0;
   let totalTradingBalancesUsd = 0;
+  let totalLiveAccountsCount = 0;
 
   const users = getAllRegisteredUsers();
   const depositsData = getAllPlatformDeposits();
@@ -1102,7 +1410,10 @@ export function getPlatformFinancialSummary(): {
       totalWalletBalancesUsd += fin.walletBalance || 0;
       if (Array.isArray(fin.accounts)) {
         fin.accounts.forEach((acc) => {
-          totalTradingBalancesUsd += acc.balance || 0;
+          if (acc && acc.type === 'Live') {
+            totalLiveAccountsCount += 1;
+            totalTradingBalancesUsd += acc.balance || 0;
+          }
         });
       }
     }
@@ -1114,6 +1425,7 @@ export function getPlatformFinancialSummary(): {
     totalUsers: users.length,
     totalWalletBalancesUsd: Number(totalWalletBalancesUsd.toFixed(2)),
     totalTradingBalancesUsd: Number(totalTradingBalancesUsd.toFixed(2)),
+    totalLiveAccountsCount,
   };
 }
 

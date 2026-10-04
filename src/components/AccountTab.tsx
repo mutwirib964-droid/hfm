@@ -30,6 +30,7 @@ import {
   ArrowRight,
   LogOut,
   AlertCircle,
+  Trash2,
 } from 'lucide-react';
 import { ProfileVerificationSection } from './ProfileVerificationSection';
 import { RiskPipCalculatorModal } from './RiskPipCalculatorModal';
@@ -46,6 +47,7 @@ interface AccountTabProps {
     currency: string;
     leverage: string;
   }) => void;
+  onDeleteAccount?: (accountIdOrNumber: string) => void;
   economicEvents: EconomicEvent[];
   marketAnalyses: MarketAnalysis[];
   isDarkMode: boolean;
@@ -62,6 +64,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   selectedAccount,
   onSelectAccount,
   onOpenNewAccount,
+  onDeleteAccount,
   economicEvents,
   marketAnalyses,
   isDarkMode,
@@ -91,6 +94,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   const [newAccType, setNewAccType] = useState<AccountType>('Live');
   const [newAccTier, setNewAccTier] = useState<AccountTier>('Premium');
   const [newAccLeverage, setNewAccLeverage] = useState('1:500');
+  const [accountToDelete, setAccountToDelete] = useState<TradingAccount | null>(null);
 
   // Calculator Tool State
   const [calcPair, setCalcPair] = useState('EURUSD');
@@ -103,7 +107,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   const [chatMessages, setChatMessages] = useState<Array<{ sender: 'user' | 'agent'; text: string; time: string }>>([
     {
       sender: 'agent',
-      text: 'Hello Josphat! Welcome to VTM Markets 24/7 Multilingual Support. How can our trading desk assist you today?',
+      text: `Hello ${currentUser?.name || 'Trader'}! Welcome to VTM Markets 24/7 Global Support. How can our trading desk assist you today?`,
       time: 'Just now',
     },
   ]);
@@ -179,13 +183,13 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                   .slice(0, 2)
                   .join('')
                   .toUpperCase()
-              : 'JN'}
+              : 'TR'}
           </div>
 
           <div>
             <div className="flex items-center gap-2">
               <h2 className={`text-sm font-bold transition-colors ${isDarkMode ? 'text-white group-hover:text-amber-300' : 'text-slate-900 group-hover:text-[#E51937]'}`}>
-                {currentUser?.name || 'Josphat Ndungu'}
+                {currentUser?.name || 'Trader'}
               </h2>
               <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-500 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
                 <ShieldCheck className="w-3.5 h-3.5" />
@@ -456,23 +460,44 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                       </div>
                     </div>
 
-                    <div className="mt-2 text-[10px]">
-                      {isDemo ? (
-                        <span className="inline-flex items-center gap-1 text-amber-500 dark:text-amber-400 font-medium bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                          <span>Simulated $100k Virtual Credit (Non-Depositable)</span>
-                        </span>
-                      ) : acc.balance === 0 ? (
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border ${
-                          isDarkMode
-                            ? 'text-neutral-400 bg-neutral-800 border-neutral-700'
-                            : 'text-slate-600 bg-slate-100 border-slate-300'
-                        }`}>
-                          <span>Real Account • Deposit Required to Trade</span>
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                          <span>Active Live Balance • Real Execution</span>
-                        </span>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-[10px]">
+                      <div>
+                        {isDemo ? (
+                          <span className="inline-flex items-center gap-1 text-amber-500 dark:text-amber-400 font-medium bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                            <span>Simulated $100k Virtual Credit (Non-Depositable)</span>
+                          </span>
+                        ) : acc.balance === 0 ? (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border ${
+                            isDarkMode
+                              ? 'text-neutral-400 bg-neutral-800 border-neutral-700'
+                              : 'text-slate-600 bg-slate-100 border-slate-300'
+                          }`}>
+                            <span>Real Account • Deposit Required to Trade</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                            <span>Active Live Balance • Real Execution</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {onDeleteAccount && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAccountToDelete(acc);
+                          }}
+                          className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[10px] font-bold transition-colors cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/30'
+                              : 'bg-rose-50 hover:bg-rose-100 text-rose-600 border-rose-200'
+                          }`}
+                          title={`Delete ${acc.type} Account #${acc.accountNumber}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>Delete</span>
+                        </button>
                       )}
                     </div>
 
@@ -1142,6 +1167,90 @@ export const AccountTab: React.FC<AccountTabProps> = ({
             >
               Confirm & Open Account
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Confirmation Modal */}
+      {accountToDelete && onDeleteAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/70 backdrop-blur-xs">
+          <div
+            className={`w-full max-w-md border rounded-2xl p-5 shadow-2xl space-y-4 text-xs transition-colors ${
+              isDarkMode
+                ? 'bg-[#181B22] border-neutral-700 text-white'
+                : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div
+              className={`flex items-center justify-between border-b pb-2.5 ${
+                isDarkMode ? 'border-neutral-800' : 'border-slate-200'
+              }`}
+            >
+              <span className="font-bold text-sm flex items-center gap-2 text-rose-500">
+                <Trash2 className="w-4 h-4" />
+                Delete {accountToDelete.type} Account #{accountToDelete.accountNumber}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAccountToDelete(null)}
+                className={`cursor-pointer ${
+                  isDarkMode ? 'text-neutral-400 hover:text-white' : 'text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className={`leading-relaxed ${isDarkMode ? 'text-neutral-300' : 'text-slate-600'}`}>
+                Are you sure you want to delete{' '}
+                <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>
+                  {accountToDelete.type} Account #{accountToDelete.accountNumber}
+                </strong>{' '}
+                ({accountToDelete.tier} • {accountToDelete.leverage})?
+              </p>
+
+              {accountToDelete.type === 'Live' && accountToDelete.balance > 0 && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                    <span>Automatic Wallet Balance Protection</span>
+                  </div>
+                  <p className="text-[11px] opacity-90">
+                    Your remaining account balance of{' '}
+                    <span className="font-mono font-bold">
+                      ${accountToDelete.balance.toLocaleString('en-US', { minimumFractionDigits: 2 })} USD
+                    </span>{' '}
+                    will be automatically transferred to your Central VTM Wallet immediately upon deletion.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setAccountToDelete(null)}
+                className={`py-2.5 rounded-xl font-bold border transition-colors cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteAccount(accountToDelete.id);
+                  setAccountToDelete(null);
+                }}
+                className="py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete Account</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

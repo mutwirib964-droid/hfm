@@ -19,6 +19,18 @@ import {
   Square,
   Circle,
   RefreshCw,
+  Crosshair,
+  GitFork,
+  Compass,
+  ArrowUpCircle,
+  ArrowDownCircle,
+  Ruler,
+  Edit3,
+  Triangle,
+  MessageSquare,
+  Activity,
+  Zap,
+  CornerUpRight,
 } from 'lucide-react';
 import { Instrument, Candle, Timeframe, ChartType } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
@@ -66,6 +78,7 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   tickDirection = 'NEUTRAL',
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showDrawingToolbar, setShowDrawingToolbar] = useState(false);
   const [showDrawingModal, setShowDrawingModal] = useState(false);
   const [showPriceAlertModal, setShowPriceAlertModal] = useState(false);
   const [quickOrderSide, setQuickOrderSide] = useState<'BUY' | 'SELL' | null>(null);
@@ -124,22 +137,20 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
     if (!activeDrawingTool) return;
     const { x, y } = getCanvasCoords(e);
 
-    if (activeDrawingTool === 'Horizontal') {
-      // Direct single click horizontal ray
+    if (activeDrawingTool === 'Horizontal' || activeDrawingTool === 'HorizontalRay' || activeDrawingTool === 'CrossLine') {
       const newDrawing: DrawnObject = {
         id: `draw-${Date.now()}`,
-        tool: 'Horizontal',
+        tool: activeDrawingTool,
         points: [{ x, y }],
         color: drawingColor,
       };
       setDrawings((prev) => [...prev, newDrawing]);
-      setDrawingNotification(`Placed Horizontal Line @ ${instrument.bid.toFixed(instrument.decimals)}`);
+      setDrawingNotification(`Placed ${activeDrawingTool} @ ${instrument.bid.toFixed(instrument.decimals)}`);
       setTimeout(() => setDrawingNotification(null), 2000);
       return;
     }
 
     if (activeDrawingTool === 'Vertical') {
-      // Direct single click vertical line
       const newDrawing: DrawnObject = {
         id: `draw-${Date.now()}`,
         tool: 'Vertical',
@@ -152,22 +163,22 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
       return;
     }
 
-    if (activeDrawingTool === 'Text') {
-      const text = `Level @ ${instrument.bid.toFixed(instrument.decimals)}`;
+    if (activeDrawingTool === 'Text' || activeDrawingTool === 'Callout') {
+      const text = `Key Level @ ${instrument.bid.toFixed(instrument.decimals)}`;
       const newDrawing: DrawnObject = {
         id: `draw-${Date.now()}`,
-        tool: 'Text',
+        tool: activeDrawingTool,
         points: [{ x, y }],
         color: drawingColor,
         text,
       };
       setDrawings((prev) => [...prev, newDrawing]);
-      setDrawingNotification(`Added Text Label: ${text}`);
+      setDrawingNotification(`Added ${activeDrawingTool}: ${text}`);
       setTimeout(() => setDrawingNotification(null), 2000);
       return;
     }
 
-    // Two-point drawing tools (Trendline, Arrowed, Rectangle, Fibonacci, Ellipse, Equidistant, Harmonics)
+    // Two-point or freehand drawing tools
     setIsDrawing(true);
     setTempPoints([{ x, y }, { x, y }]);
   };
@@ -176,7 +187,11 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawing || !activeDrawingTool || tempPoints.length === 0) return;
     const { x, y } = getCanvasCoords(e);
-    setTempPoints([tempPoints[0], { x, y }]);
+    if (activeDrawingTool === 'Brush') {
+      setTempPoints((prev) => [...prev, { x, y }]);
+    } else {
+      setTempPoints([tempPoints[0], { x, y }]);
+    }
   };
 
   // Pointer Up (Finalize Drawing)
@@ -295,6 +310,41 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.textAlign = 'center';
         const pVal = maxPrice - ((y - paddingY) / chartHeight) * priceRange;
         ctx.fillText(pVal.toFixed(instrument.decimals), chartWidth + 30, y + 3.5);
+      } else if (draw.tool === 'HorizontalRay') {
+        const { x, y } = pts[0];
+        ctx.beginPath();
+        ctx.setLineDash([4, 3]);
+        ctx.moveTo(x, y);
+        ctx.lineTo(chartWidth, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = draw.color;
+        ctx.fillRect(chartWidth - 2, y - 9, 64, 18);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 9.5px monospace';
+        ctx.textAlign = 'center';
+        const pVal = maxPrice - ((y - paddingY) / chartHeight) * priceRange;
+        ctx.fillText(pVal.toFixed(instrument.decimals), chartWidth + 30, y + 3.5);
+      } else if (draw.tool === 'CrossLine') {
+        const { x, y } = pts[0];
+        ctx.beginPath();
+        ctx.setLineDash([4, 3]);
+        ctx.moveTo(0, y);
+        ctx.lineTo(chartWidth, y);
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = draw.color;
+        ctx.fillRect(chartWidth - 2, y - 9, 64, 18);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 9.5px monospace';
+        ctx.textAlign = 'center';
+        const pVal = maxPrice - ((y - paddingY) / chartHeight) * priceRange;
+        ctx.fillText(pVal.toFixed(instrument.decimals), chartWidth + 30, y + 3.5);
       } else if (draw.tool === 'Vertical') {
         const x = pts[0].x;
         ctx.beginPath();
@@ -312,6 +362,31 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.arc(pts[0].x, pts[0].y, 4, 0, Math.PI * 2);
         ctx.arc(pts[1].x, pts[1].y, 4, 0, Math.PI * 2);
         ctx.fill();
+      } else if (draw.tool === 'Ray' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const dx = p2.x - p1.x || 1;
+        const dy = p2.y - p1.y;
+        const slope = dy / dx;
+        const endX = dx >= 0 ? chartWidth : 0;
+        const endY = p1.y + slope * (endX - p1.x);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p1.x, p1.y, 4, 0, Math.PI * 2);
+        ctx.arc(p2.x, p2.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (draw.tool === 'Brush' && pts.length >= 2) {
+        ctx.beginPath();
+        ctx.lineWidth = 2.8;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) {
+          ctx.lineTo(pts[i].x, pts[i].y);
+        }
+        ctx.stroke();
       } else if (draw.tool === 'Arrowed' && pts.length >= 2) {
         const [p1, p2] = pts;
         ctx.beginPath();
@@ -336,21 +411,42 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.fillStyle = draw.color.includes('rgba') ? draw.color : `${draw.color}28`;
         ctx.fillRect(rx, ry, rw, rh);
         ctx.strokeRect(rx, ry, rw, rh);
-      } else if (draw.tool === 'Retracements' && pts.length >= 2) {
+      } else if (draw.tool === 'Triangle' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const p3 = { x: p1.x, y: p2.y };
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, (p1.y + p2.y) / 2);
+        ctx.lineTo(p3.x, p3.y);
+        ctx.closePath();
+        ctx.fillStyle = `${draw.color}24`;
+        ctx.fill();
+        ctx.stroke();
+      } else if ((draw.tool === 'Retracements' || draw.tool === 'FibExtension') && pts.length >= 2) {
         const [p1, p2] = pts;
         const topY = Math.min(p1.y, p2.y);
         const botY = Math.max(p1.y, p2.y);
         const diffY = botY - topY;
 
-        const fibLevels = [
-          { ratio: 0.0, label: '0.0%', col: '#94A3B8' },
-          { ratio: 0.236, label: '23.6%', col: '#F23645' },
-          { ratio: 0.382, label: '38.2%', col: '#FF9800' },
-          { ratio: 0.5, label: '50.0%', col: '#4CAF50' },
-          { ratio: 0.618, label: '61.8%', col: '#089981' },
-          { ratio: 0.786, label: '78.6%', col: '#2962FF' },
-          { ratio: 1.0, label: '100.0%', col: '#94A3B8' },
-        ];
+        const fibLevels =
+          draw.tool === 'FibExtension'
+            ? [
+                { ratio: 0.0, label: '0.0%', col: '#94A3B8' },
+                { ratio: 0.382, label: '38.2%', col: '#FF9800' },
+                { ratio: 0.618, label: '61.8%', col: '#089981' },
+                { ratio: 1.0, label: '100.0%', col: '#2962FF' },
+                { ratio: 1.272, label: '127.2%', col: '#A855F7' },
+                { ratio: 1.618, label: '161.8%', col: '#E51937' },
+              ]
+            : [
+                { ratio: 0.0, label: '0.0%', col: '#94A3B8' },
+                { ratio: 0.236, label: '23.6%', col: '#F23645' },
+                { ratio: 0.382, label: '38.2%', col: '#FF9800' },
+                { ratio: 0.5, label: '50.0%', col: '#4CAF50' },
+                { ratio: 0.618, label: '61.8%', col: '#089981' },
+                { ratio: 0.786, label: '78.6%', col: '#2962FF' },
+                { ratio: 1.0, label: '100.0%', col: '#94A3B8' },
+              ];
 
         fibLevels.forEach((fib) => {
           const ly = topY + diffY * fib.ratio;
@@ -364,8 +460,103 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
 
           ctx.fillStyle = fib.col;
           ctx.font = 'bold 9.5px monospace';
-          ctx.fillText(`Fib ${fib.label}`, chartWidth - 56, ly - 3);
+          ctx.fillText(`Fib ${fib.label}`, chartWidth - 62, ly - 3);
         });
+      } else if (draw.tool === 'FibFan' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const ratios = [
+          { r: 0.382, label: '38.2%', col: '#F59E0B' },
+          { r: 0.5, label: '50.0%', col: '#10B981' },
+          { r: 0.618, label: '61.8%', col: '#3B82F6' },
+          { r: 0.786, label: '78.6%', col: '#A855F7' },
+        ];
+        ratios.forEach((f) => {
+          const targetY = p1.y + (p2.y - p1.y) * f.r;
+          ctx.beginPath();
+          ctx.strokeStyle = f.col;
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, targetY);
+          ctx.stroke();
+          ctx.fillStyle = f.col;
+          ctx.font = 'bold 9px monospace';
+          ctx.fillText(f.label, p2.x + 4, targetY + 3);
+        });
+      } else if (draw.tool === 'FibTimeZones' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const baseStep = Math.max(12, Math.abs(p2.x - p1.x));
+        const fibNums = [0, 1, 2, 3, 5, 8, 13];
+        fibNums.forEach((fn) => {
+          const vx = p1.x + fn * (baseStep * 0.35);
+          if (vx < chartWidth) {
+            ctx.beginPath();
+            ctx.setLineDash([3, 3]);
+            ctx.moveTo(vx, 20);
+            ctx.lineTo(vx, height - 12);
+            ctx.stroke();
+            ctx.fillStyle = draw.color;
+            ctx.font = 'bold 9px monospace';
+            ctx.fillText(`TZ ${fn}`, vx + 2, 32);
+          }
+        });
+      } else if ((draw.tool === 'LongPosition' || draw.tool === 'ShortPosition') && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const isLong = draw.tool === 'LongPosition';
+        const leftX = Math.min(p1.x, p2.x);
+        const boxW = Math.max(85, Math.abs(p2.x - p1.x));
+        const entryY = p1.y;
+        const distY = Math.max(28, Math.abs(p2.y - p1.y));
+        const tpHeight = distY;
+        const slHeight = distY * 0.5;
+
+        const tpTop = isLong ? entryY - tpHeight : entryY;
+        const slTop = isLong ? entryY : entryY - slHeight;
+
+        // Profit Box (Green)
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.24)';
+        ctx.strokeStyle = '#10B981';
+        ctx.fillRect(leftX, tpTop, boxW, tpHeight);
+        ctx.strokeRect(leftX, tpTop, boxW, tpHeight);
+
+        // Stop Loss Box (Red)
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.24)';
+        ctx.strokeStyle = '#EF4444';
+        ctx.fillRect(leftX, slTop, boxW, slHeight);
+        ctx.strokeRect(leftX, slTop, boxW, slHeight);
+
+        // Entry Line & Badge
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(leftX, entryY);
+        ctx.lineTo(leftX + boxW, entryY);
+        ctx.stroke();
+
+        ctx.fillStyle = '#0F172A';
+        ctx.fillRect(leftX + 4, entryY - 9, 86, 17);
+        ctx.fillStyle = '#38BDF8';
+        ctx.font = 'bold 9.5px monospace';
+        ctx.fillText(`${isLong ? 'LONG' : 'SHORT'} R:R 2.0`, leftX + 8, entryY + 3);
+      } else if (draw.tool === 'PriceRange' && pts.length >= 2) {
+        const [p1, p2] = pts;
+        const rx = Math.min(p1.x, p2.x);
+        const ry = Math.min(p1.y, p2.y);
+        const rw = Math.max(40, Math.abs(p2.x - p1.x));
+        const rh = Math.max(18, Math.abs(p2.y - p1.y));
+        ctx.fillStyle = 'rgba(59, 130, 246, 0.18)';
+        ctx.fillRect(rx, ry, rw, rh);
+        ctx.strokeRect(rx, ry, rw, rh);
+
+        const price1 = maxPrice - ((p1.y - paddingY) / chartHeight) * priceRange;
+        const price2 = maxPrice - ((p2.y - paddingY) / chartHeight) * priceRange;
+        const delta = price2 - price1;
+        const pct = price1 > 0 ? (delta / price1) * 100 : 0;
+        const badgeText = `${delta >= 0 ? '+' : ''}${delta.toFixed(instrument.decimals)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+        ctx.fillStyle = '#1E293B';
+        ctx.fillRect(rx + rw / 2 - 58, ry + rh / 2 - 10, 116, 20);
+        ctx.fillStyle = delta >= 0 ? '#34D399' : '#F87171';
+        ctx.font = 'bold 9.5px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(badgeText, rx + rw / 2, ry + rh / 2 + 3.5);
       } else if (draw.tool === 'Ellipse' && pts.length >= 2) {
         const [p1, p2] = pts;
         const cx = (p1.x + p2.x) / 2;
@@ -383,31 +574,89 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
         ctx.lineTo(p2.x, p2.y);
-        ctx.moveTo(p1.x, p1.y + 28);
-        ctx.lineTo(p2.x, p2.y + 28);
+        ctx.moveTo(p1.x, p1.y + 32);
+        ctx.lineTo(p2.x, p2.y + 32);
         ctx.stroke();
-      } else if ((draw.tool === 'XABCD' || draw.tool === 'ABCD') && pts.length >= 2) {
+        ctx.beginPath();
+        ctx.setLineDash([4, 3]);
+        ctx.moveTo(p1.x, p1.y + 16);
+        ctx.lineTo(p2.x, p2.y + 16);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else if (draw.tool === 'Pitchfork' && pts.length >= 2) {
         const [p1, p2] = pts;
-        const midX1 = p1.x + (p2.x - p1.x) * 0.33;
-        const midY1 = p2.y;
-        const midX2 = p1.x + (p2.x - p1.x) * 0.66;
-        const midY2 = p1.y + (p2.y - p1.y) * 0.35;
+        const spreadY = 30;
         ctx.beginPath();
         ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(midX1, midY1);
-        ctx.lineTo(midX2, midY2);
         ctx.lineTo(p2.x, p2.y);
+        ctx.moveTo(p1.x, p1.y - spreadY);
+        ctx.lineTo(p2.x, p2.y - spreadY);
+        ctx.moveTo(p1.x, p1.y + spreadY);
+        ctx.lineTo(p2.x, p2.y + spreadY);
+        ctx.moveTo(p1.x, p1.y - spreadY);
+        ctx.lineTo(p1.x, p1.y + spreadY);
         ctx.stroke();
-        ctx.fillStyle = `${draw.color}22`;
+      } else if (
+        (draw.tool === 'XABCD' ||
+          draw.tool === 'ABCD' ||
+          draw.tool === 'HeadAndShoulders' ||
+          draw.tool === 'ElliottWave') &&
+        pts.length >= 2
+      ) {
+        const [p1, p2] = pts;
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const wavePts =
+          draw.tool === 'HeadAndShoulders'
+            ? [
+                { x: p1.x, y: p1.y, lbl: 'L' },
+                { x: p1.x + dx * 0.2, y: p1.y - Math.abs(dy) * 0.45, lbl: 'LS' },
+                { x: p1.x + dx * 0.38, y: p1.y, lbl: 'N1' },
+                { x: p1.x + dx * 0.52, y: p1.y - Math.abs(dy) * 0.85, lbl: 'HEAD' },
+                { x: p1.x + dx * 0.68, y: p1.y, lbl: 'N2' },
+                { x: p1.x + dx * 0.84, y: p1.y - Math.abs(dy) * 0.45, lbl: 'RS' },
+                { x: p2.x, y: p1.y + Math.abs(dy) * 0.1, lbl: 'R' },
+              ]
+            : draw.tool === 'ElliottWave'
+            ? [
+                { x: p1.x, y: p1.y, lbl: '(0)' },
+                { x: p1.x + dx * 0.2, y: p1.y + dy * 0.45, lbl: '(1)' },
+                { x: p1.x + dx * 0.36, y: p1.y + dy * 0.2, lbl: '(2)' },
+                { x: p1.x + dx * 0.62, y: p1.y + dy * 0.85, lbl: '(3)' },
+                { x: p1.x + dx * 0.78, y: p1.y + dy * 0.55, lbl: '(4)' },
+                { x: p2.x, y: p2.y, lbl: '(5)' },
+              ]
+            : [
+                { x: p1.x, y: p1.y, lbl: 'X' },
+                { x: p1.x + dx * 0.33, y: p2.y, lbl: 'A' },
+                { x: p1.x + dx * 0.66, y: p1.y + dy * 0.35, lbl: 'B' },
+                { x: p2.x, y: p2.y, lbl: 'C/D' },
+              ];
+        ctx.beginPath();
+        wavePts.forEach((wp, idx) => {
+          if (idx === 0) ctx.moveTo(wp.x, wp.y);
+          else ctx.lineTo(wp.x, wp.y);
+        });
+        ctx.stroke();
+        ctx.fillStyle = `${draw.color}20`;
         ctx.fill();
-      } else if (draw.tool === 'Text' && pts.length >= 1) {
+        wavePts.forEach((wp) => {
+          ctx.fillStyle = draw.color;
+          ctx.beginPath();
+          ctx.arc(wp.x, wp.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 9px monospace';
+          ctx.fillText(wp.lbl, wp.x - 4, wp.y - 6);
+        });
+      } else if ((draw.tool === 'Text' || draw.tool === 'Callout') && pts.length >= 1) {
         const p = pts[0];
         const label = draw.text || 'Key Level';
         ctx.fillStyle = draw.color;
-        ctx.fillRect(p.x - 2, p.y - 14, label.length * 6.5 + 12, 20);
+        ctx.fillRect(p.x - 2, p.y - 18, label.length * 6.5 + 14, 20);
         ctx.fillStyle = '#FFFFFF';
         ctx.font = 'bold 10px sans-serif';
-        ctx.fillText(label, p.x + 4, p.y);
+        ctx.fillText(label, p.x + 4, p.y - 4);
       }
 
       ctx.restore();
@@ -537,15 +786,16 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           </button>
 
           <button
-            onClick={() => setShowDrawingModal(true)}
-            className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
-              activeDrawingTool
+            onClick={() => setShowDrawingToolbar((prev) => !prev)}
+            className={`p-1.5 rounded-lg border transition-colors cursor-pointer flex items-center gap-1 ${
+              showDrawingToolbar || activeDrawingTool
                 ? 'border-[#0066FF] bg-[#0066FF]/15 text-[#0066FF]'
                 : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-400'
             }`}
-            title="Open Drawing Tools"
+            title="Toggle Drawing Tools"
           >
             <PenTool className="w-4 h-4" />
+            <span className="text-[11px] font-bold hidden sm:inline">Draw</span>
           </button>
 
           {/* Price Alerts */}
@@ -651,69 +901,96 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
           }`}
         />
 
-        {/* Visible Quick Drawing Toolbar on Left Side of Chart (Always accessible on Mobile & Desktop) */}
-        <div
-          className={`absolute left-2 top-12 z-30 flex flex-col gap-1 p-1 rounded-xl border shadow-lg backdrop-blur-md ${
-            isDarkMode
-              ? 'bg-[#151821]/90 border-neutral-700/80 text-neutral-300'
-              : 'bg-white/95 border-slate-200 text-slate-700'
-          }`}
-        >
-          {[
-            { id: 'Trendline', label: 'Trendline', icon: TrendingUp },
-            { id: 'Horizontal', label: 'Horizontal Line', icon: Minus },
-            { id: 'Vertical', label: 'Vertical Line', icon: MoveVertical },
-            { id: 'Retracements', label: 'Fibonacci', icon: Sliders },
-            { id: 'Rectangle', label: 'Rectangle Zone', icon: Square },
-            { id: 'Ellipse', label: 'Circle / Zone', icon: Circle },
-            { id: 'Text', label: 'Price Label', icon: Type },
-          ].map((t) => {
-            const IconComp = t.icon;
-            const isSelected = activeDrawingTool === t.id;
-            return (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() =>
-                  setActiveDrawingTool((prev) => (prev === t.id ? null : t.id))
-                }
-                title={t.label}
-                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
-                  isSelected
-                    ? 'bg-[#E51937] text-white shadow-sm scale-105'
-                    : 'hover:bg-neutral-500/15'
-                }`}
-              >
-                <IconComp className="w-3.5 h-3.5" />
-              </button>
-            );
-          })}
-
-          <div className="h-px bg-neutral-500/20 my-0.5" />
-
-          <button
-            type="button"
-            onClick={() => setShowDrawingModal(true)}
-            title="All Drawing Tools"
-            className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-neutral-500/15 text-[#0066FF] cursor-pointer"
+        {/* Toggleable Quick Drawing Toolbar on Left Side of Chart (Only appears when Drawing Tool icon is clicked) */}
+        {showDrawingToolbar && (
+          <div
+            className={`absolute left-2 top-11 z-30 flex flex-col gap-1 p-1.5 rounded-xl border shadow-2xl backdrop-blur-md animate-fadeIn max-h-[calc(100%-56px)] overflow-y-auto no-scrollbar ${
+              isDarkMode
+                ? 'bg-[#151821]/95 border-neutral-700/80 text-neutral-200'
+                : 'bg-white/95 border-slate-300 text-slate-700'
+            }`}
           >
-            <PenTool className="w-3.5 h-3.5" />
-          </button>
+            <div className="flex items-center justify-between px-1 pb-1 border-b border-neutral-500/20">
+              <span className="text-[9px] font-extrabold uppercase tracking-wider text-[#0066FF]">
+                Tools
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowDrawingToolbar(false)}
+                title="Hide Drawing Toolbar"
+                className="text-neutral-400 hover:text-rose-500 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
 
-          {drawings.length > 0 && (
+            {[
+              { id: 'Trendline', label: 'Trendline', icon: TrendingUp },
+              { id: 'Ray', label: 'Trend Ray', icon: CornerUpRight },
+              { id: 'Horizontal', label: 'Horizontal Line', icon: Minus },
+              { id: 'Vertical', label: 'Vertical Line', icon: MoveVertical },
+              { id: 'CrossLine', label: 'Crosshair Line', icon: Crosshair },
+              { id: 'Pitchfork', label: "Andrews' Pitchfork", icon: GitFork },
+              { id: 'Retracements', label: 'Fibonacci Retracement', icon: Sliders },
+              { id: 'FibExtension', label: 'Fibonacci Extension', icon: Compass },
+              { id: 'LongPosition', label: 'Long Risk/Reward', icon: ArrowUpCircle },
+              { id: 'ShortPosition', label: 'Short Risk/Reward', icon: ArrowDownCircle },
+              { id: 'PriceRange', label: 'Price Range Ruler', icon: Ruler },
+              { id: 'Brush', label: 'Freehand Brush', icon: Edit3 },
+              { id: 'Rectangle', label: 'Rectangle Zone', icon: Square },
+              { id: 'Ellipse', label: 'Circle / Zone', icon: Circle },
+              { id: 'Triangle', label: 'Triangle Pattern', icon: Triangle },
+              { id: 'HeadAndShoulders', label: 'Head & Shoulders', icon: Activity },
+              { id: 'ElliottWave', label: 'Elliott Wave 1-5', icon: Zap },
+              { id: 'Text', label: 'Price Label', icon: Type },
+            ].map((t) => {
+              const IconComp = t.icon;
+              const isSelected = activeDrawingTool === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() =>
+                    setActiveDrawingTool((prev) => (prev === t.id ? null : t.id))
+                  }
+                  title={t.label}
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+                    isSelected
+                      ? 'bg-[#E51937] text-white shadow-sm scale-105'
+                      : 'hover:bg-neutral-500/15'
+                  }`}
+                >
+                  <IconComp className="w-3.5 h-3.5" />
+                </button>
+              );
+            })}
+
+            <div className="h-px bg-neutral-500/20 my-0.5" />
+
             <button
               type="button"
-              onClick={() => {
-                setDrawings([]);
-                setActiveDrawingTool(null);
-              }}
-              title="Clear All Drawings"
-              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-rose-500/20 text-rose-500 cursor-pointer"
+              onClick={() => setShowDrawingModal(true)}
+              title="All 26 Drawing Tools & Categories"
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-neutral-500/15 text-[#0066FF] cursor-pointer shrink-0"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <PenTool className="w-3.5 h-3.5" />
             </button>
-          )}
-        </div>
+
+            {drawings.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDrawings([]);
+                  setActiveDrawingTool(null);
+                }}
+                title="Clear All Drawings"
+                className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-rose-500/20 text-rose-500 cursor-pointer shrink-0"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Timeframe Chips Bar */}

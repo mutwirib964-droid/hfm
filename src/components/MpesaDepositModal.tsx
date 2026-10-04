@@ -27,6 +27,12 @@ import {
 import { supabaseService } from '../services/supabaseService';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
+import {
+  COUNTRY_OPTIONS,
+  getCountryByCode,
+  formatLocalPhoneInput,
+  validatePhoneForCountry,
+} from '../utils/countryPhoneConfig';
 
 interface MpesaDepositModalProps {
   isOpen: boolean;
@@ -90,7 +96,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   // Input states - Minimum deposit is strictly $16
   const [amountInput, setAmountInput] = useState<string>('16');
-  const [phoneInput, setPhoneInput] = useState<string>('0712345678');
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>(
+    currentUser?.countryCode || '+254'
+  );
+  const activeCountryCfg = getCountryByCode(selectedCountryCode);
+  const [phoneInput, setPhoneInput] = useState<string>('');
   const [targetAccount, setTargetAccount] = useState<string>(defaultTarget);
   const [selectedBankId, setSelectedBankId] = useState<string>(WELL_KNOWN_AFRICAN_BANKS[0].id);
   const [bankRefInput, setBankRefInput] = useState<string>('');
@@ -124,14 +134,18 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   // Pre-fill phone from registered user
   useEffect(() => {
+    if (currentUser?.countryCode) {
+      setSelectedCountryCode(currentUser.countryCode);
+    }
     if (currentUser?.phoneNumber || (currentUser as any)?.phone) {
-      const userPhone = currentUser.phoneNumber || (currentUser as any).phone;
-      const { valid, formatted } = formatKenyanPhone(userPhone);
-      if (valid && formatted.length === 12) {
-        setPhoneInput('0' + formatted.substring(3));
+      const userPhone = String(currentUser.phoneNumber || (currentUser as any).phone).trim();
+      const matchedCountry = COUNTRY_OPTIONS.find((c) => userPhone.startsWith(c.code));
+      if (matchedCountry) {
+        setSelectedCountryCode(matchedCountry.code);
+        const localPart = userPhone.slice(matchedCountry.code.length).trim();
+        setPhoneInput(formatLocalPhoneInput(localPart, matchedCountry));
       } else {
-        const clean = userPhone.replace(/^\+254/, '0').trim();
-        setPhoneInput(clean || '0712345678');
+        setPhoneInput(userPhone);
       }
     }
   }, [currentUser]);
@@ -144,7 +158,16 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   const numUsd = parseFloat(amountInput) || 0;
   const numKes = usdToKes(numUsd);
-  const phoneCheck = formatKenyanPhone(phoneInput);
+  const kenyanCheck = formatKenyanPhone(phoneInput);
+  const intlCheck = validatePhoneForCountry(phoneInput, activeCountryCfg);
+  const phoneCheck =
+    selectedCountryCode === '+254' && kenyanCheck.valid
+      ? kenyanCheck
+      : {
+          valid: intlCheck.valid,
+          formatted: intlCheck.e164.replace(/^\+/, ''),
+          display: intlCheck.formattedDisplay,
+        };
 
   const activeCryptoConfig =
     CRYPTO_DEPOSIT_CONFIG.find((c) => c.id === selectedCrypto) || CRYPTO_DEPOSIT_CONFIG[2];
@@ -285,7 +308,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     }
 
     if (!phoneCheck.valid) {
-      setErrorMessage('Please enter a valid Safaricom number (e.g., 0712345678).');
+      setErrorMessage(
+        intlCheck.error ||
+          `Please enter a valid ${activeCountryCfg.name} mobile number (e.g. ${activeCountryCfg.exampleFormat}).`
+      );
       return;
     }
 
@@ -594,27 +620,57 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   </div>
                 </div>
 
-                {/* Safaricom Number */}
+                {/* Mobile Number with Country Selector */}
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1.5">
-                    Safaricom Mobile Number
-                  </label>
-                  <input
-                    type="tel"
-                    placeholder="0712345678"
-                    value={phoneInput}
-                    onChange={(e) => {
-                      setPhoneInput(e.target.value);
-                      setErrorMessage(null);
-                    }}
-                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-medium ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
-                        : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
-                    }`}
-                  />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300">
+                      Mobile Money Number ({activeCountryCfg.flag} {activeCountryCfg.name})
+                    </label>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {activeCountryCfg.minDigits === activeCountryCfg.maxDigits
+                        ? `${activeCountryCfg.minDigits} digits`
+                        : `${activeCountryCfg.minDigits}–${activeCountryCfg.maxDigits} digits`}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedCountryCode}
+                      onChange={(e) => {
+                        const newCode = e.target.value;
+                        setSelectedCountryCode(newCode);
+                        const newCfg = getCountryByCode(newCode);
+                        setPhoneInput((prev) => formatLocalPhoneInput(prev, newCfg));
+                        setErrorMessage(null);
+                      }}
+                      className={`w-[125px] shrink-0 border rounded-xl px-2.5 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                        isDarkMode
+                          ? 'bg-neutral-900 border-neutral-700 text-white'
+                          : 'bg-white border-slate-200 text-slate-900'
+                      }`}
+                    >
+                      {COUNTRY_OPTIONS.map((c) => (
+                        <option key={`${c.iso}-${c.code}`} value={c.code}>
+                          {c.flag} {c.code} ({c.iso})
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="tel"
+                      placeholder={activeCountryCfg.placeholder}
+                      value={phoneInput}
+                      onChange={(e) => {
+                        setPhoneInput(formatLocalPhoneInput(e.target.value, activeCountryCfg));
+                        setErrorMessage(null);
+                      }}
+                      className={`flex-1 border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-medium ${
+                        isDarkMode
+                          ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
+                          : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                      }`}
+                    />
+                  </div>
                   <p className="text-[11px] text-slate-400 dark:text-neutral-500 mt-1">
-                    Enter the M-PESA number that will approve the STK payment prompt.
+                    Format for {activeCountryCfg.name}: <span className="font-mono">{activeCountryCfg.exampleFormat}</span>
                   </p>
                 </div>
 

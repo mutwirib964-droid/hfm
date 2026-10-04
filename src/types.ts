@@ -100,6 +100,10 @@ export interface TradingAccount {
   currency: string;
   leverage: string;
   isDefault?: boolean;
+  createdAt?: number;
+  lastDepositAt?: number;
+  lastTradeAt?: number;
+  lastActivityAt?: number;
 }
 
 export interface StrategyProvider {

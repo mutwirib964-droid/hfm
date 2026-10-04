@@ -52,6 +52,12 @@ import {
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
+import {
+  COUNTRY_OPTIONS as PHONE_CONFIGS,
+  formatLocalPhoneInput,
+  validatePhoneForCountry,
+} from '../utils/countryPhoneConfig';
+
 interface LandingPageProps {
   instruments: Instrument[];
   onSignIn: (profile: UserAuthProfile) => void;
@@ -64,30 +70,18 @@ export interface CountryOption {
   code: string;
   dialCode: string;
   flag: string;
+  placeholder: string;
+  exampleFormat: string;
 }
 
-export const COUNTRY_OPTIONS: CountryOption[] = [
-  { name: 'United States', code: 'US', dialCode: '+1', flag: '🇺🇸' },
-  { name: 'United Kingdom', code: 'GB', dialCode: '+44', flag: '🇬🇧' },
-  { name: 'Kenya', code: 'KE', dialCode: '+254', flag: '🇰🇪' },
-  { name: 'Nigeria', code: 'NG', dialCode: '+234', flag: '🇳🇬' },
-  { name: 'South Africa', code: 'ZA', dialCode: '+27', flag: '🇿🇦' },
-  { name: 'United Arab Emirates', code: 'AE', dialCode: '+971', flag: '🇦🇪' },
-  { name: 'India', code: 'IN', dialCode: '+91', flag: '🇮🇳' },
-  { name: 'Germany', code: 'DE', dialCode: '+49', flag: '🇩🇪' },
-  { name: 'France', code: 'FR', dialCode: '+33', flag: '🇫🇷' },
-  { name: 'Canada', code: 'CA', dialCode: '+1', flag: '🇨🇦' },
-  { name: 'Australia', code: 'AU', dialCode: '+61', flag: '🇦🇺' },
-  { name: 'Uganda', code: 'UG', dialCode: '+256', flag: '🇺🇬' },
-  { name: 'Tanzania', code: 'TZ', dialCode: '+255', flag: '🇹🇿' },
-  { name: 'Ghana', code: 'GH', dialCode: '+233', flag: '🇬🇭' },
-  { name: 'Egypt', code: 'EG', dialCode: '+20', flag: '🇪🇬' },
-  { name: 'Singapore', code: 'SG', dialCode: '+65', flag: '🇸🇬' },
-  { name: 'Switzerland', code: 'CH', dialCode: '+41', flag: '🇨🇭' },
-  { name: 'Netherlands', code: 'NL', dialCode: '+31', flag: '🇳🇱' },
-  { name: 'Brazil', code: 'BR', dialCode: '+55', flag: '🇧🇷' },
-  { name: 'Japan', code: 'JP', dialCode: '+81', flag: '🇯🇵' },
-];
+export const COUNTRY_OPTIONS: CountryOption[] = PHONE_CONFIGS.map((c) => ({
+  name: c.name,
+  code: c.iso,
+  dialCode: c.code,
+  flag: c.flag,
+  placeholder: c.placeholder,
+  exampleFormat: c.exampleFormat,
+}));
 
 export function detectUserCountry(): CountryOption {
   try {
@@ -187,8 +181,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         setValidationError('Please provide a valid email address.');
         return;
       }
-      if (!phoneLocal.trim()) {
-        setValidationError('Please enter your phone number.');
+      const phoneValidation = validatePhoneForCountry(phoneLocal, selectedCountry.dialCode);
+      if (!phoneValidation.valid) {
+        setValidationError(phoneValidation.error || 'Please enter a valid phone number.');
         return;
       }
       if (password.length < 6) {
@@ -215,12 +210,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         return;
       }
 
-      // Clean up local phone number (strip leading 0 if Kenyan / international format)
-      let cleanLocal = phoneLocal.trim();
-      if (selectedCountry.dialCode === '+254' && cleanLocal.startsWith('0')) {
-        cleanLocal = cleanLocal.substring(1);
-      }
-      const fullPhoneNumber = `${selectedCountry.dialCode} ${cleanLocal}`;
+      const fullPhoneNumber = phoneValidation.formattedDisplay;
 
       const newUserProfile: UserAuthProfile = {
         id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : generateSupabaseUuid(),
@@ -431,8 +421,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             email: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_EMAIL : cleanEmail,
             phoneNumber: meta.phone || '',
             phone: meta.phone || '',
-            countryCode: meta.country_code || '+254',
-            countryName: meta.country_name || 'Kenya',
+            countryCode: meta.country_code || '+1',
+            countryName: meta.country_name || 'United States',
             accountNumber: meta.account_number || String(Math.floor(10000000 + Math.random() * 90000000)),
             role: safeRole,
             isLoggedIn: true,
@@ -1453,85 +1443,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       {showAuthModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-4 md:p-6 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 overflow-x-hidden">
           <div
-            className={`w-full max-w-full h-full sm:h-auto sm:max-h-[94vh] sm:max-w-lg lg:max-w-5xl rounded-none sm:rounded-3xl border-0 sm:border shadow-2xl transition-all flex flex-col lg:flex-row overflow-x-hidden overflow-y-hidden ${
+            className={`w-full max-w-full h-full sm:h-auto sm:max-h-[94vh] sm:max-w-lg rounded-none sm:rounded-3xl border-0 sm:border shadow-2xl transition-all flex flex-col overflow-x-hidden overflow-y-hidden ${
               isDarkMode
                 ? 'bg-[#11141C] border-neutral-700/70 text-white shadow-[0_25px_60px_-15px_rgba(0,0,0,0.85)]'
                 : 'bg-white border-slate-200 text-slate-900 shadow-[0_25px_60px_-15px_rgba(0,0,0,0.25)]'
             }`}
           >
-            {/* Desktop Institutional Information Sidebar (Hidden on mobile for maximum form clarity) */}
-            <div
-              className={`w-[38%] shrink-0 hidden lg:flex flex-col justify-between p-8 border-r ${
-                isDarkMode
-                  ? 'bg-gradient-to-b from-[#141822] via-[#0E1118] to-[#0A0C10] border-neutral-800'
-                  : 'bg-gradient-to-b from-slate-900 via-slate-800 to-slate-950 border-slate-200 text-white'
-              }`}
-            >
-              <div>
-                <VTMLogo size="md" isDarkMode={true} />
-                <div className="mt-8 space-y-3">
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-[#E51937]/15 border border-[#E51937]/30 text-rose-400">
-                    <ShieldCheck className="w-3.5 h-3.5" />
-                    <span>Institutional CFD Brokerage</span>
-                  </div>
-                  <h3 className="text-2xl font-black text-white tracking-tight leading-snug">
-                    {authMode === 'register'
-                      ? 'Direct Interbank Liquidity & Ultra-Low Spreads'
-                      : 'Welcome Back to Your Central VTM Terminal'}
-                  </h3>
-                  <p className="text-xs text-neutral-300 leading-relaxed mt-2">
-                    {authMode === 'register'
-                      ? 'Create your multi-asset profile in 60 seconds. Instant central wallet setup with zero fees.'
-                      : 'Access your unified balances, active positions, copy trading, and institutional analytical tools.'}
-                  </p>
-                </div>
-
-                <div className="mt-8 space-y-3">
-                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-9 h-9 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 font-mono font-bold text-xs">
-                      0.0
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white">Raw Interbank Spreads</div>
-                      <div className="text-[11px] text-neutral-400">From 0.0 pips on EURUSD &amp; Gold</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
-                      <Zap className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white">Equinix Ultra-Low Latency</div>
-                      <div className="text-[11px] text-neutral-400">&lt; 9.8ms execution via NY4 &amp; LD4</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-3 p-3 rounded-xl bg-white/5 border border-white/10">
-                    <div className="w-9 h-9 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
-                      <Wallet className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white">Instant Kenyan &amp; Global Rail</div>
-                      <div className="text-[11px] text-neutral-400">Safaricom M-PESA STK &amp; Web3 Crypto</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-4 border-t border-white/10 flex items-center justify-between text-[11px] text-neutral-400 font-medium">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>London LD4 Online</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <Lock className="w-3 h-3 text-neutral-400" />
-                  <span>256-Bit SSL</span>
-                </span>
-              </div>
-            </div>
-
-            {/* Modal Right Column / Full Mobile Screen Container */}
+            {/* Modal Full Container */}
             <div className="flex-1 flex flex-col min-w-0 w-full max-w-full h-full sm:h-auto sm:max-h-[94vh] overflow-x-hidden overflow-y-hidden">
               {/* Header - Sticky top on mobile for instant close/navigation */}
               <div
@@ -1541,7 +1459,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               >
                 <div className="flex items-center gap-2.5 min-w-0">
                   <VTMLogo size="sm" isDarkMode={isDarkMode} />
-                  <span className="lg:hidden text-xs font-black tracking-tight text-neutral-400 truncate">
+                  <span className="text-xs font-black tracking-tight text-neutral-400 truncate">
                     {authMode === 'register' ? '• Registration' : '• Portal Sign In'}
                   </span>
                 </div>
@@ -1676,52 +1594,60 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                     </div>
                   </div>
 
-                  {/* Phone Number with Auto-Detected Country Code (Register only) */}
+                  {/* Phone Number with Country-Specific Format (Register only) */}
                   {authMode === 'register' && (
                     <div className="w-full max-w-full">
                       <div className="flex items-center justify-between mb-1.5">
                         <label className={`text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
                           Mobile Phone Number
                         </label>
-                        <span className="text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                          <LockKeyhole className="w-3 h-3" />
-                          <span>Security Bound</span>
+                        <span className={`text-[10px] font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          {selectedCountry.flag} {selectedCountry.name}
                         </span>
                       </div>
 
                       <div className="flex items-center gap-2 w-full max-w-full">
                         {/* Country code selector */}
-                        <div className="relative w-24 sm:w-28 shrink-0">
+                        <div className="relative w-28 sm:w-32 shrink-0">
                           <select
                             value={selectedCountry.code}
                             onChange={(e) => {
                               const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
-                              if (found) setSelectedCountry(found);
+                              if (found) {
+                                setSelectedCountry(found);
+                                setPhoneLocal((prev) =>
+                                  prev ? formatLocalPhoneInput(prev, found.dialCode) : ''
+                                );
+                              }
                             }}
-                            className={`w-full py-2.5 pl-2 sm:pl-3 pr-6 sm:pr-7 rounded-xl border text-base sm:text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer box-border ${
+                            className={`w-full py-2.5 pl-2.5 sm:pl-3 pr-6 sm:pr-7 rounded-xl border text-base sm:text-xs font-bold appearance-none focus:outline-none focus:border-[#E51937] focus:ring-2 focus:ring-[#E51937]/30 cursor-pointer box-border ${
                               isDarkMode
                                 ? 'bg-neutral-900/90 border-neutral-700 text-white'
                                 : 'bg-slate-50 border-slate-300 text-slate-900'
                             }`}
                           >
                             {COUNTRY_OPTIONS.map((c) => (
-                              <option key={c.code} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
-                                {c.flag} {c.dialCode}
+                              <option key={`${c.code}-${c.dialCode}`} value={c.code} className={isDarkMode ? 'bg-neutral-900 text-white' : 'bg-white text-slate-900'}>
+                                {c.flag} {c.dialCode} ({c.code})
                               </option>
                             ))}
                           </select>
                           <ChevronDown className="w-3.5 h-3.5 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-neutral-400" />
                         </div>
 
-                        {/* Local number input */}
+                        {/* Local number input formatted for selected country */}
                         <div className="relative flex-1 min-w-0">
                           <Phone className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
                           <input
                             type="tel"
                             required
-                            placeholder="712 345 678"
+                            placeholder={selectedCountry.placeholder}
                             value={phoneLocal}
-                            onChange={(e) => setPhoneLocal(e.target.value.replace(/[^0-9\s-]/g, ''))}
+                            onChange={(e) =>
+                              setPhoneLocal(
+                                formatLocalPhoneInput(e.target.value, selectedCountry.dialCode)
+                              )
+                            }
                             className={`w-full pl-8 sm:pl-9 pr-3 py-2.5 rounded-xl border text-base sm:text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${
                               isDarkMode
                                 ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
@@ -1731,10 +1657,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         </div>
                       </div>
 
-                      {/* Anti-fraud withdrawal rule notice */}
-                      <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1.5">
-                        <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                        <span className="break-words">Locked to profile for withdrawal safety (cannot be altered later)</span>
+                      <div className={`mt-1 text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                        Format for {selectedCountry.name} ({selectedCountry.dialCode}): {selectedCountry.exampleFormat}
                       </div>
                     </div>
                   )}
@@ -1813,14 +1737,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
-                    </div>
-                  )}
-
-                  {/* Informative Note: Onboarding note */}
-                  {authMode === 'register' && (
-                    <div className="text-xs text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-2 py-2 px-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 w-full max-w-full break-words">
-                      <Wallet className="w-4 h-4 shrink-0" />
-                      <span className="break-words">Initializes with Central Wallet ($0.00). Open Live/Demo accounts inside anytime.</span>
                     </div>
                   )}
 

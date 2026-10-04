@@ -79,6 +79,8 @@ import {
   MASTER_ADMIN_UID,
   isMasterAdminEmail,
   isValidUserUid,
+  sweepIdleLiveAccountsSilently,
+  markAccountDeletedLocally,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
 
@@ -903,12 +905,6 @@ export default function App() {
         maybeAddDailyWelcomeNotification(verifiedProfile, `Welcome back, ${profile.name}!`);
       }
     }
-
-    triggerActionPopup({
-      type: 'LOGIN_SUCCESS',
-      title: `Welcome, ${profile.name}!`,
-      subtitle: 'Session authenticated. Clean workspace loaded with zero running trades and zero active bots.',
-    });
   };
 
   const handleUserSignOut = () => {
@@ -1010,6 +1006,8 @@ export default function App() {
             balance: newBal,
             equity: newEq,
             freeMargin: newFree,
+            lastTradeAt: Date.now(),
+            lastActivityAt: Date.now(),
           };
           return updatedTarget;
         }
@@ -1025,6 +1023,8 @@ export default function App() {
           balance: newBal,
           equity: newEq,
           freeMargin: newFree,
+          lastTradeAt: Date.now(),
+          lastActivityAt: Date.now(),
         };
         nextAccounts.push(updatedTarget);
       }
@@ -1085,6 +1085,7 @@ export default function App() {
 
   // Reference to latest real TradingView quotes for rock-solid price synchronization
   const realTVQuotesRef = useRef<Map<string, TVQuote>>(new Map());
+  const seededClosedSymbolsRef = useRef<Set<string>>(new Set());
 
   // =========================================================================
   // REAL TRADINGVIEW PRICE INTEGRATION & HIGH-FREQUENCY REAL-TIME ENGINE
@@ -1110,9 +1111,13 @@ export default function App() {
           const quote = quotes.get(inst.symbol);
           if (!quote) return inst;
 
-          // Strict Market Closed Check: if market is closed, update quote to TradingView official close but do not tick
+          // Strict Market Closed Check: if market is closed, seed official closing quote once and freeze completely
           const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
           if (!mStatus.isOpen) {
+            if (seededClosedSymbolsRef.current.has(inst.symbol)) {
+              return inst;
+            }
+            seededClosedSymbolsRef.current.add(inst.symbol);
             return {
               ...inst,
               bid: quote.bid,
@@ -1122,6 +1127,8 @@ export default function App() {
               high24h: quote.high24h,
               low24h: quote.low24h,
             };
+          } else {
+            seededClosedSymbolsRef.current.delete(inst.symbol);
           }
 
           const oldBid = inst.bid;
@@ -1915,6 +1922,29 @@ export default function App() {
     };
 
     setPositions((prev) => [newPos, ...prev]);
+    // Stamp lastTradeAt on the active account so the platform knows this account is actively traded
+    if (selectedAccountRef.current) {
+      const nowTs = Date.now();
+      const stampedAccounts = accountsRef.current.map((a) =>
+        a.id === selectedAccountRef.current?.id || a.accountNumber === selectedAccountRef.current?.accountNumber
+          ? { ...a, lastTradeAt: nowTs, lastActivityAt: nowTs }
+          : a
+      );
+      accountsRef.current = stampedAccounts;
+      setAccounts(stampedAccounts);
+      const updatedSel =
+        stampedAccounts.find((a) => a.id === selectedAccountRef.current?.id) || selectedAccountRef.current;
+      selectedAccountRef.current = updatedSel;
+      setSelectedAccount(updatedSel);
+      if (currentUserRef.current) {
+        saveUserFinancials(currentUserRef.current, {
+          walletBalance: walletBalanceRef.current,
+          accounts: stampedAccounts,
+          selectedAccountId: updatedSel.id,
+          transactions: transactionsRef.current,
+        });
+      }
+    }
     playOrderSound(true);
     addNotification(
       `Order Executed: ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`
@@ -2402,6 +2432,8 @@ export default function App() {
               balance: Number((acc.balance + amountUsd).toFixed(2)),
               equity: Number((acc.equity + amountUsd).toFixed(2)),
               freeMargin: Number((acc.freeMargin + amountUsd).toFixed(2)),
+              lastDepositAt: Date.now(),
+              lastActivityAt: Date.now(),
             }
           : acc
       );
@@ -2789,8 +2821,9 @@ export default function App() {
     leverage: string;
   }) => {
     const num = Math.floor(7000000 + Math.random() * 999999).toString();
+    const nowTs = Date.now();
     const newAcc: TradingAccount = {
-      id: `acc-${Date.now()}`,
+      id: `acc-${nowTs}`,
       accountNumber: num,
       server: params.type === 'Live' ? 'VTMarkets-LiveServer1' : 'VTMarkets-DemoServer',
       type: params.type,
@@ -2802,6 +2835,8 @@ export default function App() {
       marginLevel: 0,
       currency: params.currency,
       leverage: params.leverage,
+      createdAt: nowTs,
+      lastActivityAt: nowTs,
     };
 
     const nextAccounts = [...accountsRef.current, newAcc];
@@ -2820,10 +2855,8 @@ export default function App() {
     }
     addNotification(`Opened new ${params.type} #${num} (${params.tier})`);
 
-    // Save newly opened trading account to Supabase
+    // Save newly opened trading account activity to Supabase (saveUserFinancials already synced vtm_user_finances atomically)
     if (currentUser) {
-      supabaseService.syncTradingAccount(currentUser, newAcc);
-      supabaseService.syncTradingAccounts(currentUser, nextAccounts);
       supabaseService.syncActivity(currentUser, {
         type: 'ACCOUNT_CREATED',
         description: `Created new ${params.type} Account #${num} (${params.tier})`,
@@ -2871,6 +2904,152 @@ export default function App() {
       },
     });
   };
+
+  // Delete Trading Account (User-side manual deletion)
+  // If a Live account has any balance > 0, it is automatically transferred to the user's Central VTM Wallet before deletion.
+  const handleDeleteAccount = useCallback(
+    (accountIdOrNumber: string) => {
+      const targetAcc = accountsRef.current.find(
+        (a) => a.id === accountIdOrNumber || a.accountNumber === accountIdOrNumber
+      );
+      if (!targetAcc) return;
+
+      const isTargetSelected =
+        selectedAccountRef.current?.id === targetAcc.id ||
+        selectedAccountRef.current?.accountNumber === targetAcc.accountNumber;
+
+      // Clear any active positions if the deleted account was currently active
+      if (isTargetSelected && positionsRef.current.length > 0) {
+        positionsRef.current = [];
+        setPositions([]);
+      }
+
+      const transferredToWallet =
+        targetAcc.type === 'Live' && Number(targetAcc.balance || 0) > 0
+          ? Number(Number(targetAcc.balance).toFixed(2))
+          : 0;
+
+      const nextWallet = Number((walletBalanceRef.current + transferredToWallet).toFixed(2));
+      const nextAccounts = accountsRef.current.filter(
+        (a) => a.id !== targetAcc.id && a.accountNumber !== targetAcc.accountNumber
+      );
+
+      let nextTransactions = [...transactionsRef.current];
+      if (transferredToWallet > 0) {
+        const ref = `VTM-CLS-${Math.floor(10000000 + Math.random() * 90000000)}`;
+        const transferTx: Transaction = {
+          id: `tx-${Date.now()}`,
+          type: 'INTERNAL_TRANSFER',
+          method: 'Account Closure Settlement',
+          amount: transferredToWallet,
+          currency: 'USD',
+          status: 'COMPLETED',
+          timestamp: Date.now(),
+          reference: ref,
+          accountNumber: 'VTM Wallet',
+          details: `Live #${targetAcc.accountNumber} ➔ VTM Wallet (Account Deleted)`,
+        };
+        nextTransactions = [transferTx, ...nextTransactions];
+      }
+
+      const nextSelected = isTargetSelected ? nextAccounts[0] || null : selectedAccountRef.current;
+
+      markAccountDeletedLocally(currentUserRef.current?.email, targetAcc.accountNumber);
+
+      walletBalanceRef.current = nextWallet;
+      accountsRef.current = nextAccounts;
+      selectedAccountRef.current = nextSelected;
+      transactionsRef.current = nextTransactions;
+      lastLocalFinancialUpdateRef.current = Date.now();
+
+      setWalletBalance(nextWallet);
+      setAccounts(nextAccounts);
+      setSelectedAccount(nextSelected);
+      setTransactions(nextTransactions);
+
+      if (currentUserRef.current) {
+        saveUserFinancials(currentUserRef.current, {
+          walletBalance: nextWallet,
+          accounts: nextAccounts,
+          selectedAccountId: nextSelected?.id || null,
+          transactions: nextTransactions,
+        });
+        supabaseService
+          .deleteTradingAccountFromDatabase(currentUserRef.current, targetAcc.accountNumber, false)
+          .catch(() => {});
+      }
+
+      addNotification(
+        transferredToWallet > 0
+          ? `Deleted ${targetAcc.type} Account #${targetAcc.accountNumber}. $${transferredToWallet.toFixed(2)} transferred to VTM Wallet.`
+          : `Deleted ${targetAcc.type} Account #${targetAcc.accountNumber}.`
+      );
+
+      triggerActionPopup({
+        type: 'INFO',
+        title: `${targetAcc.type} Account #${targetAcc.accountNumber} Deleted`,
+        subtitle:
+          transferredToWallet > 0
+            ? `$${transferredToWallet.toLocaleString('en-US', { minimumFractionDigits: 2 })} remaining balance has been transferred to your Central VTM Wallet.`
+            : `Account #${targetAcc.accountNumber} has been permanently removed from your profile.`,
+        details: {
+          accountNumber: targetAcc.accountNumber,
+          amount: transferredToWallet > 0 ? transferredToWallet : undefined,
+        },
+      });
+    },
+    []
+  );
+
+  // Silent Background Platform Cleanup for Idle Live Accounts (Never shown to users)
+  // Automatically removes Live accounts idle with $0 deposit for 2 weeks, or Live accounts with a deposit and no trades for 2 weeks (transferring balance to Wallet).
+  useEffect(() => {
+    if (!currentUser || !currentUser.isLoggedIn) return;
+
+    const runSilentCleanup = () => {
+      const activeUser = currentUserRef.current;
+      if (!activeUser || accountsRef.current.length === 0) return;
+
+      const currentState = {
+        walletBalance: walletBalanceRef.current,
+        accounts: accountsRef.current,
+        selectedAccountId: selectedAccountRef.current?.id || null,
+        transactions: transactionsRef.current,
+        lastUpdated: Date.now(),
+      };
+
+      const swept = sweepIdleLiveAccountsSilently(activeUser, currentState, (acc) => {
+        const isCurrent =
+          selectedAccountRef.current?.id === acc.id ||
+          selectedAccountRef.current?.accountNumber === acc.accountNumber;
+        return isCurrent && positionsRef.current.length > 0;
+      });
+
+      if (swept.changed) {
+        walletBalanceRef.current = swept.state.walletBalance;
+        accountsRef.current = swept.state.accounts;
+        const nextSel =
+          swept.state.accounts.find((a) => a.id === swept.state.selectedAccountId) ||
+          swept.state.accounts[0] ||
+          null;
+        selectedAccountRef.current = nextSel;
+        lastLocalFinancialUpdateRef.current = Date.now();
+
+        setWalletBalance(swept.state.walletBalance);
+        setAccounts(swept.state.accounts);
+        setSelectedAccount(nextSel);
+
+        saveUserFinancials(activeUser, swept.state);
+        swept.sweptAccountNumbers.forEach((accNum) => {
+          supabaseService.deleteTradingAccountFromDatabase(activeUser, accNum, true).catch(() => {});
+        });
+      }
+    };
+
+    runSilentCleanup();
+    const interval = setInterval(runSilentCleanup, 60000);
+    return () => clearInterval(interval);
+  }, [currentUser]);
 
   // Switch to Instrument Detail view with instrument selected
   const handleSelectInstrumentToTrade = (symbol: string) => {
@@ -3521,6 +3700,10 @@ export default function App() {
           allInstruments[0];
         if (!primaryInst) return;
 
+        // Do not run or fluctuate bot trades on closed markets
+        const botMarketStatus = checkInstrumentMarketHours(primaryInst.symbol, primaryInst.category);
+        if (!botMarketStatus.isOpen) return;
+
         // 1. Evaluate all currently open trades for this bot for rapid profit-taking & automatic closing
         openTradesForRun.forEach((activeTrade) => {
           const tradeInst =
@@ -4152,6 +4335,7 @@ export default function App() {
             onTransfer={handleTransfer}
             selectedAccount={selectedAccount}
             onSelectAccount={setSelectedAccount}
+            onDeleteAccount={handleDeleteAccount}
             isDarkMode={isDarkMode}
             currentUser={currentUser}
           />
@@ -4163,6 +4347,7 @@ export default function App() {
             selectedAccount={selectedAccount}
             onSelectAccount={setSelectedAccount}
             onOpenNewAccount={handleOpenNewAccount}
+            onDeleteAccount={handleDeleteAccount}
             economicEvents={ECONOMIC_EVENTS}
             marketAnalyses={MARKET_ANALYSES}
             isDarkMode={isDarkMode}
@@ -4255,6 +4440,7 @@ export default function App() {
           }}
           onOpenDeposit={() => setActiveTab('wallet')}
           onOpenNewAccount={() => setActiveTab('account')}
+          onDeleteAccount={handleDeleteAccount}
           onResetDemo={handleResetDemo}
           isMobileFrame={isMobileFrame}
           onToggleMobileFrame={() => setIsMobileFrame((prev) => !prev)}

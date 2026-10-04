@@ -1,4 +1,5 @@
 // Real-time Market Price Fetching and Normalization Service
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 
 export interface TVQuote {
   symbol: string;
@@ -109,6 +110,33 @@ export class TradingViewPriceService {
     decimals: number,
     _pipMultiplier: number
   ): { bid: number; ask: number; spread: number } {
+    const mStatus = checkInstrumentMarketHours(symbol);
+    if (!mStatus.isOpen) {
+      const existing = this.lastQuotes.get(symbol);
+      if (existing && existing.bid > 0 && existing.ask > 0) {
+        return {
+          bid: existing.bid,
+          ask: existing.ask,
+          spread: existing.spread,
+        };
+      }
+      const staticSpread = Number((0.28 + ((symbol.charCodeAt(0) % 5) * 0.11)).toFixed(2));
+      this.lastSpreads.set(symbol, staticSpread);
+      const bid = Number(rawPrice.toFixed(decimals));
+      let priceGap = staticSpread;
+      if (decimals === 5) {
+        priceGap = Math.max(0.00001, Number((staticSpread / 10000).toFixed(5)));
+      } else if (decimals === 4) {
+        priceGap = Math.max(0.0001, Number((staticSpread * 0.001).toFixed(4)));
+      } else if (decimals === 3 && symbol.includes('JPY')) {
+        priceGap = Math.max(0.001, Number((staticSpread * 0.01).toFixed(3)));
+      } else if (decimals === 3) {
+        priceGap = symbol === 'XAUUSD' ? staticSpread : Math.max(0.001, Number((staticSpread * 0.01).toFixed(3)));
+      }
+      const ask = Number((bid + priceGap).toFixed(decimals));
+      return { bid, ask, spread: staticSpread };
+    }
+
     const prevSpread = this.lastSpreads.get(symbol) ?? (0.28 + ((symbol.charCodeAt(0) % 5) * 0.11));
     // Random step between -0.14 and +0.14, biased toward 0.22 - 0.92 ("0.something"), strictly capped at 1.20
     const drift = (Math.random() - 0.48) * 0.24;

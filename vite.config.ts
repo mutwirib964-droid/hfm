@@ -250,6 +250,14 @@ function marketPricesPlugin() {
               'JPN225': 0.88,
             };
 
+            const utcDay = new Date().getUTCDay();
+            const utcHour = new Date().getUTCHours();
+            const isCfdClosed =
+              utcDay === 6 ||
+              (utcDay === 0 && utcHour < 22) ||
+              (utcDay === 5 && utcHour >= 21) ||
+              (utcDay >= 1 && utcDay <= 4 && utcHour === 21);
+
             cfdRes.value.data.forEach((row: any) => {
               const conf = cfdMap[row.s];
               if (conf) {
@@ -257,7 +265,9 @@ function marketPricesPlugin() {
                 const change = row.d[1] || 0;
                 const decimals = conf.dec;
                 const baseSpr = cfdSpreads[conf.sym] || 0.45;
-                const dynamicSpread = Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.24)).toFixed(2));
+                const dynamicSpread = isCfdClosed
+                  ? Number(baseSpr.toFixed(2))
+                  : Number(Math.max(0.16, Math.min(1.18, baseSpr + (Math.random() - 0.5) * 0.24)).toFixed(2));
                 const priceDiff = decimals === 3 ? dynamicSpread * 0.01 : dynamicSpread;
                 const bid = Number(close.toFixed(decimals));
                 const ask = Number((bid + priceDiff).toFixed(decimals));

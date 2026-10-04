@@ -18,6 +18,19 @@ import {
   Type,
   Share2,
   GitCommit,
+  Crosshair,
+  GitFork,
+  Compass,
+  Clock,
+  ArrowUpCircle,
+  ArrowDownCircle,
+  Ruler,
+  Edit3,
+  Triangle,
+  MessageSquare,
+  Activity,
+  Zap,
+  CornerUpRight,
 } from 'lucide-react';
 import { Instrument } from '../types';
 
@@ -45,34 +58,54 @@ export const DrawingModal: React.FC<DrawingModalProps> = ({
 
   const sections: { title: string; tools: DrawingToolItem[] }[] = [
     {
-      title: 'Lines',
+      title: 'Lines & Channels',
       tools: [
-        { id: 'Horizontal', name: 'Horizontal', icon: Minus, description: 'Horizontal price ray/level' },
-        { id: 'Vertical', name: 'Vertical', icon: MoveVertical, description: 'Vertical time line' },
-        { id: 'Trendline', name: 'Trendline', icon: TrendingUp, description: 'Diagonal trend line' },
-        { id: 'Arrowed', name: 'Arrowed', icon: ArrowUpRight, description: 'Directional arrow pointer' },
-        { id: 'Equidistant', name: 'Equidistant', icon: AlignJustify, description: 'Parallel trend channel' },
+        { id: 'Trendline', name: 'Trendline', icon: TrendingUp, description: 'Diagonal trend line between 2 points' },
+        { id: 'Ray', name: 'Trend Ray', icon: CornerUpRight, description: 'Projected trend ray extending right' },
+        { id: 'Horizontal', name: 'Horizontal', icon: Minus, description: 'Full-width horizontal price level' },
+        { id: 'HorizontalRay', name: 'Horiz. Ray', icon: ArrowUpRight, description: 'Horizontal ray from anchor point' },
+        { id: 'Vertical', name: 'Vertical', icon: MoveVertical, description: 'Vertical session/time marker' },
+        { id: 'CrossLine', name: 'Cross Line', icon: Crosshair, description: 'Intersecting price & time crosshair' },
+        { id: 'Arrowed', name: 'Arrow Vector', icon: ArrowUpRight, description: 'Directional trend arrow pointer' },
+        { id: 'Equidistant', name: 'Parallel Ch.', icon: AlignJustify, description: 'Equidistant parallel trend channel' },
+        { id: 'Pitchfork', name: 'Pitchfork', icon: GitFork, description: "Andrews' 3-prong median pitchfork" },
       ],
     },
     {
-      title: 'Fibonacci',
+      title: 'Fibonacci & Gann',
       tools: [
-        { id: 'Retracements', name: 'Retracements', icon: Sliders, description: 'Fibonacci golden ratio levels' },
+        { id: 'Retracements', name: 'Fib Retrace', icon: Sliders, description: 'Fibonacci golden ratio retracements' },
+        { id: 'FibExtension', name: 'Fib Extend', icon: Compass, description: 'Fibonacci 127.2% & 161.8% extensions' },
+        { id: 'FibFan', name: 'Fib Speed Fan', icon: Share2, description: 'Fibonacci radiating resistance fan' },
+        { id: 'FibTimeZones', name: 'Fib Time Zone', icon: Clock, description: 'Fibonacci vertical time cycles' },
       ],
     },
     {
-      title: 'Shapes',
+      title: 'Positions & Measurement',
       tools: [
-        { id: 'Ellipse', name: 'Ellipse', icon: Circle, description: 'Zone circle / ellipse' },
-        { id: 'Rectangle', name: 'Rectangle', icon: Square, description: 'Support / resistance box' },
+        { id: 'LongPosition', name: 'Long R:R', icon: ArrowUpCircle, description: 'Buy TP/SL Risk-to-Reward projection' },
+        { id: 'ShortPosition', name: 'Short R:R', icon: ArrowDownCircle, description: 'Sell TP/SL Risk-to-Reward projection' },
+        { id: 'PriceRange', name: 'Price Ruler', icon: Ruler, description: 'Measure Δ price, pips & % range' },
       ],
     },
     {
-      title: 'Other & Harmonics',
+      title: 'Shapes & Freehand',
       tools: [
-        { id: 'Text', name: 'Text Note', icon: Type, description: 'Text label on chart' },
-        { id: 'XABCD', name: 'XABCD Pattern', icon: Share2, description: 'Harmonic 5-point pattern' },
-        { id: 'ABCD', name: 'ABCD Wave', icon: GitCommit, description: 'ABCD harmonic wave' },
+        { id: 'Brush', name: 'Freehand Brush', icon: Edit3, description: 'Draw freehand curve on chart' },
+        { id: 'Rectangle', name: 'Zone Box', icon: Square, description: 'Support / supply-demand rectangle' },
+        { id: 'Ellipse', name: 'Circle Zone', icon: Circle, description: 'Liquidity circle / ellipse zone' },
+        { id: 'Triangle', name: 'Triangle', icon: Triangle, description: 'Chart consolidation triangle' },
+      ],
+    },
+    {
+      title: 'Patterns & Annotations',
+      tools: [
+        { id: 'Text', name: 'Text Note', icon: Type, description: 'Custom price label on chart' },
+        { id: 'Callout', name: 'Callout Tag', icon: MessageSquare, description: 'Pointed price callout badge' },
+        { id: 'XABCD', name: 'XABCD Harmonic', icon: Share2, description: 'Harmonic 5-point XABCD pattern' },
+        { id: 'ABCD', name: 'ABCD Wave', icon: GitCommit, description: 'Harmonic ABCD impulse wave' },
+        { id: 'HeadAndShoulders', name: 'Head & Shoulders', icon: Activity, description: 'LS - Head - RS reversal pattern' },
+        { id: 'ElliottWave', name: 'Elliott 1-5', icon: Zap, description: '5-wave Elliott impulse sequence' },
       ],
     },
   ];
