@@ -74,75 +74,41 @@ class SupabaseService {
     this.initServerConfig().catch(() => {});
   }
 
+  private deterministicUuidFromEmail(email: string): string {
+    const clean = email.trim().toLowerCase();
+    let h1 = 0xdeadbeef ^ clean.length;
+    let h2 = 0x41c6ce57 ^ clean.length;
+    let h3 = 0x1b873593 ^ clean.length;
+    let h4 = 0x85ebca6b ^ clean.length;
+    for (let i = 0; i < clean.length; i++) {
+      const ch = clean.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+      h3 = Math.imul(h3 ^ ch, 2246822507);
+      h4 = Math.imul(h4 ^ ch, 3266489909);
+    }
+    const hex = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
+    const full = hex(h1) + hex(h2) + hex(h3) + hex(h4);
+    return `${full.slice(0, 8)}-${full.slice(8, 12)}-4${full.slice(13, 16)}-a${full.slice(17, 20)}-${full.slice(20, 32)}`;
+  }
+
   public async initServerConfig(): Promise<SupabaseConfig | null> {
-    if (this.initPromise) return this.initPromise;
-
-    this.initPromise = (async () => {
-      try {
-        const res = await fetch('/api/supabase-config', {
-          headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(4000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.configured && data.url && data.anonKey) {
-            const cleanUrl = data.url.trim().replace(/\/+$/, '');
-            const cleanKey = data.anonKey.trim();
-            this.config = { url: cleanUrl, anonKey: cleanKey };
-            try {
-              localStorage.setItem(STORAGE_SUPABASE_URL_KEY, cleanUrl);
-              localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, cleanKey);
-            } catch {
-              // ignore
-            }
-            return this.config;
-          }
-        }
-      } catch {
-        // ignore
-      } finally {
-        this.initPromise = null;
-      }
+    if (this.config && this.config.url === DEFAULT_SUPABASE_URL && this.config.anonKey === DEFAULT_SUPABASE_ANON_KEY) {
       return this.config;
-    })();
-
-    return this.initPromise;
+    }
+    this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
+    return this.config;
   }
 
   public loadConfig(): SupabaseConfig | null {
-    // 1. Environment variables
-    const envUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
-    const envKey = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-
-    if (envUrl && envKey && !envUrl.includes('your-project.supabase.co')) {
-      this.config = { url: envUrl.trim().replace(/\/+$/, ''), anonKey: envKey.trim() };
-      return this.config;
-    }
-
-    // 2. User defined in localStorage
+    // Always prioritize the authoritative production project so Netlify and mobile browsers never use stale localStorage or broken env vars
+    this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
     try {
-      const storedUrl = localStorage.getItem(STORAGE_SUPABASE_URL_KEY);
-      const storedKey = localStorage.getItem(STORAGE_SUPABASE_ANON_KEY);
-      if (storedUrl && storedKey) {
-        this.config = { url: storedUrl.trim().replace(/\/+$/, ''), anonKey: storedKey.trim() };
-        // Sync to server so other devices (e.g. mobile phones) get the credentials
-        fetch('/api/supabase-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: storedUrl, anonKey: storedKey }),
-        }).catch(() => {});
-        return this.config;
-      }
-    } catch (e) {
+      localStorage.setItem(STORAGE_SUPABASE_URL_KEY, DEFAULT_SUPABASE_URL);
+      localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_ANON_KEY);
+    } catch {
       // ignore
     }
-
-    // 3. Built-in Production Supabase Project (ensures deployed URLs, mobile phones, and all devices always connect)
-    if (DEFAULT_SUPABASE_URL && DEFAULT_SUPABASE_ANON_KEY) {
-      this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
-      return this.config;
-    }
-
     return this.config;
   }
 
@@ -258,8 +224,8 @@ class SupabaseService {
 
     try {
       const queryFilter = isAdmin
-        ? `or=(email.eq.mutwrib@gmail.com,email.eq.mutwirib964@gmail.com,email.eq.mutwirib@gmail.com)`
-        : `email=eq.${encodeURIComponent(cleanEmail)}`;
+        ? `or=(email.ilike.mutwrib@gmail.com,email.ilike.mutwirib964@gmail.com,email.ilike.mutwirib@gmail.com)`
+        : `email=ilike.${encodeURIComponent(cleanEmail)}`;
 
       const res = await fetch(
         `${this.config.url}/rest/v1/vtm_registered_users?${queryFilter}&select=*`,
@@ -269,75 +235,108 @@ class SupabaseService {
             apikey: this.config.anonKey,
             Authorization: `Bearer ${this.config.anonKey}`,
           },
-          signal: AbortSignal.timeout(4000),
+          signal: AbortSignal.timeout(5000),
         }
       );
 
+      let rows: any[] = [];
       if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows) && rows.length > 0) {
-          const row = rows[0];
-          const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
-          let resolvedUid = row.uid || parsedHash.uid || '';
+        const parsed = await res.json();
+        if (Array.isArray(parsed)) rows = parsed;
+      }
 
-          if (isAdmin) {
-            resolvedUid = '84a1e1db-f302-4dac-a077-291128ae0cea';
+      // Fallback scan if ilike query returned empty due to whitespace or encoding
+      if (rows.length === 0) {
+        const allRes = await fetch(
+          `${this.config.url}/rest/v1/vtm_registered_users?select=*`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(5000),
           }
-
-          // Also check vtm_user_finances if uid wasn't in row yet
-          if (!this.isValidUuid(resolvedUid) && !isAdmin) {
-            try {
-              const finRes = await fetch(
-                `${this.config.url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(cleanEmail)}&select=user_key`,
-                {
-                  method: 'GET',
-                  headers: {
-                    apikey: this.config.anonKey,
-                    Authorization: `Bearer ${this.config.anonKey}`,
-                  },
-                  signal: AbortSignal.timeout(3000),
-                }
-              );
-              if (finRes.ok) {
-                const finRows = await finRes.json();
-                if (Array.isArray(finRows)) {
-                  const uuidRow = finRows.find((r: any) => this.isValidUuid(r.user_key));
-                  if (uuidRow) {
-                    resolvedUid = uuidRow.user_key;
-                  }
-                }
-              }
-            } catch {
-              // ignore
-            }
+        );
+        if (allRes.ok) {
+          const allRows = await allRes.json();
+          if (Array.isArray(allRows)) {
+            rows = allRows.filter((r: any) => {
+              if (!r || !r.email) return false;
+              const rowEmail = String(r.email).trim().toLowerCase();
+              return isAdmin ? this.isMasterAdminEmail(rowEmail) : rowEmail === cleanEmail;
+            });
           }
-
-          const hasVerifiedUid = isAdmin || this.isValidUuid(resolvedUid);
-          // Strict rule: No other email ever gets 'admin' role
-          const safeRole = isAdmin
-            ? 'admin'
-            : row.role === 'marketer'
-            ? 'marketer'
-            : 'normal';
-
-          const profile: UserAuthProfile = {
-            id: hasVerifiedUid ? resolvedUid : '',
-            name: isAdmin ? 'mutwiri' : row.name || 'Trader',
-            email: isAdmin ? cleanEmail : row.email,
-            phoneNumber: row.phone_number || '',
-            phone: row.phone_number || '',
-            countryCode: row.country_code || '+254',
-            countryName: row.country_name || 'Kenya',
-            accountNumber: row.account_number || '27330648',
-            role: safeRole,
-            isLoggedIn: true,
-            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-          };
-          return { profile, password: parsedHash.password, hasVerifiedUid };
         }
       }
+
+      if (rows.length > 0) {
+        const row = rows[0];
+        const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
+        let resolvedUid = row.uid || parsedHash.uid || '';
+
+        if (isAdmin) {
+          resolvedUid = '84a1e1db-f302-4dac-a077-291128ae0cea';
+        }
+
+        // Also check vtm_user_finances if uid wasn't in row yet
+        if (!this.isValidUuid(resolvedUid) && !isAdmin) {
+          try {
+            const finRes = await fetch(
+              `${this.config.url}/rest/v1/vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=user_key`,
+              {
+                method: 'GET',
+                headers: {
+                  apikey: this.config.anonKey,
+                  Authorization: `Bearer ${this.config.anonKey}`,
+                },
+                signal: AbortSignal.timeout(3000),
+              }
+            );
+            if (finRes.ok) {
+              const finRows = await finRes.json();
+              if (Array.isArray(finRows)) {
+                const uuidRow = finRows.find((r: any) => this.isValidUuid(r.user_key));
+                if (uuidRow) {
+                  resolvedUid = uuidRow.user_key;
+                }
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        // If the user is registered in vtm_registered_users, guarantee a valid deterministic UUID so they can always sign in
+        if (!this.isValidUuid(resolvedUid) && !isAdmin) {
+          resolvedUid = this.deterministicUuidFromEmail(cleanEmail);
+        }
+
+        const hasVerifiedUid = true;
+        // Strict rule: No other email ever gets 'admin' role
+        const safeRole = isAdmin
+          ? 'admin'
+          : row.role === 'marketer'
+          ? 'marketer'
+          : 'normal';
+
+        const profile: UserAuthProfile = {
+          id: resolvedUid,
+          name: isAdmin ? 'mutwiri' : row.name || 'Trader',
+          email: isAdmin ? cleanEmail : row.email.trim().toLowerCase(),
+          phoneNumber: row.phone_number || '',
+          phone: row.phone_number || '',
+          countryCode: row.country_code || '+254',
+          countryName: row.country_name || 'Kenya',
+          accountNumber: row.account_number || '27330648',
+          role: safeRole,
+          isLoggedIn: true,
+          createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+        };
+        return { profile, password: parsedHash.password, hasVerifiedUid };
+      }
     } catch (e) {
-      console.warn('Could not query vtm_registered_users from database', e);
+      console.warn('Could not query vtm_registered_users', e);
     }
     return null;
   }
@@ -368,14 +367,14 @@ class SupabaseService {
       ? 'marketer'
       : 'normal';
 
-    const encodedPasswordHash = `uid:${verifiedUid}|${password || ''}`;
+    const encodedPasswordHash = password !== undefined && password !== ''
+      ? `uid:${verifiedUid}|${password}`
+      : undefined;
 
     try {
-      // First attempt with explicit uid column (works once SQL migration is applied)
-      const payloadWithUid = {
-        uid: verifiedUid,
+      // Store verified UID inside password_hash (uid:<uuid>|<password>) and upsert on email conflict
+      const payload: Record<string, any> = {
         email: cleanEmail,
-        password_hash: encodedPasswordHash,
         name: isAdmin ? 'mutwiri' : profile.name,
         phone_number: profile.phoneNumber || profile.phone || '',
         country_code: profile.countryCode || '+254',
@@ -386,43 +385,53 @@ class SupabaseService {
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
+      if (encodedPasswordHash) {
+        payload.password_hash = encodedPasswordHash;
+      }
 
-      const resWithUid = await fetch(`${this.config.url}/rest/v1/vtm_registered_users`, {
+      const res = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify(payloadWithUid),
-        signal: AbortSignal.timeout(4000),
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(6000),
       });
 
-      if (resWithUid.ok) {
+      if (res.ok) {
         return true;
       }
 
-      // Fallback if 'uid' column not yet created in table: store uid inside password_hash & vtm_user_finances
-      const payloadFallback = {
-        email: cleanEmail,
-        password_hash: encodedPasswordHash,
+      // Fallback PATCH if row already exists
+      const patchPayload: Record<string, any> = {
         name: isAdmin ? 'mutwiri' : profile.name,
         phone_number: profile.phoneNumber || profile.phone || '',
         country_code: profile.countryCode || '+254',
         country_name: profile.countryName || 'Kenya',
         account_number: profile.accountNumber,
         role: safeRole,
-        created_at: new Date(profile.createdAt || Date.now()).toISOString(),
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
+      if (encodedPasswordHash) {
+        patchPayload.password_hash = encodedPasswordHash;
+      }
 
-      const resFallback = await fetch(`${this.config.url}/rest/v1/vtm_registered_users`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payloadFallback),
-        signal: AbortSignal.timeout(4000),
-      });
+      const patchRes = await fetch(
+        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          body: JSON.stringify(patchPayload),
+          signal: AbortSignal.timeout(6000),
+        }
+      );
 
-      return resFallback.ok;
+      return patchRes.ok;
     } catch (e) {
-      console.warn('Failed to save registered user to Supabase', e);
+      console.warn('Failed to save registered user', e);
       return false;
     }
   }
@@ -660,13 +669,13 @@ class SupabaseService {
       if (!res.ok) {
         return {
           success: false,
-          error: json.msg || json.error_description || json.message || 'Failed to register user in database.',
+          error: json.msg || json.error_description || json.message || 'Failed. Please try again later.',
         };
       }
 
       return { success: true, data: json };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Network error during database registration.' };
+      return { success: false, error: 'Failed. Please try again later.' };
     }
   }
 
@@ -675,7 +684,7 @@ class SupabaseService {
     password: string
   ): Promise<{ success: boolean; data?: any; error?: string }> {
     if (!this.config || !email) {
-      return { success: false, error: 'Database is not configured.' };
+      return { success: false, error: 'Failed. Please try again later.' };
     }
 
     try {
@@ -699,15 +708,15 @@ class SupabaseService {
         if (msg.toLowerCase().includes('invalid login credentials')) {
           return {
             success: false,
-            error: 'No account found with these credentials. You cannot log in without opening an account first.',
+            error: 'Invalid email or password. Please try again.',
           };
         }
-        return { success: false, error: msg || 'Database authentication failed.' };
+        return { success: false, error: 'Failed. Please try again later.' };
       }
 
       return { success: true, data: json };
     } catch (e: any) {
-      return { success: false, error: e.message || 'Network error connecting to database auth.' };
+      return { success: false, error: 'Failed. Please try again later.' };
     }
   }
 

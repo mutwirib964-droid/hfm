@@ -247,8 +247,22 @@ export default function App() {
       if (!supabaseService.isConfigured()) return;
 
       const remote = await supabaseService.findUserInDatabase(currentUser.email);
-      if (!remote || !isValidUserUid(remote.profile?.id)) {
-        console.warn('[Security] User not saved in Supabase or missing UID in Supabase. Signing out immediately.');
+      if (!remote) {
+        // Transient network timeout or user just registered; do not forcibly sign out if currentUser has a valid UID
+        if (isValidUserUid(currentUser.id)) {
+          supabaseService.registerUserInDatabase(currentUser).catch(() => {});
+          return;
+        }
+        localStorage.removeItem('vtm_auth_user');
+        setCurrentUser(null);
+        return;
+      }
+
+      if (!isValidUserUid(remote.profile?.id)) {
+        if (isValidUserUid(currentUser.id)) {
+          supabaseService.registerUserInDatabase(currentUser).catch(() => {});
+          return;
+        }
         localStorage.removeItem('vtm_auth_user');
         setCurrentUser(null);
         return;
