@@ -459,35 +459,39 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 const spreadInt = (inst.spread > 0 && inst.spread <= 1.2 ? inst.spread : 0.42).toFixed(2);
                 const tick = tickStates[inst.symbol] || 'NEUTRAL';
 
-                // Dynamic Curved Sparkline Path (Guarantees smooth multi-wave curve & never a flat straight line)
-                const tickStep = Math.pow(10, -inst.decimals) * (inst.decimals >= 4 ? 12 : inst.decimals === 3 ? 8 : 5);
-                const rawSpark = Array.isArray(inst.sparkline) && inst.sparkline.length >= 6 ? inst.sparkline : [inst.bid];
-                // Filter out any stale seed outlier (>0.35% away from current live bid) so an outlier never flattens the curve
-                const validSpark = rawSpark.map((v) =>
-                  inst.bid > 0 && Math.abs(v - inst.bid) / inst.bid > 0.0035 ? inst.bid : v
-                );
-                const symHash = inst.symbol.split('').reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 1), 0);
-                // Live phase shift driven by real bid/ask/spread ticks so the curve visibly flows as prices move
-                const livePhase = ((inst.bid + inst.ask) * Math.pow(10, inst.decimals) + (inst.spread || 0.4) * 10) * 0.45;
+                // Dynamic Curved Sparkline Path (Normalized multi-wave curve: mathematically impossible to ever flatten into a straight line)
+                const rawSpark = Array.isArray(inst.sparkline) && inst.sparkline.length >= 2 ? inst.sparkline : [inst.bid, inst.bid];
+                const stepDirections: number[] = [];
+                for (let s = 1; s < rawSpark.length; s++) {
+                  const diff = rawSpark[s] - rawSpark[s - 1];
+                  stepDirections.push(diff > 0 ? 0.42 : diff < 0 ? -0.42 : 0);
+                }
+                if (stepDirections.length === 0) stepDirections.push(0);
+
+                const symHash = inst.symbol
+                  .split('')
+                  .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 1) * 7, 0);
+                const discreteTicks = Math.round(inst.bid * Math.pow(10, inst.decimals));
+                // Smooth phase shift driven by real live bid ticks so the curve flows as price moves
+                const livePhase = ((discreteTicks % 100) + (inst.spread || 0.35) * 10) * 0.52;
                 const isUp = inst.change24h >= 0;
-                const waveCount = 10;
+                const waveCount = 9;
                 const curvedValues: number[] = [];
                 for (let idx = 0; idx < waveCount; idx++) {
-                  const srcIdx = Math.min(validSpark.length - 1, Math.floor((idx / (waveCount - 1)) * validSpark.length));
-                  const baseVal = validSpark[srcIdx] ?? inst.bid;
                   const progress = idx / (waveCount - 1);
-                  const trendBias = (isUp ? 1 : -1) * (progress - 0.5) * tickStep * 1.3;
-                  const wave1 = Math.sin(idx * 1.15 + symHash * 0.37 + livePhase) * tickStep * 0.95;
-                  const wave2 = Math.cos(idx * 2.1 - symHash * 0.19 + livePhase * 0.7) * tickStep * 0.55;
-                  curvedValues.push(idx === waveCount - 1 ? inst.bid : baseVal + trendBias + wave1 + wave2);
+                  const trendBias = (isUp ? 1 : -1) * (progress - 0.5) * 0.95;
+                  const wave1 = Math.sin(idx * 1.28 + symHash * 0.37 + livePhase) * 1.15;
+                  const wave2 = Math.cos(idx * 2.15 - symHash * 0.23 + livePhase * 0.75) * 0.65;
+                  const stepNudge = stepDirections[idx % stepDirections.length] || 0;
+                  curvedValues.push(trendBias + wave1 + wave2 + stepNudge);
                 }
 
                 const minSpark = Math.min(...curvedValues);
                 const maxSpark = Math.max(...curvedValues);
-                const range = Math.max(maxSpark - minSpark, tickStep * 0.5, 1e-8);
+                const range = Math.max(maxSpark - minSpark, 0.5);
                 const coords = curvedValues.map((val, idx) => ({
                   x: (idx / (curvedValues.length - 1)) * 52,
-                  y: 20 - ((val - minSpark) / range) * 15,
+                  y: 19 - ((val - minSpark) / range) * 15,
                 }));
 
                 // Build smooth cubic Bezier curve through all coordinates
