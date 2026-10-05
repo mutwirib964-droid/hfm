@@ -93,18 +93,28 @@ export const TV_INSTRUMENT_MAP: Record<
   SUIUSD: { scanner: 'crypto', ticker: 'BINANCE:SUIUSDT', decimals: 2, pipMultiplier: 100 },
 };
 
+const TICKER_TO_SYMBOL: Record<string, string> = {};
+Object.entries(TV_INSTRUMENT_MAP).forEach(([sym, cfg]) => {
+  TICKER_TO_SYMBOL[cfg.ticker] = sym;
+});
+
 export class TradingViewPriceService {
   private lastQuotes: Map<string, TVQuote> = new Map();
+  private rawTvFields: Map<string, Record<string, any>> = new Map();
   private lastSpreads: Map<string, number> = new Map();
   private isFetching = false;
-  private lastFetchTime = 0;
-  private ws: WebSocket | null = null;
+  private lastScannerFetchTime = 0;
+  private tvWs: WebSocket | null = null;
+  private binanceWs: WebSocket | null = null;
   private sse: EventSource | null = null;
+  private sseActive = false;
   private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
 
   constructor() {
+    this.initDirectTradingViewWebSocket();
     this.initServerStream();
-    this.initLiveWebSocket();
+    this.initLiveBinanceWebSocket();
+    this.initSpreadBreather();
   }
 
   /**
@@ -180,10 +190,172 @@ export class TradingViewPriceService {
     this.listeners.forEach((listener) => {
       try {
         listener(snapshot);
-      } catch (err) {
-        console.error('Error in price listener:', err);
+      } catch {
+        // ignore listener error
       }
     });
+  }
+
+  /**
+   * Direct browser connection to TradingView's real-time WebSocket stream
+   * (`wss://data.tradingview.com/socket.io/websocket?from=chart%2F&type=chart`)
+   * Ensures identical sub-second tick streaming on Netlify, Vercel, Cloud Run, and local dev!
+   */
+  private initDirectTradingViewWebSocket() {
+    if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
+    if (this.tvWs) {
+      try {
+        this.tvWs.onclose = null;
+        this.tvWs.onerror = null;
+        this.tvWs.onmessage = null;
+        this.tvWs.close();
+      } catch {}
+      this.tvWs = null;
+    }
+
+    try {
+      const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket?from=chart%2F&type=chart');
+      this.tvWs = ws;
+
+      const sendTvPacket = (func: string, args: any[]) => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const msg = JSON.stringify({ m: func, p: args });
+        ws.send(`~m~${msg.length}~m~${msg}`);
+      };
+
+      const session = 'qs_vtm_web_' + Math.random().toString(36).slice(2, 12);
+
+      ws.onopen = () => {
+        sendTvPacket('set_auth_token', ['unauthorized_user_token']);
+        sendTvPacket('quote_create_session', [session]);
+        sendTvPacket('quote_set_fields', [
+          session,
+          'lp',
+          'ch',
+          'chp',
+          'high_price',
+          'low_price',
+          'bid',
+          'ask',
+          'open_price',
+          'prev_close_price',
+        ]);
+        const allTickers = Object.values(TV_INSTRUMENT_MAP).map((s) => s.ticker);
+        sendTvPacket('quote_add_symbols', [session, ...allTickers]);
+      };
+
+      ws.onmessage = (event) => {
+        const str = typeof event.data === 'string' ? event.data : '';
+        if (!str) return;
+        const frames = str.split(/~m~\d+~m~/).filter(Boolean);
+        let updatedAny = false;
+
+        for (const frame of frames) {
+          if (frame.startsWith('~h~')) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(`~m~${frame.length}~m~${frame}`);
+            }
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(frame);
+            if (parsed.m === 'qsd' && Array.isArray(parsed.p) && parsed.p[1]) {
+              const { n: ticker, v: values } = parsed.p[1];
+              const sym = TICKER_TO_SYMBOL[ticker];
+              if (sym && values && typeof values === 'object') {
+                const merged = { ...(this.rawTvFields.get(sym) || {}), ...values };
+                this.rawTvFields.set(sym, merged);
+                if (this.updateSymbolFromRawTv(sym, merged)) {
+                  updatedAny = true;
+                }
+              }
+            }
+          } catch {
+            // ignore non-JSON frame
+          }
+        }
+
+        if (updatedAny) {
+          this.notifyListeners();
+        }
+      };
+
+      ws.onclose = () => {
+        setTimeout(() => this.initDirectTradingViewWebSocket(), 2000);
+      };
+
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch {}
+      };
+    } catch {
+      setTimeout(() => this.initDirectTradingViewWebSocket(), 3000);
+    }
+  }
+
+  private updateSymbolFromRawTv(symbol: string, raw: Record<string, any>): boolean {
+    const conf = TV_INSTRUMENT_MAP[symbol];
+    if (!conf) return false;
+    const lp =
+      typeof raw.lp === 'number' && raw.lp > 0
+        ? raw.lp
+        : typeof raw.bid === 'number' && raw.bid > 0
+        ? raw.bid
+        : null;
+    if (!lp || lp <= 0) return false;
+
+    const { bid, ask, spread } = this.computeDynamicBidAsk(
+      symbol,
+      lp,
+      conf.decimals,
+      conf.pipMultiplier
+    );
+
+    const existing = this.lastQuotes.get(symbol);
+    const change24h =
+      typeof raw.chp === 'number'
+        ? Number(raw.chp.toFixed(2))
+        : existing?.change24h ?? 0;
+    const high24h =
+      typeof raw.high_price === 'number' && raw.high_price > 0
+        ? Number(raw.high_price.toFixed(conf.decimals))
+        : existing?.high24h || ask;
+    const low24h =
+      typeof raw.low_price === 'number' && raw.low_price > 0
+        ? Number(raw.low_price.toFixed(conf.decimals))
+        : existing?.low24h || bid;
+
+    this.lastQuotes.set(symbol, {
+      symbol,
+      tvTicker: conf.ticker,
+      bid,
+      ask,
+      spread,
+      change24h,
+      high24h,
+      low24h,
+      timestamp: Date.now(),
+    });
+    return true;
+  }
+
+  private initSpreadBreather() {
+    if (typeof window === 'undefined') return;
+    setInterval(() => {
+      if (this.sseActive) return; // Server stream already breathes spread when active
+      let anyUpdated = false;
+      this.rawTvFields.forEach((raw, sym) => {
+        const mStatus = checkInstrumentMarketHours(sym);
+        if (!mStatus.isOpen) return;
+        if (this.updateSymbolFromRawTv(sym, raw)) {
+          anyUpdated = true;
+        }
+      });
+      if (anyUpdated) {
+        this.notifyListeners();
+      }
+    }, 900);
   }
 
   private ingestServerQuotesObject(quotesObj: Record<string, any>) {
@@ -195,6 +367,14 @@ export class TradingViewPriceService {
       if (!conf || data?.bid === undefined) return;
       const chartPrice = Number(data.close ?? data.bid);
       if (!(chartPrice > 0)) return;
+
+      this.rawTvFields.set(symbol, {
+        ...(this.rawTvFields.get(symbol) || {}),
+        lp: chartPrice,
+        chp: data.change24h,
+        high_price: data.high24h,
+        low_price: data.low24h,
+      });
 
       const mStatus = checkInstrumentMarketHours(symbol);
       const serverSpread =
@@ -255,24 +435,25 @@ export class TradingViewPriceService {
         try {
           const parsed = JSON.parse(event.data);
           if (parsed && parsed.quotes) {
+            this.sseActive = true;
             this.ingestServerQuotesObject(parsed.quotes);
           }
         } catch {}
       };
       es.onerror = () => {
+        this.sseActive = false;
         try {
           es.close();
         } catch {}
-        setTimeout(() => this.initServerStream(), 2000);
+        setTimeout(() => this.initServerStream(), 5000);
       };
       this.sse = es;
     } catch {}
   }
 
-  private initLiveWebSocket() {
+  private initLiveBinanceWebSocket() {
     if (typeof window === 'undefined') return;
     try {
-      // Connect to official Binance miniTicker WebSocket stream (real-time ticks matching TradingView BINANCE feeds)
       const wsUrl = 'wss://stream.binance.com:9443/ws/!miniTicker@arr';
       const ws = new WebSocket(wsUrl);
 
@@ -322,28 +503,28 @@ export class TradingViewPriceService {
               this.notifyListeners();
             }
           }
-        } catch (e) {
+        } catch {
           // Ignore parse errors on individual frames
         }
       };
 
       ws.onclose = () => {
-        setTimeout(() => this.initLiveWebSocket(), 3000);
+        setTimeout(() => this.initLiveBinanceWebSocket(), 3000);
       };
 
       ws.onerror = () => {
         try {
           ws.close();
-        } catch (e) {}
+        } catch {}
       };
 
-      this.ws = ws;
-    } catch (e) {
-      console.warn('Live WebSocket initialization notice:', e);
+      this.binanceWs = ws;
+    } catch {
+      // Silent fallback
     }
   }
 
-  // Fetch quotes from internal real-time TradingView WebSocket proxy API
+  // Fetch quotes from internal proxy API or direct scanner fallback
   public async fetchRealPrices(): Promise<Map<string, TVQuote>> {
     if (this.isFetching) return this.lastQuotes;
     this.isFetching = true;
@@ -357,157 +538,76 @@ export class TradingViewPriceService {
           cache: 'no-store',
           signal: AbortSignal.timeout(1500),
         });
-        if (proxyRes.ok) {
+        const contentType = proxyRes.headers.get('content-type') || '';
+        if (proxyRes.ok && contentType.includes('application/json')) {
           const json = await proxyRes.json();
           if (json.quotes && Object.keys(json.quotes).length > 0) {
             gotProxyQuotes = true;
             this.ingestServerQuotesObject(json.quotes);
           }
         }
-      } catch (e) {
-        // Fall through if offline
+      } catch {
+        // Fall through if offline or static host
       }
 
-      // Only hit public scanner as a slow backup if server proxy is completely unreachable
-      if (!gotProxyQuotes && now - this.lastFetchTime > 5000) {
+      // If server proxy did not return quotes, query TradingView scanners using CORS-safe text/plain
+      if (!gotProxyQuotes && now - this.lastScannerFetchTime > 1500) {
+        this.lastScannerFetchTime = now;
         try {
-          const [cfdData, forexData] = await Promise.allSettled([
-            fetch('https://scanner.tradingview.com/cfd/scan', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(3000),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'OANDA:XAUUSD',
-                    'TVC:SILVER',
-                    'FX:USOIL',
-                    'FX:UKOIL',
-                    'OANDA:NATGASUSD',
-                    'OANDA:US30USD',
-                    'OANDA:DE30EUR',
-                    'OANDA:UK100GBP',
-                    'SP:SPX',
-                    'TVC:IXIC',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-            fetch('https://scanner.tradingview.com/forex/scan', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(3000),
-              body: JSON.stringify({
-                symbols: {
-                  tickers: [
-                    'FX:EURUSD',
-                    'FX:GBPUSD',
-                    'FX:USDJPY',
-                    'FX:USDCHF',
-                    'FX:AUDUSD',
-                    'FX:USDCAD',
-                    'FX:GBPJPY',
-                    'FX:NZDUSD',
-                    'FX:EURGBP',
-                    'FX:EURJPY',
-                    'FX:AUDJPY',
-                  ],
-                },
-                columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-              }),
-            }).then((r) => r.json()),
-          ]);
+          const scannerGroups: Array<'forex' | 'cfd' | 'crypto' | 'america'> = ['forex', 'cfd', 'crypto', 'america'];
+          const results = await Promise.allSettled(
+            scannerGroups.map((scanner) => {
+              const tickers = Object.values(TV_INSTRUMENT_MAP)
+                .filter((cfg) => cfg.scanner === scanner)
+                .map((cfg) => cfg.ticker);
+              return fetch(`https://scanner.tradingview.com/${scanner}/scan`, {
+                method: 'POST',
+                // Use text/plain to avoid browser CORS preflight rejection
+                headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+                signal: AbortSignal.timeout(3000),
+                body: JSON.stringify({
+                  symbols: { tickers },
+                  columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
+                }),
+              }).then((r) => r.json());
+            })
+          );
 
-          if (cfdData.status === 'fulfilled' && cfdData.value?.data) {
-            const cfdMap: Record<string, string> = {
-              'OANDA:XAUUSD': 'XAUUSD',
-              'TVC:SILVER': 'XAGUSD',
-              'FX:USOIL': 'USOIL',
-              'FX:UKOIL': 'UKOIL',
-              'OANDA:NATGASUSD': 'NGAS',
-              'OANDA:US30USD': 'US30',
-              'OANDA:DE30EUR': 'GER40',
-              'OANDA:UK100GBP': 'UK100',
-              'SP:SPX': 'US500',
-              'TVC:IXIC': 'NAS100',
-            };
-            cfdData.value.data.forEach((row: any) => {
-              const sym = cfdMap[row.s];
-              const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
-              if (conf && row.d?.[0] > 0) {
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const { bid, ask, spread } = this.computeDynamicBidAsk(
-                  sym,
-                  close,
-                  conf.decimals,
-                  conf.pipMultiplier
-                );
-                this.lastQuotes.set(sym, {
-                  symbol: sym,
-                  tvTicker: conf.ticker,
-                  bid,
-                  ask,
-                  spread,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
-                  low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
-                  timestamp: now,
-                });
-              }
-            });
-          }
+          let updatedFromScanner = false;
+          results.forEach((res) => {
+            if (res.status === 'fulfilled' && Array.isArray(res.value?.data)) {
+              res.value.data.forEach((row: any) => {
+                const sym = TICKER_TO_SYMBOL[row.s];
+                const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
+                if (conf && row.d?.[0] > 0) {
+                  const close = Number(row.d[0]);
+                  const change = Number(row.d[1] || 0);
+                  const high = Number(row.d[4] || close);
+                  const low = Number(row.d[5] || close);
+                  this.rawTvFields.set(sym, {
+                    ...(this.rawTvFields.get(sym) || {}),
+                    lp: close,
+                    chp: change,
+                    high_price: high,
+                    low_price: low,
+                  });
+                  if (this.updateSymbolFromRawTv(sym, this.rawTvFields.get(sym)!)) {
+                    updatedFromScanner = true;
+                  }
+                }
+              });
+            }
+          });
 
-          if (forexData.status === 'fulfilled' && forexData.value?.data) {
-            const forexMap: Record<string, string> = {
-              'FX:EURUSD': 'EURUSD',
-              'FX:GBPUSD': 'GBPUSD',
-              'FX:USDJPY': 'USDJPY',
-              'FX:USDCHF': 'USDCHF',
-              'FX:AUDUSD': 'AUDUSD',
-              'FX:USDCAD': 'USDCAD',
-              'FX:GBPJPY': 'GBPJPY',
-              'FX:NZDUSD': 'NZDUSD',
-              'FX:EURGBP': 'EURGBP',
-              'FX:EURJPY': 'EURJPY',
-              'FX:AUDJPY': 'AUDJPY',
-            };
-            forexData.value.data.forEach((row: any) => {
-              const sym = forexMap[row.s];
-              const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
-              if (conf && row.d?.[0] > 0) {
-                const close = row.d[0];
-                const change = row.d[1] || 0;
-                const { bid, ask, spread } = this.computeDynamicBidAsk(
-                  sym,
-                  close,
-                  conf.decimals,
-                  conf.pipMultiplier
-                );
-                this.lastQuotes.set(sym, {
-                  symbol: sym,
-                  tvTicker: conf.ticker,
-                  bid,
-                  ask,
-                  spread,
-                  change24h: Number(change.toFixed(2)),
-                  high24h: Number((row.d[4] || ask).toFixed(conf.decimals)),
-                  low24h: Number((row.d[5] || bid).toFixed(conf.decimals)),
-                  timestamp: now,
-                });
-              }
-            });
+          if (updatedFromScanner) {
+            this.notifyListeners();
           }
-          this.notifyListeners();
-        } catch (e) {
-          // Direct fallback failed
+        } catch {
+          // Direct scanner fallback handled by WebSocket
         }
       }
-
-      this.lastFetchTime = now;
-    } catch (err) {
-      console.warn('Real price service warning:', err);
+    } catch {
+      // Silent fallback
     } finally {
       this.isFetching = false;
     }

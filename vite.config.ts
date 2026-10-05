@@ -1149,6 +1149,19 @@ function safeWsPlugin() {
 }
 
 export default defineConfig(() => {
+  let bakedSupabaseUrl = process.env.VITE_SUPABASE_URL || '';
+  let bakedSupabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
+  try {
+    const sbCfgPath = path.resolve(__dirname, '.supabase-config.json');
+    if (fs.existsSync(sbCfgPath)) {
+      const parsed = JSON.parse(fs.readFileSync(sbCfgPath, 'utf-8') || '{}');
+      if (!bakedSupabaseUrl && parsed.url) bakedSupabaseUrl = parsed.url;
+      if (!bakedSupabaseAnonKey && parsed.anonKey) bakedSupabaseAnonKey = parsed.anonKey;
+    }
+  } catch {
+    // ignore
+  }
+
   return {
     plugins: [
       safeWsPlugin(),
@@ -1216,6 +1229,8 @@ export default defineConfig(() => {
       },
     },
     define: {
+      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(bakedSupabaseUrl),
+      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(bakedSupabaseAnonKey),
       'import.meta.env.VITE_USD_KES_RATE': JSON.stringify(
         process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || ''
       ),
