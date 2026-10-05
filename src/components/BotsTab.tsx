@@ -93,8 +93,10 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   onTriggerManualSignal,
   isDarkMode = true,
 }) => {
-  // Unified subtabs: 'bots', 'runs', 'trades'
-  const [activeSubTab, setActiveSubTab] = useState<'bots' | 'runs' | 'trades'>('bots');
+  // Unified subtabs: 'bots', 'runs', 'trades' — default to 'runs' (Active Bots) when bots are deployed
+  const [activeSubTab, setActiveSubTab] = useState<'bots' | 'runs' | 'trades'>(() =>
+    botRuns.length > 0 ? 'runs' : 'bots'
+  );
   const [selectedBotForConfig, setSelectedBotForConfig] = useState<BotStrategyConfig | null>(null);
 
   // Bot Config Form State

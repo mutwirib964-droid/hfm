@@ -15,6 +15,7 @@ import {
   markBotDeletedLocally,
   sanitizeAndFilterBotRuns,
   filterTradesForValidBotRuns,
+  loadStoredBotRuns,
 } from './botTradingService';
 
 export interface SupabaseConfig {
@@ -603,18 +604,26 @@ class SupabaseService {
       const actRows = actRes && actRes.ok ? await actRes.json() : [];
 
       const financesByEmail: Record<string, UserFinancialState> = {};
-      const hasAuthoritativeFinRow = new Set<string>();
-      const deletedAccountNumbers = getDeletedAccountNumbers();
+      const deletedByEmail: Record<string, Set<string>> = {};
       const uidByEmail: Record<string, string> = {};
       const nameByEmail: Record<string, string> = {};
 
+      const getDeletedSetForEmail = (email: string): Set<string> => {
+        const clean = email.trim().toLowerCase();
+        if (!deletedByEmail[clean]) {
+          deletedByEmail[clean] = getDeletedAccountNumbers(clean);
+        }
+        return deletedByEmail[clean];
+      };
+
       if (Array.isArray(actRows)) {
         actRows.forEach((act: any) => {
-          if (act && act.activity_type === 'ACCOUNT_DELETED') {
+          if (act && act.activity_type === 'ACCOUNT_DELETED' && !act.metadata?.silent) {
             const accNum = act.metadata?.accountNumber;
-            if (accNum) {
-              deletedAccountNumbers.add(String(accNum));
-              markAccountDeletedLocally(act.user_email, String(accNum));
+            const actEmail = String(act.user_email || '').trim().toLowerCase();
+            if (accNum && actEmail) {
+              getDeletedSetForEmail(actEmail).add(String(accNum));
+              markAccountDeletedLocally(actEmail, String(accNum));
             }
           }
         });
@@ -636,10 +645,10 @@ class SupabaseService {
             ? 'mutwirib964@gmail.com'
             : emailKey;
 
-          hasAuthoritativeFinRow.add(canonicalEmail);
+          const userDeletedSet = getDeletedSetForEmail(canonicalEmail);
           const existing = financesByEmail[canonicalEmail];
           const incomingAccounts: TradingAccount[] = (Array.isArray(r.accounts) ? r.accounts : []).filter(
-            (acc: TradingAccount) => !acc?.accountNumber || !deletedAccountNumbers.has(String(acc.accountNumber))
+            (acc: TradingAccount) => !acc?.accountNumber || !userDeletedSet.has(String(acc.accountNumber))
           );
           const incomingTxs: Transaction[] = sanitizeRealTransactions(
             Array.isArray(r.transactions) ? r.transactions : []
@@ -660,8 +669,18 @@ class SupabaseService {
               financesByEmail[emailKey] = state;
             }
           } else {
-            // finRows is ordered by last_updated.desc so `existing` is the newest authoritative record for accounts & walletBalance;
-            // only merge transactions from older duplicate rows so deleted accounts are never resurrected.
+            // Merge non-deleted accounts and transactions across rows so no account is ever lost
+            const mergedAccMap = new Map<string, TradingAccount>();
+            incomingAccounts.forEach((acc) => {
+              const k = acc.accountNumber || acc.id;
+              if (k) mergedAccMap.set(k, acc);
+            });
+            (existing.accounts || []).forEach((acc) => {
+              const k = acc.accountNumber || acc.id;
+              if (k) mergedAccMap.set(k, acc);
+            });
+            const mergedAccounts = Array.from(mergedAccMap.values());
+
             const mergedTxMap = new Map<string, Transaction>();
             (existing.transactions || []).forEach((tx) => {
               const key = tx.reference || tx.id;
@@ -675,12 +694,12 @@ class SupabaseService {
             });
 
             const mergedState: UserFinancialState = {
-              walletBalance: existing.walletBalance,
-              accounts: existing.accounts,
+              walletBalance: Math.max(existing.walletBalance || 0, incomingWallet),
+              accounts: mergedAccounts,
               selectedAccountId:
                 existing.selectedAccountId ||
                 r.selected_account_id ||
-                existing.accounts[0]?.id ||
+                mergedAccounts[0]?.id ||
                 null,
               transactions: Array.from(mergedTxMap.values()).sort(
                 (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
@@ -695,7 +714,7 @@ class SupabaseService {
         });
       }
 
-      // Also merge any DEPOSIT or ACCOUNT_CREATED records from user_activities so no deposit is missed
+      // Also merge any DEPOSIT or ACCOUNT_CREATED records from user_activities so no deposit or live account is ever missed
       if (Array.isArray(actRows)) {
         actRows.forEach((act: any) => {
           if (!act || !act.user_email) return;
@@ -717,6 +736,7 @@ class SupabaseService {
 
           const fin = financesByEmail[canonicalEmail];
           const meta = act.metadata || {};
+          const userDeletedSet = getDeletedSetForEmail(canonicalEmail);
 
           if (act.activity_type === 'DEPOSIT') {
             const amt = Number(meta.amountUsd ?? meta.amount ?? 0);
@@ -759,10 +779,10 @@ class SupabaseService {
           } else if (
             (act.activity_type === 'ACCOUNT_CREATED' || act.activity_type === 'OPEN_ACCOUNT') &&
             meta.accountNumber &&
-            !hasAuthoritativeFinRow.has(canonicalEmail)
+            !this.isMasterAdminEmail(canonicalEmail)
           ) {
             const accNum = String(meta.accountNumber);
-            if (!deletedAccountNumbers.has(accNum)) {
+            if (!userDeletedSet.has(accNum)) {
               const hasAcc = fin.accounts.some((a) => a.accountNumber === accNum);
               if (!hasAcc) {
                 const isDemo = String(meta.type || '').toLowerCase() === 'demo';
@@ -1436,8 +1456,18 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
+    const activeRunIds = new Set<string>(
+      (botState.botRuns || [])
+        .flatMap((r: any) => [r?.id, r?.runId])
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    );
     const deletedBotIds = Array.from(
       new Set([...getDeletedBotIds(), ...(botState.deletedBotIds || [])])
+    ).filter(
+      (id) =>
+        typeof id === 'string' &&
+        id.trim().startsWith('run-') &&
+        !activeRunIds.has(id.trim())
     );
     const cleanedRuns = sanitizeAndFilterBotRuns(botState.botRuns || [], deletedBotIds, false);
     const cleanedTrades = filterTradesForValidBotRuns(botState.botTrades || [], cleanedRuns);
@@ -1473,23 +1503,22 @@ class SupabaseService {
     }>(user.email, 'STATE_BOTS');
     if (!raw) return null;
 
-    const remoteDeleted = Array.isArray(raw.deletedBotIds) ? raw.deletedBotIds : [];
+    // Only keep run-instance IDs ('run-...') and never tombstone any currently stored local bot run
+    const localRuns = loadStoredBotRuns();
+    const localActiveIds = new Set<string>(
+      localRuns.flatMap((r) => [r.id, r.runId]).filter(Boolean) as string[]
+    );
+    const remoteDeleted = (Array.isArray(raw.deletedBotIds) ? raw.deletedBotIds : []).filter(
+      (id): id is string =>
+        typeof id === 'string' &&
+        id.trim().startsWith('run-') &&
+        !localActiveIds.has(id.trim())
+    );
     const mergedDeleted = markBotDeletedLocally(remoteDeleted);
     const rawRuns = Array.isArray(raw.botRuns) ? raw.botRuns : [];
     const rawTrades = Array.isArray(raw.botTrades) ? raw.botTrades : [];
-    // Strip out any non-user-started, deleted, or corrupted runs
     const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false);
     const cleanedTrades = filterTradesForValidBotRuns(rawTrades, cleanedRuns);
-
-    // If legacy/corrupted/deleted runs or trades were present in Supabase, immediately persist the cleaned state back
-    if (cleanedRuns.length !== rawRuns.length || cleanedTrades.length !== rawTrades.length) {
-      this.syncBotState(user, {
-        importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
-        botRuns: cleanedRuns,
-        botTrades: cleanedTrades,
-        deletedBotIds: mergedDeleted,
-      }).catch(() => {});
-    }
 
     return {
       importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
@@ -1678,14 +1707,74 @@ class SupabaseService {
     const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
 
     try {
+      const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
+      const accountMap = new Map<string, TradingAccount>();
+
+      // Fetch current cloud accounts first so no non-deleted Live account is ever wiped by a stale device sync
+      const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
+      if (cleanEmail) {
+        orClauses.push(`user_email.eq.${encodeURIComponent(cleanEmail)}`);
+      }
+      if (user.id && this.isValidUuid(user.id)) {
+        orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
+      }
+
+      try {
+        const existingRes = await fetch(
+          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts&order=last_updated.desc`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(4000),
+          }
+        );
+        if (existingRes.ok) {
+          const existingRows = await existingRes.json();
+          if (Array.isArray(existingRows)) {
+            for (const row of existingRows) {
+              if (Array.isArray(row?.accounts)) {
+                for (const acc of row.accounts) {
+                  if (!acc) continue;
+                  const accNum = String(acc.accountNumber || '');
+                  if (accNum && deletedAccountNums.has(accNum)) continue;
+                  const k = accNum || acc.id;
+                  if (k && !accountMap.has(k)) {
+                    accountMap.set(k, acc);
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // Proceed with incoming accounts if read times out
+      }
+
+      // Apply incoming accounts (overriding matching accounts with latest balance/equity)
+      if (Array.isArray(state.accounts)) {
+        for (const acc of state.accounts) {
+          if (!acc) continue;
+          const accNum = String(acc.accountNumber || '');
+          if (accNum && deletedAccountNums.has(accNum)) continue;
+          const k = accNum || acc.id;
+          if (k) {
+            accountMap.set(k, acc);
+          }
+        }
+      }
+
+      const mergedAccounts = Array.from(accountMap.values());
       const nowIso = new Date().toISOString();
       const payload = {
         user_key: userKey,
         user_email: cleanEmail,
         user_name: isAdmin ? 'mutwiri' : user.name || '',
         wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
-        accounts: Array.isArray(state.accounts) ? state.accounts : [],
-        selected_account_id: state.selectedAccountId || null,
+        accounts: mergedAccounts,
+        selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
         transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
         last_updated: nowIso,
       };
@@ -1699,13 +1788,6 @@ class SupabaseService {
 
       // Always patch any rows matching user_email or user_key or user.id so all rows stay 100% in sync
       if (cleanEmail) {
-        const orClauses = [
-          `user_key.eq.${encodeURIComponent(userKey)}`,
-          `user_email.eq.${encodeURIComponent(cleanEmail)}`,
-        ];
-        if (user.id && this.isValidUuid(user.id)) {
-          orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
-        }
         await fetch(
           `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
           {
@@ -1719,8 +1801,8 @@ class SupabaseService {
               user_email: cleanEmail,
               user_name: isAdmin ? 'mutwiri' : user.name || '',
               wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
-              accounts: Array.isArray(state.accounts) ? state.accounts : [],
-              selected_account_id: state.selectedAccountId || null,
+              accounts: mergedAccounts,
+              selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
               transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
               last_updated: nowIso,
             }),
@@ -1758,43 +1840,110 @@ class SupabaseService {
         ? `or=(user_key.eq.mutwirib964@gmail.com,user_email.eq.mutwirib964@gmail.com)`
         : `or=(${orClauses.join(',')})`;
 
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(5000),
+      const [res, actRes] = await Promise.all([
+        fetch(
+          `${this.config.url}/rest/v1/vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(5000),
+          }
+        ),
+        cleanEmail && !isAdmin
+          ? fetch(
+              `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+                cleanEmail
+              )}&activity_type=in.(ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&select=activity_type,metadata,created_at&order=created_at.desc&limit=100`,
+              {
+                method: 'GET',
+                headers: {
+                  apikey: this.config.anonKey,
+                  Authorization: `Bearer ${this.config.anonKey}`,
+                },
+                signal: AbortSignal.timeout(4000),
+              }
+            ).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
+      const actRows = actRes && actRes.ok ? await actRes.json() : [];
+      if (Array.isArray(actRows)) {
+        for (const act of actRows) {
+          if (act && act.activity_type === 'ACCOUNT_DELETED' && !act.metadata?.silent) {
+            const accNum = act.metadata?.accountNumber;
+            if (accNum) {
+              deletedAccountNums.add(String(accNum));
+              markAccountDeletedLocally(cleanEmail, String(accNum));
+            }
+          }
         }
-      );
+      }
 
       if (res.ok) {
         const rows = await res.json();
         if (Array.isArray(rows) && rows.length > 0) {
           const row = rows[0];
-          const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
-          const filteredAccounts = (Array.isArray(row.accounts) ? row.accounts : []).filter(
-            (acc: TradingAccount) =>
-              !acc?.accountNumber || !deletedAccountNums.has(String(acc.accountNumber))
-          );
+          const accountMap = new Map<string, TradingAccount>();
+
+          // Collect all non-deleted accounts across all rows (newest row takes precedence)
+          for (const r of rows) {
+            if (Array.isArray(r?.accounts)) {
+              for (const acc of r.accounts) {
+                if (!acc) continue;
+                const accNum = String(acc.accountNumber || '');
+                if (accNum && deletedAccountNums.has(accNum)) continue;
+                const k = accNum || acc.id;
+                if (k && !accountMap.has(k)) {
+                  accountMap.set(k, acc);
+                }
+              }
+            }
+          }
+
+          // Also recover any created account from user_activities that was never deleted by the user
+          if (Array.isArray(actRows) && !isAdmin) {
+            for (const act of actRows) {
+              if (
+                (act?.activity_type === 'ACCOUNT_CREATED' || act?.activity_type === 'OPEN_ACCOUNT') &&
+                act.metadata?.accountNumber
+              ) {
+                const accNum = String(act.metadata.accountNumber);
+                if (!deletedAccountNums.has(accNum) && !accountMap.has(accNum)) {
+                  const isDemo = String(act.metadata.type || '').toLowerCase() === 'demo';
+                  const bal = isDemo ? 100000 : Number(act.metadata.balance || 0);
+                  accountMap.set(accNum, {
+                    id: `acc-${accNum}`,
+                    accountNumber: accNum,
+                    server: isDemo ? 'VTMarkets-DemoServer' : 'VTMarkets-LiveServer1',
+                    type: isDemo ? 'Demo' : 'Live',
+                    tier: act.metadata.tier || 'Standard',
+                    balance: bal,
+                    equity: bal,
+                    margin: 0,
+                    freeMargin: bal,
+                    marginLevel: 0,
+                    currency: act.metadata.currency || 'USD',
+                    leverage: act.metadata.leverage || '1:500',
+                    createdAt: act.created_at ? new Date(act.created_at).getTime() : Date.now(),
+                  });
+                }
+              }
+            }
+          }
+
+          const filteredAccounts = Array.from(accountMap.values());
 
           const rawState: UserFinancialState = {
             walletBalance: Number(row.wallet_balance || 0),
             accounts: filteredAccounts,
-            selectedAccountId: row.selected_account_id || null,
+            selectedAccountId: row.selected_account_id || filteredAccounts[0]?.id || null,
             transactions: sanitizeRealTransactions(Array.isArray(row.transactions) ? row.transactions : []),
             lastUpdated: row.last_updated ? new Date(row.last_updated).getTime() : Date.now(),
           };
-          const swept = sweepIdleLiveAccountsSilently(user, rawState);
-          if (swept.changed) {
-            this.syncUserFinancials(user, swept.state).catch(() => {});
-            swept.sweptAccountNumbers.forEach((accNum) => {
-              this.deleteTradingAccountFromDatabase(user, accNum, true).catch(() => {});
-            });
-            return swept.state;
-          }
           return rawState;
         }
       }

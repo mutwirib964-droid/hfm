@@ -44,6 +44,7 @@ import {
   initializeUserFinancials,
   loadUserFinancials,
   saveUserFinancials,
+  mergeUserFinancialStates,
   MASTER_ADMIN_EMAIL,
   MASTER_ADMIN_UID,
   isMasterAdminEmail,
@@ -379,11 +380,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           const localFinances = loadUserFinancials(verifiedProfile);
           const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
           if (localFinances && remoteFinances) {
-            if ((localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0)) {
-              saveUserFinancials(verifiedProfile, localFinances);
-            } else {
-              saveUserFinancials(verifiedProfile, remoteFinances);
-            }
+            const localIsNewer = (localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0);
+            const merged = mergeUserFinancialStates(
+              localIsNewer ? localFinances : remoteFinances,
+              localIsNewer ? remoteFinances : localFinances,
+              verifiedProfile.email
+            );
+            saveUserFinancials(verifiedProfile, merged);
           } else if (remoteFinances) {
             saveUserFinancials(verifiedProfile, remoteFinances);
           } else if (localFinances) {

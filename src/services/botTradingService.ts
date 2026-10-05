@@ -577,14 +577,21 @@ export const DEFAULT_INITIAL_BOT_RUNS: BotRunInstance[] = [];
 // Default Initial Bot Trades — always empty so no bot trades exist before the user explicitly runs a bot
 export const DEFAULT_INITIAL_BOT_TRADES: BotTrade[] = [];
 
-// Local storage managers & deleted bot tombstones
+// Local storage managers & deleted bot tombstones (strictly per-run instance ID, never blocking catalog botId/botName)
 export const getDeletedBotIds = (): string[] => {
   try {
     const raw = localStorage.getItem('vtm_deleted_bot_ids');
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed.filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
+        const cleaned = parsed.filter(
+          (id): id is string =>
+            typeof id === 'string' && id.trim().length > 0 && id.trim().startsWith('run-')
+        );
+        if (cleaned.length !== parsed.length) {
+          localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(cleaned));
+        }
+        return cleaned;
       }
     }
   } catch {
@@ -596,8 +603,12 @@ export const getDeletedBotIds = (): string[] => {
 export const markBotDeletedLocally = (ids: Array<string | undefined | null>): string[] => {
   const current = new Set<string>(getDeletedBotIds());
   for (const id of ids) {
-    if (id && typeof id === 'string' && id.trim().length > 0) {
-      current.add(id.trim());
+    if (id && typeof id === 'string') {
+      const trimmed = id.trim();
+      // Only tombstone specific run instance IDs ('run-...'), never catalog botId or botName
+      if (trimmed.startsWith('run-')) {
+        current.add(trimmed);
+      }
     }
   }
   const updated = Array.from(current);
@@ -628,13 +639,15 @@ export const sanitizeAndFilterBotRuns = (
   _pauseOnHydration = false
 ): BotRunInstance[] => {
   if (!Array.isArray(runs)) return [];
-  const deletedSet = new Set<string>([...getDeletedBotIds(), ...(extraDeletedIds || [])]);
+  const validExtraDeleted = (extraDeletedIds || []).filter(
+    (id) => typeof id === 'string' && id.trim().startsWith('run-')
+  );
+  const deletedSet = new Set<string>([...getDeletedBotIds(), ...validExtraDeleted]);
 
   return runs
     .filter((r) => {
       if (!r || typeof r !== 'object') return false;
-      // STRICT GUARD: Never allow any legacy, seeded, or auto-deployed bot run that was not explicitly started by the user
-      if (r.explicitUserRun !== true || r.userStartedVersion !== 2) {
+      if (r.explicitUserRun === false) {
         return false;
       }
 
@@ -642,11 +655,12 @@ export const sanitizeAndFilterBotRuns = (
       const name = typeof r.botName === 'string' ? r.botName.trim() : '';
       if (!sym || !name) return false;
 
-      const candidates = [r.id, r.runId, r.botId, r.botName]
-        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      // Only check specific run instance IDs (id / runId), never catalog botId or botName
+      const runInstanceIds = [r.id, r.runId]
+        .filter((v): v is string => typeof v === 'string' && v.trim().startsWith('run-'))
         .map((v) => v.trim());
 
-      if (candidates.some((c) => deletedSet.has(c))) {
+      if (runInstanceIds.some((c) => deletedSet.has(c))) {
         return false;
       }
       return true;
@@ -697,17 +711,19 @@ export const filterTradesForValidBotRuns = (
 ): BotTrade[] => {
   const sanitized = sanitizeBotTrades(trades);
   const validRunIds = new Set<string>();
+  const validBotIds = new Set<string>();
   for (const r of validRuns) {
     if (r.id) validRunIds.add(r.id);
     if (r.runId) validRunIds.add(r.runId);
+    if (r.botId) validBotIds.add(r.botId);
   }
-  // Keep closed historical trades that belong to valid runs, and ONLY keep OPEN trades if their parent run exists in validRuns
+  // Keep all closed historical trades and keep OPEN trades whose parent run or bot exists in validRuns
   return sanitized.filter((t) => {
+    if (t.status === 'CLOSED') return true;
     const rId = t.runId || t.runInstanceId || '';
-    if (!rId || !validRunIds.has(rId)) {
-      return false;
-    }
-    return true;
+    if (rId && validRunIds.has(rId)) return true;
+    if (t.botId && validBotIds.has(t.botId)) return true;
+    return false;
   });
 };
 

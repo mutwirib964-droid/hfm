@@ -49,11 +49,6 @@ export function markAccountDeletedLocally(userEmail: string | undefined | null, 
       list.push(accountNumber);
     }
     map[cleanEmail] = list;
-    const globalList = Array.isArray(map['*']) ? map['*'] : [];
-    if (!globalList.includes(accountNumber)) {
-      globalList.push(accountNumber);
-    }
-    map['*'] = globalList;
     localStorage.setItem(DELETED_ACCOUNTS_KEY, JSON.stringify(map));
   } catch {
     // ignore
@@ -66,9 +61,6 @@ export function getDeletedAccountNumbers(userEmail?: string | null): Set<string>
     const raw = localStorage.getItem(DELETED_ACCOUNTS_KEY);
     if (!raw) return set;
     const map: Record<string, string[]> = JSON.parse(raw);
-    if (Array.isArray(map['*'])) {
-      map['*'].forEach((n) => set.add(String(n)));
-    }
     if (userEmail) {
       const cleanEmail = userEmail.trim().toLowerCase();
       if (Array.isArray(map[cleanEmail])) {
@@ -98,128 +90,81 @@ export function extractAccountCreatedAt(acc: TradingAccount, fallbackTime?: numb
 }
 
 /**
- * Silent Platform Cleanup for Idle Live Accounts (Never shown to users):
- * 1. If a Live account stays idle with $0.00 (no deposit) for 2 weeks -> deleted automatically.
- * 2. If a user opens a Live account, deposits funds (balance > 0), and does not trade on it for 2 weeks ->
- *    deleted automatically by platform and its full balance is transferred back to the user's Central Wallet.
+ * Merges two UserFinancialState objects (e.g. remote cloud state and local device state)
+ * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user.
+ */
+export function mergeUserFinancialStates(
+  primary: UserFinancialState,
+  secondary: UserFinancialState | null | undefined,
+  userEmail?: string | null
+): UserFinancialState {
+  if (!secondary) return primary;
+  const deletedSet = getDeletedAccountNumbers(userEmail);
+
+  const accountMap = new Map<string, TradingAccount>();
+  // Put secondary accounts first, then let primary override matching accounts while preserving any extra non-deleted accounts
+  for (const acc of secondary.accounts || []) {
+    if (!acc) continue;
+    const accNum = String(acc.accountNumber || '');
+    if (accNum && deletedSet.has(accNum)) continue;
+    const key = accNum || acc.id;
+    if (key) accountMap.set(key, acc);
+  }
+  for (const acc of primary.accounts || []) {
+    if (!acc) continue;
+    const accNum = String(acc.accountNumber || '');
+    if (accNum && deletedSet.has(accNum)) continue;
+    const key = accNum || acc.id;
+    if (key) accountMap.set(key, acc);
+  }
+
+  const mergedAccounts = Array.from(accountMap.values());
+
+  const txMap = new Map<string, Transaction>();
+  for (const tx of [...(primary.transactions || []), ...(secondary.transactions || [])]) {
+    if (!tx) continue;
+    const key = String(tx.id || tx.reference || `${tx.type}-${tx.timestamp}`);
+    if (!txMap.has(key)) {
+      txMap.set(key, tx);
+    }
+  }
+
+  const mergedTransactions = sanitizeRealTransactions(Array.from(txMap.values()));
+  const selectedId =
+    primary.selectedAccountId && mergedAccounts.some((a) => a.id === primary.selectedAccountId)
+      ? primary.selectedAccountId
+      : secondary.selectedAccountId && mergedAccounts.some((a) => a.id === secondary.selectedAccountId)
+      ? secondary.selectedAccountId
+      : mergedAccounts[0]?.id || null;
+
+  return {
+    walletBalance: Number((primary.walletBalance ?? secondary.walletBalance ?? 0).toFixed(2)),
+    accounts: mergedAccounts,
+    selectedAccountId: selectedId,
+    transactions: mergedTransactions,
+    lastUpdated: Math.max(primary.lastUpdated || 0, secondary.lastUpdated || 0),
+  };
+}
+
+/**
+ * Live accounts are preserved permanently until the user explicitly deletes them.
+ * When a user deletes a Live account, its balance is transferred back to the Central Wallet.
  */
 export function sweepIdleLiveAccountsSilently(
-  user: UserAuthProfile | null | undefined,
+  _user: UserAuthProfile | null | undefined,
   state: UserFinancialState,
-  hasOpenPositionsOnAccount?: (acc: TradingAccount) => boolean
+  _hasOpenPositionsOnAccount?: (acc: TradingAccount) => boolean
 ): {
   state: UserFinancialState;
   sweptAccountNumbers: string[];
   transferredToWalletUsd: number;
   changed: boolean;
 } {
-  if (!state || !Array.isArray(state.accounts) || state.accounts.length === 0) {
-    return { state, sweptAccountNumbers: [], transferredToWalletUsd: 0, changed: false };
-  }
-
-  const now = Date.now();
-  const deletedSet = getDeletedAccountNumbers(user?.email);
-  let walletDelta = 0;
-  let changed = false;
-  const sweptAccountNumbers: string[] = [];
-  const nextTransactions = Array.isArray(state.transactions) ? [...state.transactions] : [];
-
-  const survivingAccounts: TradingAccount[] = [];
-
-  for (const acc of state.accounts) {
-    if (!acc) continue;
-
-    // If already tombstoned as deleted, strip it out
-    if (acc.accountNumber && deletedSet.has(String(acc.accountNumber))) {
-      changed = true;
-      continue;
-    }
-
-    if (acc.type !== 'Live') {
-      survivingAccounts.push(acc);
-      continue;
-    }
-
-    const createdAt = extractAccountCreatedAt(acc, state.lastUpdated || user?.createdAt);
-    const hasOpenPos =
-      (acc.margin || 0) > 0 || (hasOpenPositionsOnAccount ? hasOpenPositionsOnAccount(acc) : false);
-
-    if (hasOpenPos) {
-      survivingAccounts.push({
-        ...acc,
-        createdAt,
-        lastTradeAt: acc.lastTradeAt || now,
-        lastActivityAt: now,
-      });
-      continue;
-    }
-
-    const balance = Number(acc.balance || 0);
-    const lastTradeAt = acc.lastTradeAt || 0;
-    const lastDepositAt = acc.lastDepositAt || 0;
-
-    // Case 1: Live account with NO deposit (balance <= 0) idle for >= 2 weeks
-    if (balance <= 0) {
-      const referenceTime = Math.max(createdAt, lastTradeAt, lastDepositAt, acc.lastActivityAt || 0);
-      if (now - referenceTime >= TWO_WEEKS_IDLE_MS) {
-        changed = true;
-        sweptAccountNumbers.push(acc.accountNumber);
-        markAccountDeletedLocally(user?.email, acc.accountNumber);
-        continue;
-      }
-    }
-
-    // Case 2: Live account with deposit (balance > 0) where user did NOT trade for >= 2 weeks
-    if (balance > 0) {
-      const hasTradedSinceFunding = lastTradeAt > 0 && lastTradeAt >= (lastDepositAt || createdAt);
-      const idleReferenceTime = hasTradedSinceFunding
-        ? lastTradeAt
-        : Math.max(createdAt, lastDepositAt);
-
-      if (now - idleReferenceTime >= TWO_WEEKS_IDLE_MS) {
-        changed = true;
-        walletDelta = Number((walletDelta + balance).toFixed(2));
-        sweptAccountNumbers.push(acc.accountNumber);
-        markAccountDeletedLocally(user?.email, acc.accountNumber);
-        continue;
-      }
-    }
-
-    if (!acc.createdAt) {
-      changed = true;
-      survivingAccounts.push({
-        ...acc,
-        createdAt,
-      });
-    } else {
-      survivingAccounts.push(acc);
-    }
-  }
-
-  if (!changed) {
-    return { state, sweptAccountNumbers: [], transferredToWalletUsd: 0, changed: false };
-  }
-
-  const nextWalletBalance = Number(((state.walletBalance || 0) + walletDelta).toFixed(2));
-  const nextSelectedId =
-    state.selectedAccountId && survivingAccounts.some((a) => a.id === state.selectedAccountId)
-      ? state.selectedAccountId
-      : survivingAccounts[0]?.id || null;
-
-  const updatedState: UserFinancialState = {
-    ...state,
-    walletBalance: nextWalletBalance,
-    accounts: survivingAccounts,
-    selectedAccountId: nextSelectedId,
-    transactions: nextTransactions,
-    lastUpdated: now,
-  };
-
   return {
-    state: updatedState,
-    sweptAccountNumbers,
-    transferredToWalletUsd: walletDelta,
-    changed: true,
+    state,
+    sweptAccountNumbers: [],
+    transferredToWalletUsd: 0,
+    changed: false,
   };
 }
 
@@ -985,10 +930,11 @@ export function initializeUserFinancials(
     accounts: [],
     selectedAccountId: null,
     transactions: [],
-    lastUpdated: Date.now(),
+    lastUpdated: isNewRegistration ? Date.now() : 0,
   };
 
-  saveUserFinancials(user, newState);
+  // Only push empty initial state to Supabase for brand-new registrations, never on returning login before cloud hydration
+  saveUserFinancials(user, newState, isNewRegistration);
   return newState;
 }
 
@@ -1003,16 +949,40 @@ export function saveUserFinancials(
     accounts: TradingAccount[];
     selectedAccountId?: string | null;
     transactions?: Transaction[];
-  }
+  },
+  syncToCloud = true
 ): void {
   const key = getUserStorageKey(user);
   try {
+    const existingLocal = loadUserFinancials(user);
+    const deletedSet = getDeletedAccountNumbers(user?.email);
+
+    // Ensure no existing non-deleted local account is accidentally dropped during a state save
+    const accountMap = new Map<string, TradingAccount>();
+    if (existingLocal && Array.isArray(existingLocal.accounts)) {
+      for (const acc of existingLocal.accounts) {
+        if (!acc) continue;
+        const accNum = String(acc.accountNumber || '');
+        if (accNum && deletedSet.has(accNum)) continue;
+        const k = accNum || acc.id;
+        if (k) accountMap.set(k, acc);
+      }
+    }
+    for (const acc of state.accounts || []) {
+      if (!acc) continue;
+      const accNum = String(acc.accountNumber || '');
+      if (accNum && deletedSet.has(accNum)) continue;
+      const k = accNum || acc.id;
+      if (k) accountMap.set(k, acc);
+    }
+
+    const safeAccounts = Array.from(accountMap.values());
     const payload: UserFinancialState = {
       walletBalance: Number(state.walletBalance.toFixed(2)),
-      accounts: state.accounts,
-      selectedAccountId: state.selectedAccountId ?? null,
+      accounts: safeAccounts,
+      selectedAccountId: state.selectedAccountId ?? safeAccounts[0]?.id ?? null,
       transactions: sanitizeRealTransactions(state.transactions),
-      lastUpdated: Date.now(),
+      lastUpdated: syncToCloud ? Date.now() : 0,
     };
 
     localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
@@ -1021,10 +991,12 @@ export function saveUserFinancials(
       JSON.stringify({ ...payload, _key: key })
     );
 
-    // Sync to Supabase in background
-    supabaseService.syncUserFinancials(user, payload).catch((err) => {
-      console.warn('Background Supabase sync notice:', err);
-    });
+    if (syncToCloud) {
+      // Sync to Supabase in background
+      supabaseService.syncUserFinancials(user, payload).catch((err) => {
+        console.warn('Background Supabase sync notice:', err);
+      });
+    }
   } catch (e) {
     console.error(`Failed to save financials for user ${key}`, e);
   }
