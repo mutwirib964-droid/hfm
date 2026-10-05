@@ -1362,56 +1362,41 @@ export default function App() {
 
       setInstruments((prevInsts) =>
         prevInsts.map((item) => {
-          const ms = checkInstrumentMarketHours(item.symbol, item.category);
           const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
-          if (!ms.isOpen) {
-            if (tvAuthQuote && (item.bid !== tvAuthQuote.bid || item.ask !== tvAuthQuote.ask)) {
-              return {
-                ...item,
-                bid: tvAuthQuote.bid,
-                ask: tvAuthQuote.ask,
-                spread: tvAuthQuote.spread > 0 ? tvAuthQuote.spread : item.spread,
-              };
-            }
-            return item;
-          }
-
-          const curSpread = item.spread > 0 && item.spread <= 1.2 ? item.spread : 0.35;
-          const step = (Math.random() - 0.49) * 0.12;
-          let nextSpread = curSpread + step;
-          if (nextSpread > 0.96 && Math.random() < 0.65) nextSpread -= 0.14;
-          if (nextSpread < 0.16) nextSpread = 0.18 + Math.random() * 0.12;
-          if (nextSpread > 1.18) nextSpread = 1.16 - Math.random() * 0.14;
-          const dynamicSpread = Number(Math.min(1.2, Math.max(0.16, nextSpread)).toFixed(2));
-
-          // Always anchor Bid to the authoritative TradingView chart price so buttons never drift ahead of or behind the chart
           const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
-          let gap = dynamicSpread;
+          const lockedSpread = Number(
+            (tvAuthQuote?.spread && tvAuthQuote.spread > 0
+              ? tvAuthQuote.spread
+              : item.spread > 0
+              ? item.spread
+              : 0.35
+            ).toFixed(2)
+          );
+
+          let gap = lockedSpread;
           if (item.decimals === 5) {
-            gap = Math.max(0.00001, Number((dynamicSpread / 10000).toFixed(5)));
+            gap = Math.max(0.00001, Number((lockedSpread / 10000).toFixed(5)));
           } else if (item.decimals === 4) {
-            gap = Math.max(0.0001, Number((dynamicSpread / 10000).toFixed(4)));
+            gap = Math.max(0.0001, Number((lockedSpread / 1000).toFixed(4)));
           } else if (item.decimals === 3) {
             gap =
               item.symbol === 'XAUUSD'
-                ? Number(dynamicSpread.toFixed(3))
-                : Math.max(0.001, Number((dynamicSpread * 0.01).toFixed(3)));
+                ? Number(lockedSpread.toFixed(3))
+                : Math.max(0.001, Number((lockedSpread * 0.01).toFixed(3)));
           } else {
-            if (lockedBid < 250) {
-              gap = Math.max(0.01, Number((dynamicSpread * 0.04).toFixed(2)));
-            } else if (lockedBid < 1000) {
-              gap = Math.max(0.01, Number((dynamicSpread * 0.1).toFixed(2)));
-            } else {
-              gap = Math.max(0.01, Number(dynamicSpread.toFixed(2)));
-            }
+            gap = Math.max(0.01, Number(lockedSpread.toFixed(2)));
           }
+
           const nextAsk = Number((lockedBid + gap).toFixed(item.decimals));
-          return {
-            ...item,
-            bid: lockedBid,
-            ask: nextAsk,
-            spread: dynamicSpread,
-          };
+          if (item.bid !== lockedBid || item.ask !== nextAsk || item.spread !== lockedSpread) {
+            return {
+              ...item,
+              bid: lockedBid,
+              ask: nextAsk,
+              spread: lockedSpread,
+            };
+          }
+          return item;
         })
       );
 

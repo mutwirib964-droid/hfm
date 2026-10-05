@@ -111,10 +111,8 @@ export class TradingViewPriceService {
   private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
 
   constructor() {
-    this.initDirectTradingViewWebSocket();
     this.initServerStream();
     this.initLiveBinanceWebSocket();
-    this.initSpreadBreather();
   }
 
   /**
@@ -128,46 +126,20 @@ export class TradingViewPriceService {
     decimals: number,
     _pipMultiplier: number
   ): { bid: number; ask: number; spread: number } {
-    const mStatus = checkInstrumentMarketHours(symbol);
-    let spread: number;
-
-    if (!mStatus.isOpen) {
-      const staticSpread = Number((0.28 + ((symbol.charCodeAt(0) % 4) * 0.08)).toFixed(2));
-      this.lastSpreads.set(symbol, staticSpread);
-      spread = staticSpread;
-    } else {
-      const prevSpread = this.lastSpreads.get(symbol) ?? (0.28 + ((symbol.charCodeAt(0) % 4) * 0.08));
-      const drift = (Math.random() - 0.48) * 0.16;
-      let nextSpread = prevSpread + drift;
-      if (nextSpread > 0.96 && Math.random() < 0.7) {
-        nextSpread -= 0.16;
-      }
-      if (nextSpread < 0.16) {
-        nextSpread = 0.16 + Math.random() * 0.14;
-      }
-      if (nextSpread > 1.18) {
-        nextSpread = 1.18 - Math.random() * 0.16;
-      }
-      spread = Number(Math.min(1.2, Math.max(0.16, nextSpread)).toFixed(2));
-      this.lastSpreads.set(symbol, spread);
-    }
+    const fixedSpread = this.lastSpreads.get(symbol) ?? Number((0.28 + ((symbol.charCodeAt(0) % 4) * 0.06)).toFixed(2));
+    this.lastSpreads.set(symbol, fixedSpread);
+    const spread = fixedSpread;
 
     const bid = Number(rawPrice.toFixed(decimals));
     let priceGap = spread;
     if (decimals === 5) {
       priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
     } else if (decimals === 4) {
-      priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
+      priceGap = Math.max(0.0001, Number((spread / 1000).toFixed(4)));
     } else if (decimals === 3) {
       priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
     } else {
-      if (bid < 250) {
-        priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
-      } else if (bid < 1000) {
-        priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
-      } else {
-        priceGap = Math.max(0.01, Number(spread.toFixed(2)));
-      }
+      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
     }
 
     const ask = Number((bid + priceGap).toFixed(decimals));
@@ -381,6 +353,32 @@ export class TradingViewPriceService {
         typeof data.spread === 'number' && data.spread >= 0.15 && data.spread <= 1.2
           ? Number(data.spread.toFixed(2))
           : undefined;
+
+      // If server already computed aligned bid, ask, and spread from the TradingView WebSocket, use them 1:1 without re-randomizing spread on every 250ms poll
+      if (
+        serverSpread !== undefined &&
+        typeof data.bid === 'number' &&
+        typeof data.ask === 'number' &&
+        data.bid > 0 &&
+        data.ask >= data.bid
+      ) {
+        const exactBid = Number(data.bid.toFixed(conf.decimals));
+        const exactAsk = Number(data.ask.toFixed(conf.decimals));
+        this.lastSpreads.set(symbol, serverSpread);
+        this.lastQuotes.set(symbol, {
+          symbol,
+          tvTicker: conf.ticker,
+          bid: exactBid,
+          ask: exactAsk,
+          spread: serverSpread,
+          change24h: data.change24h !== undefined ? Number(data.change24h) : 0,
+          high24h: data.high24h || Number((exactAsk * 1.005).toFixed(conf.decimals)),
+          low24h: data.low24h || Number((exactBid * 0.995).toFixed(conf.decimals)),
+          timestamp: now,
+        });
+        updatedAny = true;
+        return;
+      }
 
       const { bid, ask, spread } = this.computeDynamicBidAsk(
         symbol,

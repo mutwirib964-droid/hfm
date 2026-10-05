@@ -117,40 +117,23 @@ function computeAlignedBidAsk(
   chartPrice: number,
   decimals: number,
   baseSpread: number,
-  isOpen: boolean,
-  prevSpread?: number
+  _isOpen: boolean,
+  _prevSpread?: number
 ): { bid: number; ask: number; spread: number } {
-  let spread = baseSpread;
-  if (isOpen) {
-    const startSpr = prevSpread && prevSpread >= 0.15 && prevSpread <= 1.2 ? prevSpread : baseSpread;
-    let nextSpr = startSpr + (Math.random() - 0.49) * 0.14;
-    if (nextSpr > 0.96 && Math.random() < 0.65) nextSpr -= 0.14;
-    if (nextSpr < 0.16) nextSpr = 0.18 + Math.random() * 0.12;
-    if (nextSpr > 1.18) nextSpr = 1.16 - Math.random() * 0.14;
-    spread = Number(Math.min(1.2, Math.max(0.16, nextSpr)).toFixed(2));
-  } else {
-    spread = Number(Math.min(1.2, Math.max(0.16, baseSpread)).toFixed(2));
-  }
+  const spread = Number(Math.min(1.2, Math.max(0.16, baseSpread)).toFixed(2));
 
-  // Anchor bid 1:1 to TradingView's exact chart price (lp) so buttons and chart move hand-in-hand
+  // Anchor bid 1:1 to TradingView's exact chart price (lp) and ask = bid + exact spread so SELL and BUY always move hand-in-hand
   const bid = Number(chartPrice.toFixed(decimals));
   let priceGap = spread;
 
   if (decimals === 5) {
     priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
   } else if (decimals === 4) {
-    priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
+    priceGap = Math.max(0.0001, Number((spread / 1000).toFixed(4)));
   } else if (decimals === 3) {
     priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
   } else {
-    // 2 decimals
-    if (bid < 250) {
-      priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
-    } else if (bid < 1000) {
-      priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
-    } else {
-      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
-    }
+    priceGap = Math.max(0.01, Number(spread.toFixed(2)));
   }
 
   const ask = Number((bid + priceGap).toFixed(decimals));
@@ -319,23 +302,6 @@ function marketPricesPlugin() {
     configureServer(server: any) {
       // Start persistent TradingView WebSocket only when dev server runs
       connectTradingViewWs();
-
-      // Gentle spread breather for open markets so spread moves naturally while bid stays 100% locked to TradingView lp
-      const breatherInterval = setInterval(() => {
-        let anyUpdated = false;
-        Object.entries(TV_LIVE_SYMBOLS).forEach(([sym, cfg]) => {
-          const raw = rawTvFields[sym];
-          if (!raw) return;
-          const isOpen = isServerInstrumentMarketOpen(sym, cfg.category);
-          if (!isOpen) return;
-          updateSymbolFromTv(sym, raw);
-          anyUpdated = true;
-        });
-        if (anyUpdated) {
-          scheduleBroadcast();
-        }
-      }, 900);
-      breatherInterval.unref?.();
 
       // Real-time Server-Sent Events stream for zero-lag chart-to-button synchronization
       server.middlewares.use('/api/market-stream', (req: any, res: any) => {
@@ -1214,6 +1180,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,

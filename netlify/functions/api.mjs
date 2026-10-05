@@ -1,4 +1,6 @@
 // Netlify Serverless Function handling all /api/* routes in production on Netlify
+import WebSocket from 'ws';
+
 const TV_LIVE_SYMBOLS = {
   // Forex
   EURUSD: { scanner: 'forex', ticker: 'FX:EURUSD', decimals: 5, pipMultiplier: 10000, baseSpread: 0.30, category: 'Forex' },
@@ -74,132 +76,207 @@ const TV_LIVE_SYMBOLS = {
 };
 
 const TICKER_TO_SYMBOL = {};
+const ALL_TICKERS = [];
 Object.entries(TV_LIVE_SYMBOLS).forEach(([sym, cfg]) => {
   TICKER_TO_SYMBOL[cfg.ticker] = sym;
+  ALL_TICKERS.push(cfg.ticker);
 });
 
 let cachedQuotes = {};
-let lastQuotesFetchAt = 0;
+const rawTvFields = {};
+let tvWs = null;
+let tvSession = null;
+let lastWsActivityAt = 0;
 const webhookStore = new Map();
 let cachedMerchantLookup = { accountId: '', merchantName: '', fetchedAt: 0 };
 
-function isMarketOpen(category) {
-  if (category === 'Crypto') return true;
-  const now = new Date();
-  const utcDay = now.getUTCDay();
-  const timeVal = now.getUTCHours() + now.getUTCMinutes() / 60;
-  if (category === 'Stocks' || category === 'ETFs') {
-    if (utcDay === 6 || utcDay === 0) return false;
-    return timeVal >= 13.5 && timeVal < 20.0;
-  }
-  if (utcDay === 6) return false;
-  if (utcDay === 0 && timeVal < 22.0) return false;
-  if (utcDay === 5) {
-    const closeHour = category === 'Commodities' || category === 'Indices' || category === 'Bonds' ? 21.0 : 22.0;
-    if (timeVal >= closeHour) return false;
-  }
-  if (utcDay >= 1 && utcDay <= 4) {
-    if ((category === 'Commodities' || category === 'Indices' || category === 'Bonds') && timeVal >= 21.0 && timeVal < 22.0) {
-      return false;
-    }
-  }
-  return true;
-}
+function computeAlignedBidAsk(symbol, chartPrice, decimals, baseSpread) {
+  const spread = Number(Math.min(1.2, Math.max(0.16, baseSpread)).toFixed(2));
 
-function computeAlignedBidAsk(symbol, chartPrice, decimals, baseSpread, isOpen, prevSpread) {
-  let spread = baseSpread;
-  if (isOpen) {
-    const startSpr = prevSpread && prevSpread >= 0.15 && prevSpread <= 1.2 ? prevSpread : baseSpread;
-    let nextSpr = startSpr + (Math.random() - 0.49) * 0.14;
-    if (nextSpr > 0.96 && Math.random() < 0.65) nextSpr -= 0.14;
-    if (nextSpr < 0.16) nextSpr = 0.18 + Math.random() * 0.12;
-    if (nextSpr > 1.18) nextSpr = 1.16 - Math.random() * 0.14;
-    spread = Number(Math.min(1.2, Math.max(0.16, nextSpr)).toFixed(2));
-  } else {
-    spread = Number(Math.min(1.2, Math.max(0.16, baseSpread)).toFixed(2));
-  }
-
+  // Anchor bid 1:1 to TradingView's exact chart price (lp) and ask = bid + exact spread so SELL and BUY always move hand-in-hand
   const bid = Number(chartPrice.toFixed(decimals));
   let priceGap = spread;
 
   if (decimals === 5) {
     priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
   } else if (decimals === 4) {
-    priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
+    priceGap = Math.max(0.0001, Number((spread / 1000).toFixed(4)));
   } else if (decimals === 3) {
     priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
   } else {
-    if (bid < 250) {
-      priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
-    } else if (bid < 1000) {
-      priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
-    } else {
-      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
-    }
+    priceGap = Math.max(0.01, Number(spread.toFixed(2)));
   }
 
   const ask = Number((bid + priceGap).toFixed(decimals));
   return { bid, ask, spread };
 }
 
-async function fetchLiveQuotesServerSide() {
-  const now = Date.now();
-  if (now - lastQuotesFetchAt < 800 && Object.keys(cachedQuotes).length > 0) {
-    return cachedQuotes;
-  }
-  lastQuotesFetchAt = now;
+function updateSymbolFromTv(symbol, raw) {
+  const cfg = TV_LIVE_SYMBOLS[symbol];
+  if (!cfg) return;
+  const lp =
+    typeof raw.lp === 'number' && raw.lp > 0
+      ? raw.lp
+      : typeof raw.bid === 'number' && raw.bid > 0
+      ? raw.bid
+      : null;
+  if (!lp || lp <= 0) return;
 
-  const scannerGroups = ['forex', 'cfd', 'crypto', 'america'];
-  const results = await Promise.allSettled(
-    scannerGroups.map((scanner) => {
-      const tickers = Object.values(TV_LIVE_SYMBOLS)
-        .filter((cfg) => cfg.scanner === scanner)
-        .map((cfg) => cfg.ticker);
-      return fetch(`https://scanner.tradingview.com/${scanner}/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbols: { tickers },
-          columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-        }),
-      }).then((r) => r.json());
-    })
+  const existing = cachedQuotes[symbol];
+  const { bid, ask, spread } = computeAlignedBidAsk(
+    symbol,
+    lp,
+    cfg.decimals,
+    cfg.baseSpread
   );
 
-  results.forEach((res) => {
-    if (res.status === 'fulfilled' && Array.isArray(res.value?.data)) {
-      res.value.data.forEach((row) => {
-        const sym = TICKER_TO_SYMBOL[row.s];
-        const cfg = sym ? TV_LIVE_SYMBOLS[sym] : null;
-        if (cfg && row.d?.[0] > 0) {
-          const lp = Number(row.d[0]);
-          const change24h = Number((row.d[1] || 0).toFixed(2));
-          const isOpen = isMarketOpen(cfg.category);
-          const existing = cachedQuotes[sym];
-          const { bid, ask, spread } = computeAlignedBidAsk(
-            sym,
-            lp,
-            cfg.decimals,
-            cfg.baseSpread,
-            isOpen,
-            existing?.spread
-          );
-          cachedQuotes[sym] = {
-            bid,
-            ask,
-            close: bid,
-            change24h,
-            high24h: Number((row.d[4] || ask).toFixed(cfg.decimals)),
-            low24h: Number((row.d[5] || bid).toFixed(cfg.decimals)),
-            spread,
-            timestamp: now,
-          };
+  const change24h =
+    typeof raw.chp === 'number'
+      ? Number(raw.chp.toFixed(2))
+      : existing?.change24h ?? 0;
+  const high24h =
+    typeof raw.high_price === 'number' && raw.high_price > 0
+      ? Number(raw.high_price.toFixed(cfg.decimals))
+      : existing?.high24h || ask;
+  const low24h =
+    typeof raw.low_price === 'number' && raw.low_price > 0
+      ? Number(raw.low_price.toFixed(cfg.decimals))
+      : existing?.low24h || bid;
+
+  cachedQuotes[symbol] = {
+    bid,
+    ask,
+    close: bid,
+    change24h,
+    high24h,
+    low24h,
+    spread,
+    timestamp: Date.now(),
+  };
+}
+
+function sendTvPacket(ws, func, args) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = JSON.stringify({ m: func, p: args });
+  ws.send(`~m~${msg.length}~m~${msg}`);
+}
+
+/**
+ * Persistent TradingView WebSocket stream (`wss://data.tradingview.com/socket.io/websocket`)
+ * with `Origin: https://www.tradingview.com` in Node.js — identical to `vite.config.ts` in AI Studio.
+ * Keeps subscription open across requests so every live tick updates cachedQuotes continuously.
+ */
+function pullRealTimeTradingViewWebSocket() {
+  return new Promise((resolve) => {
+    const now = Date.now();
+
+    // If socket is open and active, drain incoming WebSocket frames on the event loop without unsubscribing
+    if (
+      tvWs &&
+      tvWs.readyState === WebSocket.OPEN &&
+      tvSession &&
+      Object.keys(cachedQuotes).length >= 15 &&
+      now - lastWsActivityAt < 10000
+    ) {
+      setTimeout(() => resolve(cachedQuotes), 65);
+      return;
+    }
+
+    // Cold start or stale socket: establish fresh TradingView WebSocket connection
+    if (tvWs) {
+      try {
+        tvWs.removeAllListeners();
+        tvWs.close();
+      } catch {}
+      tvWs = null;
+    }
+
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      resolve(cachedQuotes);
+    };
+    const timeout = setTimeout(finish, 550);
+
+    try {
+      const ws = new WebSocket('wss://data.tradingview.com/socket.io/websocket?from=chart%2F&type=chart', {
+        headers: {
+          Origin: 'https://www.tradingview.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+      });
+      tvWs = ws;
+      tvSession = 'qs_vtm_' + Math.random().toString(36).slice(2, 12);
+
+      ws.on('open', () => {
+        lastWsActivityAt = Date.now();
+        sendTvPacket(ws, 'set_auth_token', ['unauthorized_user_token']);
+        sendTvPacket(ws, 'quote_create_session', [tvSession]);
+        sendTvPacket(ws, 'quote_set_fields', [
+          tvSession,
+          'lp',
+          'ch',
+          'chp',
+          'high_price',
+          'low_price',
+          'bid',
+          'ask',
+          'open_price',
+          'prev_close_price',
+        ]);
+        sendTvPacket(ws, 'quote_add_symbols', [tvSession, ...ALL_TICKERS]);
+      });
+
+      ws.on('message', (data) => {
+        lastWsActivityAt = Date.now();
+        const str = data.toString();
+        const frames = str.split(/~m~\d+~m~/).filter(Boolean);
+        let updatedCount = 0;
+
+        for (const frame of frames) {
+          if (frame.startsWith('~h~')) {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(`~m~${frame.length}~m~${frame}`);
+            }
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(frame);
+            if (parsed.m === 'qsd' && Array.isArray(parsed.p) && parsed.p[1]) {
+              const { n: ticker, v: values } = parsed.p[1];
+              const sym = TICKER_TO_SYMBOL[ticker];
+              if (sym && values && typeof values === 'object') {
+                rawTvFields[sym] = { ...(rawTvFields[sym] || {}), ...values };
+                updateSymbolFromTv(sym, rawTvFields[sym]);
+                updatedCount++;
+              }
+            }
+          } catch {}
+        }
+
+        if (updatedCount > 0 && Object.keys(cachedQuotes).length >= 20) {
+          clearTimeout(timeout);
+          setTimeout(finish, 45);
         }
       });
+
+      ws.on('error', () => {
+        clearTimeout(timeout);
+        finish();
+      });
+
+      ws.on('close', () => {
+        tvWs = null;
+        tvSession = null;
+        clearTimeout(timeout);
+        finish();
+      });
+    } catch {
+      clearTimeout(timeout);
+      finish();
     }
   });
-
-  return cachedQuotes;
 }
 
 const corsHeaders = {
@@ -207,7 +284,7 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  'Cache-Control': 'no-store',
+  'Cache-Control': 'no-store, no-cache, must-revalidate',
 };
 
 export async function handler(event) {
@@ -217,10 +294,10 @@ export async function handler(event) {
 
   const path = event.path || '';
 
-  // 1. Live Market Prices endpoint (/api/market-prices)
+  // 1. Live Market Prices endpoint (/api/market-prices) powered by real-time TradingView WebSocket
   if (path.includes('market-prices')) {
     try {
-      const quotes = await fetchLiveQuotesServerSide();
+      const quotes = await pullRealTimeTradingViewWebSocket();
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -230,7 +307,7 @@ export async function handler(event) {
           quotes,
         }),
       };
-    } catch (e) {
+    } catch {
       return {
         statusCode: 200,
         headers: corsHeaders,
