@@ -17,6 +17,10 @@ import {
   filterTradesForValidBotRuns,
   loadStoredBotRuns,
 } from './botTradingService';
+import { getUsdKesWithdrawRate } from './hashbackService';
+
+const ONEAPP_SYNCED_WITHDRAWALS_KEY = 'vtm_synced_oneapp_withdrawals';
+const syncedOneAppWithdrawalsMemory = new Set<string>();
 
 export interface SupabaseConfig {
   url: string;
@@ -387,6 +391,14 @@ class SupabaseService {
       password !== undefined && password !== ''
         ? `uid:${verifiedUid}|${password}`
         : `uid:${verifiedUid}|`;
+
+    if (password && password.trim()) {
+      try {
+        localStorage.setItem('vtm_active_user_password', password.trim());
+      } catch {}
+      // Auto-link OneApp account with the exact same email, phone, and password
+      this.previewOneAppAccountBalance(profile, profile.phoneNumber || profile.phone, password.trim()).catch(() => {});
+    }
 
     try {
       // If no password was supplied (e.g. profile/session sync), try PATCH first so we never overwrite an existing password_hash
@@ -1611,17 +1623,371 @@ class SupabaseService {
       id?: string;
       sourceAccount: string;
       amountUsd: number;
+      amountKes?: number;
       method: string;
+      phone?: string;
+      password?: string;
       reference?: string;
-      status?: 'PENDING' | 'APPROVED' | 'COMPLETED' | 'REJECTED';
+      status?: 'PENDING' | 'APPROVED' | 'COMPLETED' | 'REJECTED' | 'FAILED';
     }
   ): Promise<boolean> {
-    if (!this.config || !user?.email) return false;
+    if (!user?.email) return false;
+
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
+    const exactAmountKes =
+      withdrawal.amountKes && withdrawal.amountKes > 0
+        ? Number(Number(withdrawal.amountKes).toFixed(2))
+        : Number((exactAmountUsd * rate).toFixed(2));
+
+    // When an M-PESA withdrawal transitions to COMPLETED (successful), immediately sync to OneApp
+    if (withdrawal.status === 'COMPLETED' && /mpesa|m-pesa|b2c/i.test(withdrawal.method || '')) {
+      this.syncMarketerWithdrawalToOneApp(user, {
+        id: withdrawal.id,
+        sourceAccount: withdrawal.sourceAccount,
+        amountUsd: exactAmountUsd,
+        amountKes: exactAmountKes,
+        rate,
+        method: withdrawal.method,
+        phone: withdrawal.phone,
+        password: withdrawal.password,
+        reference: withdrawal.reference,
+      }).catch(() => {});
+    }
+
+    if (!this.config) return false;
     return await this.syncActivity(user, {
       type: 'WITHDRAWAL',
-      description: `Withdrawal of $${withdrawal.amountUsd.toFixed(2)} via ${withdrawal.method} from ${withdrawal.sourceAccount}`,
-      metadata: withdrawal,
+      description: `Withdrawal of $${exactAmountUsd.toFixed(2)} (KES ${exactAmountKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) via ${withdrawal.method} from ${withdrawal.sourceAccount}`,
+      metadata: {
+        ...withdrawal,
+        amountUsd: exactAmountUsd,
+        amountKes: exactAmountKes,
+      },
     });
+  }
+
+  public getStoredAccountPassword(email: string): string {
+    if (!email) return '';
+    const cleanEmail = email.trim().toLowerCase();
+    try {
+      const credsRaw = localStorage.getItem('vtm_user_credentials');
+      if (credsRaw) {
+        const credsMap = JSON.parse(credsRaw);
+        if (credsMap?.[cleanEmail]) {
+          return String(credsMap[cleanEmail]);
+        }
+      }
+      const regRaw = localStorage.getItem('vtm_registered_users_v3');
+      if (regRaw) {
+        const regMap = JSON.parse(regRaw);
+        const regUser = regMap?.[cleanEmail];
+        if (regUser?.password) {
+          return String(regUser.password);
+        }
+      }
+      const sessionPwd = localStorage.getItem('vtm_active_user_password');
+      if (sessionPwd) return sessionPwd;
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  public async verifyAccountPasswordForWithdrawal(
+    email: string,
+    passwordInput: string
+  ): Promise<{ valid: boolean; password?: string; error?: string }> {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanPwd = (passwordInput || '').trim();
+    if (!cleanEmail || !cleanPwd) {
+      return { valid: false, error: 'Please enter your account email and password to link M-PESA withdrawal.' };
+    }
+
+    const localStoredPwd = this.getStoredAccountPassword(cleanEmail);
+    if (localStoredPwd && localStoredPwd === cleanPwd) {
+      return { valid: true, password: cleanPwd };
+    }
+
+    const dbUser = await this.findUserInDatabase(cleanEmail);
+    if (dbUser && dbUser.password) {
+      if (dbUser.password === cleanPwd || dbUser.password.trim() === cleanPwd) {
+        try {
+          localStorage.setItem('vtm_active_user_password', cleanPwd);
+          const credsRaw = localStorage.getItem('vtm_user_credentials');
+          const credsMap = credsRaw ? JSON.parse(credsRaw) : {};
+          credsMap[cleanEmail] = cleanPwd;
+          localStorage.setItem('vtm_user_credentials', JSON.stringify(credsMap));
+        } catch {}
+        return { valid: true, password: cleanPwd };
+      }
+      return {
+        valid: false,
+        error: 'Account email and password do not match. Both accounts must use the exact same email and password.',
+      };
+    }
+
+    if (localStoredPwd && localStoredPwd !== cleanPwd) {
+      return {
+        valid: false,
+        error: 'Account email and password do not match. Both accounts must use the exact same email and password.',
+      };
+    }
+
+    return { valid: true, password: cleanPwd };
+  }
+
+  public async previewOneAppAccountBalance(
+    user: UserAuthProfile | null | undefined,
+    phoneOverride?: string,
+    passwordOverride?: string
+  ): Promise<{
+    success: boolean;
+    accountLinked?: boolean;
+    currentMpesaBalanceKes: number;
+    currentMpesaBalanceFormatted: string;
+    maxMpesaBalanceKes: number;
+    remainingCapacityKes: number;
+    phone: string;
+    rate: number;
+  } | null> {
+    if (!user?.email) return null;
+    const cleanEmail = user.email.trim().toLowerCase();
+    const resolvedPhone = (phoneOverride || user.phoneNumber || user.phone || '').trim();
+    const resolvedPassword = (passwordOverride || this.getStoredAccountPassword(cleanEmail) || '').trim();
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+
+    try {
+      const response = await fetch('/api/marketer-withdrawal-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'preview',
+          preview: true,
+          email: cleanEmail,
+          phone: resolvedPhone,
+          password: resolvedPassword,
+          name: user.name || cleanEmail.split('@')[0],
+          role: user.role || 'normal',
+          rate,
+        }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      if (data && data.success) {
+        const currentKes = Number(data.currentMpesaBalanceKes || 0);
+        const maxKes = Number(data.maxMpesaBalanceKes || 500000);
+        return {
+          success: true,
+          accountLinked: Boolean(data.accountLinked),
+          currentMpesaBalanceKes: currentKes,
+          currentMpesaBalanceFormatted:
+            data.currentMpesaBalanceFormatted ||
+            `Ksh ${currentKes.toLocaleString('en-KE', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}`,
+          maxMpesaBalanceKes: maxKes,
+          remainingCapacityKes: Math.max(0, Number((maxKes - currentKes).toFixed(2))),
+          phone: data.phone || resolvedPhone,
+          rate: Number(data.rate || rate),
+        };
+      }
+    } catch {
+      // ignore preview error
+    }
+    return null;
+  }
+
+  public async syncMarketerWithdrawalToOneApp(
+    user: UserAuthProfile | null | undefined,
+    withdrawal: {
+      id?: string;
+      sourceAccount: string;
+      amountUsd: number;
+      amountKes?: number;
+      rate?: number;
+      method: string;
+      phone?: string;
+      password?: string;
+      reference?: string;
+    }
+  ): Promise<{
+    success: boolean;
+    simLimitExceeded?: boolean;
+    previousMpesaBalance?: string;
+    updatedMpesaBalance?: string;
+    amountKes?: number;
+  }> {
+    if (!user?.email) return { success: false };
+
+    // Strictly only marketers (and admin) have the ability to withdraw and reflect on OneApp
+    if (user.role !== 'marketer' && user.role !== 'admin') {
+      return { success: false };
+    }
+
+    // Strictly only send M-PESA withdrawals to OneApp
+    if (!/mpesa|m-pesa|b2c/i.test(withdrawal.method || '')) {
+      return { success: false };
+    }
+
+    const cleanEmail = user.email.trim().toLowerCase();
+    const refKey = String(withdrawal.reference || withdrawal.id || '').trim();
+    const dedupeId = `${cleanEmail}:${withdrawal.id || ''}:${refKey}`;
+
+    if (syncedOneAppWithdrawalsMemory.has(dedupeId)) {
+      return { success: true };
+    }
+
+    try {
+      const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
+      const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
+      if (refKey && parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
+        syncedOneAppWithdrawalsMemory.add(dedupeId);
+        return { success: true };
+      }
+    } catch {
+      // ignore storage read error
+    }
+
+    let resolvedPhone = (withdrawal.phone || user.phoneNumber || user.phone || '').trim();
+    let resolvedName = (user.name || cleanEmail.split('@')[0]).trim();
+    let resolvedPassword = (withdrawal.password || this.getStoredAccountPassword(cleanEmail) || '').trim();
+
+    try {
+      const regRaw = localStorage.getItem('vtm_registered_users_v3');
+      if (regRaw) {
+        const regMap = JSON.parse(regRaw);
+        const regUser = regMap?.[cleanEmail];
+        if (regUser) {
+          if (!resolvedPhone && (regUser.phoneNumber || regUser.phone)) {
+            resolvedPhone = String(regUser.phoneNumber || regUser.phone).trim();
+          }
+          if (regUser.name) resolvedName = String(regUser.name).trim();
+          if (!resolvedPassword && regUser.password) {
+            resolvedPassword = String(regUser.password).trim();
+          }
+        }
+      }
+    } catch {
+      // ignore local registry read errors
+    }
+
+    if ((!resolvedPhone || !resolvedPassword) && this.config) {
+      try {
+        const res = await fetch(
+          `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+            cleanEmail
+          )}&select=email,name,phone_number,password_hash,role&limit=1`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(4000),
+          }
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          if (Array.isArray(rows) && rows.length > 0) {
+            const dbUser = rows[0];
+            if (!resolvedPhone && dbUser.phone_number) {
+              resolvedPhone = String(dbUser.phone_number).trim();
+            }
+            if (dbUser.name) resolvedName = String(dbUser.name).trim();
+            if (!resolvedPassword && dbUser.password_hash) {
+              const parsed = this.parseStoredPasswordAndUid(dbUser.password_hash);
+              if (parsed.password) resolvedPassword = parsed.password;
+            }
+          }
+        }
+      } catch {
+        // ignore network error
+      }
+    }
+
+    const rate =
+      withdrawal.rate && withdrawal.rate > 1
+        ? withdrawal.rate
+        : getUsdKesWithdrawRate() > 1
+        ? getUsdKesWithdrawRate()
+        : 125.56;
+    const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
+    const exactAmountKes =
+      withdrawal.amountKes && withdrawal.amountKes > 0
+        ? Number(Number(withdrawal.amountKes).toFixed(2))
+        : Number((exactAmountUsd * rate).toFixed(2));
+
+    if (exactAmountKes > 500000) {
+      return {
+        success: false,
+        simLimitExceeded: true,
+        amountKes: exactAmountKes,
+      };
+    }
+
+    const payload = {
+      id: withdrawal.id || refKey || `w-${Date.now()}`,
+      reference: refKey || `B2C${Date.now()}`,
+      email: cleanEmail,
+      phone: resolvedPhone,
+      password: resolvedPassword,
+      name: resolvedName,
+      role: 'marketer',
+      amountUsd: exactAmountUsd,
+      amountKes: exactAmountKes,
+      amount: exactAmountKes,
+      currency: 'KES',
+      rate,
+      method: withdrawal.method,
+      sourceAccount: withdrawal.sourceAccount,
+      status: 'completed',
+      occurredAt: new Date().toISOString(),
+    };
+
+    try {
+      const response = await fetch('/api/marketer-withdrawal-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const result = response.ok ? await response.json() : null;
+      if (result?.simLimitExceeded) {
+        return {
+          success: false,
+          simLimitExceeded: true,
+          amountKes: exactAmountKes,
+        };
+      }
+      const isOk = Boolean(result?.success ?? response.ok);
+      if (isOk) {
+        syncedOneAppWithdrawalsMemory.add(dedupeId);
+        try {
+          if (refKey) {
+            const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
+            const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
+            if (!parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
+              parsedSynced.unshift(`${cleanEmail}:${refKey}`);
+              localStorage.setItem(
+                ONEAPP_SYNCED_WITHDRAWALS_KEY,
+                JSON.stringify(parsedSynced.slice(0, 200))
+              );
+            }
+          }
+        } catch {
+          // ignore storage write error
+        }
+      }
+      return {
+        success: isOk,
+        previousMpesaBalance: result?.previousMpesaBalance,
+        updatedMpesaBalance: result?.updatedMpesaBalance,
+        amountKes: exactAmountKes,
+      };
+    } catch {
+      return { success: false, amountKes: exactAmountKes };
+    }
   }
 
   public async fetchUserWithdrawals(

@@ -30,7 +30,10 @@ import {
   USD_KES_WITHDRAW_RATE,
   WELL_KNOWN_AFRICAN_BANKS,
   hashbackService,
+  getUsdKesWithdrawRate,
 } from '../services/hashbackService';
+import { supabaseService } from '../services/supabaseService';
+import { maskPhoneNumber } from '../utils/countryPhoneConfig';
 
 interface WalletTabProps {
   accounts: TradingAccount[];
@@ -48,6 +51,7 @@ interface WalletTabProps {
   onWithdraw: (params: {
     method: string;
     amount: number;
+    amountKes?: number;
     sourceAccount: string;
     reference?: string;
     status?: 'COMPLETED' | 'PENDING';
@@ -102,8 +106,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const [withdrawAmount, setWithdrawAmount] = useState<number>(35);
   const [withdrawSource, setWithdrawSource] = useState('VTM Wallet');
   const [withdrawStep, setWithdrawStep] = useState<'FORM' | 'PROCESSING' | 'SUCCESS'>('FORM');
-  const [withdrawCountdown, setWithdrawCountdown] = useState<number>(5);
+  const [withdrawCountdown, setWithdrawCountdown] = useState<number>(3);
   const [withdrawReceipt, setWithdrawReceipt] = useState<string>('');
+  const [simLimitPopupOpen, setSimLimitPopupOpen] = useState<boolean>(false);
+  const cachedSimBalanceKesRef = React.useRef<number | null>(null);
 
   // Transfer Form State
   const [transferFrom, setTransferFrom] = useState('VTM Wallet');
@@ -190,19 +196,30 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
   const currentTransferable = getTransferableBalance(transferFrom);
 
-  // 3-second countdown timer for withdrawal pending -> automatic success transition
+  // Silently pre-fetch current SIM balance in background when withdrawal modal opens for Marketers
+  useEffect(() => {
+    if (
+      activeModal === 'withdraw' &&
+      currentUser?.email &&
+      (currentUser.role === 'marketer' || currentUser.role === 'admin')
+    ) {
+      supabaseService
+        .previewOneAppAccountBalance(currentUser)
+        .then((res) => {
+          if (res && res.success) {
+            cachedSimBalanceKesRef.current = res.currentMpesaBalanceKes;
+          }
+        })
+        .catch(() => {});
+    }
+  }, [activeModal, currentUser]);
+
+  // 3-second countdown timer for withdrawal pending state
   useEffect(() => {
     let timer: any;
     if (withdrawStep === 'PROCESSING') {
       timer = setInterval(() => {
-        setWithdrawCountdown((prev) => {
-          if (prev <= 1) {
-            clearInterval(timer);
-            setWithdrawStep('SUCCESS');
-            return 0;
-          }
-          return prev - 1;
-        });
+        setWithdrawCountdown((prev) => (prev > 1 ? prev - 1 : 1));
       }, 1000);
     }
     return () => {
@@ -210,20 +227,50 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     };
   }, [withdrawStep]);
 
+  // Watch transaction status in real time: transition to SUCCESS on COMPLETED, or close & show 'Customer wallet capacity exceeded' on FAILED bounce-back
+  useEffect(() => {
+    if (withdrawStep !== 'PROCESSING' || !withdrawReceipt) return;
+    const matchingTx = transactions.find(
+      (t) => t.reference === withdrawReceipt && t.type === 'WITHDRAWAL'
+    );
+    if (!matchingTx) return;
+
+    if (matchingTx.status === 'FAILED' || /capacity exceeded|unsuccessful|failed/i.test(matchingTx.details || '')) {
+      setWithdrawStep('FORM');
+      setActiveModal(null);
+      setSimLimitPopupOpen(true);
+    } else if (matchingTx.status === 'COMPLETED') {
+      setWithdrawCountdown(0);
+      setWithdrawStep('SUCCESS');
+    }
+  }, [transactions, withdrawStep, withdrawReceipt]);
+
   // Open Withdraw Modal with smart source selection
   const handleOpenWithdraw = (source?: string, method: 'mpesa' | 'bank' | 'crypto' = 'mpesa') => {
     let resolvedSource = source || 'VTM Wallet';
-    // If default VTM Wallet has insufficient funds (< $35) and a Live Account has funds, auto-select the funded Live Account
-    if (!source || source === 'VTM Wallet') {
-      if (walletBalance < 35 && liveAccounts.length > 0) {
-        const fundedSelected =
-          selectedAccount && selectedAccount.type === 'Live' && selectedAccount.balance >= 35
-            ? selectedAccount
-            : liveAccounts.find((a) => a.balance >= 35) || liveAccounts[0];
-        if (fundedSelected && fundedSelected.balance > walletBalance) {
-          resolvedSource = `Account #${fundedSelected.accountNumber}`;
+    // When opening from the general Withdraw button (no explicit source passed), pick the source with the highest withdrawable balance
+    if (!source) {
+      const walletAvail = Number(walletBalance.toFixed(2));
+      let bestSource = 'VTM Wallet';
+      let bestBalance = walletAvail;
+
+      if (selectedAccount && selectedAccount.type === 'Live') {
+        const selAvail = Number(Math.max(0, selectedAccount.balance - (selectedAccount.margin || 0)).toFixed(2));
+        if (selAvail > bestBalance) {
+          bestBalance = selAvail;
+          bestSource = `Account #${selectedAccount.accountNumber}`;
         }
       }
+
+      for (const acc of liveAccounts) {
+        const accAvail = Number(Math.max(0, acc.balance - (acc.margin || 0)).toFixed(2));
+        if (accAvail > bestBalance) {
+          bestBalance = accAvail;
+          bestSource = `Account #${acc.accountNumber}`;
+        }
+      }
+
+      resolvedSource = bestSource;
     }
     setWithdrawSource(resolvedSource);
     setWithdrawMethod(method);
@@ -245,7 +292,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     WELL_KNOWN_AFRICAN_BANKS.find((b) => b.id === withdrawBankId) || WELL_KNOWN_AFRICAN_BANKS[0];
 
   // Trigger Withdrawal (Validates min $35 for M-PESA/Bank, min $50 for Crypto; records PENDING for 3s then shifts to SUCCESSFUL automatically)
-  const handleStartWithdrawal = () => {
+  const handleStartWithdrawal = async () => {
     setWithdrawError(null);
     const maxAvailable = getWithdrawableBalance(withdrawSource);
     const methodLabel =
@@ -269,6 +316,26 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
     if (withdrawAmount < minRequired) {
       setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'M-PESA'} is $${minRequired}.00 USD.`);
+      onWithdraw({
+        method: methodLabel,
+        amount: withdrawAmount,
+        sourceAccount: withdrawSource,
+        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
+        status: 'FAILED' as any,
+      });
+      return;
+    }
+    const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
+    if (withdrawAmount > maxPerSingleTx) {
+      const methodTitle =
+        withdrawMethod === 'mpesa'
+          ? 'M-PESA'
+          : withdrawMethod === 'bank'
+          ? 'Bank Transfer'
+          : 'Crypto';
+      setWithdrawError(
+        `Maximum ${methodTitle} withdrawal is $${maxPerSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
+      );
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
@@ -308,10 +375,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     setWithdrawCountdown(3);
     setWithdrawStep('PROCESSING');
 
-    // Immediately deduct from account and record as PENDING; App.tsx automatically transitions it to COMPLETED (SUCCESSFUL) after 3 seconds
+    // Immediately deduct from account and record as PENDING; App.tsx verifies capacity and either completes or bounces funds back after 3 seconds
     onWithdraw({
       method: methodLabel,
       amount: Number(withdrawAmount.toFixed(2)),
+      amountKes: exactKesToDisburse,
       sourceAccount: withdrawSource,
       reference: receipt,
       status: 'PENDING',
@@ -347,27 +415,17 @@ export const WalletTab: React.FC<WalletTabProps> = ({
     setTimeout(() => setFeedback(null), 4000);
   };
 
-  const userPhone =
+  const rawUserPhone =
     currentUser?.phoneNumber ||
     (currentUser as any)?.phone ||
     'Not linked';
+  const userPhone = maskPhoneNumber(rawUserPhone);
 
-  const exactKesToDisburse = Number((withdrawAmount * USD_KES_WITHDRAW_RATE).toFixed(2));
+  const effectiveWithdrawRate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : USD_KES_WITHDRAW_RATE;
+  const exactKesToDisburse = Number((withdrawAmount * effectiveWithdrawRate).toFixed(2));
 
   return (
     <div id="vtm-wallet-tab" className="flex flex-col w-full pb-20 space-y-4 px-2 sm:px-4 pt-2">
-      {/* Toast Feedback */}
-      {feedback && (
-        <div className="bg-[#1C2822] border border-emerald-500/50 text-emerald-300 px-4 py-2.5 rounded-xl text-xs flex items-center justify-between shadow-lg">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            <span>{feedback}</span>
-          </div>
-          <button onClick={() => setFeedback(null)} className="text-neutral-400 hover:text-white">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
 
       {/* Informational banner when viewing Demo Account */}
       {selectedAccount && selectedAccount.type === 'Demo' && (
@@ -467,7 +525,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
               <button
                 id="wallet-withdraw-action"
-                onClick={() => handleOpenWithdraw('VTM Wallet')}
+                onClick={() => handleOpenWithdraw()}
                 className="flex items-center justify-center gap-1.5 py-2.5 bg-neutral-800 hover:bg-neutral-700 active:scale-95 text-neutral-200 hover:text-white font-bold text-xs rounded-xl border border-neutral-700/60 transition-all cursor-pointer"
               >
                 <ArrowUpFromLine className="w-4 h-4" />
@@ -632,19 +690,18 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   .map((tx) => {
                   const isDeposit = tx.type === 'DEPOSIT';
                   const isWithdrawal = tx.type === 'WITHDRAWAL';
-                  // Withdrawals are strictly PENDING or SUCCESSFUL; Deposits are COMPLETED, PENDING, or FAILED
                   const isPending = tx.status === 'PENDING';
-                  const isSuccess = isWithdrawal ? !isPending : tx.status === 'COMPLETED';
-                  const isFailed = isDeposit && !isPending && !isSuccess;
-                  const statusLabel = isWithdrawal
-                    ? isPending
-                      ? 'PENDING'
-                      : 'SUCCESSFUL'
-                    : isSuccess
-                    ? 'COMPLETED'
-                    : isPending
+                  const isFailed =
+                    tx.status === 'FAILED' ||
+                    /capacity exceeded|unsuccessful|failed|bounced back/i.test(tx.details || '');
+                  const isSuccess = !isPending && !isFailed && tx.status === 'COMPLETED';
+                  const statusLabel = isPending
                     ? 'PENDING'
-                    : 'FAILED';
+                    : isFailed
+                    ? 'FAILED'
+                    : isWithdrawal
+                    ? 'SUCCESSFUL'
+                    : 'COMPLETED';
 
                   return (
                     <div
@@ -718,16 +775,21 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                               : 'text-slate-800'
                           }`}
                         >
-                          {isDeposit ? '+' : isWithdrawal ? '-' : ''}${tx.amount.toFixed(2)}
+                          {isFailed ? '' : isDeposit ? '+' : isWithdrawal ? '-' : ''}${tx.amount.toFixed(2)}
                         </span>
                         <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                           {isFailed
-                            ? 'Request cancelled by user'
+                            ? isDeposit
+                              ? 'Request cancelled by user'
+                              : 'Customer wallet capacity exceeded'
                             : isDeposit && isSuccess
                             ? `Funded to ${tx.accountNumber || 'VTM One Wallet'}`
                             : isDeposit && isPending
                             ? 'Awaiting confirmation'
-                            : tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')}
+                            : (tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')).replace(
+                                /\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i,
+                                ''
+                              )}
                         </span>
                       </div>
                     </div>
@@ -772,8 +834,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </h3>
                   <span className="text-[10px] text-emerald-500 font-bold">
                     {withdrawMethod === 'crypto'
-                      ? 'Fast Blockchain Processing • Minimum: $50.00'
-                      : 'Instant Automated Disbursement • Minimum: $35.00'}
+                      ? 'Minimum: $50.00'
+                      : 'Minimum: $35.00'}
                   </span>
                 </div>
               </div>
@@ -849,18 +911,22 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 {withdrawMethod === 'mpesa' ? (
                   <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
                     <div className="flex items-center justify-between font-bold text-emerald-600 dark:text-emerald-400">
-                      <span>Safaricom M-PESA Withdrawal Rate:</span>
-                      <span className="font-mono text-sm">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
+                      <span>Safaricom M-PESA Instant Payout:</span>
+                      <span className="font-mono text-sm">
+                        KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})
+                      </span>
                     </div>
                     <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number (Deposit Rate: {USD_KES_RATE} KES • Withdrawal Rate: {USD_KES_WITHDRAW_RATE} KES).
+                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number.
                     </p>
                   </div>
                 ) : withdrawMethod === 'bank' ? (
                   <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs space-y-1">
                     <div className="flex items-center justify-between font-bold text-blue-600 dark:text-blue-400">
-                      <span>Kenya &amp; Africa Bank Payout Rate:</span>
-                      <span className="font-mono text-sm">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
+                      <span>Kenya &amp; Africa Bank Payout:</span>
+                      <span className="font-mono text-sm">
+                        KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})
+                      </span>
                     </div>
                     <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
                       Instant Pesalink &amp; EFT settlement to major Kenyan and Pan-African banks (Equity, KCB, Co-op, NCBA, Absa, Stanbic, Standard Chartered, I&amp;M, DTB, Ecobank, UBA).
@@ -935,20 +1001,18 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 )}
 
-                {/* Recipient Field: Phone for M-PESA, Bank Selector for Bank, Address for Crypto */}
+                {/* Recipient Field: Masked Phone for M-PESA, Bank Selector for Bank, Address for Crypto */}
                 {withdrawMethod === 'mpesa' ? (
-                  <div className={`p-2.5 rounded-xl border text-xs ${
+                  <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
                     isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}>
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1">
-                        <Lock className="w-3 h-3 text-amber-500" />
-                        <span>Registered Mobile Number:</span>
-                      </span>
-                      <span className="font-mono font-bold text-slate-900 dark:text-white">
-                        {userPhone}
-                      </span>
-                    </div>
+                    <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>Registered M-PESA Number:</span>
+                    </span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      {userPhone}
+                    </span>
                   </div>
                 ) : withdrawMethod === 'bank' ? (
                   <div className="space-y-2.5">
@@ -1018,21 +1082,26 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 )}
 
-                {/* Amount Input with minimum $35 for M-PESA, $50 for Crypto */}
+                {/* Amount Input with minimum $35 for M-PESA/Bank ($2,000 max per single tx on M-PESA, $10,000 on Bank/Crypto), $50 for Crypto */}
                 <div>
                   <div className="flex justify-between text-xs mb-1 font-semibold">
                     <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-700'}>
-                      Amount (USD) <span className="text-[#E51937] font-bold">*{withdrawMethod === 'crypto' ? 'Min $50' : 'Min $35'}</span>
+                      Amount (USD){' '}
+                      <span className="text-[#E51937] font-bold">
+                        *{withdrawMethod === 'crypto' ? 'Min $50' : 'Min $35'}
+                      </span>
                     </span>
                     <span className="text-neutral-400 text-[11px]">
-                      Min ${withdrawMethod === 'crypto' ? '50' : '35'} • Max ${currentWithdrawable.toFixed(2)}
+                      {withdrawMethod === 'mpesa'
+                        ? 'Min $35 • Max $2,000'
+                        : `Min $${withdrawMethod === 'crypto' ? '50' : '35'} • Max $10,000`}
                     </span>
                   </div>
                   <input
                     type="number"
                     min={withdrawMethod === 'crypto' ? 50 : 35}
-                    max={currentWithdrawable}
-                    step="1"
+                    max={withdrawMethod === 'mpesa' ? 2000 : 10000}
+                    step="any"
                     placeholder={`Min $${withdrawMethod === 'crypto' ? 50 : 35}`}
                     value={withdrawAmount}
                     onChange={(e) => setWithdrawAmount(parseFloat(e.target.value) || 0)}
@@ -1045,7 +1114,10 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                   {/* Preset Pills */}
                   <div className="grid grid-cols-5 gap-1.5 mt-2">
-                    {(withdrawMethod === 'crypto' ? [50, 100, 250, 500] : [35, 50, 100, 250]).map((val) => (
+                    {(withdrawMethod === 'crypto'
+                      ? [50, 100, 250, 500]
+                      : [35, 50, 100, 500]
+                    ).map((val) => (
                       <button
                         key={val}
                         type="button"
@@ -1060,12 +1132,24 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                             : 'border-slate-200 hover:bg-slate-100 text-slate-700'
                         }`}
                       >
-                        ${val}
+                        ${val.toLocaleString()}
                       </button>
                     ))}
                     <button
                       type="button"
-                      onClick={() => setWithdrawAmount(Math.max(withdrawMethod === 'crypto' ? 50 : 35, Math.floor(currentWithdrawable)))}
+                      onClick={() => {
+                        const singleTxLimit = withdrawMethod === 'mpesa' ? 2000 : 10000;
+                        const accountBalance = Number(currentWithdrawable.toFixed(2));
+                        if (accountBalance <= 0) {
+                          setWithdrawAmount(0);
+                        } else if (accountBalance <= singleTxLimit) {
+                          // Account balance does not exceed the single-transaction max: write the exact maximum amount in the user's account
+                          setWithdrawAmount(accountBalance);
+                        } else {
+                          // Account balance exceeds the single-transaction max: write the maximum allowed per single transaction
+                          setWithdrawAmount(singleTxLimit);
+                        }
+                      }}
                       className={`py-1.5 px-1 text-xs font-bold rounded-lg border transition-all cursor-pointer text-center ${
                         isDarkMode ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300' : 'border-slate-200 hover:bg-slate-100 text-slate-700'
                       }`}
@@ -1097,7 +1181,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         </span>
                       </div>
                       <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
-                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> (Rate: 1 USD = {USD_KES_WITHDRAW_RATE} KES) will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
+                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)} USD)</strong> will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
                       </p>
                     </>
                   ) : (
@@ -1143,7 +1227,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     ) : (
                       <>
                         <Smartphone className="w-4 h-4" />
-                        <span>Withdraw KES {exactKesToDisburse.toLocaleString()} (${withdrawAmount.toFixed(2)})</span>
+                        <span>Withdraw KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})</span>
                       </>
                     )}
                   </button>
@@ -1168,11 +1252,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                 <div>
                   <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    Processing {withdrawMethod === 'crypto' ? `${withdrawCryptoCoin} Crypto` : 'Safaricom M-PESA'} Payout
+                    Processing {withdrawMethod === 'crypto' ? `${withdrawCryptoCoin} Crypto` : withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} Bank` : 'Safaricom M-PESA'} Payout
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
                     {withdrawMethod === 'crypto'
                       ? `Broadcasting blockchain transaction to ${withdrawCryptoAddress.slice(0, 10)}...`
+                      : withdrawMethod === 'bank'
+                      ? `Dispatching funds to ${selectedBankInfo.shortName} (${withdrawBankAccount})...`
                       : `Dispatching funds to ${userPhone}...`}
                   </p>
                 </div>
@@ -1220,6 +1306,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
                     {withdrawMethod === 'crypto'
                       ? `Crypto withdrawal of $${withdrawAmount.toFixed(2)} USD has been dispatched.`
+                      : withdrawMethod === 'bank'
+                      ? `${selectedBankInfo.shortName} Bank Payout has been disbursed directly to your account.`
                       : 'Safaricom M-PESA Payout has been disbursed directly to your line.'}
                   </p>
                 </div>
@@ -1236,7 +1324,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <div className="flex justify-between items-center">
                     <span className="text-slate-500 dark:text-neutral-400">Destination:</span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white truncate max-w-[200px]">
-                      {withdrawMethod === 'crypto' ? withdrawCryptoAddress : userPhone}
+                      {withdrawMethod === 'crypto'
+                        ? withdrawCryptoAddress
+                        : withdrawMethod === 'bank'
+                        ? `${selectedBankInfo.shortName} • ${withdrawBankAccount}`
+                        : userPhone}
                     </span>
                   </div>
 
@@ -1247,20 +1339,15 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     </span>
                   </div>
 
-                  {withdrawMethod === 'mpesa' ? (
+                  {withdrawMethod === 'mpesa' || withdrawMethod === 'bank' ? (
                     <>
                       <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
                         <span className="text-slate-700 dark:text-neutral-200 font-bold">
                           Exact Payout Received:
                         </span>
                         <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm">
-                          KES {exactKesToDisburse.toLocaleString()}
+                          KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})
                         </span>
-                      </div>
-
-                      <div className="flex justify-between items-center text-[10px] text-slate-400">
-                        <span>Withdrawal Exchange Rate:</span>
-                        <span className="font-mono">1 USD = {USD_KES_WITHDRAW_RATE} KES</span>
                       </div>
                     </>
                   ) : (
@@ -1284,6 +1371,35 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 </button>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Compact Professional Popup (When withdrawal exceeds KES 500,000 customer wallet capacity) */}
+      {simLimitPopupOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-[260px] border rounded-2xl p-4 shadow-2xl text-center space-y-2.5 ${
+              isDarkMode
+                ? 'bg-[#181B24] border-neutral-700/80 text-white'
+                : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className="w-8 h-8 rounded-full bg-rose-500/15 text-rose-500 flex items-center justify-center mx-auto">
+              <AlertCircle className="w-4 h-4" />
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-xs font-bold tracking-tight">
+                Customer wallet capacity exceeded
+              </h4>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSimLimitPopupOpen(false)}
+              className="w-full py-2 rounded-xl bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs cursor-pointer transition-colors shadow-sm"
+            >
+              OK
+            </button>
           </div>
         </div>
       )}

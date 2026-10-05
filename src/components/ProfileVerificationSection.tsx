@@ -25,6 +25,7 @@ import {
   getCountryByName,
   formatLocalPhoneInput,
   validatePhoneForCountry,
+  maskPhoneNumber,
 } from '../utils/countryPhoneConfig';
 
 interface ProfileVerificationSectionProps {
@@ -360,35 +361,9 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
             <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
               Phone Number ({activeCountryCfg.flag} {activeCountryCfg.code})
             </span>
-            <div className="flex items-center gap-1.5">
-              <select
-                value={selectedCountryCode}
-                onChange={(e) => {
-                  const newCode = e.target.value;
-                  setSelectedCountryCode(newCode);
-                  const cfg = getCountryByCode(newCode);
-                  setAddress(`${cfg.defaultCity}, ${cfg.name}`);
-                }}
-                className={`text-[11px] font-bold rounded px-1 py-0.5 border focus:outline-none ${
-                  isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
-                }`}
-              >
-                {COUNTRY_OPTIONS.map((c) => (
-                  <option key={`${c.iso}-${c.code}`} value={c.code}>
-                    {c.flag} {c.code}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="tel"
-                value={phone}
-                onChange={(e) => setPhone(formatLocalPhoneInput(e.target.value, activeCountryCfg))}
-                placeholder={activeCountryCfg.placeholder}
-                className={`w-full font-mono text-xs bg-transparent focus:outline-none ${
-                  isDarkMode ? 'text-neutral-200' : 'text-slate-800'
-                }`}
-              />
-            </div>
+            <span className={`font-mono text-xs font-bold ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>
+              {maskPhoneNumber(phone || currentUser?.phoneNumber || (currentUser as any)?.phone || 'Not linked')}
+            </span>
           </div>
 
           <div

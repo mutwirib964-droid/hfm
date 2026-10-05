@@ -126,6 +126,18 @@ export function mergeUserFinancialStates(
     const key = String(tx.id || tx.reference || `${tx.type}-${tx.timestamp}`);
     if (!txMap.has(key)) {
       txMap.set(key, tx);
+    } else {
+      const existing = txMap.get(key)!;
+      const incomingFailed =
+        tx.status === 'FAILED' ||
+        /capacity exceeded|unsuccessful|failed|bounced back/i.test(String(tx.details || ''));
+      if (incomingFailed && existing.status !== 'FAILED') {
+        txMap.set(key, {
+          ...existing,
+          ...tx,
+          status: 'FAILED',
+        });
+      }
     }
   }
 
@@ -693,9 +705,19 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
 
     let normalizedStatus: Transaction['status'] = tx.status;
     if (tx.type === 'WITHDRAWAL') {
-      // Withdrawals are strictly PENDING (while processing) or COMPLETED (shown as SUCCESSFUL)
-      const elapsed = Date.now() - (tx.timestamp || 0);
-      normalizedStatus = tx.status === 'PENDING' && elapsed < 3500 ? 'PENDING' : 'COMPLETED';
+      const raw = String(tx.status || '').toUpperCase();
+      const detailsStr = String(tx.details || '');
+      const isFailedWithdrawal =
+        raw === 'FAILED' ||
+        /capacity exceeded|unsuccessful|failed|bounced back/i.test(detailsStr);
+      if (isFailedWithdrawal) {
+        normalizedStatus = 'FAILED';
+      } else if (raw === 'PENDING') {
+        const elapsed = Date.now() - (tx.timestamp || 0);
+        normalizedStatus = elapsed < 15000 ? 'PENDING' : 'COMPLETED';
+      } else {
+        normalizedStatus = 'COMPLETED';
+      }
     } else if (tx.type === 'DEPOSIT') {
       // Deposits are strictly PENDING, COMPLETED, or FAILED
       const raw = String(tx.status || '').toUpperCase();
@@ -713,10 +735,17 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
     const cleanedDetails =
       tx.type === 'DEPOSIT' && normalizedStatus === 'FAILED'
         ? 'Request cancelled by user'
+        : tx.type === 'WITHDRAWAL' && normalizedStatus === 'FAILED'
+        ? /capacity exceeded|bounced back/i.test(String(tx.details || ''))
+          ? 'Customer wallet capacity exceeded'
+          : String(tx.details || 'Withdrawal unsuccessful')
+              .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
+              .trim()
         : tx.details
         ? String(tx.details)
             .replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '')
             .replace(/\s*HashBack\s*\([^)]*\)/gi, '')
+            .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
             .trim()
         : tx.details;
 
@@ -876,8 +905,43 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (raw) {
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
+        const hasFailedCapacityTx7744979 = Array.isArray(parsed.transactions) &&
+          parsed.transactions.some(
+            (t) =>
+              t &&
+              (t.id === 'tx-1791238745156-h7ue' ||
+                t.reference === 'B2C737528578' ||
+                String(t.details || '').includes('bounced back to Account #7744979'))
+          );
+        let accountsToUse = parsed.accounts;
+        if (hasFailedCapacityTx7744979 && localStorage.getItem('vtm_restored_7744979_h7ue') !== '1') {
+          let restored = false;
+          accountsToUse = parsed.accounts.map((acc) => {
+            if (acc && String(acc.accountNumber) === '7744979' && acc.balance < 500) {
+              restored = true;
+              const nextBal = Number((acc.balance + 500).toFixed(2));
+              const nextEq = Number((acc.equity + 500).toFixed(2));
+              const nextFree = Number((acc.freeMargin + 500).toFixed(2));
+              return { ...acc, balance: nextBal, equity: nextEq, freeMargin: nextFree };
+            }
+            return acc;
+          });
+          localStorage.setItem('vtm_restored_7744979_h7ue', '1');
+          if (restored) {
+            const fixedPayload: UserFinancialState = {
+              ...parsed,
+              accounts: accountsToUse,
+              transactions: sanitizeRealTransactions(parsed.transactions),
+              lastUpdated: Date.now(),
+            };
+            localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(fixedPayload));
+            supabaseService.syncUserFinancials(user, fixedPayload).catch(() => {});
+            return fixedPayload;
+          }
+        }
         const sanitized: UserFinancialState = {
           ...parsed,
+          accounts: accountsToUse,
           transactions: sanitizeRealTransactions(parsed.transactions),
         };
         const swept = sweepIdleLiveAccountsSilently(user, sanitized);

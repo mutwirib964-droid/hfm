@@ -60,7 +60,7 @@ const STORAGE_KEY_MERCHANT_NAME = 'vtm_hashback_merchant_name';
 // Live mutable exports hydrated from `/api/hashback-config` (sensitive credentials remain strictly server-side)
 export let HASHBACK_MERCHANT_NAME: string = 'HASHBACK PAYMENT';
 export let USD_KES_RATE: number =
-  Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 1;
+  Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 125.56;
 export let USD_KES_WITHDRAW_RATE: number = USD_KES_RATE;
 
 let runtimeSecretsCache: {

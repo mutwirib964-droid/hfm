@@ -32,6 +32,7 @@ import {
   getCountryByCode,
   formatLocalPhoneInput,
   validatePhoneForCountry,
+  maskPhoneNumber,
 } from '../utils/countryPhoneConfig';
 
 interface MpesaDepositModalProps {
@@ -104,6 +105,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   );
   const activeCountryCfg = getCountryByCode(selectedCountryCode);
   const [phoneInput, setPhoneInput] = useState<string>('');
+  const rawPrefilledPhoneRef = useRef<string>('');
   const [targetAccount, setTargetAccount] = useState<string>(defaultTarget);
 
   // Crypto state
@@ -148,7 +150,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     });
   }, [isOpen]);
 
-  // Pre-fill phone from registered user
+  // Pre-fill masked phone from registered user while preserving raw number for STK push
   useEffect(() => {
     if (currentUser?.countryCode) {
       setSelectedCountryCode(currentUser.countryCode);
@@ -159,9 +161,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       if (matchedCountry) {
         setSelectedCountryCode(matchedCountry.code);
         const localPart = userPhone.slice(matchedCountry.code.length).trim();
-        setPhoneInput(formatLocalPhoneInput(localPart, matchedCountry));
+        const formattedLocal = formatLocalPhoneInput(localPart, matchedCountry);
+        rawPrefilledPhoneRef.current = formattedLocal;
+        setPhoneInput(maskPhoneNumber(formattedLocal));
       } else {
-        setPhoneInput(userPhone);
+        rawPrefilledPhoneRef.current = userPhone;
+        setPhoneInput(maskPhoneNumber(userPhone));
       }
     }
   }, [currentUser]);
@@ -181,8 +186,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const settlementDestinationLabel = matchedLiveAccount
     ? `${matchedLiveAccount.name || 'Live Account'} (#${matchedLiveAccount.accountNumber})`
     : targetAccount;
-  const kenyanCheck = formatKenyanPhone(phoneInput);
-  const intlCheck = validatePhoneForCountry(phoneInput, activeCountryCfg);
+  const effectivePhoneForValidation =
+    phoneInput.includes('*') && rawPrefilledPhoneRef.current
+      ? rawPrefilledPhoneRef.current
+      : phoneInput;
+  const kenyanCheck = formatKenyanPhone(effectivePhoneForValidation);
+  const intlCheck = validatePhoneForCountry(effectivePhoneForValidation, activeCountryCfg);
   const phoneCheck =
     selectedCountryCode === '+254' && kenyanCheck.valid
       ? kenyanCheck
@@ -707,7 +716,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 Safaricom M-PESA Express (HashBack)
               </h3>
               <p className="text-center text-xs text-slate-500 dark:text-neutral-400 mb-3">
-                Instant prompt sent to your Safaricom mobile • Rate: 1 USD = {liveUsdKesRate} KES
+                Instant prompt sent to your Safaricom mobile • KES {numKes.toLocaleString()} (${numUsd || 16} USD)
               </p>
 
               {/* Dynamic HashBack Account & Settlement Details Summary (no sensitive credentials exposed) */}
@@ -736,7 +745,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                       Amount (USD) <span className="text-[#0066FF] font-bold">*Min $16</span>
                     </label>
                     <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                      ≈ KES {numKes.toLocaleString()}
+                      KES {numKes.toLocaleString()} (${numUsd || 16} USD)
                     </span>
                   </div>
                   <input
@@ -1126,7 +1135,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
               <p className="text-xs text-slate-600 leading-relaxed max-w-xs mx-auto">
                 An M-PESA prompt was sent to{' '}
-                <span className="font-bold text-slate-900">{phoneInput}</span>. Enter your PIN to
+                <span className="font-bold text-slate-900">{maskPhoneNumber(phoneCheck.display || phoneInput)}</span>. Enter your PIN to
                 complete the payment.
               </p>
 

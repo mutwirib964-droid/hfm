@@ -155,7 +155,7 @@ export const ActionToastBanner: React.FC<ActionToastBannerProps> = ({ toasts, po
 
   return (
     <div className="fixed top-14 sm:top-4 right-3 sm:right-6 left-3 sm:left-auto z-[120] flex flex-col gap-2 pointer-events-none max-w-sm sm:max-w-md w-auto">
-      {list.slice(0, 3).map((toast) => (
+      {list.slice(0, 1).map((toast) => (
         <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
       ))}
     </div>

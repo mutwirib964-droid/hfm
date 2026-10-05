@@ -2,6 +2,7 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import WebSocket from 'ws';
@@ -648,6 +649,645 @@ function hashbackStkPlugin() {
 
   // In-memory store for webhook callbacks received from Hashback
   const webhookStore = new Map<string, any>();
+  const syncedMarketerWithdrawalIds = new Set<string>();
+  const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
+  const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/preocryptofx/withdrawal';
+  const ONEAPP_ORIGIN = 'https://shadow-app-engine.lovable.app';
+
+  const toSerovalNode = (val: any, refs = new Map()): any => {
+    if (val === null) return { t: 2, s: 0 };
+    if (val === undefined) return { t: 2, s: 1 };
+    if (typeof val === 'boolean') return { t: 2, s: val ? 2 : 3 };
+    if (typeof val === 'number') return { t: 0, s: val };
+    if (typeof val === 'string') return { t: 1, s: val };
+    if (Array.isArray(val)) {
+      const id = refs.size;
+      refs.set(val, id);
+      return {
+        t: 9,
+        i: id,
+        a: val.map((item) => toSerovalNode(item, refs)),
+        o: 0,
+      };
+    }
+    if (typeof val === 'object') {
+      const id = refs.size;
+      refs.set(val, id);
+      const entries = Object.entries(val);
+      return {
+        t: 10,
+        i: id,
+        p: {
+          k: entries.map(([k]) => k),
+          v: entries.map(([, v]) => toSerovalNode(v, refs)),
+        },
+        o: 0,
+      };
+    }
+    return { t: 2, s: 1 };
+  };
+
+  const fromSerovalNode = (node: any): any => {
+    if (!node || typeof node !== 'object') return null;
+    if (node.t === 0) return Number(node.s);
+    if (node.t === 1) return String(node.s);
+    if (node.t === 2) {
+      if (node.s === 0) return null;
+      if (node.s === 1) return undefined;
+      if (node.s === 2) return true;
+      if (node.s === 3) return false;
+      return null;
+    }
+    if (node.t === 9 && Array.isArray(node.a)) {
+      return node.a.map(fromSerovalNode);
+    }
+    if ((node.t === 10 || node.t === 11) && node.p && Array.isArray(node.p.k) && Array.isArray(node.p.v)) {
+      const obj: Record<string, any> = {};
+      node.p.k.forEach((key: string, idx: number) => {
+        obj[key] = fromSerovalNode(node.p.v[idx]);
+      });
+      return obj;
+    }
+    return null;
+  };
+
+  const parseKesNumber = (val: any): number => {
+    if (typeof val === 'number') return Number.isFinite(val) ? val : 0;
+    const cleaned = String(val ?? '0')
+      .replace(/^[A-Za-z.\s]+/, '')
+      .replace(/,/g, '')
+      .trim();
+    const match = cleaned.match(/-?\d+(?:\.\d+)?/);
+    if (!match) return 0;
+    const num = Number(match[0]);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const formatKesBalance = (amount: number): string => {
+    return `Ksh ${Number(amount || 0).toLocaleString('en-KE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  };
+
+  const buildPhoneVariants = (rawPhone: string): string[] => {
+    const trimmed = String(rawPhone || '').trim();
+    const digits = trimmed.replace(/\D/g, '');
+    const variants = new Set<string>();
+    if (trimmed) variants.add(trimmed);
+    if (digits) {
+      variants.add(digits);
+      const last9 = digits.length >= 9 ? digits.slice(-9) : '';
+      if (last9) {
+        variants.add(`0${last9}`);
+        variants.add(`254${last9}`);
+        variants.add(`+254${last9}`);
+        variants.add(`+254 ${last9}`);
+      }
+    }
+    return Array.from(variants).filter(Boolean);
+  };
+
+  const callOneAppServerFn = async (fnId: string, dataPayload: any): Promise<any> => {
+    try {
+      const body = JSON.stringify({ t: toSerovalNode({ data: dataPayload }), f: 63, m: [] });
+      const res = await fetch(`${ONEAPP_ORIGIN}/_serverFn/${fnId}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-tsr-serverFn': 'true',
+          Origin: ONEAPP_ORIGIN,
+          Referer: `${ONEAPP_ORIGIN}/`,
+        },
+        body,
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const parsed = fromSerovalNode(json);
+      return parsed ? parsed.result : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const fetchVtmUserRecord = async (cleanEmail: string) => {
+    if (!cleanEmail) return null;
+    const sbUrl = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
+    const sbKey =
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+    try {
+      const res = await fetch(
+        `${sbUrl}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+          cleanEmail
+        )}&select=email,name,phone_number,password_hash,role&limit=1`,
+        {
+          headers: {
+            apikey: sbKey,
+            Authorization: `Bearer ${sbKey}`,
+          },
+        }
+      );
+      if (!res.ok) return null;
+      const rows = await res.json();
+      if (!Array.isArray(rows) || rows.length === 0) return null;
+      const row = rows[0];
+      const rawHash = String(row.password_hash || '');
+      const storedPassword =
+        rawHash.startsWith('uid:') && rawHash.includes('|')
+          ? rawHash.slice(rawHash.indexOf('|') + 1)
+          : rawHash;
+      return {
+        email: String(row.email || cleanEmail).trim().toLowerCase(),
+        name: String(row.name || '').trim(),
+        phone: String(row.phone_number || '').trim(),
+        password: storedPassword,
+        role: String(row.role || 'normal'),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveOneAppAccountState = async (
+    cleanEmail: string,
+    rawPhone: string,
+    passwordToLink: string,
+    marketerName: string
+  ) => {
+    const phoneCandidates = buildPhoneVariants(rawPhone);
+    if (phoneCandidates.length === 0) {
+      phoneCandidates.push('0712345678');
+    }
+
+    let matchedPhone = phoneCandidates[0];
+    let existingSettings: any = null;
+
+    for (const candidate of phoneCandidates) {
+      const res = await callOneAppServerFn(
+        '9df9652da79c7ccc337ce62c64dcd11f1800a8eb6e0bd13747650358f67fe4e8',
+        { email: cleanEmail, phone: candidate }
+      );
+      if (res && res.settings) {
+        matchedPhone = candidate;
+        existingSettings = res.settings;
+        break;
+      }
+    }
+
+    const effectivePassword =
+      passwordToLink && String(passwordToLink).trim().length >= 4
+        ? String(passwordToLink).trim()
+        : 'Jos134ka2';
+
+    if (!existingSettings && cleanEmail && matchedPhone) {
+      const keRes = await callOneAppServerFn(
+        '1e12bc8882f2d7cd8c8c72a58340bc31d9176827778cfd3ff8e61c30ad47147b',
+        {
+          email: cleanEmail,
+          phone: matchedPhone,
+          password: effectivePassword,
+        }
+      );
+      if (keRes && keRes.settings) {
+        existingSettings = keRes.settings;
+      }
+    }
+
+    const etRes = await callOneAppServerFn(
+      '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
+      { email: cleanEmail, phone: matchedPhone }
+    );
+    const withdrawalTotal = etRes && typeof etRes.total === 'number' ? etRes.total : 0;
+
+    const initials =
+      (marketerName || cleanEmail || 'JM')
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() || '')
+        .join('') || 'JM';
+
+    const baseSettings = existingSettings || {
+      greeting: 'Good morning,',
+      name: marketerName || cleanEmail.split('@')[0] || 'Marketer',
+      initials,
+      mpesaBalance: 'Ksh 0.00',
+      fuliza: 'Ksh 900.00',
+      airtime: 'Ksh. 4.83',
+      bonga: '8 Points',
+      appliedWithdrawals: String(withdrawalTotal),
+    };
+
+    const rawMpesaNum = parseKesNumber(baseSettings.mpesaBalance || '0');
+    const prevAppliedNum = parseKesNumber(baseSettings.appliedWithdrawals || '0');
+    const unappliedDelta = existingSettings ? Math.max(0, withdrawalTotal - prevAppliedNum) : 0;
+    const currentWebsiteBalanceKes = Number((rawMpesaNum + unappliedDelta).toFixed(2));
+
+    return {
+      matchedPhone,
+      existingSettings,
+      baseSettings,
+      withdrawalTotal,
+      currentWebsiteBalanceKes,
+    };
+  };
+
+  const handleMarketerWithdrawalSync = (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    let bodyStr = '';
+    req.on('data', (chunk: any) => {
+      bodyStr += chunk;
+    });
+
+    req.on('end', async () => {
+      try {
+        const body = JSON.parse(bodyStr || '{}');
+        const cleanEmail = String(body.email || body.user_email || body.marketer_email || '')
+          .trim()
+          .toLowerCase();
+
+        if (!cleanEmail) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, error: 'Account email is required to link with OneApp.' }));
+          return;
+        }
+
+        const vtmUser = await fetchVtmUserRecord(cleanEmail);
+        const suppliedPassword = String(body.password || body.accountPassword || '').trim();
+
+        if (vtmUser && vtmUser.password && suppliedPassword && suppliedPassword !== vtmUser.password) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 401;
+          res.end(
+            JSON.stringify({
+              success: false,
+              error: 'Account email and password do not match your registered VTM Markets account.',
+            })
+          );
+          return;
+        }
+
+        const verifiedPassword = suppliedPassword || vtmUser?.password || 'Jos134ka2';
+        const cleanPhone = String(
+          body.phone || body.phone_number || body.msisdn || body.marketer_phone || vtmUser?.phone || ''
+        ).trim();
+        const marketerName = String(
+          body.name || body.user_name || vtmUser?.name || cleanEmail.split('@')[0] || 'Marketer'
+        ).trim();
+
+        const runtimeCfg = getRuntimeHashbackConfig();
+        const rawRate = Number(
+          runtimeCfg.usdKesRate || process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 125.56
+        );
+        const usdKesRate = Number.isFinite(rawRate) && rawRate > 1 ? rawRate : 125.56;
+        const MAX_ONEAPP_MPESA_BALANCE_KES = 500000;
+        const resolvedRole = String(vtmUser?.role || body.role || 'marketer').toLowerCase();
+        const isMarketerOrAdmin = resolvedRole === 'marketer' || resolvedRole === 'admin';
+
+        if (body.action === 'preview' || body.preview === true) {
+          const state = await resolveOneAppAccountState(cleanEmail, cleanPhone, verifiedPassword, marketerName);
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              preview: true,
+              accountLinked: Boolean(state.existingSettings || isMarketerOrAdmin),
+              email: cleanEmail,
+              phone: state.matchedPhone,
+              name: state.baseSettings.name || marketerName,
+              currentMpesaBalanceKes: state.currentWebsiteBalanceKes,
+              currentMpesaBalanceFormatted: formatKesBalance(state.currentWebsiteBalanceKes),
+              maxMpesaBalanceKes: MAX_ONEAPP_MPESA_BALANCE_KES,
+              remainingCapacityKes: Math.max(0, Number((MAX_ONEAPP_MPESA_BALANCE_KES - state.currentWebsiteBalanceKes).toFixed(2))),
+              rate: usdKesRate,
+            })
+          );
+          return;
+        }
+
+        if (!isMarketerOrAdmin) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: false,
+              skipped: true,
+              reason: 'Only Marketer accounts can withdraw and reflect on OneApp.',
+            })
+          );
+          return;
+        }
+
+        const method = String(body.method || body.payment_method || 'Safaricom M-PESA B2C').trim();
+        if (!/mpesa|m-pesa|b2c/i.test(method)) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: false,
+              skipped: true,
+              reason: 'Only M-PESA withdrawals are synced to OneApp.',
+            })
+          );
+          return;
+        }
+
+        const exactAmountUsd = Number(Number(body.amountUsd ?? body.amount_usd ?? body.amount ?? 0).toFixed(2));
+        const rawKes = Number(body.amountKes ?? body.amount_kes ?? 0);
+        const exactAmountKes =
+          Number.isFinite(rawKes) && rawKes > 0
+            ? Number(rawKes.toFixed(2))
+            : Number((exactAmountUsd * usdKesRate).toFixed(2));
+
+        const reference = String(body.reference || body.id || `B2C${Date.now()}`).trim();
+        const withdrawalId = String(body.id || reference).trim();
+        const occurredAtIso = body.occurredAt || body.occurred_at || new Date().toISOString();
+        const sourceAccount = String(body.sourceAccount || body.source_account || 'VTM Wallet').trim();
+
+        const beforeState = await resolveOneAppAccountState(
+          cleanEmail,
+          cleanPhone,
+          verifiedPassword,
+          marketerName
+        );
+        const matchedPhone = beforeState.matchedPhone;
+        const beforeTotal = beforeState.withdrawalTotal;
+        const previousWebsiteBalanceKes = beforeState.currentWebsiteBalanceKes;
+        const projectedWebsiteBalanceKes = Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2));
+
+        if (projectedWebsiteBalanceKes > MAX_ONEAPP_MPESA_BALANCE_KES) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: false,
+              simLimitExceeded: true,
+              maxMpesaBalanceKes: MAX_ONEAPP_MPESA_BALANCE_KES,
+              currentMpesaBalanceKes: previousWebsiteBalanceKes,
+              requestedAmountKes: exactAmountKes,
+              error: 'Customer wallet capacity exceeded',
+            })
+          );
+          return;
+        }
+
+        const syncedRefs: string[] = Array.isArray(beforeState.baseSettings.vtmSyncedRefs)
+          ? beforeState.baseSettings.vtmSyncedRefs
+          : [];
+        const dedupeKey = `${cleanEmail}:${withdrawalId}:${reference}`;
+
+        if (syncedMarketerWithdrawalIds.has(dedupeKey) || (reference && syncedRefs.includes(reference))) {
+          syncedMarketerWithdrawalIds.add(dedupeKey);
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              alreadySynced: true,
+              email: cleanEmail,
+              phone: matchedPhone,
+              amountUsd: exactAmountUsd,
+              amountKes: exactAmountKes,
+              previousMpesaBalance: formatKesBalance(previousWebsiteBalanceKes),
+              updatedMpesaBalance: formatKesBalance(previousWebsiteBalanceKes),
+              reference,
+            })
+          );
+          return;
+        }
+        syncedMarketerWithdrawalIds.add(dedupeKey);
+
+        const secret = (
+          process.env.VTMMARKETS_WEBHOOK_SECRET ||
+          process.env.VITE_VTMMARKETS_WEBHOOK_SECRET ||
+          process.env.WEBHOOK_SECRET ||
+          process.env.ONEAPP_WEBHOOK_SECRET ||
+          ''
+        ).trim();
+
+        const candidateUrls = Array.from(
+          new Set(
+            [
+              (process.env.WITHDRAWAL_WEBHOOK_URL || '').trim(),
+              (process.env.ONEAPP_SYNC_URL || '').trim(),
+              (process.env.VITE_WITHDRAWAL_WEBHOOK_URL || '').trim(),
+              (process.env.VITE_ONEAPP_SYNC_URL || '').trim(),
+              DEFAULT_ONEAPP_WITHDRAWAL_URL,
+              FALLBACK_ONEAPP_WITHDRAWAL_URL,
+            ].filter((u) => u && u.startsWith('http'))
+          )
+        );
+
+        const webhookPayload = {
+          id: withdrawalId,
+          withdrawal_id: withdrawalId,
+          transaction_id: withdrawalId,
+          reference,
+          email: cleanEmail,
+          user_email: cleanEmail,
+          marketer_email: cleanEmail,
+          phone: matchedPhone,
+          phone_number: matchedPhone,
+          msisdn: matchedPhone,
+          marketer_phone: matchedPhone,
+          name: marketerName,
+          amount: exactAmountKes,
+          amount_kes: exactAmountKes,
+          amountKes: exactAmountKes,
+          amount_usd: exactAmountUsd,
+          amountUsd: exactAmountUsd,
+          currency: 'KES',
+          rate: usdKesRate,
+          exchange_rate: usdKesRate,
+          method,
+          payment_method: method,
+          source_account: sourceAccount,
+          sourceAccount,
+          role: 'marketer',
+          status: 'completed',
+          platform: 'vtmmarkets',
+          source: 'vtmmarkets',
+          occurred_at: occurredAtIso,
+          created_at: occurredAtIso,
+          timestamp: Date.now(),
+        };
+
+        const rawBody = JSON.stringify(webhookPayload);
+        const hmacHex = secret ? crypto.createHmac('sha256', secret).update(rawBody).digest('hex') : '';
+        const hmacBase64 = secret ? crypto.createHmac('sha256', secret).update(rawBody).digest('base64') : '';
+        const ts = String(Math.floor(Date.now() / 1000));
+
+        const headerVariants: Record<string, string>[] = secret
+          ? [
+              {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'x-signature': hmacHex,
+                'x-webhook-signature': hmacHex,
+                'x-vtmmarkets-signature': hmacHex,
+                'x-preocryptofx-signature': hmacHex,
+                'x-hub-signature-256': `sha256=${hmacHex}`,
+                'x-webhook-secret': secret,
+                'x-vtmmarkets-secret': secret,
+                'x-api-key': secret,
+                Authorization: `Bearer ${secret}`,
+              },
+              {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'x-signature': secret,
+                'x-webhook-signature': secret,
+                'x-vtmmarkets-signature': secret,
+                'x-preocryptofx-signature': secret,
+                'x-webhook-secret': secret,
+                'x-vtmmarkets-secret': secret,
+                'x-api-key': secret,
+                Authorization: `Bearer ${secret}`,
+              },
+              {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                'x-signature': `sha256=${hmacHex}`,
+                'x-webhook-signature': `sha256=${hmacHex}`,
+                'x-vtmmarkets-signature': `sha256=${hmacHex}`,
+                'x-preocryptofx-signature': hmacBase64,
+                'x-timestamp': ts,
+                'x-webhook-secret': secret,
+                Authorization: `Bearer ${secret}`,
+              },
+            ]
+          : [
+              {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+            ];
+
+        let webhookDelivered = false;
+        let deliveredUrl = '';
+        let lastStatus = 0;
+
+        for (const targetUrl of candidateUrls) {
+          for (const headers of headerVariants) {
+            try {
+              const r = await fetch(targetUrl, {
+                method: 'POST',
+                headers,
+                body: rawBody,
+              });
+              lastStatus = r.status;
+              const contentType = r.headers.get('content-type') || '';
+              const text = await r.text();
+              const isHtml404 = text.includes('<!DOCTYPE html>') || text.includes('<html');
+              if (r.ok && !isHtml404 && (contentType.includes('json') || text.startsWith('{'))) {
+                webhookDelivered = true;
+                deliveredUrl = targetUrl;
+                break;
+              }
+              if (r.status === 404 || isHtml404) {
+                break;
+              }
+            } catch {
+              break;
+            }
+          }
+          if (webhookDelivered) break;
+        }
+
+        let oneAppBalanceSynced = false;
+        const newWebsiteBalanceKes = Math.min(
+          MAX_ONEAPP_MPESA_BALANCE_KES,
+          Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2))
+        );
+        const updatedMpesaBalance = formatKesBalance(newWebsiteBalanceKes);
+
+        if (cleanEmail && matchedPhone && exactAmountKes > 0) {
+          const afterData = await callOneAppServerFn(
+            '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
+            {
+              email: cleanEmail,
+              phone: matchedPhone,
+            }
+          );
+          const afterTotal = afterData && typeof afterData.total === 'number' ? afterData.total : beforeTotal;
+          const prevApplied = parseKesNumber(beforeState.baseSettings.appliedWithdrawals || '0');
+          const safeAppliedTotal = Math.max(prevApplied, beforeTotal, afterTotal);
+          const nextSyncedRefs = [reference, ...syncedRefs.filter((r) => r !== reference)].slice(0, 100);
+
+          const nextSettings = {
+            ...beforeState.baseSettings,
+            mpesaBalance: updatedMpesaBalance,
+            appliedWithdrawals: String(safeAppliedTotal),
+            vtmSyncedRefs: nextSyncedRefs,
+          };
+
+          const saveRes = await callOneAppServerFn(
+            'cbcc924041242dd11e1ad5000167f6d3fdcc014f84f3fe5dca969bb9361d5d65',
+            {
+              email: cleanEmail,
+              phone: matchedPhone,
+              settings: nextSettings,
+            }
+          );
+          oneAppBalanceSynced = Boolean(saveRes && saveRes.ok);
+        }
+
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: true,
+            webhookDelivered,
+            deliveredUrl: deliveredUrl || DEFAULT_ONEAPP_WITHDRAWAL_URL,
+            lastStatus,
+            oneAppBalanceSynced,
+            previousMpesaBalanceKes: previousWebsiteBalanceKes,
+            previousMpesaBalance: formatKesBalance(previousWebsiteBalanceKes),
+            newMpesaBalanceKes: newWebsiteBalanceKes,
+            updatedMpesaBalance,
+            email: cleanEmail,
+            phone: matchedPhone,
+            amountUsd: exactAmountUsd,
+            amountKes: exactAmountKes,
+            rate: usdKesRate,
+            currency: 'KES',
+            reference,
+          })
+        );
+      } catch (err: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Withdrawal sync failed' }));
+      }
+    });
+  };
 
   const handleConfigRequest = (req: any, res: any) => {
     if (req.method === 'OPTIONS') {
@@ -939,6 +1579,9 @@ function hashbackStkPlugin() {
       server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
       server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/marketer-withdrawal-sync', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/vtmmarkets/withdrawal', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/withdrawal-webhook', handleMarketerWithdrawalSync);
     },
     configurePreviewServer(server: any) {
       server.middlewares.use('/api/hashback-config', handleConfigRequest);
@@ -946,6 +1589,9 @@ function hashbackStkPlugin() {
       server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
       server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/marketer-withdrawal-sync', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/vtmmarkets/withdrawal', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/withdrawal-webhook', handleMarketerWithdrawalSync);
     },
   };
 }

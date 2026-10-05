@@ -37,7 +37,7 @@ function generateInstitutionalAnswer(query: string, user?: any): string {
   const q = (query || '').toLowerCase();
 
   if (q.includes('m-pesa') || q.includes('mpesa') || (q.includes('deposit') && q.includes('phone'))) {
-    return `### Safaricom M-PESA Express STK Deposit Guide\n\n1. **Direct Funding**: Go to the **Wallet** tab or click the green **Deposit** button in the top navigation bar.\n2. **Select Account**: Choose whether to fund your **VTM One Wallet** or a specific **Live Trading Account**.\n3. **Enter Amount**: Minimum deposit is **$16.00 USD** (converted at **1 USD = 129.50 KES**).\n4. **STK Push**: Enter your Safaricom phone number (e.g. 07XXXXXXXX or 01XXXXXXXX). Your phone will receive an STK prompt to enter your M-PESA PIN.\n5. **Instant Credit**: Once confirmed, your balance is credited immediately with 0% processing fee.`;
+    return `### Safaricom M-PESA Express STK Deposit Guide\n\n1. **Direct Funding**: Go to the **Wallet** tab or click the green **Deposit** button in the top navigation bar.\n2. **Select Account**: Choose whether to fund your **VTM One Wallet** or a specific **Live Trading Account**.\n3. **Enter Amount**: Minimum deposit is **$16.00 USD**.\n4. **STK Push**: Enter your Safaricom phone number (e.g. 07XXXXXXXX or 01XXXXXXXX). Your phone will receive an STK prompt to enter your M-PESA PIN.\n5. **Instant Credit**: Once confirmed, your balance is credited immediately with 0% processing fee.`;
   }
 
   if (q.includes('bitcoin') || q.includes('crypto') || q.includes('btc') || q.includes('usdt') || q.includes('eth')) {

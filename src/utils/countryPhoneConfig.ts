@@ -370,3 +370,42 @@ export function validatePhoneForCountry(
     nationalDigits,
   };
 }
+
+/**
+ * Masks any phone number so the full number is never exposed anywhere in the platform.
+ * Shows the leading and trailing numbers with asterisks (*) in the middle.
+ * Examples:
+ *   "+254 797 253 118" -> "+25479****118"
+ *   "254797253118"     -> "25479****118"
+ *   "0797253118"       -> "0797***118"
+ */
+export function maskPhoneNumber(raw?: string | null): string {
+  if (!raw) return 'Not linked';
+  const trimmed = String(raw).trim();
+  if (!trimmed || trimmed.toLowerCase() === 'not linked' || trimmed.toLowerCase() === 'n/a') {
+    return trimmed || 'Not linked';
+  }
+  if (trimmed.includes('*')) return trimmed;
+
+  const compact = trimmed.replace(/\s+/g, '');
+  if (compact.length <= 4) return compact;
+  if (compact.length <= 7) {
+    return `${compact.slice(0, 2)}${'*'.repeat(Math.max(2, compact.length - 4))}${compact.slice(-2)}`;
+  }
+  if (compact.startsWith('+')) {
+    const frontLen = Math.min(6, Math.max(4, compact.length - 6));
+    const endLen = 3;
+    const starsLen = Math.max(3, compact.length - frontLen - endLen);
+    return `${compact.slice(0, frontLen)}${'*'.repeat(starsLen)}${compact.slice(-endLen)}`;
+  }
+  if (compact.length >= 11) {
+    const frontLen = 5;
+    const endLen = 3;
+    const starsLen = Math.max(3, compact.length - frontLen - endLen);
+    return `${compact.slice(0, frontLen)}${'*'.repeat(starsLen)}${compact.slice(-endLen)}`;
+  }
+  const frontLen = compact.startsWith('0') ? 4 : 3;
+  const endLen = 3;
+  const starsLen = Math.max(3, compact.length - frontLen - endLen);
+  return `${compact.slice(0, frontLen)}${'*'.repeat(starsLen)}${compact.slice(-endLen)}`;
+}

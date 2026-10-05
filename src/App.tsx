@@ -94,6 +94,7 @@ import {
   mergeUserFinancialStates,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
+import { getUsdKesWithdrawRate } from './services/hashbackService';
 
 let isAudioMuted = false;
 
@@ -2982,144 +2983,128 @@ export default function App() {
     });
   };
 
+  const finalizingWithdrawalsRef = useRef<Set<string>>(new Set());
+
   // Helper to complete a PENDING withdrawal transaction automatically after 3 seconds
-  const finalizePendingWithdrawal = useCallback((txId: string, reference: string) => {
+  // If an M-PESA withdrawal would cause the linked wallet to exceed KES 500,000, mark as FAILED ('Customer wallet capacity exceeded') without deducting from the source account/wallet.
+  const finalizePendingWithdrawal = useCallback(async (txId: string, reference: string, explicitAmountKes?: number) => {
     const existingTx = transactionsRef.current.find(
       (t) => (t.id === txId || (reference && t.reference === reference)) && t.type === 'WITHDRAWAL'
     );
-    if (!existingTx || existingTx.status === 'COMPLETED') return;
+    if (!existingTx || existingTx.status === 'COMPLETED' || existingTx.status === 'FAILED') return;
+    if (finalizingWithdrawalsRef.current.has(existingTx.id)) return;
+    finalizingWithdrawalsRef.current.add(existingTx.id);
 
-    const updatedTransactions = transactionsRef.current.map((t) =>
-      t.id === existingTx.id
-        ? {
-            ...t,
-            status: 'COMPLETED' as const,
-            details: `${t.details || `Withdrawal from ${t.accountNumber || 'Account'}`} • Disbursed`,
-          }
-        : t
-    );
-
-    transactionsRef.current = updatedTransactions;
-    setTransactions(updatedTransactions);
-    lastLocalFinancialUpdateRef.current = Date.now();
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const exactAmountKes =
+      explicitAmountKes && explicitAmountKes > 0
+        ? Number(explicitAmountKes.toFixed(2))
+        : Number((existingTx.amount * rate).toFixed(2));
 
     const activeUser = currentUserRef.current;
-    if (activeUser) {
-      saveUserFinancials(activeUser, {
-        walletBalance: walletBalanceRef.current,
-        accounts: accountsRef.current,
-        selectedAccountId: selectedAccountRef.current?.id,
-        transactions: updatedTransactions,
-      });
-      supabaseService.saveWithdrawal(activeUser, {
+    const isMpesaTx = /mpesa|m-pesa|b2c/i.test(existingTx.method || '');
+    const sourceAcc = existingTx.accountNumber || 'VTM Wallet';
+    const amountUsd = Number(existingTx.amount.toFixed(2));
+
+    if (
+      activeUser &&
+      isMpesaTx &&
+      (activeUser.role === 'marketer' || activeUser.role === 'admin')
+    ) {
+      const storedPwd = supabaseService.getStoredAccountPassword(activeUser.email);
+      const syncResult = await supabaseService.syncMarketerWithdrawalToOneApp(activeUser, {
         id: existingTx.id,
-        sourceAccount: existingTx.accountNumber || 'VTM Wallet',
-        amountUsd: existingTx.amount,
+        sourceAccount: sourceAcc,
+        amountUsd,
+        amountKes: exactAmountKes,
+        rate,
         method: existingTx.method,
+        phone: activeUser.phoneNumber || (activeUser as any)?.phone || '',
+        password: storedPwd,
         reference: existingTx.reference,
-        status: 'COMPLETED',
       });
-      supabaseService.syncTransactions(activeUser, updatedTransactions);
-      supabaseService.syncActivity(activeUser, {
-        type: 'WITHDRAWAL_COMPLETED',
-        description: `Withdrawal of $${existingTx.amount.toFixed(2)} from ${existingTx.accountNumber || 'Account'} completed via ${existingTx.method}. Ref: ${existingTx.reference}`,
-        metadata: {
-          amount: existingTx.amount,
-          sourceAccount: existingTx.accountNumber,
+
+      if (syncResult?.simLimitExceeded || exactAmountKes > 500000) {
+        // Refresh account/wallet state without deducting any funds
+        const intactWallet = walletBalanceRef.current;
+        const intactAccounts = [...accountsRef.current];
+        setWalletBalance(intactWallet);
+        setAccounts(intactAccounts);
+        setSelectedAccount((acc) => {
+          if (!acc) return null;
+          const found =
+            intactAccounts.find((a) => a.id === acc.id || a.accountNumber === acc.accountNumber) || acc;
+          selectedAccountRef.current = found;
+          return { ...found };
+        });
+
+        const failedTransactions = transactionsRef.current.map((t) =>
+          t.id === existingTx.id
+            ? {
+                ...t,
+                status: 'FAILED' as const,
+                details: 'Customer wallet capacity exceeded',
+              }
+            : t
+        );
+
+        transactionsRef.current = failedTransactions;
+        setTransactions(failedTransactions);
+        lastLocalFinancialUpdateRef.current = Date.now();
+
+        saveUserFinancials(activeUser, {
+          walletBalance: intactWallet,
+          accounts: intactAccounts,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: failedTransactions,
+        });
+        supabaseService.saveWithdrawal(activeUser, {
+          id: existingTx.id,
+          sourceAccount: sourceAcc,
+          amountUsd,
+          amountKes: exactAmountKes,
+          method: existingTx.method,
           reference: existingTx.reference,
-          status: 'COMPLETED',
-        },
-      });
+          status: 'FAILED',
+        });
+
+        triggerActionPopup({
+          type: 'WITHDRAWAL_FAILED',
+          title: 'Customer wallet capacity exceeded',
+          details: {
+            amount: amountUsd,
+            method: existingTx.method,
+            reason: 'Customer wallet capacity exceeded',
+            accountNumber: sourceAcc,
+          },
+        });
+        return;
+      }
     }
 
-    addNotification(
-      `Withdrawal of $${existingTx.amount.toFixed(2)} completed successfully! (Ref: ${existingTx.reference})`
-    );
-    triggerActionPopup({
-      type: 'WITHDRAWAL_SUCCESS',
-      title: `Withdrawal of $${existingTx.amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
-      subtitle: `Instant payout disbursed from ${existingTx.accountNumber || 'Account'} via ${existingTx.method}. Ref: ${existingTx.reference}`,
-      details: {
-        amount: existingTx.amount,
-        method: existingTx.method,
-        reference: existingTx.reference,
-        accountNumber: existingTx.accountNumber || 'VTM Wallet',
-      },
-    });
-  }, []);
-
-  // Safety Watcher: Ensure any PENDING withdrawal transaction automatically shifts to COMPLETED (SUCCESSFUL) after 3 seconds without fail
-  useEffect(() => {
-    const pendingWithdrawals = transactions.filter(
-      (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING'
-    );
-    if (pendingWithdrawals.length === 0) return;
-
-    const timers = pendingWithdrawals.map((tx) => {
-      const elapsed = Date.now() - (tx.timestamp || Date.now());
-      const remainingMs = Math.max(300, 3000 - elapsed);
-      return setTimeout(() => {
-        finalizePendingWithdrawal(tx.id, tx.reference);
-      }, remainingMs);
-    });
-
-    return () => {
-      timers.forEach((timer) => clearTimeout(timer));
-    };
-  }, [transactions, finalizePendingWithdrawal]);
-
-  // Withdrawal Handlers - Minimum withdrawal is strictly $35 ($50 for Crypto)
-  // Deducts immediately from account, stores new balance for next trades/transactions,
-  // records as PENDING for 3 seconds, then shifts automatically to COMPLETED (SUCCESSFUL) without fail.
-  const handleWithdraw = (params: {
-    method: string;
-    amount: number;
-    sourceAccount: string;
-    reference?: string;
-    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
-  }) => {
-    const amountUsd = Number((params.amount || 0).toFixed(2));
-
-    if (params.status === 'FAILED' || amountUsd < 35) {
-      triggerActionPopup({
-        type: 'WITHDRAWAL_FAILED',
-        title: 'Withdrawal Unsuccessful',
-        subtitle: amountUsd < 35 ? 'Minimum withdrawal requirement is $35.00 USD.' : 'Insufficient withdrawable funds in selected source.',
-        details: {
-          amount: amountUsd,
-          method: params.method,
-          reason: amountUsd < 35 ? 'Minimum withdrawal amount is $35.00 USD.' : 'Insufficient funds.',
-        },
-      });
-      return;
-    }
-
-    const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
-    const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-
-    // 1. Immediately deduct amount from the source account/wallet and store the new balance for next trades & transactions
+    // Deduct amount from source account/wallet now that the withdrawal is verified and COMPLETED
     let nextWallet = walletBalanceRef.current;
     let nextAccounts = [...accountsRef.current];
     let resultingBalance = 0;
 
     if (
-      params.sourceAccount === 'VTM Wallet' ||
-      params.sourceAccount === 'VTM One Wallet' ||
-      params.sourceAccount === 'HF Wallet' ||
-      params.sourceAccount.toLowerCase().includes('wallet')
+      sourceAcc === 'VTM Wallet' ||
+      sourceAcc === 'VTM One Wallet' ||
+      sourceAcc === 'HF Wallet' ||
+      sourceAcc.toLowerCase().includes('wallet')
     ) {
       nextWallet = Math.max(0, Number((walletBalanceRef.current - amountUsd).toFixed(2)));
       resultingBalance = nextWallet;
       walletBalanceRef.current = nextWallet;
       setWalletBalance(nextWallet);
     } else {
-      const cleanSource = params.sourceAccount.replace(/^Account\s*#/i, '').trim();
+      const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
       nextAccounts = accountsRef.current.map((acc) => {
         if (
           acc.accountNumber === cleanSource ||
-          acc.accountNumber === params.sourceAccount ||
-          `Account #${acc.accountNumber}` === params.sourceAccount ||
-          acc.id === params.sourceAccount
+          acc.accountNumber === sourceAcc ||
+          `Account #${acc.accountNumber}` === sourceAcc ||
+          acc.id === sourceAcc
         ) {
           const newBal = Math.max(0, Number((acc.balance - amountUsd).toFixed(2)));
           const newEq = Math.max(0, Number((acc.equity - amountUsd).toFixed(2)));
@@ -3144,7 +3129,129 @@ export default function App() {
       });
     }
 
-    // 2. Always start as PENDING for 3 seconds so it is recorded immediately in transactions & Supabase
+    const updatedTransactions = transactionsRef.current.map((t) =>
+      t.id === existingTx.id
+        ? {
+            ...t,
+            status: 'COMPLETED' as const,
+            details: `Withdrawal from ${sourceAcc} (New Bal: $${resultingBalance.toFixed(2)}) • Disbursed (KES ${exactAmountKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`,
+          }
+        : t
+    );
+
+    transactionsRef.current = updatedTransactions;
+    setTransactions(updatedTransactions);
+    lastLocalFinancialUpdateRef.current = Date.now();
+
+    if (activeUser) {
+      saveUserFinancials(activeUser, {
+        walletBalance: nextWallet,
+        accounts: nextAccounts,
+        selectedAccountId: selectedAccountRef.current?.id,
+        transactions: updatedTransactions,
+      });
+      supabaseService.saveWithdrawal(activeUser, {
+        id: existingTx.id,
+        sourceAccount: sourceAcc,
+        amountUsd,
+        amountKes: exactAmountKes,
+        method: existingTx.method,
+        reference: existingTx.reference,
+        status: 'COMPLETED',
+      });
+      supabaseService.syncActivity(activeUser, {
+        type: 'WITHDRAWAL_COMPLETED',
+        description: `Withdrawal of $${amountUsd.toFixed(2)} (KES ${exactAmountKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) from ${sourceAcc} completed via ${existingTx.method}. Ref: ${existingTx.reference}`,
+        metadata: {
+          amount: amountUsd,
+          amountKes: exactAmountKes,
+          sourceAccount: sourceAcc,
+          reference: existingTx.reference,
+          status: 'COMPLETED',
+        },
+      });
+    }
+
+    addNotification(
+      `Withdrawal of $${amountUsd.toFixed(2)} (KES ${exactAmountKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) completed successfully! (Ref: ${existingTx.reference})`
+    );
+    triggerActionPopup({
+      type: 'WITHDRAWAL_SUCCESS',
+      title: `Withdrawal of $${amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
+      subtitle: `Instant payout of KES ${exactAmountKes.toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} disbursed from ${sourceAcc} via ${existingTx.method}. Ref: ${existingTx.reference}`,
+      details: {
+        amount: amountUsd,
+        amountKes: exactAmountKes,
+        method: existingTx.method,
+        reference: existingTx.reference,
+        accountNumber: sourceAcc,
+      },
+    });
+  }, []);
+
+  // Safety Watcher: Ensure any PENDING withdrawal transaction automatically finalizes after 3 seconds without fail
+  useEffect(() => {
+    const pendingWithdrawals = transactions.filter(
+      (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING'
+    );
+    if (pendingWithdrawals.length === 0) return;
+
+    const timers = pendingWithdrawals.map((tx) => {
+      const elapsed = Date.now() - (tx.timestamp || Date.now());
+      const remainingMs = Math.max(300, 3000 - elapsed);
+      return setTimeout(() => {
+        finalizePendingWithdrawal(tx.id, tx.reference);
+      }, remainingMs);
+    });
+
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+    };
+  }, [transactions, finalizePendingWithdrawal]);
+
+  // Withdrawal Handlers - Minimum withdrawal is strictly $35 ($50 for Crypto)
+  // Records as PENDING for 3 seconds while verifying capacity, then deducts and completes if successful or marks FAILED without deducting if capacity exceeded.
+  const handleWithdraw = (params: {
+    method: string;
+    amount: number;
+    amountKes?: number;
+    sourceAccount: string;
+    reference?: string;
+    status?: 'COMPLETED' | 'PENDING' | 'FAILED';
+  }) => {
+    const amountUsd = Number((params.amount || 0).toFixed(2));
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const exactAmountKes =
+      params.amountKes && params.amountKes > 0
+        ? Number(params.amountKes.toFixed(2))
+        : Number((amountUsd * rate).toFixed(2));
+
+    const isMpesaMethod = (params.method || '').toLowerCase().includes('m-pesa') || (params.method || '').toLowerCase().includes('mpesa');
+    const maxSingleTx = isMpesaMethod ? 2000 : 10000;
+    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx) {
+      const failReason =
+        amountUsd < 35
+          ? 'Minimum withdrawal requirement is $35.00 USD.'
+          : amountUsd > maxSingleTx
+          ? `Maximum withdrawal is $${maxSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
+          : 'Insufficient withdrawable funds in selected source.';
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Withdrawal Unsuccessful',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+        },
+      });
+      return;
+    }
+
+    const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
+    const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // Record as PENDING for 3 seconds while verifying; balance is only deducted upon verified completion
     const newTx: Transaction = {
       id: txId,
       type: 'WITHDRAWAL',
@@ -3155,7 +3262,7 @@ export default function App() {
       timestamp: Date.now(),
       reference: ref,
       accountNumber: params.sourceAccount,
-      details: `Withdrawal from ${params.sourceAccount} (New Bal: $${resultingBalance.toFixed(2)})`,
+      details: `Withdrawal from ${params.sourceAccount}`,
     };
 
     const nextTransactions = [newTx, ...transactionsRef.current];
@@ -3165,8 +3272,8 @@ export default function App() {
 
     if (currentUser) {
       saveUserFinancials(currentUser, {
-        walletBalance: nextWallet,
-        accounts: nextAccounts,
+        walletBalance: walletBalanceRef.current,
+        accounts: accountsRef.current,
         selectedAccountId: selectedAccountRef.current?.id,
         transactions: nextTransactions,
       });
@@ -3174,25 +3281,15 @@ export default function App() {
         id: newTx.id,
         sourceAccount: params.sourceAccount,
         amountUsd,
+        amountKes: exactAmountKes,
         method: params.method,
         reference: ref,
         status: 'PENDING',
       });
-      supabaseService.syncTransactions(currentUser, nextTransactions);
-      supabaseService.syncActivity(currentUser, {
-        type: 'WITHDRAWAL_PENDING',
-        description: `Withdrawal of $${amountUsd.toFixed(2)} initiated from ${params.sourceAccount} via ${params.method} (Pending 3s verification)`,
-        metadata: { amount: amountUsd, sourceAccount: params.sourceAccount, reference: ref, status: 'PENDING' },
-      });
     }
 
-    addNotification(
-      `Withdrawal of $${amountUsd.toFixed(2)} from ${params.sourceAccount} is PENDING (processing 3s)...`
-    );
-
-    // 3. Automatically shift from PENDING to COMPLETED (SUCCESSFUL) after 3 seconds without fail
     setTimeout(() => {
-      finalizePendingWithdrawal(txId, ref);
+      finalizePendingWithdrawal(txId, ref, exactAmountKes);
     }, 3000);
   };
 
