@@ -2,9 +2,10 @@ import {
   UserFinancialState,
   getUserStorageKey,
   sanitizeRealTransactions,
-  sweepIdleLiveAccountsSilently,
   markAccountDeletedLocally,
   getDeletedAccountNumbers,
+  pickAuthoritativeAccount,
+  isSkeletonZeroAccount,
 } from '../utils/financialStorage';
 import { TradingAccount, Transaction, Position, PendingOrder, ClosedTrade } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -681,7 +682,7 @@ class SupabaseService {
               financesByEmail[emailKey] = state;
             }
           } else {
-            // Merge non-deleted accounts and transactions across rows so no account is ever lost
+            // Merge non-deleted accounts and transactions across rows so no account is ever lost or overwritten by a $0 skeleton
             const mergedAccMap = new Map<string, TradingAccount>();
             incomingAccounts.forEach((acc) => {
               const k = acc.accountNumber || acc.id;
@@ -689,7 +690,10 @@ class SupabaseService {
             });
             (existing.accounts || []).forEach((acc) => {
               const k = acc.accountNumber || acc.id;
-              if (k) mergedAccMap.set(k, acc);
+              if (k) {
+                const prev = mergedAccMap.get(k);
+                mergedAccMap.set(k, prev ? pickAuthoritativeAccount(prev, acc, true) : acc);
+              }
             });
             const mergedAccounts = Array.from(mergedAccMap.values());
 
@@ -818,29 +822,6 @@ class SupabaseService {
           }
         });
       }
-
-      // Silently sweep idle Live accounts across all platform users (2 weeks idle with $0 -> delete; or deposited & no trade -> transfer to wallet & delete)
-      Object.keys(financesByEmail).forEach((emailKey) => {
-        const fin = financesByEmail[emailKey];
-        if (!fin || !Array.isArray(fin.accounts) || fin.accounts.length === 0) return;
-        const dummyUser: UserAuthProfile = {
-          id: uidByEmail[emailKey] || this.deterministicUuidFromEmail(emailKey),
-          email: emailKey,
-          name: nameByEmail[emailKey] || emailKey.split('@')[0],
-          role: 'normal',
-          accountNumber: fin.accounts[0]?.accountNumber || 'VTM-000000',
-          isLoggedIn: false,
-          createdAt: Date.now(),
-        };
-        const swept = sweepIdleLiveAccountsSilently(dummyUser, fin);
-        if (swept.changed) {
-          financesByEmail[emailKey] = swept.state;
-          this.syncUserFinancials(dummyUser, swept.state).catch(() => {});
-          swept.sweptAccountNumbers.forEach((accNum) => {
-            this.deleteTradingAccountFromDatabase(dummyUser, accNum, true).catch(() => {});
-          });
-        }
-      });
 
       const usersMap = new Map<string, UserAuthProfile>();
 
@@ -2107,8 +2088,9 @@ class SupabaseService {
                   const accNum = String(acc.accountNumber || '');
                   if (accNum && deletedAccountNums.has(accNum)) continue;
                   const k = accNum || acc.id;
-                  if (k && !accountMap.has(k)) {
-                    accountMap.set(k, acc);
+                  if (k) {
+                    const prev = accountMap.get(k);
+                    accountMap.set(k, prev ? pickAuthoritativeAccount(prev, acc, false) : acc);
                   }
                 }
               }
@@ -2119,7 +2101,7 @@ class SupabaseService {
         // Proceed with incoming accounts if read times out
       }
 
-      // Apply incoming accounts (overriding matching accounts with latest balance/equity)
+      // Apply incoming accounts (overriding matching accounts with latest balance/equity, while blocking $0 skeleton overwrites)
       if (Array.isArray(state.accounts)) {
         for (const acc of state.accounts) {
           if (!acc) continue;
@@ -2127,7 +2109,12 @@ class SupabaseService {
           if (accNum && deletedAccountNums.has(accNum)) continue;
           const k = accNum || acc.id;
           if (k) {
-            accountMap.set(k, acc);
+            const prev = accountMap.get(k);
+            if (prev && isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev)) {
+              accountMap.set(k, prev);
+            } else {
+              accountMap.set(k, acc);
+            }
           }
         }
       }
@@ -2255,7 +2242,7 @@ class SupabaseService {
           const row = rows[0];
           const accountMap = new Map<string, TradingAccount>();
 
-          // Collect all non-deleted accounts across all rows (newest row takes precedence)
+          // Collect all non-deleted accounts across all rows (using authoritative balance/timestamp check)
           for (const r of rows) {
             if (Array.isArray(r?.accounts)) {
               for (const acc of r.accounts) {
@@ -2263,15 +2250,16 @@ class SupabaseService {
                 const accNum = String(acc.accountNumber || '');
                 if (accNum && deletedAccountNums.has(accNum)) continue;
                 const k = accNum || acc.id;
-                if (k && !accountMap.has(k)) {
-                  accountMap.set(k, acc);
+                if (k) {
+                  const prev = accountMap.get(k);
+                  accountMap.set(k, prev ? pickAuthoritativeAccount(prev, acc, false) : acc);
                 }
               }
             }
           }
 
-          // Also recover any created account from user_activities that was never deleted by the user
-          if (Array.isArray(actRows) && !isAdmin) {
+          // Only recover created accounts from user_activities if vtm_user_finances had zero accounts
+          if (accountMap.size === 0 && Array.isArray(actRows) && !isAdmin) {
             for (const act of actRows) {
               if (
                 (act?.activity_type === 'ACCOUNT_CREATED' || act?.activity_type === 'OPEN_ACCOUNT') &&
@@ -2675,85 +2663,8 @@ ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS selected_account_i
 ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS transactions JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ DEFAULT now();
 
--- 6. Silent Database-Level Cleanup Function for Idle Live Accounts (2 Weeks = 14 Days)
-CREATE OR REPLACE FUNCTION public.sweep_idle_live_accounts_in_db()
-RETURNS void
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = public, pg_temp
-AS $$
-DECLARE
-  rec RECORD;
-  acc JSONB;
-  new_accounts JSONB;
-  wallet_add NUMERIC(15, 2);
-  acc_type TEXT;
-  acc_bal NUMERIC(15, 2);
-  acc_margin NUMERIC(15, 2);
-  created_ms BIGINT;
-  last_deposit_ms BIGINT;
-  last_trade_ms BIGINT;
-  last_act_ms BIGINT;
-  ref_ms BIGINT;
-  now_ms BIGINT := (EXTRACT(EPOCH FROM now()) * 1000)::BIGINT;
-  two_weeks_ms BIGINT := 14 * 24 * 60 * 60 * 1000;
-  changed BOOLEAN;
-BEGIN
-  FOR rec IN SELECT user_key, wallet_balance, accounts FROM public.vtm_user_finances WHERE jsonb_typeof(accounts) = 'array' AND jsonb_array_length(accounts) > 0 LOOP
-    new_accounts := '[]'::jsonb;
-    wallet_add := 0;
-    changed := FALSE;
-
-    FOR acc IN SELECT * FROM jsonb_array_elements(rec.accounts) LOOP
-      acc_type := COALESCE(acc->>'type', 'Live');
-      acc_bal := COALESCE((acc->>'balance')::NUMERIC, 0);
-      acc_margin := COALESCE((acc->>'margin')::NUMERIC, 0);
-
-      IF acc_type <> 'Live' OR acc_margin > 0 THEN
-        new_accounts := new_accounts || jsonb_build_array(acc);
-        CONTINUE;
-      END IF;
-
-      created_ms := COALESCE((acc->>'createdAt')::BIGINT, now_ms);
-      last_deposit_ms := COALESCE((acc->>'lastDepositAt')::BIGINT, 0);
-      last_trade_ms := COALESCE((acc->>'lastTradeAt')::BIGINT, 0);
-      last_act_ms := COALESCE((acc->>'lastActivityAt')::BIGINT, 0);
-
-      IF acc_bal <= 0 THEN
-        ref_ms := GREATEST(created_ms, last_deposit_ms, last_trade_ms, last_act_ms);
-        IF (now_ms - ref_ms) >= two_weeks_ms THEN
-          changed := TRUE;
-          CONTINUE;
-        END IF;
-      ELSE
-        IF last_trade_ms > 0 AND last_trade_ms >= GREATEST(created_ms, last_deposit_ms) THEN
-          ref_ms := last_trade_ms;
-        ELSE
-          ref_ms := GREATEST(created_ms, last_deposit_ms);
-        END IF;
-
-        IF (now_ms - ref_ms) >= two_weeks_ms THEN
-          wallet_add := wallet_add + acc_bal;
-          changed := TRUE;
-          CONTINUE;
-        END IF;
-      END IF;
-
-      new_accounts := new_accounts || jsonb_build_array(acc);
-    END LOOP;
-
-    IF changed THEN
-      UPDATE public.vtm_user_finances
-      SET wallet_balance = COALESCE(rec.wallet_balance, 0) + wallet_add,
-          accounts = new_accounts,
-          last_updated = now()
-      WHERE user_key = rec.user_key;
-    END IF;
-  END LOOP;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.sweep_idle_live_accounts_in_db() FROM PUBLIC, anon, authenticated;
+-- 6. Ensure Live Accounts Are Preserved Permanently (Remove any legacy idle sweep function)
+DROP FUNCTION IF EXISTS public.sweep_idle_live_accounts_in_db();
 
 -- Fix legacy functions if present in database
 DO $$ BEGIN
@@ -2999,15 +2910,11 @@ GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role
 -- Re-apply function execution restrictions after grants so PUBLIC/anon/authenticated cannot directly invoke trigger functions
 REVOKE ALL ON FUNCTION public.enforce_strict_uid_and_single_admin() FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.handle_auth_user_sync_vtm() FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.sweep_idle_live_accounts_in_db() FROM PUBLIC, anon, authenticated;
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public' AND p.proname = 'handle_new_vtm_user') THEN
     REVOKE ALL ON FUNCTION public.handle_new_vtm_user() FROM PUBLIC, anon, authenticated;
   END IF;
 END $$;
-
--- Run initial sweep once immediately
-SELECT public.sweep_idle_live_accounts_in_db();
 `;
   }
 }

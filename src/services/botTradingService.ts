@@ -727,14 +727,33 @@ export const filterTradesForValidBotRuns = (
   });
 };
 
-export const loadStoredBotRuns = (): BotRunInstance[] => {
+const getActiveBotStorageSuffix = (userEmail?: string | null): string => {
+  if (userEmail && userEmail.trim()) {
+    return `_${userEmail.trim().toLowerCase()}`;
+  }
   try {
-    const raw = localStorage.getItem('vtm_bot_runs');
+    const rawUser = localStorage.getItem('vtm_auth_user');
+    if (rawUser) {
+      const parsed = JSON.parse(rawUser);
+      if (parsed?.email && typeof parsed.email === 'string') {
+        return `_${parsed.email.trim().toLowerCase()}`;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return '';
+};
+
+export const loadStoredBotRuns = (userEmail?: string | null): BotRunInstance[] => {
+  try {
+    const key = `vtm_bot_runs${getActiveBotStorageSuffix(userEmail)}`;
+    const raw = localStorage.getItem(key);
     if (raw !== null) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleaned = sanitizeAndFilterBotRuns(parsed, [], false);
-        localStorage.setItem('vtm_bot_runs', JSON.stringify(cleaned));
+        localStorage.setItem(key, JSON.stringify(cleaned));
         return cleaned;
       }
     }
@@ -745,24 +764,26 @@ export const loadStoredBotRuns = (): BotRunInstance[] => {
   return [];
 };
 
-export const saveStoredBotRuns = (runs: BotRunInstance[]) => {
+export const saveStoredBotRuns = (runs: BotRunInstance[], userEmail?: string | null) => {
   try {
+    const key = `vtm_bot_runs${getActiveBotStorageSuffix(userEmail)}`;
     const cleaned = sanitizeAndFilterBotRuns(runs, [], false);
-    localStorage.setItem('vtm_bot_runs', JSON.stringify(cleaned));
+    localStorage.setItem(key, JSON.stringify(cleaned));
   } catch (e) {
     // ignore
   }
 };
 
-export const loadStoredBotTrades = (): BotTrade[] => {
+export const loadStoredBotTrades = (userEmail?: string | null): BotTrade[] => {
   try {
-    const validRuns = loadStoredBotRuns();
-    const raw = localStorage.getItem('vtm_bot_trades');
+    const validRuns = loadStoredBotRuns(userEmail);
+    const key = `vtm_bot_trades${getActiveBotStorageSuffix(userEmail)}`;
+    const raw = localStorage.getItem(key);
     if (raw !== null) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleanedTrades = filterTradesForValidBotRuns(parsed, validRuns);
-        localStorage.setItem('vtm_bot_trades', JSON.stringify(cleanedTrades));
+        localStorage.setItem(key, JSON.stringify(cleanedTrades));
         return cleanedTrades;
       }
     }
@@ -772,9 +793,10 @@ export const loadStoredBotTrades = (): BotTrade[] => {
   return [];
 };
 
-export const saveStoredBotTrades = (trades: BotTrade[]) => {
+export const saveStoredBotTrades = (trades: BotTrade[], userEmail?: string | null) => {
   try {
-    localStorage.setItem('vtm_bot_trades', JSON.stringify(trades));
+    const key = `vtm_bot_trades${getActiveBotStorageSuffix(userEmail)}`;
+    localStorage.setItem(key, JSON.stringify(trades));
   } catch (e) {
     // ignore
   }

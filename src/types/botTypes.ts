@@ -47,6 +47,8 @@ export interface BotRunInstance {
   lastSignalTime?: number;
   explicitUserRun?: boolean;
   userStartedVersion?: number;
+  accountId?: string;
+  accountNumber?: string;
 }
 
 export interface BotTrade {
@@ -78,6 +80,8 @@ export interface BotTrade {
   exitReason?: 'TAKE_PROFIT' | 'STOP_LOSS' | 'MANUAL_CLOSE' | 'TP' | 'SL';
   userRole?: UserRole;
   targetOutcome?: 'WIN' | 'LOSS';
+  accountId?: string;
+  accountNumber?: string;
 }
 
 export interface UserAuthProfile {

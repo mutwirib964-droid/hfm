@@ -63,6 +63,7 @@ interface TradeTabProps {
   onClosePosition: (id: string) => void;
   onCloseAllPositions: () => void;
   onCancelPendingOrder: (id: string) => void;
+  onUpdatePositionTpSl?: (id: string, sl: number | null, tp: number | null) => void;
   isDarkMode?: boolean;
   tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
   isMobileFrame?: boolean;
@@ -88,6 +89,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   onClosePosition,
   onCloseAllPositions,
   onCancelPendingOrder,
+  onUpdatePositionTpSl,
   isDarkMode = true,
   tickDirection = 'NEUTRAL',
   isMobileFrame = false,
@@ -100,7 +102,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   const [orderType, setOrderType] = useState<
     'MARKET' | 'BUY_LIMIT' | 'SELL_LIMIT' | 'BUY_STOP' | 'SELL_STOP'
   >('MARKET');
-  const [lots, setLots] = useState<number>(0.1);
+  const [lots, setLots] = useState<number>(0.01);
   const [targetPrice, setTargetPrice] = useState<string>(
     currentInstrument.bid.toString()
   );
@@ -109,6 +111,9 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   const [slPrice, setSlPrice] = useState<string>('');
   const [useTP, setUseTP] = useState(false);
   const [tpPrice, setTpPrice] = useState<string>('');
+  const [editingPosId, setEditingPosId] = useState<string | null>(null);
+  const [editSlVal, setEditSlVal] = useState<string>('');
+  const [editTpVal, setEditTpVal] = useState<string>('');
 
   const [activeBottomSection, setActiveBottomSection] = useState<
     'positions' | 'orders' | 'history'
@@ -217,11 +222,38 @@ export const TradeTab: React.FC<TradeTabProps> = ({
     setLots((prev) => Math.max(0.01, Number((prev + delta).toFixed(2))));
   };
 
+  const resolveDefaultSlTpPrice = (side: 'BUY' | 'SELL', kind: 'SL' | 'TP', refPrice: number): number => {
+    const unitVal = Math.max(0.0001, lots * contractSize);
+    const defaultUsd = kind === 'TP' ? Math.max(0.5, Number((lots / 0.01) * 1.0)) : Math.max(0.5, Number((lots / 0.01) * 0.8));
+    const offset = defaultUsd / unitVal;
+    if (kind === 'TP') {
+      return Number((side === 'BUY' ? refPrice + offset : refPrice - offset).toFixed(currentInstrument.decimals));
+    }
+    return Number((side === 'BUY' ? refPrice - offset : refPrice + offset).toFixed(currentInstrument.decimals));
+  };
+
   const handleExecute = (side: 'BUY' | 'SELL') => {
     const marketStatus = checkInstrumentMarketHours(
       currentInstrument.symbol,
       currentInstrument.category
     );
+
+    const entryRef = side === 'BUY' ? currentInstrument.ask : currentInstrument.bid;
+    const parsedSl = slPrice.trim() !== '' ? parseFloat(slPrice) : NaN;
+    const parsedTp = tpPrice.trim() !== '' ? parseFloat(tpPrice) : NaN;
+
+    const effectiveSl =
+      !isNaN(parsedSl) && parsedSl !== 0
+        ? parsedSl
+        : useSL
+        ? resolveDefaultSlTpPrice(side, 'SL', entryRef)
+        : null;
+    const effectiveTp =
+      !isNaN(parsedTp) && parsedTp > 0
+        ? parsedTp
+        : useTP
+        ? resolveDefaultSlTpPrice(side, 'TP', entryRef)
+        : null;
 
     if (orderType === 'MARKET') {
       if (!marketStatus.isOpen) {
@@ -232,14 +264,12 @@ export const TradeTab: React.FC<TradeTabProps> = ({
         return;
       }
 
-      const sl = useSL && slPrice ? parseFloat(slPrice) : null;
-      const tp = useTP && tpPrice ? parseFloat(tpPrice) : null;
       onExecuteMarketOrder({
         symbol: currentInstrument.symbol,
         side,
         lots,
-        sl,
-        tp,
+        sl: effectiveSl,
+        tp: effectiveTp,
       });
       setFeedbackMsg(`Executed ${side} ${lots} lots on ${currentInstrument.symbol}`);
       setTimeout(() => setFeedbackMsg(null), 3500);
@@ -254,16 +284,14 @@ export const TradeTab: React.FC<TradeTabProps> = ({
 
       const target = parseFloat(targetPrice);
       if (isNaN(target) || target <= 0) return;
-      const sl = useSL && slPrice ? parseFloat(slPrice) : null;
-      const tp = useTP && tpPrice ? parseFloat(tpPrice) : null;
       onPlacePendingOrder({
         symbol: currentInstrument.symbol,
         side: orderType.startsWith('BUY') ? 'BUY' : 'SELL',
         type: orderType,
         targetPrice: target,
         lots,
-        sl,
-        tp,
+        sl: effectiveSl,
+        tp: effectiveTp,
       });
       setFeedbackMsg(`Pending ${orderType} order placed!`);
       setTimeout(() => setFeedbackMsg(null), 3500);
@@ -715,26 +743,48 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                 <input
                   type="checkbox"
                   checked={useSL}
-                  onChange={(e) => setUseSL(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setUseSL(checked);
+                    if (!checked) {
+                      setSlPrice('');
+                    } else if (!slPrice) {
+                      setSlPrice(resolveDefaultSlTpPrice('BUY', 'SL', currentInstrument.bid).toFixed(currentInstrument.decimals));
+                    }
+                  }}
                   className="accent-[#FF334B]"
                 />
                 Stop Loss (SL)
               </label>
+              {useSL && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUseSL(false);
+                    setSlPrice('');
+                  }}
+                  className="text-[10px] text-neutral-400 hover:text-rose-400 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-            {useSL && (
-              <input
-                type="number"
-                step="any"
-                placeholder={`e.g. ${(currentInstrument.bid * 0.995).toFixed(currentInstrument.decimals)}`}
-                value={slPrice}
-                onChange={(e) => setSlPrice(e.target.value)}
-                className={`w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-rose-500 ${
-                  isDarkMode
-                    ? 'bg-neutral-950 border-neutral-700 text-white'
-                    : 'bg-white border-slate-300 text-slate-900'
-                }`}
-              />
-            )}
+            <input
+              type="number"
+              step="any"
+              placeholder={`Price or $ loss (e.g. ${resolveDefaultSlTpPrice('BUY', 'SL', currentInstrument.bid).toFixed(currentInstrument.decimals)})`}
+              value={slPrice}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSlPrice(val);
+                setUseSL(val.trim() !== '');
+              }}
+              className={`w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-rose-500 ${
+                isDarkMode
+                  ? 'bg-neutral-950 border-neutral-700 text-white'
+                  : 'bg-white border-slate-300 text-slate-900'
+              }`}
+            />
           </div>
 
           {/* Take Profit */}
@@ -748,26 +798,48 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                 <input
                   type="checkbox"
                   checked={useTP}
-                  onChange={(e) => setUseTP(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setUseTP(checked);
+                    if (!checked) {
+                      setTpPrice('');
+                    } else if (!tpPrice) {
+                      setTpPrice(resolveDefaultSlTpPrice('BUY', 'TP', currentInstrument.ask).toFixed(currentInstrument.decimals));
+                    }
+                  }}
                   className="accent-[#00C076]"
                 />
                 Take Profit (TP)
               </label>
+              {useTP && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUseTP(false);
+                    setTpPrice('');
+                  }}
+                  className="text-[10px] text-neutral-400 hover:text-emerald-400 cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-            {useTP && (
-              <input
-                type="number"
-                step="any"
-                placeholder={`e.g. ${(currentInstrument.ask * 1.008).toFixed(currentInstrument.decimals)}`}
-                value={tpPrice}
-                onChange={(e) => setTpPrice(e.target.value)}
-                className={`w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-emerald-500 ${
-                  isDarkMode
-                    ? 'bg-neutral-950 border-neutral-700 text-white'
-                    : 'bg-white border-slate-300 text-slate-900'
-                }`}
-              />
-            )}
+            <input
+              type="number"
+              step="any"
+              placeholder={`Price or $ profit (e.g. ${resolveDefaultSlTpPrice('BUY', 'TP', currentInstrument.ask).toFixed(currentInstrument.decimals)})`}
+              value={tpPrice}
+              onChange={(e) => {
+                const val = e.target.value;
+                setTpPrice(val);
+                setUseTP(val.trim() !== '');
+              }}
+              className={`w-full border rounded px-2 py-1 text-xs font-mono focus:outline-none focus:border-emerald-500 ${
+                isDarkMode
+                  ? 'bg-neutral-950 border-neutral-700 text-white'
+                  : 'bg-white border-slate-300 text-slate-900'
+              }`}
+            />
           </div>
         </div>
 
@@ -1052,25 +1124,92 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                         </div>
                       </div>
 
-                      {/* Right: Profit & Close Button */}
-                      <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200 dark:border-neutral-800">
-                        <div className="text-right">
-                          <span className="text-[10px] text-slate-500 dark:text-neutral-400 block font-medium">Floating Profit</span>
-                          <span
-                            className={`text-sm font-mono font-bold ${
-                              pos.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'
-                            }`}
+                       {/* Right: Profit, SL/TP Edit & Close Button */}
+                      <div className="flex flex-col sm:items-end gap-2 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200 dark:border-neutral-800">
+                        <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full">
+                          <div className="text-right">
+                            <span className="text-[10px] text-slate-500 dark:text-neutral-400 block font-medium">Floating Profit</span>
+                            <span
+                              className={`text-sm font-mono font-bold ${
+                                pos.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'
+                              }`}
+                            >
+                              {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)}
+                            </span>
+                          </div>
+
+                          {onUpdatePositionTpSl && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (editingPosId === pos.id) {
+                                  setEditingPosId(null);
+                                } else {
+                                  setEditingPosId(pos.id);
+                                  setEditSlVal(pos.sl ? String(pos.sl) : '');
+                                  setEditTpVal(pos.tp ? String(pos.tp) : '');
+                                }
+                              }}
+                              className={`px-2.5 py-1.5 border rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                                isDarkMode
+                                  ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700'
+                                  : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                              }`}
+                            >
+                              SL/TP
+                            </button>
+                          )}
+
+                          <button
+                            onClick={() => onClosePosition(pos.id)}
+                            className="px-3 py-1.5 bg-[#E51937]/15 hover:bg-[#E51937] text-[#E51937] hover:text-white border border-[#E51937]/40 rounded-lg text-xs font-semibold transition-all cursor-pointer"
                           >
-                            {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)}
-                          </span>
+                            Close
+                          </button>
                         </div>
 
-                        <button
-                          onClick={() => onClosePosition(pos.id)}
-                          className="px-3 py-1.5 bg-[#E51937]/15 hover:bg-[#E51937] text-[#E51937] hover:text-white border border-[#E51937]/40 rounded-lg text-xs font-semibold transition-all"
-                        >
-                          Close
-                        </button>
+                        {editingPosId === pos.id && onUpdatePositionTpSl && (
+                          <div className={`w-full sm:w-80 p-2 rounded-lg border flex items-center gap-1.5 text-xs ${
+                            isDarkMode ? 'bg-neutral-950 border-neutral-800' : 'bg-white border-slate-200'
+                          }`}>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="SL Price or $"
+                              value={editSlVal}
+                              onChange={(e) => setEditSlVal(e.target.value)}
+                              className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
+                                isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                              }`}
+                            />
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="TP Price or $"
+                              value={editTpVal}
+                              onChange={(e) => setEditTpVal(e.target.value)}
+                              className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
+                                isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                              }`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newSl = editSlVal.trim() !== '' ? parseFloat(editSlVal) : null;
+                                const newTp = editTpVal.trim() !== '' ? parseFloat(editTpVal) : null;
+                                onUpdatePositionTpSl(
+                                  pos.id,
+                                  newSl !== null && !isNaN(newSl) ? newSl : null,
+                                  newTp !== null && !isNaN(newTp) ? newTp : null
+                                );
+                                setEditingPosId(null);
+                              }}
+                              className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );

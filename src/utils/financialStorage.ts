@@ -89,9 +89,60 @@ export function extractAccountCreatedAt(acc: TradingAccount, fallbackTime?: numb
   return fallbackTime && fallbackTime > 1000000000000 ? fallbackTime : Date.now();
 }
 
+export function isSkeletonZeroAccount(acc: TradingAccount): boolean {
+  if (!acc) return true;
+  const bal = Number(acc.balance || 0);
+  const hasActivity = Boolean(acc.lastActivityAt || acc.lastTradeAt || acc.lastDepositAt);
+  const isRecoveredId = Boolean(acc.accountNumber && acc.id === `acc-${acc.accountNumber}`);
+  return bal <= 0 && !hasActivity && isRecoveredId;
+}
+
+export function getAccountLatestTimestamp(acc: TradingAccount): number {
+  if (!acc) return 0;
+  return Math.max(
+    Number(acc.lastActivityAt || 0),
+    Number(acc.lastTradeAt || 0),
+    Number(acc.lastDepositAt || 0),
+    Number(acc.createdAt || 0)
+  );
+}
+
+export function pickAuthoritativeAccount(
+  existing: TradingAccount,
+  incoming: TradingAccount,
+  incomingIsPrimary = true
+): TradingAccount {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+
+  const existingIsSkeleton = isSkeletonZeroAccount(existing);
+  const incomingIsSkeleton = isSkeletonZeroAccount(incoming);
+
+  // Never let a $0 recovered skeleton overwrite a real account that has balance or activity
+  if (incomingIsSkeleton && !existingIsSkeleton) {
+    return existing;
+  }
+  if (existingIsSkeleton && !incomingIsSkeleton) {
+    return incoming;
+  }
+
+  const existingTs = getAccountLatestTimestamp(existing);
+  const incomingTs = getAccountLatestTimestamp(incoming);
+
+  if (incomingTs > existingTs) {
+    return incoming;
+  }
+  if (existingTs > incomingTs) {
+    return existing;
+  }
+
+  return incomingIsPrimary ? incoming : existing;
+}
+
 /**
  * Merges two UserFinancialState objects (e.g. remote cloud state and local device state)
- * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user.
+ * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user,
+ * and no stale/skeleton $0 record overwrites an account's real database balance.
  */
 export function mergeUserFinancialStates(
   primary: UserFinancialState,
@@ -102,7 +153,7 @@ export function mergeUserFinancialStates(
   const deletedSet = getDeletedAccountNumbers(userEmail);
 
   const accountMap = new Map<string, TradingAccount>();
-  // Put secondary accounts first, then let primary override matching accounts while preserving any extra non-deleted accounts
+  // Put secondary accounts first, then merge primary accounts using authoritative timestamp/skeleton protection
   for (const acc of secondary.accounts || []) {
     if (!acc) continue;
     const accNum = String(acc.accountNumber || '');
@@ -115,7 +166,10 @@ export function mergeUserFinancialStates(
     const accNum = String(acc.accountNumber || '');
     if (accNum && deletedSet.has(accNum)) continue;
     const key = accNum || acc.id;
-    if (key) accountMap.set(key, acc);
+    if (key) {
+      const prev = accountMap.get(key);
+      accountMap.set(key, prev ? pickAuthoritativeAccount(prev, acc, true) : acc);
+    }
   }
 
   const mergedAccounts = Array.from(accountMap.values());
@@ -905,55 +959,11 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (raw) {
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
-        const hasFailedCapacityTx7744979 = Array.isArray(parsed.transactions) &&
-          parsed.transactions.some(
-            (t) =>
-              t &&
-              (t.id === 'tx-1791238745156-h7ue' ||
-                t.reference === 'B2C737528578' ||
-                String(t.details || '').includes('bounced back to Account #7744979'))
-          );
-        let accountsToUse = parsed.accounts;
-        if (hasFailedCapacityTx7744979 && localStorage.getItem('vtm_restored_7744979_h7ue') !== '1') {
-          let restored = false;
-          accountsToUse = parsed.accounts.map((acc) => {
-            if (acc && String(acc.accountNumber) === '7744979' && acc.balance < 500) {
-              restored = true;
-              const nextBal = Number((acc.balance + 500).toFixed(2));
-              const nextEq = Number((acc.equity + 500).toFixed(2));
-              const nextFree = Number((acc.freeMargin + 500).toFixed(2));
-              return { ...acc, balance: nextBal, equity: nextEq, freeMargin: nextFree };
-            }
-            return acc;
-          });
-          localStorage.setItem('vtm_restored_7744979_h7ue', '1');
-          if (restored) {
-            const fixedPayload: UserFinancialState = {
-              ...parsed,
-              accounts: accountsToUse,
-              transactions: sanitizeRealTransactions(parsed.transactions),
-              lastUpdated: Date.now(),
-            };
-            localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(fixedPayload));
-            supabaseService.syncUserFinancials(user, fixedPayload).catch(() => {});
-            return fixedPayload;
-          }
-        }
-        const sanitized: UserFinancialState = {
+        return {
           ...parsed,
-          accounts: accountsToUse,
+          accounts: parsed.accounts,
           transactions: sanitizeRealTransactions(parsed.transactions),
         };
-        const swept = sweepIdleLiveAccountsSilently(user, sanitized);
-        if (swept.changed) {
-          localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(swept.state));
-          supabaseService.syncUserFinancials(user, swept.state).catch(() => {});
-          swept.sweptAccountNumbers.forEach((accNum) => {
-            supabaseService.deleteTradingAccountFromDatabase(user, accNum, true).catch(() => {});
-          });
-          return swept.state;
-        }
-        return sanitized;
       }
     }
 
@@ -1013,6 +1023,7 @@ export function saveUserFinancials(
     accounts: TradingAccount[];
     selectedAccountId?: string | null;
     transactions?: Transaction[];
+    lastUpdated?: number;
   },
   syncToCloud = true
 ): void {
@@ -1037,7 +1048,11 @@ export function saveUserFinancials(
       const accNum = String(acc.accountNumber || '');
       if (accNum && deletedSet.has(accNum)) continue;
       const k = accNum || acc.id;
-      if (k) accountMap.set(k, acc);
+      if (k) {
+        const prev = accountMap.get(k);
+        // When explicitly saving state (syncToCloud = true), incoming state is authoritative unless incoming is a $0 skeleton
+        accountMap.set(key ? k : acc.id, prev && !syncToCloud ? pickAuthoritativeAccount(prev, acc, true) : (prev && isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev) ? prev : acc));
+      }
     }
 
     const safeAccounts = Array.from(accountMap.values());
@@ -1046,7 +1061,7 @@ export function saveUserFinancials(
       accounts: safeAccounts,
       selectedAccountId: state.selectedAccountId ?? safeAccounts[0]?.id ?? null,
       transactions: sanitizeRealTransactions(state.transactions),
-      lastUpdated: syncToCloud ? Date.now() : 0,
+      lastUpdated: syncToCloud ? Date.now() : (state.lastUpdated || existingLocal?.lastUpdated || 0),
     };
 
     localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));

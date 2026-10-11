@@ -49,11 +49,15 @@ export interface Position {
   currentPrice: number;
   sl: number | null;
   tp: number | null;
+  slUsd?: number | null;
+  tpUsd?: number | null;
   pnl: number;
   swap: number;
   commission: number;
   openTime: number;
   targetOutcome?: 'WIN' | 'LOSS';
+  accountId?: string;
+  accountNumber?: string;
 }
 
 export interface PendingOrder {
@@ -68,6 +72,8 @@ export interface PendingOrder {
   tp: number | null;
   status: 'PENDING' | 'TRIGGERED' | 'CANCELLED';
   createdAt: number;
+  accountId?: string;
+  accountNumber?: string;
 }
 
 export interface ClosedTrade {
@@ -82,6 +88,8 @@ export interface ClosedTrade {
   openTime: number;
   closeTime: number;
   reason: 'TP' | 'SL' | 'MANUAL';
+  accountId?: string;
+  accountNumber?: string;
 }
 
 export type AccountType = 'Live' | 'Demo';

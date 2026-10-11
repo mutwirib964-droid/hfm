@@ -30,6 +30,7 @@ interface TradesTabProps {
   onClosePosition: (id: string) => void;
   onCloseAllPositions: () => void;
   onCancelPendingOrder: (id: string) => void;
+  onUpdatePositionTpSl?: (id: string, sl: number | null, tp: number | null) => void;
   isDarkMode?: boolean;
   // Chart synchronization
   instruments?: Instrument[];
@@ -51,6 +52,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   onClosePosition,
   onCloseAllPositions,
   onCancelPendingOrder,
+  onUpdatePositionTpSl,
   isDarkMode = false,
   instruments = [],
   selectedSymbol = 'EURUSD',
@@ -63,6 +65,9 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   tickDirection = 'NEUTRAL',
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'open' | 'pending' | 'closed'>('open');
+  const [editingPosId, setEditingPosId] = useState<string | null>(null);
+  const [editSlValue, setEditSlValue] = useState<string>('');
+  const [editTpValue, setEditTpValue] = useState<string>('');
 
   const totalFloatingPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
 
@@ -260,14 +265,94 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                           </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          {pos.sl && <span>SL: {pos.sl}</span>}
-                          {pos.tp && <span>TP: {pos.tp}</span>}
+                          <span className={pos.sl ? 'text-red-400 font-semibold' : ''}>
+                            SL: {pos.sl ?? '—'}{pos.slUsd ? ` (-$${pos.slUsd})` : ''}
+                          </span>
+                          <span className={pos.tp ? 'text-emerald-400 font-semibold' : ''}>
+                            TP: {pos.tp ?? '—'}{pos.tpUsd ? ` (+$${pos.tpUsd})` : ''}
+                          </span>
                         </div>
                       </div>
 
-                      <div className={`mt-2 pt-2 border-t flex items-center justify-end ${
+                      {editingPosId === pos.id && onUpdatePositionTpSl && (
+                        <div className={`mt-2 p-2.5 rounded-xl border grid grid-cols-2 gap-2 ${
+                          isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                        }`}>
+                          <div>
+                            <label className="text-[10px] font-bold text-red-400 block mb-1">Stop Loss (Price or $)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="Price or $"
+                              value={editSlValue}
+                              onChange={(e) => setEditSlValue(e.target.value)}
+                              className={`w-full px-2 py-1 text-xs font-mono rounded border focus:outline-none ${
+                                isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                              }`}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-emerald-400 block mb-1">Take Profit (Price or $)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="Price or $"
+                              value={editTpValue}
+                              onChange={(e) => setEditTpValue(e.target.value)}
+                              className={`w-full px-2 py-1 text-xs font-mono rounded border focus:outline-none ${
+                                isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                              }`}
+                            />
+                          </div>
+                          <div className="col-span-2 flex justify-end gap-2 pt-1">
+                            <button
+                              onClick={() => setEditingPosId(null)}
+                              className="px-2.5 py-1 text-[11px] font-semibold rounded bg-neutral-500/20 text-neutral-400 hover:bg-neutral-500/30 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => {
+                                const nextSl = editSlValue.trim() !== '' ? parseFloat(editSlValue) : null;
+                                const nextTp = editTpValue.trim() !== '' ? parseFloat(editTpValue) : null;
+                                onUpdatePositionTpSl(
+                                  pos.id,
+                                  nextSl && !isNaN(nextSl) && nextSl > 0 ? nextSl : null,
+                                  nextTp && !isNaN(nextTp) && nextTp > 0 ? nextTp : null
+                                );
+                                setEditingPosId(null);
+                              }}
+                              className="px-3 py-1 text-[11px] font-bold rounded bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer"
+                            >
+                              Save TP/SL
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className={`mt-2 pt-2 border-t flex items-center justify-between gap-2 ${
                         isDarkMode ? 'border-neutral-800' : 'border-slate-100'
                       }`}>
+                        {onUpdatePositionTpSl ? (
+                          <button
+                            onClick={() => {
+                              if (editingPosId === pos.id) {
+                                setEditingPosId(null);
+                              } else {
+                                setEditingPosId(pos.id);
+                                setEditSlValue(pos.sl ? String(pos.sl) : '');
+                                setEditTpValue(pos.tp ? String(pos.tp) : '');
+                              }
+                            }}
+                            className={`py-1 px-2.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {editingPosId === pos.id ? 'Close Editor' : 'Set TP / SL'}
+                          </button>
+                        ) : <span />}
                         <button
                           onClick={() => onClosePosition(pos.id)}
                           className={`py-1 px-3 text-xs font-bold rounded-lg transition-colors cursor-pointer ${

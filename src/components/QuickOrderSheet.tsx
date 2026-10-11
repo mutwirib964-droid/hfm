@@ -28,7 +28,7 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   isDarkMode = false,
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>(initialSide);
-  const [lots, setLots] = useState<number>(0.1);
+  const [lots, setLots] = useState<number>(0.01);
   const [hasSL, setHasSL] = useState<boolean>(false);
   const [hasTP, setHasTP] = useState<boolean>(false);
   const [slPrice, setSlPrice] = useState<string>('');
@@ -53,16 +53,36 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
     setLots(val);
   };
 
+  const defaultSlPlaceholder = (
+    side === 'BUY' ? instrument.bid * 0.998 : instrument.ask * 1.002
+  ).toFixed(instrument.decimals);
+  const defaultTpPlaceholder = (
+    side === 'BUY' ? instrument.ask * 1.002 : instrument.bid * 0.998
+  ).toFixed(instrument.decimals);
+
   const handleSubmit = () => {
     if (!marketStatus.isOpen) {
       return;
     }
+    const parsedSl = slPrice.trim() !== '' ? parseFloat(slPrice) : NaN;
+    const parsedTp = tpPrice.trim() !== '' ? parseFloat(tpPrice) : NaN;
+    const effectiveSl = !isNaN(parsedSl) && parsedSl > 0
+      ? parsedSl
+      : hasSL
+      ? parseFloat(defaultSlPlaceholder)
+      : null;
+    const effectiveTp = !isNaN(parsedTp) && parsedTp > 0
+      ? parsedTp
+      : hasTP
+      ? parseFloat(defaultTpPlaceholder)
+      : null;
+
     onExecute({
       symbol: instrument.symbol,
       side,
       lots,
-      sl: hasSL && slPrice ? parseFloat(slPrice) : null,
-      tp: hasTP && tpPrice ? parseFloat(tpPrice) : null,
+      sl: effectiveSl,
+      tp: effectiveTp,
     });
     onClose();
   };
@@ -226,21 +246,37 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
             }`}
           >
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-semibold text-neutral-500">Stop Loss</span>
+              <span className="text-xs font-semibold text-neutral-500">Stop Loss (Price or $)</span>
               <input
                 type="checkbox"
                 checked={hasSL}
-                onChange={(e) => setHasSL(e.target.checked)}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setHasSL(checked);
+                  if (checked && !slPrice) {
+                    setSlPrice(defaultSlPlaceholder);
+                  } else if (!checked) {
+                    setSlPrice('');
+                  }
+                }}
                 className="accent-red-500 cursor-pointer"
               />
             </div>
             <input
               type="number"
-              placeholder={hasSL ? (side === 'BUY' ? (instrument.bid * 0.995).toFixed(instrument.decimals) : (instrument.ask * 1.005).toFixed(instrument.decimals)) : 'Off'}
-              disabled={!hasSL}
+              step="any"
+              placeholder={hasSL ? defaultSlPlaceholder : 'Price or $ loss'}
               value={slPrice}
-              onChange={(e) => setSlPrice(e.target.value)}
-              className="w-full text-xs font-semibold p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent disabled:opacity-40"
+              onChange={(e) => {
+                const val = e.target.value;
+                setSlPrice(val);
+                if (val.trim() !== '' && !hasSL) {
+                  setHasSL(true);
+                } else if (val.trim() === '' && hasSL) {
+                  setHasSL(false);
+                }
+              }}
+              className="w-full text-xs font-semibold p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent"
             />
           </div>
 
@@ -251,21 +287,37 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
             }`}
           >
             <div className="flex items-center justify-between mb-1.5">
-              <span className="text-xs font-semibold text-neutral-500">Take Profit</span>
+              <span className="text-xs font-semibold text-neutral-500">Take Profit (Price or $)</span>
               <input
                 type="checkbox"
                 checked={hasTP}
-                onChange={(e) => setHasTP(e.target.checked)}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setHasTP(checked);
+                  if (checked && !tpPrice) {
+                    setTpPrice(defaultTpPlaceholder);
+                  } else if (!checked) {
+                    setTpPrice('');
+                  }
+                }}
                 className="accent-emerald-500 cursor-pointer"
               />
             </div>
             <input
               type="number"
-              placeholder={hasTP ? (side === 'BUY' ? (instrument.bid * 1.01).toFixed(instrument.decimals) : (instrument.ask * 0.99).toFixed(instrument.decimals)) : 'Off'}
-              disabled={!hasTP}
+              step="any"
+              placeholder={hasTP ? defaultTpPlaceholder : 'Price or $ profit'}
               value={tpPrice}
-              onChange={(e) => setTpPrice(e.target.value)}
-              className="w-full text-xs font-semibold p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent disabled:opacity-40"
+              onChange={(e) => {
+                const val = e.target.value;
+                setTpPrice(val);
+                if (val.trim() !== '' && !hasTP) {
+                  setHasTP(true);
+                } else if (val.trim() === '' && hasTP) {
+                  setHasTP(false);
+                }
+              }}
+              className="w-full text-xs font-semibold p-1.5 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-transparent"
             />
           </div>
         </div>

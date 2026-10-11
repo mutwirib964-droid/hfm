@@ -379,18 +379,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         try {
           const localFinances = loadUserFinancials(verifiedProfile);
           const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
-          if (localFinances && remoteFinances) {
-            const localIsNewer = (localFinances.lastUpdated || 0) > (remoteFinances.lastUpdated || 0);
-            const merged = mergeUserFinancialStates(
-              localIsNewer ? localFinances : remoteFinances,
-              localIsNewer ? remoteFinances : localFinances,
-              verifiedProfile.email
-            );
-            saveUserFinancials(verifiedProfile, merged);
-          } else if (remoteFinances) {
-            saveUserFinancials(verifiedProfile, remoteFinances);
+          if (remoteFinances) {
+            const merged = localFinances
+              ? mergeUserFinancialStates(remoteFinances, localFinances, verifiedProfile.email)
+              : remoteFinances;
+            saveUserFinancials(verifiedProfile, merged, false);
           } else if (localFinances) {
-            saveUserFinancials(verifiedProfile, localFinances);
+            saveUserFinancials(verifiedProfile, localFinances, false);
           } else {
             initializeUserFinancials(verifiedProfile, false);
           }
