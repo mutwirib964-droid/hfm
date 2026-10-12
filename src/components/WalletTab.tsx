@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { UserAuthProfile } from '../types';
 import { MpesaDepositModal } from './MpesaDepositModal';
+import { TotpVerificationModal } from './Security2FAModal';
 import {
   USD_KES_RATE,
   USD_KES_WITHDRAW_RATE,
@@ -62,6 +63,8 @@ interface WalletTabProps {
   onDeleteAccount?: (accountIdOrNumber: string) => void;
   isDarkMode?: boolean;
   currentUser?: UserAuthProfile | null;
+  twoFactorEnabled?: boolean;
+  twoFactorSecret?: string;
 }
 
 export const WalletTab: React.FC<WalletTabProps> = ({
@@ -76,6 +79,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   onDeleteAccount,
   isDarkMode = false,
   currentUser,
+  twoFactorEnabled = true,
+  twoFactorSecret = 'JBSWY3DPEHPK3PXP',
 }) => {
   const [activeModal, setActiveModal] = useState<'deposit' | 'withdraw' | 'transfer' | null>(null);
   const [isDepositModalOpen, setIsDepositModalOpen] = useState<boolean>(false);
@@ -109,6 +114,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const [withdrawCountdown, setWithdrawCountdown] = useState<number>(3);
   const [withdrawReceipt, setWithdrawReceipt] = useState<string>('');
   const [simLimitPopupOpen, setSimLimitPopupOpen] = useState<boolean>(false);
+  const [isWithdraw2FAOpen, setIsWithdraw2FAOpen] = useState<boolean>(false);
   const cachedSimBalanceKesRef = React.useRef<number | null>(null);
 
   // Transfer Form State
@@ -364,6 +370,23 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       setWithdrawError(`Please enter a valid ${selectedBankInfo.shortName} account number.`);
       return;
     }
+
+    // Require 2FA TOTP verification before executing withdrawal
+    if (twoFactorEnabled) {
+      setIsWithdraw2FAOpen(true);
+      return;
+    }
+
+    executeVerifiedWithdrawal();
+  };
+
+  const executeVerifiedWithdrawal = () => {
+    const methodLabel =
+      withdrawMethod === 'crypto'
+        ? `Crypto Payout (${withdrawCryptoCoin})`
+        : withdrawMethod === 'bank'
+        ? `${selectedBankInfo.shortName} Transfer`
+        : 'Safaricom M-PESA B2C';
 
     const receipt =
       withdrawMethod === 'crypto'
@@ -1573,6 +1596,20 @@ export const WalletTab: React.FC<WalletTabProps> = ({
             setTimeout(() => setFeedback(null), 5000);
           }
         }}
+      />
+      {/* 2FA TOTP Verification Modal for Account Withdrawals */}
+      <TotpVerificationModal
+        isOpen={isWithdraw2FAOpen}
+        title="2FA Withdrawal Authorization"
+        subtitle={`Enter your 6-digit TOTP code to authorize withdrawing $${withdrawAmount.toFixed(2)} USD from ${withdrawSource}.`}
+        actionLabel={`Verify & Withdraw $${withdrawAmount.toFixed(2)}`}
+        isDarkMode={isDarkMode}
+        twoFactorSecret={twoFactorSecret}
+        onVerified={() => {
+          setIsWithdraw2FAOpen(false);
+          executeVerifiedWithdrawal();
+        }}
+        onCancel={() => setIsWithdraw2FAOpen(false)}
       />
     </div>
   );

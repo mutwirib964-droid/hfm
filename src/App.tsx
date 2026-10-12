@@ -42,6 +42,8 @@ import { AccountTab } from './components/AccountTab';
 import { VTMLogo } from './components/VTMLogo';
 import { BotsTab } from './components/BotsTab';
 import { LandingPage } from './components/LandingPage';
+import { Security2FAModal } from './components/Security2FAModal';
+import { getStoredTotpState, saveStoredTotpState } from './utils/totp';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { PWAInstallModals } from './components/pwa/PWAInstallModals';
 import { ActionPopupManager } from './components/popups/ActionPopupManager';
@@ -153,7 +155,26 @@ export default function App() {
   }, [soundEnabled]);
   const [showSpreadBrackets, setShowSpreadBrackets] = useState<boolean>(true);
   const [drawdownProtection, setDrawdownProtection] = useState<boolean>(true);
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState<boolean>(false);
+  const [twoFactorEnabled, setTwoFactorEnabled] = useState<boolean>(() => {
+    try {
+      const savedUser = localStorage.getItem('vtm_auth_user');
+      const parsedUser = savedUser ? JSON.parse(savedUser) : null;
+      const totpState = getStoredTotpState(parsedUser?.email);
+      return Boolean(totpState.enabled && totpState.secret);
+    } catch {
+      return false;
+    }
+  });
+  const [twoFactorSecret, setTwoFactorSecret] = useState<string>(() => {
+    try {
+      const savedUser = localStorage.getItem('vtm_auth_user');
+      const parsedUser = savedUser ? JSON.parse(savedUser) : null;
+      return getStoredTotpState(parsedUser?.email).secret || '';
+    } catch {
+      return '';
+    }
+  });
+  const [isMandatory2FAOpen, setIsMandatory2FAOpen] = useState<boolean>(false);
 
   // Market & Accounts State
   const [instruments, setInstruments] = useState<Instrument[]>(INITIAL_INSTRUMENTS);
@@ -444,7 +465,22 @@ export default function App() {
           setSoundEnabled(settings.soundEnabled);
           setShowSpreadBrackets(settings.showSpreadBrackets);
           setDrawdownProtection(settings.drawdownProtection);
-          setTwoFactorEnabled(settings.twoFactorEnabled);
+          const localTotp = getStoredTotpState(remote.profile.email);
+          const resolvedSecret = settings.twoFactorSecret || localTotp.secret || '';
+          const resolvedEnabled = Boolean((settings.twoFactorEnabled || localTotp.enabled) && resolvedSecret);
+          setTwoFactorEnabled(resolvedEnabled);
+          if (resolvedSecret) {
+            setTwoFactorSecret(resolvedSecret);
+            saveStoredTotpState(remote.profile.email, resolvedEnabled, resolvedSecret);
+          }
+          if (!resolvedEnabled && !isMasterAdminEmail(remote.profile.email)) {
+            setIsMandatory2FAOpen(true);
+          }
+        } else if (!settings && isInitialMount) {
+          const localTotp = getStoredTotpState(remote.profile.email);
+          if (!localTotp.enabled || !localTotp.secret) {
+            setIsMandatory2FAOpen(true);
+          }
         }
       });
 
@@ -1002,6 +1038,18 @@ export default function App() {
     // Restore user's exact persisted notifications (including all unread notifications)
     const storedUserNotifs = loadUserNotificationsFromStorage(verifiedProfile);
     setNotifications(storedUserNotifs);
+
+    // Check user's TOTP 2FA setup status on login; enforce mandatory 2FA setup if not yet configured
+    const userTotp = getStoredTotpState(verifiedProfile.email);
+    if (userTotp.enabled && userTotp.secret) {
+      setTwoFactorEnabled(true);
+      setTwoFactorSecret(userTotp.secret);
+      setIsMandatory2FAOpen(false);
+    } else {
+      setTwoFactorEnabled(false);
+      setTwoFactorSecret(userTotp.secret || '');
+      setIsMandatory2FAOpen(true);
+    }
 
     if (profile.isNewRegistration) {
       logUserActivity(profile, 'SIGNUP', `Trader registered: ${profile.email || profile.name}`);
@@ -5278,6 +5326,16 @@ export default function App() {
     if (partial.showSpreadBrackets !== undefined) setShowSpreadBrackets(partial.showSpreadBrackets);
     if (partial.drawdownProtection !== undefined) setDrawdownProtection(partial.drawdownProtection);
     if (partial.twoFactorEnabled !== undefined) setTwoFactorEnabled(partial.twoFactorEnabled);
+    if (partial.twoFactorSecret !== undefined) setTwoFactorSecret(partial.twoFactorSecret);
+
+    const next2FA = partial.twoFactorEnabled ?? twoFactorEnabled;
+    const next2FASecret = partial.twoFactorSecret ?? twoFactorSecret;
+    if (partial.twoFactorEnabled !== undefined || partial.twoFactorSecret !== undefined) {
+      saveStoredTotpState(currentUser?.email, next2FA, next2FASecret);
+      if (next2FA && next2FASecret) {
+        setIsMandatory2FAOpen(false);
+      }
+    }
 
     if (currentUser) {
       supabaseService.saveUserSettings(currentUser, {
@@ -5287,7 +5345,8 @@ export default function App() {
         soundEnabled: partial.soundEnabled ?? soundEnabled,
         showSpreadBrackets: partial.showSpreadBrackets ?? showSpreadBrackets,
         drawdownProtection: partial.drawdownProtection ?? drawdownProtection,
-        twoFactorEnabled: partial.twoFactorEnabled ?? twoFactorEnabled,
+        twoFactorEnabled: next2FA,
+        twoFactorSecret: next2FASecret,
         activeAccountId: selectedAccount?.id,
       });
       supabaseService.syncActivity(currentUser, {
@@ -5297,6 +5356,22 @@ export default function App() {
       });
     }
   };
+
+  // Enforce mandatory 2FA TOTP setup on session start for logged-in non-admin users who haven't completed 2FA setup
+  useEffect(() => {
+    if (!currentUser || !currentUser.isLoggedIn || isMasterAdminEmail(currentUser.email)) {
+      setIsMandatory2FAOpen(false);
+      return;
+    }
+    const localTotp = getStoredTotpState(currentUser.email);
+    if (localTotp.enabled && localTotp.secret) {
+      setTwoFactorEnabled(true);
+      setTwoFactorSecret(localTotp.secret);
+      setIsMandatory2FAOpen(false);
+    } else if (!twoFactorEnabled || !twoFactorSecret) {
+      setIsMandatory2FAOpen(true);
+    }
+  }, [currentUser?.email]);
 
   // Automatic Sync: Keep trades, bots, price alerts, and copy strategies consistent across all devices
   useEffect(() => {
@@ -5372,6 +5447,7 @@ export default function App() {
           showSpreadBrackets,
           drawdownProtection,
           twoFactorEnabled,
+          twoFactorSecret,
           activeAccountId: selectedAccount?.id,
         }),
         supabaseService.syncTransactions(currentUser, transactions),
@@ -5482,7 +5558,13 @@ export default function App() {
             drawdownProtection={drawdownProtection}
             onToggleDrawdownProtection={() => handleUpdatePlatformSetting({ drawdownProtection: !drawdownProtection })}
             twoFactorEnabled={twoFactorEnabled}
-            onToggle2FA={(val) => handleUpdatePlatformSetting({ twoFactorEnabled: val })}
+            twoFactorSecret={twoFactorSecret}
+            onToggle2FA={(val, secret) =>
+              handleUpdatePlatformSetting({
+                twoFactorEnabled: val,
+                ...(secret !== undefined ? { twoFactorSecret: secret } : {}),
+              })
+            }
             currentUser={currentUser}
             onSyncAllToSupabase={handleSyncAllToSupabase}
           />
@@ -5539,6 +5621,8 @@ export default function App() {
             onDeleteAccount={handleDeleteAccount}
             isDarkMode={isDarkMode}
             currentUser={currentUser}
+            twoFactorEnabled={twoFactorEnabled}
+            twoFactorSecret={twoFactorSecret}
           />
         );
       case 'account':
@@ -5726,6 +5810,40 @@ export default function App() {
           onDismiss={handleDismissToast}
           isDarkMode={isDarkMode}
         />
+
+        {/* Mandatory First-Login 2FA TOTP Setup Modal */}
+        {currentUser && !isMasterAdminEmail(currentUser.email) && isMandatory2FAOpen && (
+          <Security2FAModal
+            isOpen={true}
+            onClose={() => setIsMandatory2FAOpen(false)}
+            isMandatory={true}
+            userEmail={currentUser.email}
+            twoFactorEnabled={twoFactorEnabled}
+            twoFactorSecret={twoFactorSecret}
+            onUpdate2FA={(enabled, secret) => {
+              handleUpdatePlatformSetting({
+                twoFactorEnabled: enabled,
+                ...(secret ? { twoFactorSecret: secret } : {}),
+              });
+              if (enabled) {
+                setIsMandatory2FAOpen(false);
+                addNotification('Two-Factor Authentication (TOTP) enabled and verified.');
+                if (currentUser) {
+                  supabaseService.syncActivity(currentUser, {
+                    type: 'SECURITY_2FA_ENABLED',
+                    description: 'Completed mandatory Two-Factor Authentication (TOTP) setup',
+                    metadata: { method: 'TOTP', mandatory: true },
+                  });
+                }
+              }
+            }}
+            onNotify={addNotification}
+            onSignOut={() => {
+              setIsMandatory2FAOpen(false);
+              handleUserSignOut();
+            }}
+          />
+        )}
 
         {/* Real-time Target Price Alert Management Modal */}
         <PriceAlertModal

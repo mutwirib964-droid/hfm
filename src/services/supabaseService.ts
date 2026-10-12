@@ -2666,6 +2666,68 @@ ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS last_updated TIMES
 -- 6. Ensure Live Accounts Are Preserved Permanently (Remove any legacy idle sweep function)
 DROP FUNCTION IF EXISTS public.sweep_idle_live_accounts_in_db();
 
+-- Database-Level Account Balance Guard:
+-- Prevents any uninitialized $0 skeleton state from overwriting a funded Live/Demo account in vtm_user_finances
+CREATE OR REPLACE FUNCTION public.protect_vtm_user_finances_accounts()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_old_acc JSONB;
+  v_new_acc JSONB;
+  v_merged JSONB := '[]'::jsonb;
+  v_found BOOLEAN;
+  v_old_num TEXT;
+  v_new_num TEXT;
+  v_old_bal NUMERIC;
+  v_new_bal NUMERIC;
+  v_new_has_activity BOOLEAN;
+BEGIN
+  IF TG_OP = 'UPDATE' AND jsonb_typeof(OLD.accounts) = 'array' AND jsonb_typeof(NEW.accounts) = 'array' THEN
+    FOR v_new_acc IN SELECT * FROM jsonb_array_elements(NEW.accounts)
+    LOOP
+      v_new_num := COALESCE(v_new_acc->>'accountNumber', v_new_acc->>'id', '');
+      v_new_bal := COALESCE((v_new_acc->>'balance')::numeric, 0);
+      v_new_has_activity := (v_new_acc ? 'lastTradeAt' AND v_new_acc->>'lastTradeAt' IS NOT NULL)
+                         OR (v_new_acc ? 'lastActivityAt' AND v_new_acc->>'lastActivityAt' IS NOT NULL)
+                         OR (v_new_acc ? 'lastDepositAt' AND v_new_acc->>'lastDepositAt' IS NOT NULL);
+      v_found := false;
+
+      IF v_new_bal = 0 AND NOT v_new_has_activity AND v_new_num <> '' THEN
+        FOR v_old_acc IN SELECT * FROM jsonb_array_elements(OLD.accounts)
+        LOOP
+          v_old_num := COALESCE(v_old_acc->>'accountNumber', v_old_acc->>'id', '');
+          v_old_bal := COALESCE((v_old_acc->>'balance')::numeric, 0);
+          IF v_old_num = v_new_num AND v_old_bal > 0 THEN
+            v_merged := v_merged || jsonb_build_array(v_old_acc);
+            v_found := true;
+            EXIT;
+          END IF;
+        END LOOP;
+      END IF;
+
+      IF NOT v_found THEN
+        v_merged := v_merged || jsonb_build_array(v_new_acc);
+      END IF;
+    END LOOP;
+
+    NEW.accounts := v_merged;
+  END IF;
+
+  NEW.last_updated := now();
+  RETURN NEW;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.protect_vtm_user_finances_accounts() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS trg_protect_vtm_user_finances_accounts ON public.vtm_user_finances;
+CREATE TRIGGER trg_protect_vtm_user_finances_accounts
+BEFORE UPDATE ON public.vtm_user_finances
+FOR EACH ROW EXECUTE FUNCTION public.protect_vtm_user_finances_accounts();
+
 -- Fix legacy functions if present in database
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public' AND p.proname = 'update_updated_at_column') THEN
