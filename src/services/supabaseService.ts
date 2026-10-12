@@ -2358,7 +2358,7 @@ class SupabaseService {
       'STATE_NOTIFICATIONS',
       `Synchronized ${notifications.length} user notifications`,
       {
-        notifications: notifications.slice(0, 200),
+        notifications: notifications.slice(0, 500),
         lastWelcomeDate: lastWelcomeDate || '',
         updatedAt: Date.now(),
       }

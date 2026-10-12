@@ -890,7 +890,7 @@ export default function App() {
   ) => {
     try {
       const ts = updatedAt ?? Date.now();
-      localStorage.setItem(getNotificationsStorageKey(user), JSON.stringify(list.slice(0, 200)));
+      localStorage.setItem(getNotificationsStorageKey(user), JSON.stringify(list.slice(0, 500)));
       localStorage.setItem(getNotificationsUpdatedStorageKey(user), String(ts));
     } catch {
       // ignore
@@ -2206,7 +2206,7 @@ export default function App() {
           createdAt: nowTs,
         },
         ...prev,
-      ].slice(0, 200);
+      ].slice(0, 500);
       saveUserNotificationsToStorage(activeUser, updated, nowTs);
       if (activeUser) {
         const welcomeDate = localStorage.getItem(getWelcomeDateStorageKey(activeUser)) || '';

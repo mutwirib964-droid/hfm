@@ -463,7 +463,13 @@ export const Header: React.FC<HeaderProps> = ({
             <Bell className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {unreadCount > 0 && (
               <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 bg-[#E51937] text-white text-[9px] font-bold rounded-full flex items-center justify-center animate-pulse">
-                {unreadCount}
+                {unreadCount > 200 ? (
+                  <span className="inline-flex items-center leading-none">
+                    200<sup className="text-[8px] -top-1 ml-px font-black leading-none">+</sup>
+                  </span>
+                ) : (
+                  unreadCount
+                )}
               </span>
             )}
           </button>
@@ -480,8 +486,14 @@ export const Header: React.FC<HeaderProps> = ({
                   <Bell className="w-3.5 h-3.5 text-[#E51937]" />
                   <span>Notifications</span>
                   {unreadCount > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-[#E51937]/15 text-[#E51937] text-[10px] font-extrabold">
-                      {unreadCount} unread
+                    <span className="px-1.5 py-0.5 rounded-full bg-[#E51937]/15 text-[#E51937] text-[10px] font-extrabold inline-flex items-center">
+                      {unreadCount > 200 ? (
+                        <span>
+                          200<sup className="text-[8px] -top-0.5 ml-px font-black leading-none">+</sup> unread
+                        </span>
+                      ) : (
+                        `${unreadCount} unread`
+                      )}
                     </span>
                   )}
                 </span>
