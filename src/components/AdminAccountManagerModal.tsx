@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   ShieldCheck,
   Wallet,
@@ -141,6 +141,9 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     }
   }, []);
 
+  const selectedUserEmailRef = useRef(selectedUserEmail);
+  selectedUserEmailRef.current = selectedUserEmail;
+
   // Fetch all real users & finances from Supabase and replace local cache with authoritative Supabase state
   const syncFromSupabaseCloud = useCallback(async () => {
     setIsSyncingCloud(true);
@@ -158,9 +161,10 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       const updatedMetrics = loadLocalAdminMetrics();
       setIsSyncingCloud(false);
 
+      const currentSelected = selectedUserEmailRef.current;
       if (
         updatedMetrics.length > 0 &&
-        (!selectedUserEmail || !updatedMetrics.some((m) => m.user.email.toLowerCase() === selectedUserEmail))
+        (!currentSelected || !updatedMetrics.some((m) => m.user.email.toLowerCase() === currentSelected))
       ) {
         const firstClient =
           updatedMetrics.find((m) => !isMasterAdminEmail(m.user.email)) || updatedMetrics[0];
@@ -169,7 +173,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         }
       }
     }
-  }, [loadLocalAdminMetrics, selectedUserEmail, handleSelectUserForEdit]);
+  }, [loadLocalAdminMetrics, handleSelectUserForEdit]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -179,7 +183,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       syncFromSupabaseCloud();
     }, 8000);
     return () => clearInterval(interval);
-  }, [isOpen, loadLocalAdminMetrics, syncFromSupabaseCloud]);
+  }, [isOpen]);
 
   // Create a new Live Trading Account for the selected user immediately
   const handleAddLiveAccountForUser = () => {

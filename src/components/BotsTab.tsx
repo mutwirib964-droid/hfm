@@ -175,10 +175,16 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const liveOpenTrades = openTrades.map((t) => {
     const inst = instMap.get(t.symbol);
     const decimals = inst ? inst.decimals : (t.symbol.includes('JPY') ? 3 : 2);
-    const currentPrice = inst
-      ? (t.side === 'BUY' ? inst.bid : inst.ask)
-      : (t.currentPrice || t.openPrice || 1.0);
-    const profitUsd = calculateBotPnL(t.symbol, t.side, t.openPrice, currentPrice, t.lotSize, userRole);
+    const currentPrice =
+      typeof t.currentPrice === 'number' && !isNaN(t.currentPrice)
+        ? t.currentPrice
+        : inst
+        ? (t.side === 'BUY' ? inst.bid : inst.ask)
+        : (t.openPrice || 1.0);
+    const profitUsd =
+      typeof t.profitUsd === 'number' && !isNaN(t.profitUsd)
+        ? t.profitUsd
+        : calculateBotPnL(t.symbol, t.side, t.openPrice, currentPrice, t.lotSize, userRole);
 
     return {
       ...t,
@@ -192,7 +198,10 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   const adjustedClosedTrades = closedTrades.map((t) => {
     const closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice ?? t.openPrice;
-    const exactPnl = calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
+    const exactPnl =
+      typeof t.profitUsd === 'number' && !isNaN(t.profitUsd)
+        ? t.profitUsd
+        : calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
     return {
       ...t,
       closePrice: closePriceVal,
@@ -1012,7 +1021,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-800/60 font-mono">
-                      {closedTrades.map((t) => {
+                      {adjustedClosedTrades.map((t) => {
                         const isProfit = (t.profitUsd || 0) >= 0;
                         const dateStr = t.closeTime
                           ? new Date(t.closeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -1048,18 +1057,14 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             <td className="p-2.5 font-sans">
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  t.closeReason === 'TAKE_PROFIT' || t.closeReason === 'TP'
+                                  isProfit
                                     ? 'bg-emerald-500/15 text-emerald-400'
-                                    : t.closeReason === 'STOP_LOSS' || t.closeReason === 'SL'
-                                    ? 'bg-rose-500/15 text-rose-400'
-                                    : 'bg-neutral-500/15 text-neutral-300'
+                                    : 'bg-rose-500/15 text-rose-400'
                                 }`}
                               >
-                                {t.closeReason === 'TAKE_PROFIT' || t.closeReason === 'TP'
-                                  ? 'Take Profit Hit'
-                                  : t.closeReason === 'STOP_LOSS' || t.closeReason === 'SL'
-                                  ? 'Stop Loss Hit'
-                                  : 'Target Reached'}
+                                {isProfit
+                                  ? (t.closeReason === 'MANUAL' ? 'Manual Close (+)' : 'Take Profit Hit')
+                                  : (t.closeReason === 'MANUAL' ? 'Manual Close (-)' : 'Stop Loss Hit')}
                               </span>
                             </td>
                             <td className={`p-2.5 text-right font-bold ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>

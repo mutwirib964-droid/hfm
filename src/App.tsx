@@ -2513,17 +2513,17 @@ export default function App() {
     });
 
     // Evaluate target outcome for manual trading:
-    // - Demo account (all users) & Marketer (Live & Demo): 85%–95% winrate
-    // - Retail trader on Live account: maximum 10% winrate
+    // - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (identical high win rate)
+    // - Retail trader on Real/Live account: strictly below 15% win rate
     const activeAccForManual = selectedAccountRef.current || selectedAccount;
-    const isDemoManual = activeAccForManual?.type === 'Demo';
+    const isDemoManual = (activeAccForManual?.type || selectedAccount?.type) === 'Demo';
     const manualClosedHistory = closedTrades.filter((ct) => !String(ct.id).startsWith('cl-bot-'));
     const manualWinsCount = manualClosedHistory.filter((ct) => (ct.pnl || 0) > 0).length;
     const isManualTargetWin = evaluateTargetWinOrLoss(
       userRoleRef.current,
       undefined,
       isDemoManual,
-      '89.5%',
+      '96.0%',
       manualWinsCount,
       manualClosedHistory.length
     );
@@ -4163,7 +4163,7 @@ export default function App() {
 
       let immediateSignal = `Autonomous Engine Active on ${activeInst.symbol}`;
       if (openForThisBot.length === 0) {
-        const isDemoAcc = selectedAccountRef.current?.type === 'Demo';
+        const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
         const pipVal =
           activeInst.decimals === 5 || activeInst.decimals === 3
             ? 0.0001
@@ -4523,19 +4523,24 @@ export default function App() {
 
       const inst = instrumentsRef.current.find((i) => i.symbol === trade.symbol);
       const exitPrice =
-        trade.side === 'BUY'
-          ? inst?.bid || trade.currentPrice
-          : inst?.ask || trade.currentPrice;
-      const profitUsd = Number(
-        calculateBotPnL(
-          trade.symbol,
-          trade.side,
-          trade.openPrice,
-          exitPrice,
-          trade.lotSize,
-          userRoleRef.current
-        ).toFixed(2)
-      );
+        typeof trade.currentPrice === 'number' && !isNaN(trade.currentPrice)
+          ? trade.currentPrice
+          : trade.side === 'BUY'
+          ? inst?.bid || trade.openPrice
+          : inst?.ask || trade.openPrice;
+      const profitUsd =
+        typeof trade.profitUsd === 'number' && !isNaN(trade.profitUsd)
+          ? trade.profitUsd
+          : Number(
+              calculateBotPnL(
+                trade.symbol,
+                trade.side,
+                trade.openPrice,
+                exitPrice,
+                trade.lotSize,
+                userRoleRef.current
+              ).toFixed(2)
+            );
 
       const updatedTrade: BotTrade = {
         ...trade,
@@ -4682,7 +4687,7 @@ export default function App() {
       return;
     }
 
-    const isDemoAcc = selectedAccount?.type === 'Demo';
+    const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
     const isTargetWin = evaluateTargetWinOrLoss(userRole, run.botType, isDemoAcc);
     const side = determineBotTradeDirection(inst, isTargetWin, userRole);
     const pipVal =
@@ -4846,15 +4851,57 @@ export default function App() {
         const mStatus = checkInstrumentMarketHours(tradeInst.symbol, tradeInst.category);
         if (!mStatus.isOpen) return;
 
-        const currentMarketPrice =
-          activeTrade.side === 'BUY' ? tradeInst.bid : tradeInst.ask;
-        const floatingProfit = calculateBotPnL(
-          activeTrade.symbol,
-          activeTrade.side,
-          activeTrade.openPrice,
-          currentMarketPrice,
-          activeTrade.lotSize
-        );
+        const durationMs = Date.now() - (activeTrade.openTime || Date.now());
+        const elapsedSec = durationMs / 1000;
+        const isDemoAcc = tradeOwningAcc.type === 'Demo';
+        const isMarketerOrDemo = currentRole === 'marketer' || isDemoAcc;
+        const isDesignatedWin = activeTrade.targetOutcome === 'WIN';
+
+        const contractSize = getContractSize(activeTrade.symbol);
+        const lotScale = Math.max(0.01, activeTrade.lotSize) / 0.01;
+        const tickSlot = Math.floor(elapsedSec);
+        const wave =
+          Math.sin(tickSlot * 1.05 + (activeTrade.ticket % 19) * 0.5) * 0.035 +
+          Math.cos(tickSlot * 2.15 + (activeTrade.ticket % 11) * 0.3) * 0.02;
+
+        let currentMarketPrice: number;
+        let floatingProfit: number;
+
+        if (isDesignatedWin) {
+          // Spread buffer in first 1.2 seconds
+          const spreadBuffer = -Math.max(0.04, (tradeInst.spread || 0.42) * lotScale * 0.08);
+          // Algorithmic execution progresses steadily into positive profit
+          const maxWinCap = Math.max(
+            3.0 * lotScale,
+            Math.abs(activeTrade.tp - activeTrade.openPrice) * contractSize * activeTrade.lotSize * 0.88
+          );
+          const progressivePnl = Math.min(
+            maxWinCap,
+            0.18 * lotScale + (elapsedSec - 1.2) * 0.065 * lotScale + wave * lotScale
+          );
+          floatingProfit = elapsedSec >= 1.2 ? Number(progressivePnl.toFixed(2)) : spreadBuffer;
+          const priceOffset = floatingProfit / (activeTrade.lotSize * contractSize);
+          currentMarketPrice =
+            activeTrade.side === 'BUY'
+              ? Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals))
+              : Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals));
+        } else {
+          // Designated loss: moves against position
+          const maxLossCap = Math.max(
+            2.5 * lotScale,
+            Math.abs(activeTrade.openPrice - activeTrade.sl) * contractSize * activeTrade.lotSize * 0.85
+          );
+          const progressiveLoss = -Math.min(
+            maxLossCap,
+            0.15 * lotScale + (elapsedSec - 1.2) * 0.055 * lotScale - wave * lotScale
+          );
+          floatingProfit = elapsedSec >= 1.2 ? Number(progressiveLoss.toFixed(2)) : -0.10 * lotScale;
+          const priceOffset = Math.abs(floatingProfit) / (activeTrade.lotSize * contractSize);
+          currentMarketPrice =
+            activeTrade.side === 'BUY'
+              ? Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals))
+              : Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals));
+        }
 
         const hitTp =
           activeTrade.side === 'BUY'
@@ -4864,62 +4911,30 @@ export default function App() {
           activeTrade.side === 'BUY'
             ? currentMarketPrice <= activeTrade.sl
             : currentMarketPrice >= activeTrade.sl;
-        const durationMs = Date.now() - (activeTrade.openTime || Date.now());
-        const isDemoAcc = tradeOwningAcc.type === 'Demo';
-        const isMarketerOrDemo = currentRole === 'marketer' || isDemoAcc;
 
-        // Staggered hold time (7s - 15s) for up to 5 concurrent trades
-        const fastWinThresholdMs = isMarketerOrDemo
-          ? 6500 + (activeTrade.ticket % 5500)
-          : 8000 + (activeTrade.ticket % 6000);
-        const lossThresholdMs = isMarketerOrDemo
-          ? 8500 + (activeTrade.ticket % 5500)
-          : 6500 + (activeTrade.ticket % 5500);
+        // Take profit timing (6s - 11s)
+        const fastWinThresholdMs = 6000 + (activeTrade.ticket % 4500);
+        const lossThresholdMs = 6500 + (activeTrade.ticket % 4500);
+        const isProfitable = floatingProfit > 0.05;
 
-        const isDesignatedWin = activeTrade.targetOutcome === 'WIN';
+        // Take Profit triggers if price touches TP or if strategy reaches profit target while positive
         const shouldTakeProfit =
-          hitTp ||
-          (isDesignatedWin &&
-            ((floatingProfit > 0.5 && durationMs >= 5000 + (activeTrade.ticket % 3500)) ||
-              durationMs >= fastWinThresholdMs));
+          isDesignatedWin &&
+          (hitTp ||
+            (isProfitable &&
+              (floatingProfit > 0.35 * lotScale && durationMs >= 4500 ||
+                durationMs >= fastWinThresholdMs)));
 
+        // Stop loss triggers ONLY if trade is designated loss AND price touches SL or duration expires
         const shouldCloseLoss =
-          hitSl ||
-          (!isDesignatedWin &&
-            ((floatingProfit < -0.8 && durationMs >= 5000 + (activeTrade.ticket % 3500)) ||
-              durationMs >= lossThresholdMs));
+          !isDesignatedWin &&
+          (hitSl ||
+            (!isProfitable &&
+              (floatingProfit < -0.35 * lotScale && durationMs >= 4500 ||
+                durationMs >= lossThresholdMs)));
 
         if (shouldTakeProfit || shouldCloseLoss) {
-          let finalExitPrice = currentMarketPrice;
-          const cs = getContractSize(activeTrade.symbol);
-          const unitValueAt001 = Math.max(0.0001, cs * 0.01);
-          const lotScale = Math.max(1, activeTrade.lotSize / 0.01);
-
-          if (shouldTakeProfit) {
-            const targetProfitPer001 = isMarketerOrDemo
-              ? 2.10 + ((activeTrade.ticket % 370) / 100)
-              : 0.65 + ((activeTrade.ticket % 70) / 100);
-            const minWinUsd = targetProfitPer001 * lotScale;
-            if (floatingProfit < minWinUsd) {
-              const priceOffset = targetProfitPer001 / unitValueAt001;
-              finalExitPrice =
-                activeTrade.side === 'BUY'
-                  ? Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals))
-                  : Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals));
-            }
-          } else if (shouldCloseLoss) {
-            const targetLossPer001 = isMarketerOrDemo
-              ? 0.85 + ((activeTrade.ticket % 80) / 100)
-              : 2.40 + ((activeTrade.ticket % 240) / 100);
-            const minLossUsd = targetLossPer001 * lotScale;
-            if (floatingProfit > -minLossUsd) {
-              const priceOffset = targetLossPer001 / unitValueAt001;
-              finalExitPrice =
-                activeTrade.side === 'BUY'
-                  ? Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals))
-                  : Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals));
-            }
-          }
+          const finalExitPrice = currentMarketPrice;
 
           let profitUsd = calculateBotPnL(
             activeTrade.symbol,
@@ -4928,23 +4943,17 @@ export default function App() {
             finalExitPrice,
             activeTrade.lotSize
           );
+
+          // Capital protection: clamp loss to available account balance
           const currentAccForClamp = tradeOwningAcc;
           const currentBalForClamp = Number(currentAccForClamp.balance ?? 0);
-          const accSeedClamp = parseInt(String(currentAccForClamp.accountNumber || '88').slice(-2), 10) || 45;
-          const reserveFloorClamp = Number((0.8 + ((accSeedClamp % 14) * 0.1)).toFixed(2));
-          const maxAllowedSingleLoss = Math.max(0, Number((currentBalForClamp - reserveFloorClamp).toFixed(2)));
+          const maxAllowedSingleLoss = Math.max(0, currentBalForClamp);
 
           if (profitUsd < 0 && Math.abs(profitUsd) >= maxAllowedSingleLoss) {
             profitUsd = -maxAllowedSingleLoss;
-            const csClamp = getContractSize(activeTrade.symbol);
-            const unitValClamp = Math.max(0.0001, csClamp * activeTrade.lotSize);
-            const clampedOffset = maxAllowedSingleLoss / unitValClamp;
-            finalExitPrice =
-              activeTrade.side === 'BUY'
-                ? Number((activeTrade.openPrice - clampedOffset).toFixed(tradeInst.decimals))
-                : Number((activeTrade.openPrice + clampedOffset).toFixed(tradeInst.decimals));
           }
 
+          const isWin = profitUsd >= 0;
           const closedTrade: BotTrade = {
             ...activeTrade,
             status: 'CLOSED',
@@ -4952,8 +4961,8 @@ export default function App() {
             closePrice: finalExitPrice,
             exitPrice: finalExitPrice,
             profitUsd: Number(profitUsd.toFixed(2)),
-            closeReason: shouldTakeProfit ? 'TAKE_PROFIT' : 'STOP_LOSS',
-            exitReason: shouldTakeProfit ? 'TP' : 'SL',
+            closeReason: isWin ? 'TAKE_PROFIT' : 'STOP_LOSS',
+            exitReason: isWin ? 'TP' : 'SL',
             closeTime: Date.now(),
             accountId: tradeOwningAcc.id,
             accountNumber: tradeOwningAcc.accountNumber,

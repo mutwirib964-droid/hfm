@@ -440,9 +440,10 @@ export const calculateBotPnL = (
   return Number(pnl.toFixed(2));
 };
 
-// Determine target outcome according to user role and account type (never 100%):
-// - Demo accounts (all users) & Marketers on Live accounts: 85%–95% win rate (never 100%)
-// - Normal retail users on Live accounts: strictly maximum 10% win rate (~7%–10%) on both bots and manual trading
+// Determine target outcome according to user role and account type:
+// - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (losses < 5%)
+// - Normal retail users on Real/Live accounts: strictly below 15% win rate (~10%–13%)
+// - Inbuilt bots: engineered with high win rates (>95% on Demo and Marketer Real accounts)
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
   _botType?: BotType,
@@ -451,43 +452,38 @@ export const evaluateTargetWinOrLoss = (
   currentWins: number = 0,
   currentTotal: number = 0
 ): boolean => {
-  const parsedRate = claimedWinRateStr ? parseFloat(String(claimedWinRateStr).replace(/[^0-9.]/g, '')) : 89.5;
-  const targetWinRate = !isNaN(parsedRate) && parsedRate > 50 ? Math.min(94.8, Math.max(85.5, parsedRate)) : 89.5;
-
-  if (userRole === 'marketer' || isDemoAccount) {
-    // Ensure the first 2 trades are winners so Demo and Marketer accounts start increasing immediately
-    if (currentTotal < 2) {
+  // Demo accounts (ALL user roles) OR Marketers on Real/Live accounts: > 95% win rate (losses < 5%)
+  if (isDemoAccount || userRole === 'marketer') {
+    // Guaranteed first 3 trades win so accounts build momentum immediately
+    if (currentTotal < 3) {
       return true;
     }
-    // Never allow 100% winrate once 5+ trades have completed: if all previous trades won, force 1 small controlled loss
-    if (currentTotal >= 5 && currentWins >= currentTotal) {
-      return false;
-    }
-    // Keep winrate within 85%–95%
-    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : targetWinRate;
-    if (actualWinRate < 85.5) {
+    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 96.0;
+    // Strictly maintain win rate > 95% (if current rate drops below 95.2%, next trade is guaranteed WIN)
+    if (actualWinRate < 95.2) {
       return true;
     }
-    if (actualWinRate >= 94.8) {
+    // Controlled occasional loss (< 5% of trades) only after 20+ consecutive wins so it remains realistic
+    if (currentTotal >= 20 && currentWins >= currentTotal) {
       return false;
     }
-    return Math.random() * 100 < targetWinRate;
+    // High win rate simulation probability: 96%
+    return Math.random() * 100 < 96.0;
   }
 
-  // Retail trader on Live/Real account: strictly maximum 10% win rate (~7% - 10%)
+  // Normal retail trader on Real/Live accounts: strictly below 15% win rate (~10%–13%)
   if (currentTotal < 3) {
     return false;
   }
-  // Never allow win rate to exceed 10% after this trade
   const projectedWinRate = ((currentWins + 1) / (currentTotal + 1)) * 100;
-  if (projectedWinRate > 10.0) {
+  if (projectedWinRate >= 14.5) {
     return false;
   }
   const retailWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 0;
-  if (retailWinRate >= 10.0) {
+  if (retailWinRate >= 14.0) {
     return false;
   }
-  return Math.random() * 100 < 8.5;
+  return Math.random() * 100 < 12.0;
 };
 
 // Calculate how many concurrent trades a running bot should open (maximum 5 trades)

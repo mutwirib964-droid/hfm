@@ -116,12 +116,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const [transferTo, setTransferTo] = useState(liveAccounts[0]?.accountNumber || '');
   const [transferAmount, setTransferAmount] = useState<number>(100);
 
+  const firstLiveAccNum = liveAccounts[0]?.accountNumber || '';
+
   // Keep transfer source and destination valid whenever accounts update
   useEffect(() => {
-    if (!transferTo && liveAccounts.length > 0) {
-      setTransferTo(liveAccounts[0].accountNumber);
+    if (!transferTo && firstLiveAccNum) {
+      setTransferTo(firstLiveAccNum);
     }
-  }, [liveAccounts, transferTo]);
+  }, [firstLiveAccNum, transferTo]);
 
   const handleSwapTransfer = () => {
     const prevFrom = transferFrom;
