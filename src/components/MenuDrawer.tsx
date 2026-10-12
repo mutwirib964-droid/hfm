@@ -29,7 +29,6 @@ import {
 import { ActiveTab } from '../types';
 import { RiskPipCalculatorModal } from './RiskPipCalculatorModal';
 import { TradersRewardsModal } from './TradersRewardsModal';
-import { Security2FAModal } from './Security2FAModal';
 import { DedicatedTraderSupportModal } from './DedicatedTraderSupportModal';
 import { UserAuthProfile } from '../types/botTypes';
 
@@ -62,11 +61,9 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   const [modalNotice, setModalNotice] = useState<string | null>(null);
   const [isRiskCalcOpen, setIsRiskCalcOpen] = useState(false);
   const [isRewardsOpen, setIsRewardsOpen] = useState(false);
-  const [is2FAOpen, setIs2FAOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
-  const [twoFactorEnabled, setTwoFactorEnabled] = useState(true);
 
-  if (!isOpen && !isRiskCalcOpen && !isRewardsOpen && !is2FAOpen && !isSupportOpen) return null;
+  if (!isOpen && !isRiskCalcOpen && !isRewardsOpen && !isSupportOpen) return null;
 
   const handleCopyAccount = () => {
     navigator.clipboard.writeText('8842-9102-LIVE');
@@ -317,22 +314,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
 
               <button
                 onClick={() => {
-                  setIs2FAOpen(true);
-                  onClose();
-                }}
-                className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Shield className="w-4 h-4 text-emerald-500" />
-                  <span>Security &amp; 2FA Protection</span>
-                </div>
-                <span className="text-[10px] text-emerald-600 dark:text-emerald-500 font-bold">
-                  {twoFactorEnabled ? 'Active' : 'Off'}
-                </span>
-              </button>
-
-              <button
-                onClick={() => {
                   setIsSupportOpen(true);
                   onClose();
                 }}
@@ -409,14 +390,6 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         isOpen={isRewardsOpen}
         onClose={() => setIsRewardsOpen(false)}
         isDarkMode={isDarkMode}
-      />
-
-      <Security2FAModal
-        isOpen={is2FAOpen}
-        onClose={() => setIs2FAOpen(false)}
-        isDarkMode={isDarkMode}
-        twoFactorEnabled={twoFactorEnabled}
-        onToggle2FA={setTwoFactorEnabled}
       />
 
       <DedicatedTraderSupportModal

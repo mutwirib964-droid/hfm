@@ -26,7 +26,6 @@ import {
   CheckCircle2,
   Server,
 } from 'lucide-react';
-import { Security2FAModal, TotpVerificationModal } from './Security2FAModal';
 import { DedicatedTraderSupportModal } from './DedicatedTraderSupportModal';
 import { UserAuthProfile } from '../types/botTypes';
 
@@ -43,9 +42,6 @@ interface MoreTabProps {
   onToggleSpreadBrackets?: () => void;
   drawdownProtection?: boolean;
   onToggleDrawdownProtection?: () => void;
-  twoFactorEnabled?: boolean;
-  twoFactorSecret?: string;
-  onToggle2FA?: (enabled: boolean, secret?: string) => void;
   currentUser?: UserAuthProfile | null;
   onSyncAllToSupabase?: () => Promise<void>;
 }
@@ -63,32 +59,16 @@ export const MoreTab: React.FC<MoreTabProps> = ({
   onToggleSpreadBrackets,
   drawdownProtection = true,
   onToggleDrawdownProtection,
-  twoFactorEnabled = true,
-  twoFactorSecret = 'JBSWY3DPEHPK3PXP',
-  onToggle2FA,
   currentUser,
   onSyncAllToSupabase,
 }) => {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [is2FAModalOpen, setIs2FAModalOpen] = useState<boolean>(false);
   const [isSupportModalOpen, setIsSupportModalOpen] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
-  const [pendingSettingAction, setPendingSettingAction] = useState<{
-    label: string;
-    execute: () => void;
-  } | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
-  };
-
-  const require2FAForSettingChange = (label: string, execute: () => void) => {
-    if (twoFactorEnabled) {
-      setPendingSettingAction({ label, execute });
-    } else {
-      execute();
-    }
   };
 
   const handleManualSync = async () => {
@@ -162,12 +142,10 @@ export const MoreTab: React.FC<MoreTabProps> = ({
               </div>
               <button
                 onClick={() => {
-                  require2FAForSettingChange('Toggle One-Click Direct Execution', () => {
-                    onToggleOneClick();
-                    showToast(
-                      `One-Click Trading is now ${!oneClickTrading ? 'ENABLED' : 'DISABLED'}`
-                    );
-                  });
+                  onToggleOneClick();
+                  showToast(
+                    `One-Click Trading is now ${!oneClickTrading ? 'ENABLED' : 'DISABLED'}`
+                  );
                 }}
                 className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
                   oneClickTrading ? 'bg-blue-600' : isDarkMode ? 'bg-neutral-700' : 'bg-neutral-300'
@@ -200,10 +178,8 @@ export const MoreTab: React.FC<MoreTabProps> = ({
                     key={val}
                     onClick={() => {
                       if (slippage === val) return;
-                      require2FAForSettingChange(`Set Maximum Slippage to ${val} pips`, () => {
-                        if (onSlippageChange) onSlippageChange(val);
-                        showToast(`Slippage set to ${val} pips`);
-                      });
+                      if (onSlippageChange) onSlippageChange(val);
+                      showToast(`Slippage set to ${val} pips`);
                     }}
                     className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
                       slippage === val
@@ -232,10 +208,8 @@ export const MoreTab: React.FC<MoreTabProps> = ({
               </div>
               <button
                 onClick={() => {
-                  require2FAForSettingChange('Update Trade Sound Effects', () => {
-                    if (onToggleSound) onToggleSound();
-                    showToast(`Sound FX ${!soundEnabled ? 'Enabled' : 'Muted'}`);
-                  });
+                  if (onToggleSound) onToggleSound();
+                  showToast(`Sound FX ${!soundEnabled ? 'Enabled' : 'Muted'}`);
                 }}
                 className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
                   soundEnabled ? 'bg-amber-500' : isDarkMode ? 'bg-neutral-700' : 'bg-neutral-300'
@@ -280,9 +254,7 @@ export const MoreTab: React.FC<MoreTabProps> = ({
               </div>
               <button
                 onClick={() => {
-                  require2FAForSettingChange('Change Terminal Theme Style', () => {
-                    onToggleTheme();
-                  });
+                  onToggleTheme();
                 }}
                 className={`px-3 py-1.5 text-xs font-bold rounded-lg border transition-colors cursor-pointer ${
                   isDarkMode
@@ -309,10 +281,8 @@ export const MoreTab: React.FC<MoreTabProps> = ({
               </div>
               <button
                 onClick={() => {
-                  require2FAForSettingChange('Toggle Chart Spreads & Market Depth', () => {
-                    if (onToggleSpreadBrackets) onToggleSpreadBrackets();
-                    showToast(`Live Spreads on Chart: ${!showSpreadBrackets ? 'ON' : 'OFF'}`);
-                  });
+                  if (onToggleSpreadBrackets) onToggleSpreadBrackets();
+                  showToast(`Live Spreads on Chart: ${!showSpreadBrackets ? 'ON' : 'OFF'}`);
                 }}
                 className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
                   showSpreadBrackets ? 'bg-teal-500' : isDarkMode ? 'bg-neutral-700' : 'bg-neutral-300'
@@ -357,12 +327,10 @@ export const MoreTab: React.FC<MoreTabProps> = ({
               </div>
               <button
                 onClick={() => {
-                  require2FAForSettingChange('Toggle Auto Drawdown Guard', () => {
-                    if (onToggleDrawdownProtection) onToggleDrawdownProtection();
-                    showToast(
-                      `Zero Balance Guard: ${!drawdownProtection ? 'ENABLED' : 'DISABLED'}`
-                    );
-                  });
+                  if (onToggleDrawdownProtection) onToggleDrawdownProtection();
+                  showToast(
+                    `Zero Balance Guard: ${!drawdownProtection ? 'ENABLED' : 'DISABLED'}`
+                  );
                 }}
                 className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer ${
                   drawdownProtection ? 'bg-rose-600' : isDarkMode ? 'bg-neutral-700' : 'bg-neutral-300'
@@ -374,26 +342,6 @@ export const MoreTab: React.FC<MoreTabProps> = ({
                   }`}
                 />
               </button>
-            </div>
-
-            {/* 2FA Shield */}
-            <div
-              onClick={() => setIs2FAModalOpen(true)}
-              className="p-3.5 flex items-center justify-between hover:bg-neutral-50 dark:hover:bg-neutral-800/40 cursor-pointer transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-500">
-                  <Lock className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold">Biometric & 2FA Security</h3>
-                  <p className="text-xs text-neutral-400">Device Fingerprint + Authenticator App linked</p>
-                </div>
-              </div>
-              <span className="text-xs font-bold text-emerald-500 flex items-center gap-1">
-                {twoFactorEnabled ? 'Active' : 'Off'}
-                <ChevronRight className="w-3.5 h-3.5 text-neutral-500" />
-              </span>
             </div>
 
             {/* 24/7 Dedicated Support */}
@@ -423,39 +371,6 @@ export const MoreTab: React.FC<MoreTabProps> = ({
           </p>
         </div>
       </div>
-
-      {/* 2FA Modal */}
-      <Security2FAModal
-        isOpen={is2FAModalOpen}
-        onClose={() => setIs2FAModalOpen(false)}
-        isDarkMode={isDarkMode}
-        twoFactorEnabled={twoFactorEnabled}
-        twoFactorSecret={twoFactorSecret}
-        userEmail={currentUser?.email}
-        onToggle2FA={(val, sec) => {
-          if (onToggle2FA) onToggle2FA(val, sec);
-        }}
-      />
-
-      {/* 2FA TOTP Verification Modal for Settings Modifications */}
-      <TotpVerificationModal
-        isOpen={Boolean(pendingSettingAction)}
-        title="2FA Verification: Modify Settings"
-        subtitle={
-          pendingSettingAction
-            ? `Enter your 6-digit TOTP code to authorize: "${pendingSettingAction.label}".`
-            : 'Enter your 6-digit TOTP code to modify platform settings.'
-        }
-        actionLabel="Verify & Apply Setting"
-        isDarkMode={isDarkMode}
-        twoFactorSecret={twoFactorSecret}
-        onVerified={() => {
-          const act = pendingSettingAction;
-          setPendingSettingAction(null);
-          if (act) act.execute();
-        }}
-        onCancel={() => setPendingSettingAction(null)}
-      />
 
       {/* Dedicated Trader Support AI Modal */}
       <DedicatedTraderSupportModal
