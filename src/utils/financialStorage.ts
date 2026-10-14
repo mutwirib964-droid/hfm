@@ -483,6 +483,33 @@ export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | '
       }
     }
 
+    // Broadcast immediate role change notification across windows and tabs
+    try {
+      const channel = new BroadcastChannel('vtm_global_sync');
+      channel.postMessage({
+        type: 'ROLE_CHANGED',
+        email: cleanEmail,
+        role: effectiveRole,
+        timestamp: Date.now(),
+      });
+      setTimeout(() => channel.close(), 100);
+    } catch {
+      // ignore
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('vtm_role_changed', {
+          detail: { email: cleanEmail, role: effectiveRole, timestamp: Date.now() },
+        })
+      );
+      try {
+        localStorage.setItem('vtm_role_update_ping', `${cleanEmail}:${effectiveRole}:${Date.now()}`);
+      } catch {
+        // ignore
+      }
+    }
+
     // Sync to Supabase immediately
     supabaseService.updateUserRoleInDatabase(cleanEmail, effectiveRole).catch(() => {});
     return true;

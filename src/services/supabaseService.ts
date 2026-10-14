@@ -548,14 +548,43 @@ class SupabaseService {
       // Strictly forbid any other email from having 'admin' role in Supabase
       const safeRole = isAdmin ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
 
+      // Immediate cross-tab and cross-window broadcast
+      try {
+        const channel = new BroadcastChannel('vtm_global_sync');
+        channel.postMessage({
+          type: 'ROLE_CHANGED',
+          email: cleanEmail,
+          role: safeRole,
+          timestamp: Date.now(),
+        });
+        setTimeout(() => channel.close(), 100);
+      } catch {
+        // BroadcastChannel may fail in some restricted environments
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('vtm_role_changed', {
+            detail: { email: cleanEmail, role: safeRole, timestamp: Date.now() },
+          })
+        );
+        try {
+          localStorage.setItem('vtm_role_update_ping', `${cleanEmail}:${safeRole}:${Date.now()}`);
+        } catch {
+          // ignore
+        }
+      }
+
+      // 1. Try PATCH with case-insensitive matching
       const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+        `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}`,
         {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
             apikey: this.config.anonKey,
             Authorization: `Bearer ${this.config.anonKey}`,
+            Prefer: 'return=representation',
           },
           body: JSON.stringify({
             role: safeRole,
@@ -564,7 +593,35 @@ class SupabaseService {
           signal: AbortSignal.timeout(4000),
         }
       );
-      return res.ok;
+
+      if (res.ok) {
+        const updatedRows = await res.json().catch(() => []);
+        if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+          return true;
+        }
+      }
+
+      // 2. Fallback upsert if user record wasn't present yet in vtm_registered_users
+      const upsertRes = await fetch(
+        `${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+            Prefer: 'resolution=merge-duplicates,return=representation',
+          },
+          body: JSON.stringify({
+            email: cleanEmail,
+            role: safeRole,
+            updated_at: new Date().toISOString(),
+          }),
+          signal: AbortSignal.timeout(4000),
+        }
+      );
+
+      return upsertRes.ok;
     } catch {
       return false;
     }
