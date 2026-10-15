@@ -456,7 +456,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 Viewing Demo Account #{selectedAccount.accountNumber} ($100,000 Virtual Practice Credit)
               </div>
               <div className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-amber-200/90' : 'text-amber-900 font-medium'}`}>
-                Demo accounts are credited with simulated virtual funds and cannot be deposited into or withdrawn from. All deposits and withdrawals operate exclusively on real VTM Wallet &amp; Live trading accounts.
+                Demo accounts are credited with virtual practice funds and cannot be deposited into or withdrawn from. All deposits and withdrawals operate exclusively on real VTM Wallet &amp; Live trading accounts.
               </div>
             </div>
           </div>
@@ -650,7 +650,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     ) : (
                       <div className="w-full flex items-center justify-between">
                         <span className="text-amber-500/80 font-medium text-[10px]">
-                          Virtual practice credit (Simulated)
+                          Virtual practice credit
                         </span>
                         {onDeleteAccount && (
                           <button

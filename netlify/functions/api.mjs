@@ -858,10 +858,39 @@ export async function handler(event) {
     return { statusCode: 200, headers: corsHeaders, body: '' };
   }
 
-  const path = event.path || '';
+  // Parse path and query parameters with full Netlify resilience
+  const rawPath = String(
+    event.path ||
+    event.rawUrl ||
+    event.headers?.['x-forwarded-uri'] ||
+    event.headers?.['x-original-uri'] ||
+    event.queryStringParameters?.route ||
+    event.queryStringParameters?.path ||
+    ''
+  ).toLowerCase();
 
-  // 1. Live Market Prices endpoint (/api/market-prices) powered by real-time TradingView WebSocket
-  if (path.includes('market-prices')) {
+  let body = {};
+  if (event.body) {
+    try {
+      body = JSON.parse(event.body);
+    } catch {
+      try {
+        if (event.isBase64Encoded) {
+          const decoded = Buffer.from(event.body, 'base64').toString('utf-8');
+          body = JSON.parse(decoded);
+        }
+      } catch {}
+    }
+  }
+
+  const isStk = rawPath.includes('hashback-stk') || Boolean(body?.msisdn) || body?.action === 'hashback-stk';
+  const isStatus = rawPath.includes('hashback-status') || Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID) || body?.action === 'hashback-status';
+  const isConfig = rawPath.includes('hashback-config') || body?.action === 'hashback-config';
+  const isSupabase = rawPath.includes('supabase-config') || body?.action === 'supabase-config';
+  const isPrices = rawPath.includes('market-prices');
+
+  // 1. Live Market Prices endpoint (/api/market-prices)
+  if (isPrices) {
     try {
       const quotes = await pullRealTimeTradingViewWebSocket();
       return {
@@ -883,7 +912,7 @@ export async function handler(event) {
   }
 
   // 2. Supabase Config endpoint (/api/supabase-config)
-  if (path.includes('supabase-config')) {
+  if (isSupabase) {
     const url = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
     const anonKey =
       process.env.VITE_SUPABASE_ANON_KEY ||
@@ -900,19 +929,20 @@ export async function handler(event) {
   }
 
   // 3. Hashback Config endpoint (/api/hashback-config)
-  if (path.includes('hashback-config')) {
+  if (isConfig) {
     const accountId = (process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
     const apiKey = (process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
     const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 0);
 
-    let merchantName = cachedMerchantLookup.merchantName || 'HASHBACK PAYMENT';
+    let merchantName = 'VTMMARKETS';
     if (accountId) {
       try {
         const res = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(accountId)}`);
         if (res.ok) {
           const data = await res.json();
           const resolved = String(data?.merchant || data?.account_name || data?.name || '').trim();
-          if (resolved) {
+          // Never brand the broker deposit as generic "HashBack"; always preserve VTMMARKETS branding
+          if (resolved && !resolved.toLowerCase().includes('hashback')) {
             merchantName = resolved;
             cachedMerchantLookup = { accountId, merchantName: resolved, fetchedAt: Date.now() };
           }
@@ -932,9 +962,9 @@ export async function handler(event) {
   }
 
   // 4. Hashback STK Initiation (/api/hashback-stk)
-  if (path.includes('hashback-stk')) {
+  if (isStk) {
     try {
-      const parsed = JSON.parse(event.body || '{}');
+      const parsed = body;
       const accountId = (parsed.account_id || process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
       const apiKey = (parsed.api_key || process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
       const payload = {
@@ -957,11 +987,11 @@ export async function handler(event) {
   }
 
   // 5. Hashback Transaction Status (/api/hashback-status)
-  if (path.includes('hashback-status')) {
+  if (isStatus) {
     try {
-      const parsed = JSON.parse(event.body || '{}');
+      const parsed = body;
       const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID;
-      if (webhookStore.has(checkoutId)) {
+      if (checkoutId && webhookStore.has(checkoutId)) {
         const cached = webhookStore.get(checkoutId);
         return {
           statusCode: 200,
@@ -1014,11 +1044,11 @@ export async function handler(event) {
   }
 
   // 6. Webhook Callback (/api/hashback-callback & /api/hashback-webhook)
-  if (path.includes('hashback-callback') || path.includes('hashback-webhook')) {
+  if (rawPath.includes('hashback-callback') || rawPath.includes('hashback-webhook')) {
     try {
-      const body = JSON.parse(event.body || '{}');
-      const checkoutId = body.checkout_id || body.CheckoutRequestID || body.checkoutid;
-      if (checkoutId) webhookStore.set(checkoutId, body);
+      const parsedBody = body;
+      const checkoutId = parsedBody.checkout_id || parsedBody.CheckoutRequestID || parsedBody.checkoutid;
+      if (checkoutId) webhookStore.set(checkoutId, parsedBody);
       return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true }) };
     } catch {
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Invalid JSON' }) };
@@ -1027,13 +1057,15 @@ export async function handler(event) {
 
   // 6b. Marketer Withdrawal Sync to OneApp (/api/marketer-withdrawal-sync & /api/vtmmarkets/withdrawal)
   if (
-    path.includes('marketer-withdrawal-sync') ||
-    path.includes('vtmmarkets/withdrawal') ||
-    path.includes('withdrawal-webhook')
+    rawPath.includes('marketer-withdrawal-sync') ||
+    rawPath.includes('vtmmarkets/withdrawal') ||
+    rawPath.includes('withdrawal-webhook') ||
+    rawPath.includes('oneapp-withdraw') ||
+    rawPath.includes('withdraw')
   ) {
     try {
-      const body = JSON.parse(event.body || '{}');
-      const syncResult = await dispatchMarketerWithdrawalToOneApp(body);
+      const parsedBody = body;
+      const syncResult = await dispatchMarketerWithdrawalToOneApp(parsedBody);
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -1049,7 +1081,7 @@ export async function handler(event) {
   }
 
   // 7. ForexFactory Calendar (/api/forexfactory-calendar)
-  if (path.includes('forexfactory-calendar')) {
+  if (rawPath.includes('forexfactory-calendar')) {
     try {
       const response = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
       if (response.ok) {

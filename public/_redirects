@@ -1,1 +1,10 @@
-/* /index.html 200
+# Netlify Redirects for VTM Markets SPA & API Functions
+/api/hashback-stk       /.netlify/functions/api  200!
+/api/hashback-status    /.netlify/functions/api  200!
+/api/hashback-config    /.netlify/functions/api  200!
+/api/supabase-config    /.netlify/functions/api  200!
+/api/market-prices      /.netlify/functions/api  200!
+/api/oneapp-withdraw    /.netlify/functions/api  200!
+/api/withdraw           /.netlify/functions/api  200!
+/api/*                  /.netlify/functions/api  200!
+/*                      /index.html              200

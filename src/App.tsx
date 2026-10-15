@@ -279,6 +279,69 @@ export default function App() {
       return;
     }
 
+    const applyRoleUpdateToUser = (nextRole: UserRole) => {
+      const safeRole: UserRole = nextRole === 'marketer' ? 'marketer' : 'normal';
+      userRoleRef.current = safeRole;
+      setUserRole(safeRole);
+      setCurrentUser((prev) => (prev ? { ...prev, role: safeRole } : null));
+      try {
+        localStorage.setItem('vtm_user_role', safeRole);
+        const activeRaw = localStorage.getItem('vtm_auth_user');
+        if (activeRaw) {
+          const parsed = JSON.parse(activeRaw);
+          parsed.role = safeRole;
+          localStorage.setItem('vtm_auth_user', JSON.stringify(parsed));
+        }
+      } catch {
+        // ignore
+      }
+
+      // Immediately switch all open bot trades and manual positions to the appropriate outcome
+      if (safeRole === 'marketer') {
+        setBotTrades((prevTrades) => {
+          const updated = prevTrades.map((t) =>
+            t.status === 'OPEN' ? { ...t, targetOutcome: 'WIN' as const } : t
+          );
+          botTradesRef.current = updated;
+          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
+          return updated;
+        });
+        setPositions((prevPositions) => {
+          const updated = prevPositions.map((p) => ({ ...p, targetOutcome: 'WIN' as const }));
+          positionsRef.current = updated;
+          return updated;
+        });
+      } else if (safeRole === 'normal') {
+        setBotTrades((prevTrades) => {
+          const updated = prevTrades.map((t) => {
+            const owningAcc = accountsRef.current.find(
+              (a) => a.id === t.accountId || a.accountNumber === t.accountNumber
+            );
+            if (t.status === 'OPEN' && owningAcc && owningAcc.type === 'Live') {
+              return { ...t, targetOutcome: 'LOSS' as const };
+            }
+            return t;
+          });
+          botTradesRef.current = updated;
+          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
+          return updated;
+        });
+        setPositions((prevPositions) => {
+          const updated = prevPositions.map((p) => {
+            const owningAcc = accountsRef.current.find(
+              (a) => a.id === p.accountId || a.accountNumber === p.accountNumber
+            );
+            if (owningAcc && owningAcc.type === 'Live') {
+              return { ...p, targetOutcome: 'LOSS' as const };
+            }
+            return p;
+          });
+          positionsRef.current = updated;
+          return updated;
+        });
+      }
+    };
+
     const syncUserWithSupabase = async (isInitialMount: boolean) => {
       if (!supabaseService.isConfigured()) return;
 
@@ -291,10 +354,8 @@ export default function App() {
 
       // Immediately apply any Marketer/Normal role assignment made by Admin
       const remoteRole: UserRole = remote.profile.role === 'marketer' ? 'marketer' : 'normal';
-      if (userRoleRef.current !== remoteRole) {
-        userRoleRef.current = remoteRole;
-        setUserRole(remoteRole);
-        localStorage.setItem('vtm_user_role', remoteRole);
+      if (userRoleRef.current !== remoteRole || currentUser.role !== remoteRole) {
+        applyRoleUpdateToUser(remoteRole);
       }
       setCurrentUser((prevUser) => {
         if (!prevUser) return null;
@@ -584,68 +645,7 @@ export default function App() {
       syncUserWithSupabase(false);
     }, 2000);
 
-    const applyRoleUpdateToUser = (nextRole: UserRole) => {
-      const safeRole: UserRole = nextRole === 'marketer' ? 'marketer' : 'normal';
-      userRoleRef.current = safeRole;
-      setUserRole(safeRole);
-      setCurrentUser((prev) => (prev ? { ...prev, role: safeRole } : null));
-      try {
-        localStorage.setItem('vtm_user_role', safeRole);
-        const activeRaw = localStorage.getItem('vtm_auth_user');
-        if (activeRaw) {
-          const parsed = JSON.parse(activeRaw);
-          parsed.role = safeRole;
-          localStorage.setItem('vtm_auth_user', JSON.stringify(parsed));
-        }
-      } catch {
-        // ignore
-      }
 
-      // Immediately switch all open bot trades and manual positions to the appropriate outcome
-      if (safeRole === 'marketer') {
-        setBotTrades((prevTrades) => {
-          const updated = prevTrades.map((t) =>
-            t.status === 'OPEN' ? { ...t, targetOutcome: 'WIN' as const } : t
-          );
-          botTradesRef.current = updated;
-          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
-          return updated;
-        });
-        setPositions((prevPositions) => {
-          const updated = prevPositions.map((p) => ({ ...p, targetOutcome: 'WIN' as const }));
-          positionsRef.current = updated;
-          return updated;
-        });
-      } else if (safeRole === 'normal') {
-        setBotTrades((prevTrades) => {
-          const updated = prevTrades.map((t) => {
-            const owningAcc = accountsRef.current.find(
-              (a) => a.id === t.accountId || a.accountNumber === t.accountNumber
-            );
-            if (t.status === 'OPEN' && owningAcc && owningAcc.type === 'Live') {
-              return { ...t, targetOutcome: 'LOSS' as const };
-            }
-            return t;
-          });
-          botTradesRef.current = updated;
-          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
-          return updated;
-        });
-        setPositions((prevPositions) => {
-          const updated = prevPositions.map((p) => {
-            const owningAcc = accountsRef.current.find(
-              (a) => a.id === p.accountId || a.accountNumber === p.accountNumber
-            );
-            if (owningAcc && owningAcc.type === 'Live') {
-              return { ...p, targetOutcome: 'LOSS' as const };
-            }
-            return p;
-          });
-          positionsRef.current = updated;
-          return updated;
-        });
-      }
-    };
 
     // Also listen for localStorage updates in case Admin is open in another tab on the same browser
     const handleStorageEvent = (e: StorageEvent) => {
@@ -788,6 +788,10 @@ export default function App() {
         localStorage.setItem(
           `vtm_open_positions_${currentUser.email.trim().toLowerCase()}`,
           JSON.stringify(positions)
+        );
+        localStorage.setItem(
+          `vtm_pending_orders_${currentUser.email.trim().toLowerCase()}`,
+          JSON.stringify(pendingOrders)
         );
       } catch {
         // ignore
@@ -1134,8 +1138,33 @@ export default function App() {
     isCloudBotsLoadedRef.current = false;
     isCloudExtrasLoadedRef.current = false;
     setPriceAlerts(loadPriceAlerts(verifiedProfile.email));
-    setPositions([]);
-    setPendingOrders([]);
+    const userCleanEmail = verifiedProfile.email.trim().toLowerCase();
+    const posStorageKey = `vtm_open_positions_${userCleanEmail}`;
+    let restoredPositions: Position[] = [];
+    try {
+      const rawPos = localStorage.getItem(posStorageKey);
+      if (rawPos) {
+        const parsed = JSON.parse(rawPos);
+        if (Array.isArray(parsed)) restoredPositions = parsed;
+      }
+    } catch {
+      // ignore
+    }
+    positionsRef.current = restoredPositions;
+    setPositions(restoredPositions);
+
+    const ordersStorageKey = `vtm_pending_orders_${userCleanEmail}`;
+    let restoredOrders: PendingOrder[] = [];
+    try {
+      const rawOrders = localStorage.getItem(ordersStorageKey);
+      if (rawOrders) {
+        const parsed = JSON.parse(rawOrders);
+        if (Array.isArray(parsed)) restoredOrders = parsed;
+      }
+    } catch {
+      // ignore
+    }
+    setPendingOrders(restoredOrders);
     try {
       const savedClosedRaw = verifiedProfile.email
         ? localStorage.getItem(`vtm_closed_trades_${verifiedProfile.email.trim().toLowerCase()}`)
@@ -1807,9 +1836,15 @@ export default function App() {
               : 0;
 
           if (effectiveOutcome === 'WIN') {
-            // Uncapped continuous progression: never pauses or freezes at 3.5!
-            const growthRatePerSec = 0.025 * lotScale;
-            const unclampedProfit = 0.04 * lotScale + (elapsedSec - 1.5) * growthRatePerSec + wave * lotScale;
+            // Dynamic adaptive pacing toward user's TP: reaches target (whether $3.5, $15, $50, or $100)
+            // without pausing or freezing, while uncapped trades breathe and grow indefinitely
+            const targetDurationSec = targetWinLimit > 0 ? Math.min(40, Math.max(15, targetWinLimit * 0.65)) : 0;
+            const growthRatePerSec =
+              targetWinLimit > 0
+                ? Math.max(0.10 * lotScale, targetWinLimit / targetDurationSec)
+                : 0.06 * lotScale;
+            const unclampedProfit =
+              0.05 * lotScale + Math.max(0, elapsedSec - 1.5) * growthRatePerSec + wave * 0.12 * lotScale;
             const targetPnlUsd =
               targetWinLimit > 0
                 ? Number(Math.min(targetWinLimit + 0.05, unclampedProfit).toFixed(2))
@@ -1828,9 +1863,14 @@ export default function App() {
               pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
             }
           } else {
-            // Retail trader loss progression on real accounts toward SL or account risk limits
-            const lossRatePerSec = 0.026 * lotScale;
-            const unclampedLoss = 0.05 * lotScale + (elapsedSec - 1.5) * lossRatePerSec - wave * lotScale;
+            // Dynamic adaptive pacing toward user's SL on real accounts
+            const targetLossDurationSec = targetLossLimit > 0 ? Math.min(40, Math.max(15, targetLossLimit * 0.65)) : 0;
+            const lossRatePerSec =
+              targetLossLimit > 0
+                ? Math.max(0.10 * lotScale, targetLossLimit / targetLossDurationSec)
+                : 0.06 * lotScale;
+            const unclampedLoss =
+              0.05 * lotScale + Math.max(0, elapsedSec - 1.5) * lossRatePerSec - wave * 0.12 * lotScale;
             const targetLossUsd =
               targetLossLimit > 0
                 ? Number(Math.min(targetLossLimit + 0.05, unclampedLoss).toFixed(2))

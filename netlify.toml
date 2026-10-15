@@ -22,8 +22,38 @@
     Cache-Control = "no-cache, no-store, must-revalidate"
 
 [[redirects]]
+  from = "/api/hashback-stk"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/hashback-status"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/hashback-config"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/supabase-config"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/market-prices"
+  to = "/.netlify/functions/api"
+  status = 200
+  force = true
+
+[[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api/:splat"
+  to = "/.netlify/functions/api"
   status = 200
   force = true
 

@@ -608,7 +608,7 @@ function hashbackStkPlugin() {
 
   const resolveMerchantAccountName = async (accountId: string, fallbackName?: string): Promise<string> => {
     const cleanAcc = (accountId || '').trim();
-    if (!cleanAcc) return fallbackName || 'HASHBACK PAYMENT';
+    if (!cleanAcc) return fallbackName || 'VTMMARKETS';
 
     // Use cached merchant name if same accountId and fetched within last 5 minutes
     if (
@@ -631,7 +631,7 @@ function hashbackStkPlugin() {
       if (res.ok) {
         const data = await res.json();
         const resolved = String(data?.merchant || data?.account_name || data?.name || '').trim();
-        if (resolved) {
+        if (resolved && !resolved.toLowerCase().includes('hashback')) {
           cachedMerchantLookup = {
             accountId: cleanAcc,
             merchantName: resolved,
@@ -639,12 +639,13 @@ function hashbackStkPlugin() {
           };
           return resolved;
         }
+        return 'VTMMARKETS';
       }
     } catch {
       // ignore network error and fall back to cached or saved name
     }
 
-    return cachedMerchantLookup.merchantName || fallbackName || 'HASHBACK PAYMENT';
+    return cachedMerchantLookup.merchantName || fallbackName || 'VTMMARKETS';
   };
 
   // In-memory store for webhook callbacks received from Hashback

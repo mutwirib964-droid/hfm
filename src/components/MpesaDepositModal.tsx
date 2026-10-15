@@ -179,7 +179,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   const numUsd = parseFloat(amountInput) || 0;
   const numKes = Math.max(1, Math.round(numUsd * (liveUsdKesRate || USD_KES_RATE)));
-  const userAccountName = hashbackMerchantName || 'HASHBACK PAYMENT';
+  const userAccountName =
+    hashbackMerchantName && !hashbackMerchantName.toLowerCase().includes('hashback')
+      ? hashbackMerchantName
+      : 'VTMMARKETS';
   const matchedLiveAccount = accounts.find(
     (a) => `Account #${a.accountNumber}` === targetAccount || a.accountNumber === targetAccount
   );
@@ -334,7 +337,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           });
           supabaseService.syncActivity(latest.currentUser, {
             type: 'DEPOSIT_CONFIRMED',
-            description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed by Hashback for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Receipt: ${receipt}`,
+            description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Receipt: ${receipt}`,
             metadata: { receipt, checkoutId, amountUsd: latest.numUsd, amountKes: latest.numKes, targetAccount: latest.targetAccount },
           });
 
@@ -713,7 +716,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               </div>
 
               <h3 className="text-base sm:text-lg font-bold text-center mb-1 text-slate-900 dark:text-white">
-                Safaricom M-PESA Express (HashBack)
+                Safaricom M-PESA Express (VTMMARKETS)
               </h3>
               <p className="text-center text-xs text-slate-500 dark:text-neutral-400 mb-3">
                 Instant prompt sent to your Safaricom mobile • KES {numKes.toLocaleString()} (${numUsd || 16} USD)
@@ -1148,7 +1151,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
               <div className="pt-4 mt-4 border-t border-slate-100 flex items-center justify-center gap-1.5 text-xs text-slate-400">
                 <span>Secured by</span>
-                <span className="font-extrabold text-slate-700 tracking-wider">#HASHBACK</span>
+                <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
               </div>
             </div>
           )}
@@ -1174,7 +1177,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               <div className="pt-4 border-t border-slate-100 text-center space-y-1">
                 <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400">
                   <span>Secured by</span>
-                  <span className="font-extrabold text-slate-700 tracking-wider">#HASHBACK</span>
+                  <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
                 </div>
                 <button
                   type="button"
@@ -1233,7 +1236,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               <div className="pt-4 border-t border-slate-100 text-center space-y-1">
                 <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400">
                   <span>Secured by</span>
-                  <span className="font-extrabold text-slate-700 tracking-wider">#HASHBACK</span>
+                  <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
                 </div>
                 <span className="text-[11px] text-slate-400 block">Report scam</span>
               </div>

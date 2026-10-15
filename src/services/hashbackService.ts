@@ -58,7 +58,7 @@ const STORAGE_KEY_USD_KES_RATE = 'vtm_hashback_usd_kes_rate';
 const STORAGE_KEY_MERCHANT_NAME = 'vtm_hashback_merchant_name';
 
 // Live mutable exports hydrated from `/api/hashback-config` (sensitive credentials remain strictly server-side)
-export let HASHBACK_MERCHANT_NAME: string = 'HASHBACK PAYMENT';
+export let HASHBACK_MERCHANT_NAME: string = 'VTMMARKETS';
 export let USD_KES_RATE: number =
   Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 125.56;
 export let USD_KES_WITHDRAW_RATE: number = USD_KES_RATE;
@@ -70,7 +70,7 @@ let runtimeSecretsCache: {
   loaded: boolean;
 } = {
   usdKesRate: USD_KES_RATE,
-  merchantName: '',
+  merchantName: 'VTMMARKETS',
   isConfigured: false,
   loaded: false,
 };
@@ -94,31 +94,89 @@ export async function syncRuntimeHashbackSecrets(): Promise<{
   }
 
   try {
-    const res = await fetch('/api/hashback-config', {
+    let res = await fetch('/api/hashback-config', {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
-    if (res.ok) {
+    if (!res.ok) {
+      try {
+        res = await fetch('/.netlify/functions/api?route=hashback-config', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+      } catch {}
+    }
+    if (!res.ok) {
+      try {
+        res = await fetch('/.netlify/functions/hashback-config', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+        });
+      } catch {}
+    }
+
+    if (res && res.ok) {
       const data = await res.json();
       if (Number(data.usdKesRate) > 0) {
         runtimeSecretsCache.usdKesRate = Number(data.usdKesRate);
         USD_KES_RATE = runtimeSecretsCache.usdKesRate;
         USD_KES_WITHDRAW_RATE = runtimeSecretsCache.usdKesRate;
       }
-      if (data.merchantName) {
-        runtimeSecretsCache.merchantName = String(data.merchantName).trim();
-        HASHBACK_MERCHANT_NAME = runtimeSecretsCache.merchantName;
-        try {
-          localStorage.setItem(STORAGE_KEY_MERCHANT_NAME, runtimeSecretsCache.merchantName);
-        } catch {
-          // ignore
-        }
+      const rawMerchant = String(data.merchantName || '').trim();
+      // Ensure merchant name never defaults to third-party provider "HashBack"
+      if (rawMerchant && !rawMerchant.toLowerCase().includes('hashback')) {
+        runtimeSecretsCache.merchantName = rawMerchant;
+        HASHBACK_MERCHANT_NAME = rawMerchant;
+      } else {
+        runtimeSecretsCache.merchantName = 'VTMMARKETS';
+        HASHBACK_MERCHANT_NAME = 'VTMMARKETS';
+      }
+      try {
+        localStorage.setItem(STORAGE_KEY_MERCHANT_NAME, runtimeSecretsCache.merchantName);
+      } catch {
+        // ignore
       }
       runtimeSecretsCache.isConfigured = Boolean(data.configured);
       runtimeSecretsCache.loaded = true;
+    } else {
+      // If server returned non-200, try client-side account lookup if VITE_HASHBACK_ACCOUNT_ID is set
+      const clientAccId = String(import.meta.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
+      if (clientAccId) {
+        try {
+          const accRes = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(clientAccId)}`);
+          if (accRes.ok) {
+            const accData = await accRes.json();
+            const resolved = String(accData?.merchant || accData?.account_name || accData?.name || '').trim();
+            if (resolved && !resolved.toLowerCase().includes('hashback')) {
+              runtimeSecretsCache.merchantName = resolved;
+              HASHBACK_MERCHANT_NAME = resolved;
+            } else {
+              runtimeSecretsCache.merchantName = 'VTMMARKETS';
+              HASHBACK_MERCHANT_NAME = 'VTMMARKETS';
+            }
+          }
+        } catch {}
+      }
     }
   } catch {
-    // Fallback to cached values
+    // Fallback to cached or client-provided values
+    const clientAccId = String(import.meta.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
+    if (clientAccId) {
+      try {
+        const accRes = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(clientAccId)}`);
+        if (accRes.ok) {
+          const accData = await accRes.json();
+          const resolved = String(accData?.merchant || accData?.account_name || accData?.name || '').trim();
+          if (resolved && !resolved.toLowerCase().includes('hashback')) {
+            runtimeSecretsCache.merchantName = resolved;
+            HASHBACK_MERCHANT_NAME = resolved;
+          } else {
+            runtimeSecretsCache.merchantName = 'VTMMARKETS';
+            HASHBACK_MERCHANT_NAME = 'VTMMARKETS';
+          }
+        }
+      } catch {}
+    }
   }
   return getHashbackConfig();
 }
@@ -165,22 +223,30 @@ export function getHashbackConfig() {
   let savedMerchant = '';
   try {
     savedMerchant = (localStorage.getItem(STORAGE_KEY_MERCHANT_NAME) || '').trim();
+    if (savedMerchant.toLowerCase().includes('hashback')) {
+      savedMerchant = 'VTMMARKETS';
+      localStorage.setItem(STORAGE_KEY_MERCHANT_NAME, 'VTMMARKETS');
+    }
   } catch {
     // ignore
   }
 
-  const merchantName =
+  let merchantName =
     runtimeSecretsCache.merchantName ||
     savedMerchant ||
     HASHBACK_MERCHANT_NAME ||
-    'HASHBACK PAYMENT';
+    'VTMMARKETS';
+
+  if (!merchantName || merchantName.toLowerCase().includes('hashback')) {
+    merchantName = 'VTMMARKETS';
+  }
 
   const usdKesRate = getUsdKesRate();
 
   return {
     usdKesRate,
     merchantName,
-    isConfigured: runtimeSecretsCache.isConfigured,
+    isConfigured: runtimeSecretsCache.isConfigured || Boolean(import.meta.env.VITE_HASHBACK_ACCOUNT_ID),
   };
 }
 
@@ -292,7 +358,7 @@ export async function initiateStkPush(req: HashbackStkRequest): Promise<MpesaPay
   let data: any = null;
   let httpOk = false;
 
-  // Server-side proxy (/api/hashback-stk) injects server Secrets (HASHBACK_ACCOUNT_ID, HASHBACK_API_KEY) securely
+  // Tier 1: Standard proxy endpoint (/api/hashback-stk)
   try {
     const proxyRes = await fetch('/api/hashback-stk', {
       method: 'POST',
@@ -311,6 +377,86 @@ export async function initiateStkPush(req: HashbackStkRequest): Promise<MpesaPay
     }
   } catch {
     data = null;
+  }
+
+  // Tier 2: Direct Netlify function path (/.netlify/functions/api)
+  if (!data || !httpOk) {
+    try {
+      const netlifyRes = await fetch('/.netlify/functions/api', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ ...payload, action: 'hashback-stk' }),
+      });
+      const text = await netlifyRes.text();
+      try {
+        const netlifyData = JSON.parse(text);
+        if (netlifyData) {
+          data = netlifyData;
+          httpOk = netlifyRes.ok;
+        }
+      } catch {}
+    } catch {}
+  }
+
+  // Tier 3: Named Netlify function (/.netlify/functions/hashback-stk)
+  if (!data || !httpOk) {
+    try {
+      const fnRes = await fetch('/.netlify/functions/hashback-stk', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      const text = await fnRes.text();
+      try {
+        const fnData = JSON.parse(text);
+        if (fnData) {
+          data = fnData;
+          httpOk = fnRes.ok;
+        }
+      } catch {}
+    } catch {}
+  }
+
+  // Tier 4: Direct client-side HashBack CORS call if client credentials exist
+  if (!data || !httpOk) {
+    const clientAcc = String(import.meta.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
+    const clientKey = String(import.meta.env.VITE_HASHBACK_API_KEY || '').trim();
+    if (clientAcc && clientKey) {
+      try {
+        const directRes = await fetch('https://api.hashback.co.ke/initiatestk', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({
+            account_id: clientAcc,
+            api_key: clientKey,
+            amount: payload.amount,
+            msisdn: payload.msisdn,
+            reference: payload.reference,
+          }),
+        });
+        const directText = await directRes.text();
+        try {
+          const directData = JSON.parse(directText);
+          if (directData) {
+            data = directData;
+            httpOk = directRes.ok;
+          }
+        } catch {
+          // ignore
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   if (!data) {
@@ -362,19 +508,13 @@ export async function initiateStkPush(req: HashbackStkRequest): Promise<MpesaPay
  * and Safaricom has confirmed the transaction.
  */
 export async function checkStkPaymentStatus(checkoutId: string): Promise<HashbackStatusResponse> {
-  try {
-    const response = await fetch('/api/hashback-status', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        checkout_id: checkoutId,
-        checkoutid: checkoutId,
-      }),
-    });
+  const statusPayload = {
+    checkout_id: checkoutId,
+    checkoutid: checkoutId,
+    action: 'hashback-status',
+  };
 
-    const data = await response.json();
+  const parseStatusResult = (data: any) => {
     if (data && typeof data.confirmed === 'boolean') {
       return {
         success: Boolean(data.success),
@@ -388,15 +528,50 @@ export async function checkStkPaymentStatus(checkoutId: string): Promise<Hashbac
         raw: data.data || data,
       };
     }
-  } catch (err: any) {
-    return {
-      success: false,
-      confirmed: false,
-      pending: true,
-      failed: false,
-      resultDesc: err?.message || 'Checking payment status...',
-    };
-  }
+    return null;
+  };
+
+  // Tier 1: /api/hashback-status
+  try {
+    const response = await fetch('/api/hashback-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(statusPayload),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      const parsed = parseStatusResult(data);
+      if (parsed) return parsed;
+    }
+  } catch {}
+
+  // Tier 2: /.netlify/functions/api
+  try {
+    const netlifyRes = await fetch('/.netlify/functions/api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(statusPayload),
+    });
+    if (netlifyRes.ok) {
+      const data = await netlifyRes.json();
+      const parsed = parseStatusResult(data);
+      if (parsed) return parsed;
+    }
+  } catch {}
+
+  // Tier 3: /.netlify/functions/hashback-status
+  try {
+    const fnRes = await fetch('/.netlify/functions/hashback-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(statusPayload),
+    });
+    if (fnRes.ok) {
+      const data = await fnRes.json();
+      const parsed = parseStatusResult(data);
+      if (parsed) return parsed;
+    }
+  } catch {}
 
   return {
     success: false,

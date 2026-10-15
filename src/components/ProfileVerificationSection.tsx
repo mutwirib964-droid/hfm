@@ -116,53 +116,6 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
     };
   });
 
-  const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
-
-  // 15-Minute Auto-Verification Timer (15 min = 900 seconds)
-  const AUTO_VERIFY_DURATION_MS = 15 * 60 * 1000;
-
-  useEffect(() => {
-    if (!kycRecord.submitted || kycRecord.isVerified) return;
-
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - kycRecord.submittedAt;
-      const remainingMs = AUTO_VERIFY_DURATION_MS - elapsed;
-
-      if (remainingMs <= 0) {
-        // Automatically verify after 15 minutes!
-        const updated: KycRecord = {
-          ...kycRecord,
-          isVerified: true,
-          verifiedAt: Date.now(),
-        };
-        setKycRecord(updated);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-        setSecondsRemaining(0);
-        clearInterval(interval);
-      } else {
-        setSecondsRemaining(Math.ceil(remainingMs / 1000));
-      }
-    }, 1000);
-
-    // Initial check
-    const elapsed = Date.now() - kycRecord.submittedAt;
-    const remainingMs = AUTO_VERIFY_DURATION_MS - elapsed;
-    if (remainingMs <= 0) {
-      const updated: KycRecord = {
-        ...kycRecord,
-        isVerified: true,
-        verifiedAt: Date.now(),
-      };
-      setKycRecord(updated);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-      setSecondsRemaining(0);
-    } else {
-      setSecondsRemaining(Math.ceil(remainingMs / 1000));
-    }
-
-    return () => clearInterval(interval);
-  }, [kycRecord.submitted, kycRecord.submittedAt, kycRecord.isVerified]);
-
   const handleSubmitVerification = (e: React.FormEvent) => {
     e.preventDefault();
     if (kycRecord.submitted) return; // Can only occur once
@@ -183,27 +136,6 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
 
     setKycRecord(newRecord);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(newRecord));
-    setSecondsRemaining(15 * 60);
-  };
-
-  // Fast forward helper for user testing so they don't have to wait 15 real-time minutes
-  const handleSimulate15Minutes = () => {
-    const updated: KycRecord = {
-      ...kycRecord,
-      submitted: true,
-      submittedAt: Date.now() - AUTO_VERIFY_DURATION_MS - 1000,
-      isVerified: true,
-      verifiedAt: Date.now(),
-    };
-    setKycRecord(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-    setSecondsRemaining(0);
-  };
-
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}m ${s < 10 ? '0' : ''}${s}s`;
   };
 
   return (
@@ -240,7 +172,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   {kycRecord.isVerified
                     ? 'Account Fully Verified & Approved'
                     : kycRecord.submitted
-                    ? 'Documents Uploaded — Verification in Progress'
+                    ? 'Documents Submitted — Under Compliance Review'
                     : 'Profile & Document Verification Required'}
                 </h3>
                 <span
@@ -257,7 +189,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   {kycRecord.isVerified
                     ? 'VERIFIED'
                     : kycRecord.submitted
-                    ? 'AUTO-VERIFYING (15m)'
+                    ? 'UNDER REVIEW'
                     : 'PENDING UPLOAD'}
                 </span>
               </div>
@@ -266,46 +198,31 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                 {kycRecord.isVerified
                   ? 'Identity (ID/Passport/Licence) and Proof of Residence verified and locked. Unlimited trading & withdrawal limits active.'
                   : kycRecord.submitted
-                  ? `Your documents were submitted. Under automatic security verification policy, your account will be auto-verified automatically in ${formatTime(
-                      secondsRemaining
-                    )}.`
-                  : 'Upload your National ID, Passport, or Driving Licence and Tax Certificate or Utility Bill to verify residency and identity.'}
+                  ? 'Your documents have been securely received and are currently being reviewed by the compliance desk.'
+                  : 'Upload your National ID, Passport, or Driving Licence and Proof of Residence to verify your institutional trading profile.'}
               </p>
             </div>
           </div>
-
-          {kycRecord.submitted && !kycRecord.isVerified && (
-            <div className="flex items-center gap-2 self-start sm:self-auto">
-              <button
-                type="button"
-                onClick={handleSimulate15Minutes}
-                title="Fast-forward the 15-minute verification process"
-                className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-300 border border-amber-500/40 rounded-xl font-bold text-[11px] flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-              >
-                <FastForward className="w-3.5 h-3.5" />
-                <span>Simulate 15m Clearance</span>
-              </button>
-            </div>
-          )}
         </div>
 
-        {kycRecord.submitted && !kycRecord.isVerified && (
-          <div className="mt-3 pt-3 border-t border-amber-500/20 flex items-center justify-between text-[11px]">
-            <span className="text-amber-600 dark:text-amber-400 font-semibold flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 animate-spin" />
-              <span>Time until automatic verification clearance:</span>
-            </span>
-            <span
-              className={`font-mono font-bold text-sm px-2.5 py-0.5 rounded-lg border ${
-                isDarkMode
-                  ? 'text-white bg-neutral-900 border-neutral-700'
-                  : 'text-slate-900 bg-white border-slate-300'
-              }`}
-            >
-              {formatTime(secondsRemaining)}
-            </span>
+        {/* KYC Guidelines Card (Clean Institutional Standards) */}
+        <div
+          className={`mt-3.5 p-3 rounded-xl border text-[11px] space-y-1.5 ${
+            isDarkMode ? 'bg-neutral-900/80 border-neutral-800 text-neutral-300' : 'bg-white border-slate-200 text-slate-700'
+          }`}
+        >
+          <div className="font-bold flex items-center gap-1.5 text-sky-400">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Document Quality & Upload Guidelines</span>
           </div>
-        )}
+          <ul className="space-y-1 text-[11px] list-disc list-inside opacity-90 pl-1">
+            <li><strong>Full Legal Names:</strong> The name on your uploaded ID must exactly match your registered account name.</li>
+            <li><strong>Clear &amp; Unblurred:</strong> Do not submit blurry, shadowed, or cropped images. All text must be sharp and legible.</li>
+            <li><strong>All 4 Corners Visible:</strong> Ensure the entire document with all four edges is visible in the frame.</li>
+            <li><strong>Valid Government ID:</strong> National ID Card, Valid Passport, or Driving Licence (front &amp; back).</li>
+            <li><strong>Recent Proof of Residence:</strong> Utility bill or bank statement issued within the last 90 days.</li>
+          </ul>
+        </div>
       </div>
 
       {/* User Personal Details Section */}
@@ -689,15 +606,14 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               className={`p-3 rounded-xl border text-[11px] leading-relaxed ${
                 isDarkMode
                   ? 'bg-neutral-900/60 border-neutral-800 text-neutral-400'
-                  : 'bg-amber-50/70 border-amber-200 text-slate-700'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
               }`}
             >
               <div className="flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <span>
-                  <strong>One-Time Verification Rule:</strong> Once uploaded, your documents are submitted
-                  directly to the auto-verification gateway and locked. Verification clears automatically
-                  after <strong>15 minutes</strong>.
+                  <strong>Compliance Guarantee:</strong> Your documents are encrypted end-to-end and stored
+                  in accordance with international regulatory KYC/AML standards. Please ensure the names match your profile.
                 </span>
               </div>
             </div>
@@ -707,7 +623,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               className="w-full py-3 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold text-xs rounded-xl shadow-lg transition-all shadow-red-950/40 active:scale-98 cursor-pointer flex items-center justify-center gap-2"
             >
               <Upload className="w-4 h-4" />
-              <span>Submit for Automated 15-Minute Verification</span>
+              <span>Submit Documents for Compliance Verification</span>
             </button>
           </form>
         )}

@@ -134,15 +134,29 @@ export const AccountTab: React.FC<AccountTabProps> = ({
     ]);
     setChatInput('');
 
-    // Automated intelligent representative reply
+    // Automated intelligent 24/7 live representative reply
     setTimeout(() => {
-      let reply = "Thank you for reaching out to VTM Markets. Our team operates 24/7 to provide institutional grade liquidity and instant order routing. We have flagged your request with our account specialist.";
-      if (userMsg.toLowerCase().includes('deposit') || userMsg.toLowerCase().includes('wallet')) {
-        reply = "Deposits into your VTM Wallet are processed instantly with 0% fees across Visa/Mastercard, Tether USDT, and local payment rails.";
-      } else if (userMsg.toLowerCase().includes('spread') || userMsg.toLowerCase().includes('leverage')) {
-        reply = "VTM Markets offers competitive leverage up to 1:2000 and ultra-tight raw spreads from 0.0 pips on our Zero Spread and Pro accounts.";
-      } else if (userMsg.toLowerCase().includes('copy') || userMsg.toLowerCase().includes('hfcopy')) {
-        reply = "With VTM Copy, you can allocate funds with full risk management, customizable volume allocation, and automated rescue levels.";
+      const q = userMsg.toLowerCase();
+      let reply = `Hello! I'm active on the VTM Markets 24/7 Trading Desk. How can I help you regarding your trading terminal, positions, or account funding today?`;
+
+      if (q.includes('deposit') || q.includes('wallet') || q.includes('fund') || q.includes('mpesa') || q.includes('m-pesa')) {
+        reply = "Deposits into your VTM Wallet are credited in real time. We support instant Safaricom M-PESA, Visa/Mastercard, and Crypto (USDT TRC20/ERC20) with 0% processing fees. You can initiate a deposit directly from the Deposit tab.";
+      } else if (q.includes('withdraw') || q.includes('payout')) {
+        reply = "Withdrawals are processed 24/7 directly to your original deposit method or verified M-Pesa/bank account. All withdrawals are approved and dispatched promptly with zero platform deduction.";
+      } else if (q.includes('spread') || q.includes('leverage') || q.includes('fee')) {
+        reply = "VTM Markets provides raw ECN spreads from 0.0 pips and flexible leverage up to 1:2000 across major currencies, gold, crypto, and global indices with institutional execution speeds.";
+      } else if (q.includes('bot') || q.includes('ea') || q.includes('algo') || q.includes('automate')) {
+        reply = "Our quantitative Expert Advisor (EA) bots execute systematic multi-trade strategies with automated take-profit and stop-loss parameters. You can deploy or configure bot parameters anytime from the Bots tab.";
+      } else if (q.includes('verify') || q.includes('kyc') || q.includes('document') || q.includes('id')) {
+        reply = "You can submit your government ID and proof of residence under the Verification section of your profile. Ensure your legal names match and the photo has clear visible edges with no blur.";
+      } else if (q.includes('trade') || q.includes('order') || q.includes('tp') || q.includes('sl') || q.includes('position')) {
+        reply = "Market and pending orders can be opened from the Trade tab. Both price targets and USD profit/loss values are supported for Take Profit (TP) and Stop Loss (SL). Your open trades remain active continuously until closed.";
+      } else if (q.includes('role') || q.includes('marketer') || q.includes('retail')) {
+        reply = "Accounts are configured with dedicated institutional execution profiles. If you have questions about specific partner or marketer tiers, your permissions reflect instantly across all active sessions.";
+      } else if (q.includes('hello') || q.includes('hi') || q.includes('hey')) {
+        reply = `Hello ${currentUser?.name || 'Trader'}! Our 24/7 Global Trading Desk is standing by. Feel free to ask anything about deposits, orders, algorithmic trading, or account features.`;
+      } else {
+        reply = `Thank you for your message! Our 24/7 Trading Desk is live and assisting you directly. If you need help with deposits, withdrawals, order execution, or bot configurations, let me know and I will guide you immediately.`;
       }
 
       setChatMessages((prev) => [
@@ -153,7 +167,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
-    }, 900);
+    }, 700);
   };
 
   // Calculator calculations
@@ -464,7 +478,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                       <div>
                         {isDemo ? (
                           <span className="inline-flex items-center gap-1 text-amber-500 dark:text-amber-400 font-medium bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                            <span>Simulated $100k Virtual Credit (Non-Depositable)</span>
+                            <span>$100,000 Virtual Practice Credit</span>
                           </span>
                         ) : acc.balance === 0 ? (
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border ${
@@ -1134,7 +1148,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
                     <span>Demo Virtual Account • Initial Balance: $100,000.00</span>
                   </div>
                   <p className="mt-1 opacity-90">
-                    Pre-credited with $100,000 simulated currency for practicing strategies. Non-depositable and non-withdrawable.
+                    Pre-credited with $100,000 virtual practice funds for executing and refining trading strategies.
                   </p>
                 </div>
               )}
