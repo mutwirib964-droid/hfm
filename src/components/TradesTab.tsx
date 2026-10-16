@@ -159,6 +159,19 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             )}
           </button>
         </div>
+        <div className="flex items-center gap-2">
+          <select
+            className={`px-2 py-1 text-[10px] rounded-lg border cursor-pointer ${isDarkMode ? 'bg-neutral-800 border-neutral-700' : 'bg-white border-slate-300'}`}
+            onChange={(e) => {
+              const days = parseInt(e.target.value);
+              console.log('Filter by', days, 'days');
+            }}
+          >
+            <option value="1">Today</option>
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+          </select>
+        </div>
       </div>
 
       {/* Floating P/L, Equity, and Free Margin Metrics Banner */}
@@ -376,7 +389,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'}`}>
               <div className="flex items-center justify-between px-1 mb-3">
                 <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                  Latest {Math.min(20, closedTrades.length)} Closed Trades
+                  Closed Trades History
                 </span>
                 <button
                   onClick={() => setActiveSubTab('closed')}
