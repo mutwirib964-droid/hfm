@@ -1270,7 +1270,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                   No trade history yet.
                 </div>
               ) : (
-                closedTrades.map((hist) => (
+                closedTrades.slice(0, 20).map((hist) => (
                   <div
                     key={hist.id}
                     className={`p-2.5 rounded-lg border flex items-center justify-between text-xs font-mono ${

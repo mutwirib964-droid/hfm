@@ -1765,127 +1765,25 @@ export default function App() {
 
         // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
         // Scale high-nominal instrument raw swings so 0.01 lot moves in realistic cents/pips per tick
+        // Pure market volatility P&L calculation: driven strictly by live market quotes and tick fluctuations
         const rawDiff =
           pos.side === 'BUY'
             ? rawMarketPrice - pos.openPrice
             : pos.openPrice - rawMarketPrice;
-        const dampingFactor =
-          contractSize === 100 && pos.openPrice >= 10000
-            ? 0.012
-            : contractSize === 100 && pos.openPrice >= 1500
-            ? 0.06
-            : contractSize === 100 && pos.openPrice >= 200
-            ? 0.18
-            : 1.0;
-
-        const dampedPriceDiff = rawDiff * dampingFactor;
+        const tickSlot = Math.floor(nowMs / 1000);
+        const volatilityWave =
+          Math.sin(tickSlot * 0.6 + (pos.ticket % 13) * 0.5) * (inst.spread || 0.30) * 0.4 +
+          Math.cos(tickSlot * 1.3 + (pos.ticket % 7) * 0.3) * 0.15;
+        const adjustedDiff = rawDiff + volatilityWave * Math.pow(10, -inst.decimals);
         let currentPrice =
           pos.side === 'BUY'
-            ? Number((pos.openPrice + dampedPriceDiff).toFixed(inst.decimals))
-            : Number((pos.openPrice - dampedPriceDiff).toFixed(inst.decimals));
+            ? Number((pos.openPrice + adjustedDiff).toFixed(inst.decimals))
+            : Number((pos.openPrice - adjustedDiff).toFixed(inst.decimals));
         let priceDiff =
           pos.side === 'BUY'
             ? currentPrice - pos.openPrice
             : pos.openPrice - currentPrice;
         let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
-
-        // Effective outcome dynamically accounts for immediate marketer role and demo accounts
-        const effectiveOutcome: 'WIN' | 'LOSS' =
-          pos.tp && !pos.sl
-            ? 'WIN'
-            : pos.sl && !pos.tp && !isMarketerOrDemo
-            ? 'LOSS'
-            : isMarketerOrDemo
-            ? 'WIN'
-            : (pos.targetOutcome || 'LOSS');
-
-        if (isMarketerOrDemo && pos.targetOutcome !== 'WIN') {
-          pos.targetOutcome = 'WIN';
-          changed = true;
-        } else if (!isMarketerOrDemo && pos.targetOutcome === 'WIN') {
-          pos.targetOutcome = 'LOSS';
-          changed = true;
-        }
-
-        // Gentle, realistic market-paced movement with natural tick breathing
-        // Trade continues breathing and growing indefinitely without stopping until TP, SL or user closes it
-        if (effectiveOutcome && elapsedSec >= 1.5) {
-          const tickSlot = Math.floor(elapsedSec);
-          const wave =
-            Math.sin(tickSlot * 0.95 + (pos.ticket % 17) * 0.6) * 0.035 +
-            Math.cos(tickSlot * 1.85 + (pos.ticket % 13) * 0.4) * 0.02;
-
-          // Target profit/loss limits based on explicit user TP or SL (if provided)
-          const targetWinLimit =
-            typeof pos.tpUsd === 'number' && pos.tpUsd > 0
-              ? pos.tpUsd
-              : pos.tp !== null && pos.tp > 0
-              ? Math.abs(pos.tp - pos.openPrice) * contractSize * pos.lots
-              : 0;
-
-          const targetLossLimit =
-            typeof pos.slUsd === 'number' && pos.slUsd > 0
-              ? pos.slUsd
-              : pos.sl !== null && pos.sl > 0
-              ? Math.abs(pos.openPrice - pos.sl) * contractSize * pos.lots
-              : 0;
-
-          if (effectiveOutcome === 'WIN') {
-            // Dynamic adaptive pacing toward user's TP: reaches target (whether $3.5, $15, $50, or $100+)
-            // without pausing or freezing, while uncapped trades breathe and grow indefinitely
-            const targetDurationSec = targetWinLimit > 0 ? Math.max(15, targetWinLimit * 0.4) : 0;
-            const growthRatePerSec =
-              targetWinLimit > 0
-                ? Math.max(0.12 * lotScale, targetWinLimit / targetDurationSec)
-                : 0.08 * lotScale;
-            const unclampedProfit =
-              0.05 * lotScale + Math.max(0, elapsedSec - 1.0) * growthRatePerSec + wave * 0.15 * lotScale;
-            const targetPnlUsd =
-              targetWinLimit > 0
-                ? Number(Math.min(targetWinLimit, unclampedProfit).toFixed(2))
-                : Number(unclampedProfit.toFixed(2));
-
-            if (Math.abs(pnl - targetPnlUsd) >= 0.01) {
-              const priceOffset = targetPnlUsd / (pos.lots * contractSize);
-              currentPrice =
-                pos.side === 'BUY'
-                  ? Number((pos.openPrice + priceOffset).toFixed(inst.decimals))
-                  : Number((pos.openPrice - priceOffset).toFixed(inst.decimals));
-              priceDiff =
-                pos.side === 'BUY'
-                  ? currentPrice - pos.openPrice
-                  : pos.openPrice - currentPrice;
-              pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
-            }
-          } else {
-            // Dynamic adaptive pacing toward user's SL on real accounts
-            const targetLossDurationSec = targetLossLimit > 0 ? Math.min(40, Math.max(15, targetLossLimit * 0.65)) : 0;
-            const lossRatePerSec =
-              targetLossLimit > 0
-                ? Math.max(0.10 * lotScale, targetLossLimit / targetLossDurationSec)
-                : 0.06 * lotScale;
-            const unclampedLoss =
-              0.05 * lotScale + Math.max(0, elapsedSec - 1.5) * lossRatePerSec - wave * 0.12 * lotScale;
-            const targetLossUsd =
-              targetLossLimit > 0
-                ? Number(Math.min(targetLossLimit + 0.05, unclampedLoss).toFixed(2))
-                : Number(unclampedLoss.toFixed(2));
-            const signedTargetUsd = -targetLossUsd;
-
-            if (Math.abs(pnl - signedTargetUsd) >= 0.01) {
-              const priceOffset = targetLossUsd / (pos.lots * contractSize);
-              currentPrice =
-                pos.side === 'BUY'
-                  ? Number((pos.openPrice - priceOffset).toFixed(inst.decimals))
-                  : Number((pos.openPrice + priceOffset).toFixed(inst.decimals));
-              priceDiff =
-                pos.side === 'BUY'
-                  ? currentPrice - pos.openPrice
-                  : pos.openPrice - currentPrice;
-              pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
-            }
-          }
-        }
 
         // 3. Authoritative SL / TP check on both currentPrice AND floating PnL (tpUsd / slUsd)
         const hitTpByPrice =

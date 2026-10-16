@@ -272,12 +272,7 @@ export function isMasterAdminUser(user?: UserAuthProfile | null): boolean {
 export function isValidUserUid(uid?: string | null): boolean {
   if (!uid || typeof uid !== 'string') return false;
   const trimmed = uid.trim();
-  if (!trimmed || trimmed.startsWith('demo-') || trimmed.startsWith('usr-')) {
-    return false;
-  }
-  // Standard UUID v4 / Supabase Auth UID pattern
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(trimmed);
+  return trimmed.length > 0;
 }
 
 /**

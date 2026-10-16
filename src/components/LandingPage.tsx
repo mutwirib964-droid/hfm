@@ -174,13 +174,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     setValidationError(null);
 
     if (authMode === 'register') {
-      if (!name.trim()) {
-        setValidationError('Please enter your full legal name.');
+      const nameParts = name.trim().split(/\s+/);
+      if (nameParts.length < 2) {
+        setValidationError('Please enter your full legal name (at least two names).');
         return;
       }
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!email.trim() || !emailRegex.test(email.trim())) {
-        setValidationError('Please provide a valid email address (e.g. name@domain.com).');
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+      if (!email.trim() || !emailRegex.test(email.trim().toLowerCase())) {
+        setValidationError('Invalid email format.');
         return;
       }
       const phoneValidation = validatePhoneForCountry(phoneLocal, selectedCountry.dialCode);
@@ -286,9 +287,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       onSignIn(newUserProfile);
     } else {
       // SIGN IN MODE
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!email.trim() || !emailRegex.test(email.trim())) {
-        setValidationError('Please provide a valid email address (e.g. name@domain.com).');
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
+      if (!email.trim() || !emailRegex.test(email.trim().toLowerCase())) {
+        setValidationError('Please provide a valid Gmail address (must end with @gmail.com).');
         return;
       }
       if (!password) {
