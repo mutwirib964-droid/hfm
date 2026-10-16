@@ -151,7 +151,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
               <span className={`ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full font-bold ${
                 isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-200 text-slate-700'
               }`}>
-                {Math.min(20, closedTrades.length)}
+                {closedTrades.length}
               </span>
             )}
             {activeSubTab === 'closed' && (
@@ -386,7 +386,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                 </button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {closedTrades.slice(0, 20).map((cl) => {
+                {closedTrades.map((cl) => {
                   const exactPnl =
                     cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
                       ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
@@ -506,7 +506,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-              {closedTrades.slice(0, 20).map((cl) => {
+              {closedTrades.map((cl) => {
                 const exactPnl =
                   cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
                     ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
