@@ -529,6 +529,19 @@ export default function App() {
         }
       });
 
+      supabaseService.fetchUserFinancials(remote.profile).then((fin) => {
+        if (fin) {
+          setAccounts(fin.accounts);
+          if (fin.accounts.length > 0) {
+            setSelectedAccount(
+              fin.accounts.find((a) => a.id === fin.selectedAccountId) || fin.accounts[0]
+            );
+          }
+          setWalletBalance(fin.walletBalance);
+          setTransactions(fin.transactions);
+        }
+      });
+
       supabaseService.fetchUserTrades(remote.profile).then((remoteTrades) => {
         if (remoteTrades) {
           if (isInitialMount) {
@@ -725,16 +738,9 @@ export default function App() {
     return initializeUserFinancials(currentUser, currentUser.isNewRegistration ?? false);
   }, [currentUser?.id]);
 
-  const [accounts, setAccounts] = useState<TradingAccount[]>(() => initialFinancials.accounts);
-  const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(() => {
-    if (initialFinancials.accounts.length === 0) return null;
-    return (
-      initialFinancials.accounts.find((a) => a.id === initialFinancials.selectedAccountId) ||
-      initialFinancials.accounts[0] ||
-      null
-    );
-  });
-  const [walletBalance, setWalletBalance] = useState<number>(() => initialFinancials.walletBalance);
+  const [accounts, setAccounts] = useState<TradingAccount[]>([]);
+  const [selectedAccount, setSelectedAccount] = useState<TradingAccount | null>(null);
+  const [walletBalance, setWalletBalance] = useState<number>(0);
 
   // Trading Positions, Orders, and History (Restore open positions across reloads & logins; restore closed trade history)
   const [positions, setPositions] = useState<Position[]>(() => {
