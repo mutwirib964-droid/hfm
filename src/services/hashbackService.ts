@@ -462,7 +462,7 @@ export async function initiateStkPush(req: HashbackStkRequest): Promise<MpesaPay
   if (!data) {
     return {
       success: false,
-      message: 'Unable to reach M-Pesa gateway. Please check your connection and try again.',
+      message: 'Transaction cannot be completed right now. Please try again later.',
     };
   }
 

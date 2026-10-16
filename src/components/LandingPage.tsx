@@ -178,8 +178,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         setValidationError('Please enter your full legal name.');
         return;
       }
-      if (!email.trim() || !email.includes('@')) {
-        setValidationError('Please provide a valid email address.');
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email.trim() || !emailRegex.test(email.trim())) {
+        setValidationError('Please provide a valid email address (e.g. name@domain.com).');
         return;
       }
       const phoneValidation = validatePhoneForCountry(phoneLocal, selectedCountry.dialCode);
@@ -285,8 +286,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       onSignIn(newUserProfile);
     } else {
       // SIGN IN MODE
-      if (!email.trim()) {
-        setValidationError('Please enter your email.');
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!email.trim() || !emailRegex.test(email.trim())) {
+        setValidationError('Please provide a valid email address (e.g. name@domain.com).');
         return;
       }
       if (!password) {

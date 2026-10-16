@@ -405,11 +405,8 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               </div>
             </div>
 
-            <p className={`text-[11px] italic text-center ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
-              Verification submission occurs only once per regulatory account holder.
-              {kycRecord.isVerified
-                ? ' Status: Permanently Approved.'
-                : ' Automatic verification will finalize within 15 minutes of upload.'}
+            <p className={`text-[11px] text-center ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+              Verification Guidelines: Ensure photos are clear with no blur, full legal names match government ID, and all document corners are fully visible.
             </p>
           </div>
         ) : (
