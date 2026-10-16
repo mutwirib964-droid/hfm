@@ -508,7 +508,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         <div className="flex-1 p-3 sm:p-4">
           <div className="flex items-center justify-between px-1 mb-3">
             <span className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-              Showing Latest {Math.min(20, closedTrades.length)} Closed Trades
+              Closed Trades History
             </span>
           </div>
           {closedTrades.length === 0 ? (
