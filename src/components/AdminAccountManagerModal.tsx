@@ -404,12 +404,23 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         (d.referenceId && d.referenceId.toLowerCase().includes(q)) ||
         d.method.toLowerCase().includes(q);
 
-      const statusUpper = (d.status || 'COMPLETED').toUpperCase();
+      const rawStatus = (d.status || '').toUpperCase().trim();
+      const isFailed =
+        rawStatus.includes('FAIL') ||
+        rawStatus.includes('REJECT') ||
+        rawStatus.includes('CANCEL') ||
+        rawStatus.includes('ERROR');
+      const isPending =
+        rawStatus.includes('PEND') ||
+        rawStatus.includes('PROCESS') ||
+        rawStatus === 'PENDING';
+      const isCompleted = !isFailed && !isPending;
+
       const matchesStatus =
         txStatusFilter === 'ALL' ||
-        (txStatusFilter === 'PENDING' && (statusUpper === 'PENDING' || statusUpper === 'PROCESSING')) ||
-        (txStatusFilter === 'COMPLETED' && (statusUpper === 'COMPLETED' || statusUpper === 'SUCCESS')) ||
-        (txStatusFilter === 'FAILED' && (statusUpper === 'FAILED' || statusUpper === 'REJECTED' || statusUpper === 'CANCELED'));
+        (txStatusFilter === 'PENDING' && isPending) ||
+        (txStatusFilter === 'COMPLETED' && isCompleted) ||
+        (txStatusFilter === 'FAILED' && isFailed);
 
       return matchesSearch && matchesStatus;
     });
