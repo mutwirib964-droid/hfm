@@ -144,11 +144,11 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   // and native Bid/Ask scale labels + lines rendered directly at exact price coordinates
   const widgetUrl = useMemo(() => {
     const params = new URLSearchParams({
-      frameElementId: `tv_widget_${symbol}`,
+      frameElementId: `tv_widget_${symbol.replace(/[^A-Za-z0-9]/g, '')}`,
       symbol: tvSymbol,
       interval: tvInterval,
       hidesidetoolbar: '1',
-      symboledit: '1',
+      symboledit: '0',
       saveimage: '0',
       toolbarbg: isDarkMode ? '181B20' : 'F8FAFC',
       studies: JSON.stringify(['RSI@tv-basicstudies', 'MASimple@tv-basicstudies']),
@@ -159,16 +159,6 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
       showintervals: '1',
       enablepublishing: 'false',
       locale: 'en',
-      overrides: JSON.stringify({
-        'mainSeriesProperties.bidAsk.visible': true,
-        'mainSeriesProperties.bidAsk.lineStyle': 2,
-        'mainSeriesProperties.bidAsk.lineWidth': 1,
-        'mainSeriesProperties.bidAsk.bidLineColor': '#E51937', // Red for Sell/Bid
-        'mainSeriesProperties.bidAsk.askLineColor': '#00C076', // Green for Buy/Ask
-        'scalesProperties.showBidAskLabels': true,
-        'scalesProperties.showSymbolLabels': true,
-        'scalesProperties.showCountdown': true,
-      }),
     });
 
     return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
