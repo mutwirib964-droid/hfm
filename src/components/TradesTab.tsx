@@ -39,12 +39,48 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   isDarkMode = false,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'open' | 'pending' | 'closed'>('open');
+  const [historyFilter, setHistoryFilter] = useState<'TODAY' | 'WEEK' | 'MONTH' | 'ALL'>('ALL');
   const [editingPosId, setEditingPosId] = useState<string | null>(null);
   const [editSlValue, setEditSlValue] = useState<string>('');
   const [editTpValue, setEditTpValue] = useState<string>('');
 
   const totalFloatingPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
   const memoizedClosedTrades = useMemo(() => closedTrades, [closedTrades]);
+
+  const filteredClosedTrades = useMemo(() => {
+    const now = Date.now();
+    const startOfToday = new Date().setHours(0, 0, 0, 0);
+    return memoizedClosedTrades.filter((cl) => {
+      const t = cl.closeTime || cl.openTime || 0;
+      if (historyFilter === 'TODAY') {
+        return t >= startOfToday;
+      }
+      if (historyFilter === 'WEEK') {
+        return t >= now - 7 * 86400000;
+      }
+      if (historyFilter === 'MONTH') {
+        return t >= now - 30 * 86400000;
+      }
+      return true;
+    });
+  }, [memoizedClosedTrades, historyFilter]);
+
+  const historyMetrics = useMemo(() => {
+    const totalPnl = filteredClosedTrades.reduce((sum, cl) => {
+      const exactPnl =
+        cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
+          ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
+          : cl.pnl;
+      return sum + exactPnl;
+    }, 0);
+    const winCount = filteredClosedTrades.filter((cl) => (cl.pnl || 0) >= 0).length;
+    const winRate = filteredClosedTrades.length > 0 ? (winCount / filteredClosedTrades.length) * 100 : 0;
+    return {
+      totalPnl: Number(totalPnl.toFixed(2)),
+      tradeCount: filteredClosedTrades.length,
+      winRate: Math.round(winRate),
+    };
+  }, [filteredClosedTrades]);
 
   return (
     <div id="vtm-trades-screen" className={`min-h-[calc(100vh-120px)] flex flex-col pb-16 transition-colors duration-200 ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
@@ -223,37 +259,122 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
         {activeSubTab === 'closed' && (
           <div className="p-3 sm:p-4">
-            <div className="mb-3 px-1">
-              <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>Closed Trades History ({memoizedClosedTrades.length})</span>
+            {/* Timeframe Filter Buttons */}
+            <div className="flex items-center gap-1.5 flex-wrap mb-3 px-1">
+              {([
+                { key: 'TODAY', label: 'Today' },
+                { key: 'WEEK', label: 'Past 7 Days' },
+                { key: 'MONTH', label: '1 Month' },
+                { key: 'ALL', label: 'All Time' },
+              ] as const).map((filterItem) => (
+                <button
+                  key={filterItem.key}
+                  onClick={() => setHistoryFilter(filterItem.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                    historyFilter === filterItem.key
+                      ? 'bg-[#E51937] text-white shadow-xs'
+                      : isDarkMode
+                      ? 'bg-neutral-800/80 text-neutral-300 hover:bg-neutral-700'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                  }`}
+                >
+                  {filterItem.label}
+                </button>
+              ))}
             </div>
-            {memoizedClosedTrades.length === 0 ? (
-              <div className="flex flex-col items-center justify-center p-8 text-center min-h-[260px]">
-                <p className="text-sm font-medium opacity-70">No trade history recorded yet</p>
+
+            {/* Performance Summary Banner for Selected Timeframe */}
+            <div
+              className={`p-3.5 mb-3 rounded-2xl border flex items-center justify-between text-xs ${
+                isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-slate-50 border-slate-200'
+              }`}
+            >
+              <div>
+                <span className="text-[10px] uppercase font-bold opacity-60 block">Period Net P/L</span>
+                <span
+                  className={`text-base font-black font-mono ${
+                    historyMetrics.totalPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                  }`}
+                >
+                  {historyMetrics.totalPnl >= 0 ? '+' : ''}${historyMetrics.totalPnl.toFixed(2)}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] uppercase font-bold opacity-60 block">Trades Completed</span>
+                <span className={`text-xs font-bold font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {historyMetrics.tradeCount} Trade{historyMetrics.tradeCount !== 1 ? 's' : ''} ({historyMetrics.winRate}% Win)
+                </span>
+              </div>
+            </div>
+
+            {filteredClosedTrades.length === 0 ? (
+              <div className="flex flex-col items-center justify-center p-8 text-center min-h-[220px]">
+                <p className="text-sm font-medium opacity-70">No trades found for this period</p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {memoizedClosedTrades.map((cl) => {
+                {filteredClosedTrades.map((cl) => {
                   const exactPnl =
                     cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
                       ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
                       : cl.pnl;
+                  const dateStr = cl.closeTime
+                    ? new Date(cl.closeTime).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : cl.openTime
+                    ? new Date(cl.openTime).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                      })
+                    : 'Recently';
+
                   return (
-                    <div key={cl.id} className={`p-3.5 rounded-2xl border ${isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200 shadow-xs'}`}>
+                    <div
+                      key={cl.id}
+                      className={`p-3.5 rounded-2xl border ${
+                        isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200 shadow-xs'
+                      }`}
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{cl.symbol}</span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${cl.side === 'BUY' ? (isDarkMode ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700') : (isDarkMode ? 'bg-red-950 text-red-400' : 'bg-red-100 text-red-700')}`}>
+                          <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                            {cl.symbol}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              cl.side === 'BUY'
+                                ? isDarkMode
+                                  ? 'bg-emerald-950 text-emerald-400'
+                                  : 'bg-emerald-100 text-emerald-700'
+                                : isDarkMode
+                                ? 'bg-red-950 text-red-400'
+                                : 'bg-red-100 text-red-700'
+                            }`}
+                          >
                             {cl.side} {cl.lots}
                           </span>
-                          <span className={`text-[10px] font-mono opacity-60`}>#{cl.ticket}</span>
+                          <span className="text-[10px] font-mono opacity-60">#{cl.ticket}</span>
                         </div>
-                        <span className={`font-black text-sm ${exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                        <span
+                          className={`font-black text-sm ${
+                            exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                          }`}
+                        >
                           {exactPnl >= 0 ? '+' : ''}${exactPnl.toFixed(2)}
                         </span>
                       </div>
-                      <div className={`flex items-center justify-between text-xs mt-2 font-mono opacity-75`}>
-                        <span>{cl.openPrice} ➔ <strong>{cl.closePrice}</strong></span>
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800/40">{cl.reason}</span>
+                      <div className="flex items-center justify-between text-xs mt-2 font-mono opacity-75">
+                        <span>
+                          {cl.openPrice} ➔ <strong>{cl.closePrice}</strong>
+                        </span>
+                        <div className="flex items-center gap-1.5 text-[10px]">
+                          <span className="opacity-75">{dateStr}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-neutral-800/40">{cl.reason}</span>
+                        </div>
                       </div>
                     </div>
                   );

@@ -2046,10 +2046,14 @@ export default function App() {
 
   // Helper: Check if a position, order, closed trade, bot run, or bot trade belongs to a given TradingAccount
   const belongsToAccount = (
-    item: { accountId?: string; accountNumber?: string } | null | undefined,
+    item: { accountId?: string; accountNumber?: string; closePrice?: number; pnl?: number } | null | undefined,
     acc: TradingAccount | null | undefined
   ): boolean => {
     if (!item || !acc) return false;
+    // Closed trades always belong to the user's active account history view
+    if (item.closePrice !== undefined || item.pnl !== undefined) {
+      return true;
+    }
     if (item.accountId || item.accountNumber) {
       return (
         (Boolean(item.accountId) && item.accountId === acc.id) ||
