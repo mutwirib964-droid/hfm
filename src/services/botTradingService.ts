@@ -581,8 +581,7 @@ export const getDeletedBotIds = (): string[] => {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleaned = parsed.filter(
-          (id): id is string =>
-            typeof id === 'string' && id.trim().length > 0 && id.trim().startsWith('run-')
+          (id): id is string => typeof id === 'string' && id.trim().length > 0
         );
         if (cleaned.length !== parsed.length) {
           localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(cleaned));
@@ -601,8 +600,7 @@ export const markBotDeletedLocally = (ids: Array<string | undefined | null>): st
   for (const id of ids) {
     if (id && typeof id === 'string') {
       const trimmed = id.trim();
-      // Only tombstone specific run instance IDs ('run-...'), never catalog botId or botName
-      if (trimmed.startsWith('run-')) {
+      if (trimmed.length > 0) {
         current.add(trimmed);
       }
     }
@@ -636,7 +634,7 @@ export const sanitizeAndFilterBotRuns = (
 ): BotRunInstance[] => {
   if (!Array.isArray(runs)) return [];
   const validExtraDeleted = (extraDeletedIds || []).filter(
-    (id) => typeof id === 'string' && id.trim().startsWith('run-')
+    (id) => typeof id === 'string' && id.trim().length > 0
   );
   const deletedSet = new Set<string>([...getDeletedBotIds(), ...validExtraDeleted]);
 
@@ -651,9 +649,8 @@ export const sanitizeAndFilterBotRuns = (
       const name = typeof r.botName === 'string' ? r.botName.trim() : '';
       if (!sym || !name) return false;
 
-      // Only check specific run instance IDs (id / runId), never catalog botId or botName
-      const runInstanceIds = [r.id, r.runId]
-        .filter((v): v is string => typeof v === 'string' && v.trim().startsWith('run-'))
+      const runInstanceIds = [r.id, r.runId, r.botId]
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
         .map((v) => v.trim());
 
       if (runInstanceIds.some((c) => deletedSet.has(c))) {
