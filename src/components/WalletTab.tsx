@@ -327,7 +327,26 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       });
       return;
     }
-    const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
+    const effectiveRate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const estKes = Number((withdrawAmount * effectiveRate).toFixed(2));
+
+    if (withdrawMethod === 'mpesa' && estKes > 250000) {
+      setWithdrawError(
+        'Maximum M-PESA withdrawal is KES 250,000.00 per single transaction.'
+      );
+      return;
+    }
+
+    if (
+      withdrawMethod === 'mpesa' &&
+      ((cachedSimBalanceKesRef.current && cachedSimBalanceKesRef.current + estKes > 500000) || estKes > 500000)
+    ) {
+      setWithdrawError('Customer wallet capacity exceeded');
+      setSimLimitPopupOpen(true);
+      return;
+    }
+
+    const maxPerSingleTx = withdrawMethod === 'mpesa' ? Math.floor(250000 / effectiveRate) : 10000;
     if (withdrawAmount > maxPerSingleTx) {
       const methodTitle =
         withdrawMethod === 'mpesa'
