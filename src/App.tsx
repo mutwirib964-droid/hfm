@@ -5604,7 +5604,6 @@ export default function App() {
             oneClickTrading={oneClickTrading}
             priceAlerts={priceAlerts}
             onOpenPriceAlert={handleOpenPriceAlertModal}
-            onExecuteMarketOrder={handleExecuteMarketOrder}
           />
         );
       case 'instrument-detail':
