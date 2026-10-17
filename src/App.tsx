@@ -3713,19 +3713,17 @@ export default function App() {
         : Number((amountUsd * rate).toFixed(2));
 
     const isMpesaMethod = (params.method || '').toLowerCase().includes('m-pesa') || (params.method || '').toLowerCase().includes('mpesa');
-    const maxSingleTx = isMpesaMethod ? Math.floor(250000 / rate) : 10000;
-    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx || (isMpesaMethod && exactAmountKes > 250000)) {
+    const maxSingleTx = isMpesaMethod ? 2000 : 10000;
+    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx) {
       const failReason =
-        isMpesaMethod && exactAmountKes > 250000
-          ? 'Maximum M-PESA withdrawal is KES 250,000.00 per single transaction.'
-          : amountUsd < 35
+        amountUsd < 35
           ? 'Minimum withdrawal requirement is $35.00 USD.'
           : amountUsd > maxSingleTx
           ? `Maximum withdrawal is $${maxSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
           : 'Insufficient withdrawable funds in selected source.';
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
-        title: isMpesaMethod && exactAmountKes > 250000 ? 'Single Transaction Limit Exceeded' : 'Withdrawal Unsuccessful',
+        title: 'Withdrawal Unsuccessful',
         subtitle: failReason,
         details: {
           amount: amountUsd,
