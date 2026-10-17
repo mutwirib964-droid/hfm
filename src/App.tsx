@@ -1769,40 +1769,20 @@ export default function App() {
           }
         }
 
-        // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
-        const rawDiff =
-          pos.side === 'BUY'
-            ? rawMarketPrice - pos.openPrice
-            : pos.openPrice - rawMarketPrice;
-        const tickSlot = Math.floor(nowMs / 1000);
-        let volatilityWave =
-          Math.sin(tickSlot * 0.6 + (pos.ticket % 13) * 0.5) * (inst.spread || 0.30) * 0.4 +
-          Math.cos(tickSlot * 1.3 + (pos.ticket % 7) * 0.3) * 0.15;
-
-        if (pos.targetOutcome === 'WIN') {
-          const tradeAgeSec = (nowMs - (pos.openTime || nowMs)) / 1000;
-          const profitTrend = Math.min(1.0, tradeAgeSec / 5) * (inst.spread || 0.35) * 1.8;
-          volatilityWave += profitTrend;
-        }
-
-        const adjustedDiff = rawDiff + volatilityWave * Math.pow(10, -inst.decimals);
-        let currentPrice =
-          pos.side === 'BUY'
-            ? Number((pos.openPrice + adjustedDiff).toFixed(inst.decimals))
-            : Number((pos.openPrice - adjustedDiff).toFixed(inst.decimals));
-        let priceDiff =
+        // 2. Real market-paced P&L calculation: tracking real market quotes smoothly and naturally at market speed
+        const currentPrice = rawMarketPrice;
+        const priceDiff =
           pos.side === 'BUY'
             ? currentPrice - pos.openPrice
             : pos.openPrice - currentPrice;
         let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
 
-        if (pos.targetOutcome === 'WIN') {
-          const minSpreadLoss = -Number(((inst.spread || 0.35) * (pos.lots / 0.01) * 0.12).toFixed(2));
-          if (pnl < minSpreadLoss) {
-            pnl = minSpreadLoss;
-          } else if (pnl > 0.05 && Math.sin(tickSlot * 0.4) > 0.6) {
-            pnl = Number((pnl * 0.75).toFixed(2));
-          }
+        // For marketer/demo accounts with WIN outcome, provide a natural, slow, realistic bias so trades succeed without fast artificial shifts
+        if (pos.targetOutcome === 'WIN' && pnl < 0) {
+          const naturalAssist = Math.abs(priceDiff) * 0.2;
+          const assistedDiff = priceDiff >= 0 ? priceDiff + naturalAssist : priceDiff + naturalAssist * 1.5;
+          const finalDiff = pos.side === 'BUY' ? assistedDiff : -assistedDiff;
+          pnl = Number((finalDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
         }
 
         // 3. Authoritative SL / TP check on both currentPrice AND floating PnL (tpUsd / slUsd)
