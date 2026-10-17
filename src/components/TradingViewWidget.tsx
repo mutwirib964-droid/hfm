@@ -859,9 +859,11 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
         src={widgetUrl}
         onLoad={() => setIsLoading(false)}
         className="w-full h-full flex-1 border-0"
+        style={{ minHeight: '300px', display: 'block' }}
         title={`TradingView Chart - ${symbol}`}
-        allowFullScreen
+        allow="fullscreen; cross-origin-isolated"
         referrerPolicy="no-referrer"
+        sandbox="allow-scripts allow-same-origin allow-forms"
       />
 
       {/* Full Categorized Drawing Tools Modal */}
