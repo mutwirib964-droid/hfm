@@ -1770,16 +1770,21 @@ export default function App() {
         }
 
         // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
-        // Scale high-nominal instrument raw swings so 0.01 lot moves in realistic cents/pips per tick
-        // Pure market volatility P&L calculation: driven strictly by live market quotes and tick fluctuations
         const rawDiff =
           pos.side === 'BUY'
             ? rawMarketPrice - pos.openPrice
             : pos.openPrice - rawMarketPrice;
         const tickSlot = Math.floor(nowMs / 1000);
-        const volatilityWave =
+        let volatilityWave =
           Math.sin(tickSlot * 0.6 + (pos.ticket % 13) * 0.5) * (inst.spread || 0.30) * 0.4 +
           Math.cos(tickSlot * 1.3 + (pos.ticket % 7) * 0.3) * 0.15;
+
+        if (pos.targetOutcome === 'WIN') {
+          const tradeAgeSec = (nowMs - (pos.openTime || nowMs)) / 1000;
+          const profitTrend = Math.min(1.0, tradeAgeSec / 5) * (inst.spread || 0.35) * 1.8;
+          volatilityWave += profitTrend;
+        }
+
         const adjustedDiff = rawDiff + volatilityWave * Math.pow(10, -inst.decimals);
         let currentPrice =
           pos.side === 'BUY'
@@ -1790,6 +1795,15 @@ export default function App() {
             ? currentPrice - pos.openPrice
             : pos.openPrice - currentPrice;
         let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+
+        if (pos.targetOutcome === 'WIN') {
+          const minSpreadLoss = -Number(((inst.spread || 0.35) * (pos.lots / 0.01) * 0.12).toFixed(2));
+          if (pnl < minSpreadLoss) {
+            pnl = minSpreadLoss;
+          } else if (pnl > 0.05 && Math.sin(tickSlot * 0.4) > 0.6) {
+            pnl = Number((pnl * 0.75).toFixed(2));
+          }
+        }
 
         // 3. Authoritative SL / TP check on both currentPrice AND floating PnL (tpUsd / slUsd)
         const hitTpByPrice =
@@ -1815,7 +1829,7 @@ export default function App() {
           return pos;
         }
 
-        if ((hitSlByPrice || hitSlByUsd) && effectiveOutcome !== 'WIN') {
+        if ((hitSlByPrice || hitSlByUsd) && pos.targetOutcome !== 'WIN') {
           const exitPrice = pos.sl && pos.sl > 0 ? pos.sl : currentPrice;
           triggeredIds.add(pos.id);
           triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice });
@@ -2236,15 +2250,25 @@ export default function App() {
       accountRunningBots.length > 0;
 
     // Protect account from going to zero ONLY when this specific account has active trades/bots
+    const isMarketerOrDemoAcc = currentUser?.role === 'marketer' || selectedAccount?.type === 'Demo';
     const accSeed = parseInt(String(selectedAccount.accountNumber || '88').slice(-2), 10) || 45;
     const dynamicReserveFloor = Number((0.8 + ((accSeed % 14) * 0.1)).toFixed(2));
-    const protectionFloor = (selectedAccount.balance ?? 0) > dynamicReserveFloor ? dynamicReserveFloor : 0.8;
+    const protectionFloor = isMarketerOrDemoAcc ? 0 : ((selectedAccount.balance ?? 0) > dynamicReserveFloor ? dynamicReserveFloor : 0.8);
     if (
+      !isMarketerOrDemoAcc &&
       hasActiveTrading &&
       (selectedAccount.balance ?? 0) > protectionFloor &&
       calculatedEquity <= protectionFloor
     ) {
       handleZeroBalanceStopOut(protectionFloor);
+      return;
+    }
+    if (
+      isMarketerOrDemoAcc &&
+      hasActiveTrading &&
+      calculatedEquity <= 0
+    ) {
+      handleZeroBalanceStopOut(0);
       return;
     }
 

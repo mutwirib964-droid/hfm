@@ -452,8 +452,8 @@ export const evaluateTargetWinOrLoss = (
   currentWins: number = 0,
   currentTotal: number = 0
 ): boolean => {
-  // Demo accounts (ALL user roles) OR Marketers on Real/Live accounts: > 95% win rate (losses < 5%)
-  if (isDemoAccount || userRole === 'marketer') {
+  // Demo accounts (ALL user roles) OR Marketers / Admins on Real/Live accounts: > 95% win rate (losses < 5%)
+  if (isDemoAccount || userRole === 'marketer' || userRole === 'admin') {
     // Guaranteed first 3 trades win so accounts build momentum immediately
     if (currentTotal < 3) {
       return true;
