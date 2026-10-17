@@ -88,16 +88,16 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center">
+    <div className="fixed inset-0 z-[100] flex items-end justify-center">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 transition-opacity z-40"
+        className="fixed inset-0 bg-black/60 transition-opacity z-[90]"
         onClick={onClose}
       />
 
       {/* Sheet Container */}
       <div
-        className={`relative w-full max-w-lg rounded-t-3xl p-5 z-50 shadow-2xl transition-all duration-300 min-h-[300px] flex flex-col ${
+        className={`relative w-full max-w-lg rounded-t-3xl p-5 z-[95] shadow-2xl transition-all duration-300 min-h-[300px] flex flex-col ${
           isDarkMode ? 'bg-[#181A20] text-white' : 'bg-white text-neutral-900'
         }`}
       >
