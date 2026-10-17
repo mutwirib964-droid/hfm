@@ -81,7 +81,6 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'admin' | 'marketer' | 'normal'>('ALL');
-  const [txStatusFilter, setTxStatusFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'FAILED'>('ALL');
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
 
   // Users and Deposits state
@@ -396,35 +395,15 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   // Filtered deposits
   const filteredDeposits = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return depositsData.deposits.filter((d) => {
-      const matchesSearch =
-        !q ||
+    if (!q) return depositsData.deposits;
+    return depositsData.deposits.filter(
+      (d) =>
         d.userEmail.toLowerCase().includes(q) ||
         d.userName.toLowerCase().includes(q) ||
         (d.referenceId && d.referenceId.toLowerCase().includes(q)) ||
-        d.method.toLowerCase().includes(q);
-
-      const rawStatus = (d.status || '').toUpperCase().trim();
-      const isFailed =
-        rawStatus.includes('FAIL') ||
-        rawStatus.includes('REJECT') ||
-        rawStatus.includes('CANCEL') ||
-        rawStatus.includes('ERROR');
-      const isPending =
-        rawStatus.includes('PEND') ||
-        rawStatus.includes('PROCESS') ||
-        rawStatus === 'PENDING';
-      const isCompleted = !isFailed && !isPending;
-
-      const matchesStatus =
-        txStatusFilter === 'ALL' ||
-        (txStatusFilter === 'PENDING' && isPending) ||
-        (txStatusFilter === 'COMPLETED' && isCompleted) ||
-        (txStatusFilter === 'FAILED' && isFailed);
-
-      return matchesSearch && matchesStatus;
-    });
-  }, [depositsData.deposits, searchQuery, txStatusFilter]);
+        d.method.toLowerCase().includes(q)
+    );
+  }, [depositsData.deposits, searchQuery]);
 
   // Platform Aggregate Totals (Live Trading Accounts strictly in terms of numbers/count)
   const platformStats = useMemo(() => {
@@ -1379,47 +1358,26 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         {activeTab === 'deposits' && (
           <section className={`rounded-xl border overflow-hidden ${cardBg}`}>
             <div
-              className={`p-4 border-b flex flex-col gap-3 ${
+              className={`p-4 border-b flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 ${
                 isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'
               }`}
             >
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="relative flex-1 max-w-md">
-                  <Search className={`w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 ${mutedText}`} />
-                  <input
-                    type="text"
-                    placeholder="Search deposits by name, email, or payment method..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className={`w-full pl-9 pr-4 py-2 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
-                  />
-                </div>
-
-                <div className={`text-xs font-mono tabular-nums ${mutedText}`}>
-                  Total Deposited:{' '}
-                  <strong className="text-emerald-600 dark:text-emerald-400">
-                    ${depositsData.totalDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                  </strong>
-                </div>
+              <div className="relative flex-1 max-w-md">
+                <Search className={`w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 ${mutedText}`} />
+                <input
+                  type="text"
+                  placeholder="Search deposits by name, email, or payment method..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className={`w-full pl-9 pr-4 py-2 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                />
               </div>
 
-              {/* Transaction Status Filter Tabs */}
-              <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-white/[0.06]">
-                {(['ALL', 'PENDING', 'COMPLETED', 'FAILED'] as const).map((st) => (
-                  <button
-                    key={st}
-                    onClick={() => setTxStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                      txStatusFilter === st
-                        ? 'bg-[#E51937] text-white'
-                        : isDarkMode
-                        ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    {st === 'ALL' ? 'All Transactions' : st.charAt(0) + st.slice(1).toLowerCase()}
-                  </button>
-                ))}
+              <div className={`text-xs font-mono tabular-nums ${mutedText}`}>
+                Total Deposited:{' '}
+                <strong className="text-emerald-600 dark:text-emerald-400">
+                  ${depositsData.totalDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </strong>
               </div>
             </div>
 
@@ -1478,11 +1436,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                         <td className={`py-3.5 px-4 text-right font-mono tabular-nums ${secondaryText}`}>
                           KES {(d.amountKes || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
                         </td>
-                        <td className={`py-3.5 px-4 text-right font-medium ${
-                          (d.status || '').toUpperCase() === 'COMPLETED' ? 'text-emerald-600 dark:text-emerald-400' :
-                          (d.status || '').toUpperCase() === 'FAILED' || (d.status || '').toUpperCase() === 'REJECTED' || (d.status || '').toUpperCase() === 'CANCELED' ? 'text-rose-600 dark:text-rose-400' :
-                          'text-amber-600 dark:text-amber-400'
-                        }`}>
+                        <td className="py-3.5 px-4 text-right text-emerald-600 dark:text-emerald-400 font-medium">
                           {d.status}
                         </td>
                       </tr>

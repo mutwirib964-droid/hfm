@@ -1383,39 +1383,6 @@ class SupabaseService {
     mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
     const latestClosed = mergedClosed.slice(0, 50);
 
-    // Also persist directly into public.closed_trades table
-    try {
-      if (latestClosed.length > 0) {
-        const rows = latestClosed.slice(0, 50).map((t) => ({
-          id: t.id || `ct-${t.ticket}-${t.closeTime}`,
-          user_email: user.email.trim().toLowerCase(),
-          ticket: t.ticket,
-          account_number: data.accountNumber || user.accountNumber || '',
-          symbol: t.symbol,
-          side: t.side,
-          lots: t.lots,
-          open_price: t.openPrice,
-          close_price: t.closePrice,
-          pnl: t.pnl,
-          open_time: t.openTime,
-          close_time: t.closeTime,
-          reason: t.reason || 'MANUAL',
-        }));
-        fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
-          method: 'POST',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-            'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates',
-          },
-          body: JSON.stringify(rows),
-        }).catch(() => {});
-      }
-    } catch {
-      // ignore
-    }
-
     return await this.saveCloudStateRecord(
       user.email,
       'STATE_TRADES',
@@ -1518,50 +1485,9 @@ class SupabaseService {
         // ignore
       }
 
-      // Direct query to public.closed_trades table
-      try {
-        const ctRes = await fetch(
-          `${this.config.url}/rest/v1/closed_trades?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=close_time.desc&limit=200`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4500),
-          }
-        );
-        if (ctRes.ok) {
-          const ctRows = await ctRes.json();
-          if (Array.isArray(ctRows)) {
-            for (const row of ctRows) {
-              const key = String(row.ticket || row.id);
-              if (!closedMap.has(key)) {
-                closedMap.set(key, {
-                  id: row.id,
-                  ticket: Number(row.ticket),
-                  symbol: row.symbol,
-                  side: row.side === 'SELL' ? 'SELL' : 'BUY',
-                  lots: Number(row.lots),
-                  openPrice: Number(row.open_price ?? row.openPrice),
-                  closePrice: Number(row.close_price ?? row.closePrice),
-                  pnl: Number(row.pnl),
-                  openTime: Number(row.open_time ?? row.openTime),
-                  closeTime: Number(row.close_time ?? row.closeTime),
-                  reason: row.reason || 'MANUAL',
-                  accountNumber: row.account_number ?? row.accountNumber,
-                });
-              }
-            }
-          }
-        }
-      } catch {
-        // ignore
-      }
-
     const mergedClosedTrades = Array.from(closedMap.values())
       .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
-      .slice(0, 200);
+      .slice(0, 50);
 
     return {
       positions: data && Array.isArray(data.positions) ? data.positions : [],

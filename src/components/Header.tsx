@@ -537,22 +537,22 @@ export const Header: React.FC<HeaderProps> = ({
                     <div
                       key={n.id}
                       onClick={() => onToggleNotificationRead && onToggleNotificationRead(n.id)}
-                      className={`w-full p-3 border rounded-xl text-left transition-all cursor-pointer ${
+                      className={`p-2.5 border rounded-lg text-left transition-colors cursor-pointer ${
                         !n.read
                           ? isDarkMode
-                            ? 'bg-[#E51937]/20 border-[#E51937]/60 shadow-sm border-l-4 border-l-[#E51937]'
-                            : 'bg-red-50 border-red-300 shadow-sm border-l-4 border-l-[#E51937]'
+                            ? 'bg-[#E51937]/10 border-[#E51937]/40'
+                            : 'bg-red-50/70 border-red-200'
                           : isDarkMode
-                          ? 'bg-neutral-900/90 border-neutral-800'
-                          : 'bg-white border-slate-200 shadow-2xs'
+                          ? 'bg-neutral-900/80 border-neutral-800'
+                          : 'bg-slate-50 border-slate-200'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-3 w-full">
-                        <div className="flex items-start gap-2 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-start gap-1.5">
                           {!n.read && (
-                            <span className="w-2 h-2 rounded-full bg-[#E51937] shrink-0 mt-1.5" />
+                            <span className="w-2 h-2 rounded-full bg-[#E51937] shrink-0 mt-1" />
                           )}
-                          <p className={`text-xs leading-relaxed ${!n.read ? 'font-black' : 'font-medium opacity-90'}`}>
+                          <p className={`text-xs ${!n.read ? 'font-bold' : 'font-medium'}`}>
                             {n.title}
                           </p>
                         </div>
@@ -563,13 +563,13 @@ export const Header: React.FC<HeaderProps> = ({
                               e.stopPropagation();
                               onToggleNotificationRead(n.id);
                             }}
-                            className={`text-[10px] font-bold shrink-0 px-2 py-1 rounded-md border cursor-pointer transition-colors ${
+                            className={`text-[10px] font-semibold shrink-0 px-1.5 py-0.5 rounded border cursor-pointer ${
                               !n.read
                                 ? isDarkMode
-                                  ? 'border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700'
-                                  : 'border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200'
+                                  ? 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'
+                                  : 'border-slate-300 text-slate-700 hover:bg-white'
                                 : isDarkMode
-                                ? 'border-neutral-800 text-neutral-400 hover:text-white'
+                                ? 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
                                 : 'border-slate-200 text-slate-500 hover:text-slate-800'
                             }`}
                           >
@@ -577,7 +577,7 @@ export const Header: React.FC<HeaderProps> = ({
                           </button>
                         )}
                       </div>
-                      <span className="text-[10px] opacity-60 font-mono mt-1.5 block">
+                      <span className="text-[10px] text-neutral-500 font-mono mt-1 block">
                         {n.time}
                       </span>
                     </div>

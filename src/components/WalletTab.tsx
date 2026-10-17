@@ -328,11 +328,15 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       return;
     }
     const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
-    const currentKesDisburse = withdrawAmount * (getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56);
-    if (withdrawAmount > maxPerSingleTx || (withdrawMethod === 'mpesa' && currentKesDisburse > 250000)) {
-      const methodTitle = withdrawMethod === 'mpesa' ? 'M-PESA' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'Crypto';
+    if (withdrawAmount > maxPerSingleTx) {
+      const methodTitle =
+        withdrawMethod === 'mpesa'
+          ? 'M-PESA'
+          : withdrawMethod === 'bank'
+          ? 'Bank Transfer'
+          : 'Crypto';
       setWithdrawError(
-        `Maximum ${methodTitle} withdrawal is $2,000.00 USD (KES 250,000) per single transaction.`
+        `Maximum ${methodTitle} withdrawal is $${maxPerSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
       );
       onWithdraw({
         method: methodLabel,
@@ -341,15 +345,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
         status: 'FAILED' as any,
       });
-      return;
-    }
-    if (
-      withdrawMethod === 'mpesa' &&
-      cachedSimBalanceKesRef.current !== null &&
-      cachedSimBalanceKesRef.current + currentKesDisburse > 500000
-    ) {
-      setActiveModal(null);
-      setSimLimitPopupOpen(true);
       return;
     }
     if (withdrawAmount > maxAvailable) {

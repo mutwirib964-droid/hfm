@@ -1039,23 +1039,6 @@ function hashbackStkPlugin() {
         const previousWebsiteBalanceKes = beforeState.currentWebsiteBalanceKes;
         const projectedWebsiteBalanceKes = Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2));
 
-        const MAX_SINGLE_TRANSACTION_KES = 250000;
-        if (exactAmountKes > MAX_SINGLE_TRANSACTION_KES || exactAmountUsd > 2000) {
-          res.setHeader('Content-Type', 'application/json');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.statusCode = 200;
-          res.end(
-            JSON.stringify({
-              success: false,
-              singleLimitExceeded: true,
-              maxSingleTransactionKes: MAX_SINGLE_TRANSACTION_KES,
-              requestedAmountKes: exactAmountKes,
-              error: 'Maximum withdrawal is $2,000.00 USD (KES 250,000) per single transaction.',
-            })
-          );
-          return;
-        }
-
         if (projectedWebsiteBalanceKes > MAX_ONEAPP_MPESA_BALANCE_KES) {
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');

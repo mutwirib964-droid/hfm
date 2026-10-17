@@ -452,8 +452,8 @@ export const evaluateTargetWinOrLoss = (
   currentWins: number = 0,
   currentTotal: number = 0
 ): boolean => {
-  // Demo accounts (ALL user roles) OR Marketers / Admins on Real/Live accounts: > 95% win rate (losses < 5%)
-  if (isDemoAccount || userRole === 'marketer' || userRole === 'admin') {
+  // Demo accounts (ALL user roles) OR Marketers on Real/Live accounts: > 95% win rate (losses < 5%)
+  if (isDemoAccount || userRole === 'marketer') {
     // Guaranteed first 3 trades win so accounts build momentum immediately
     if (currentTotal < 3) {
       return true;
@@ -581,7 +581,8 @@ export const getDeletedBotIds = (): string[] => {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleaned = parsed.filter(
-          (id): id is string => typeof id === 'string' && id.trim().length > 0
+          (id): id is string =>
+            typeof id === 'string' && id.trim().length > 0 && id.trim().startsWith('run-')
         );
         if (cleaned.length !== parsed.length) {
           localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(cleaned));
@@ -600,7 +601,8 @@ export const markBotDeletedLocally = (ids: Array<string | undefined | null>): st
   for (const id of ids) {
     if (id && typeof id === 'string') {
       const trimmed = id.trim();
-      if (trimmed.length > 0) {
+      // Only tombstone specific run instance IDs ('run-...'), never catalog botId or botName
+      if (trimmed.startsWith('run-')) {
         current.add(trimmed);
       }
     }
@@ -634,7 +636,7 @@ export const sanitizeAndFilterBotRuns = (
 ): BotRunInstance[] => {
   if (!Array.isArray(runs)) return [];
   const validExtraDeleted = (extraDeletedIds || []).filter(
-    (id) => typeof id === 'string' && id.trim().length > 0
+    (id) => typeof id === 'string' && id.trim().startsWith('run-')
   );
   const deletedSet = new Set<string>([...getDeletedBotIds(), ...validExtraDeleted]);
 
@@ -649,8 +651,9 @@ export const sanitizeAndFilterBotRuns = (
       const name = typeof r.botName === 'string' ? r.botName.trim() : '';
       if (!sym || !name) return false;
 
-      const runInstanceIds = [r.id, r.runId, r.botId]
-        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      // Only check specific run instance IDs (id / runId), never catalog botId or botName
+      const runInstanceIds = [r.id, r.runId]
+        .filter((v): v is string => typeof v === 'string' && v.trim().startsWith('run-'))
         .map((v) => v.trim());
 
       if (runInstanceIds.some((c) => deletedSet.has(c))) {
