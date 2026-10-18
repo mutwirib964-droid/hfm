@@ -531,29 +531,31 @@ export default function App() {
 
       supabaseService.fetchUserTrades(remote.profile).then((remoteTrades) => {
         if (remoteTrades) {
-          if (isInitialMount) {
-            if (remoteTrades.positions) setPositions(remoteTrades.positions);
-            if (remoteTrades.pendingOrders) setPendingOrders(remoteTrades.pendingOrders);
+          const isRecentLocalAction = Date.now() - lastLocalTradeActionRef.current < 6000;
+          if (!isRecentLocalAction) {
+            if (Array.isArray(remoteTrades.positions)) {
+              setPositions(remoteTrades.positions);
+              positionsRef.current = remoteTrades.positions;
+            }
+            if (Array.isArray(remoteTrades.pendingOrders)) {
+              setPendingOrders(remoteTrades.pendingOrders);
+            }
           }
-          if (remoteTrades.closedTrades.length > 0) {
-            setClosedTrades((prev) => {
-              const map = new Map<string, ClosedTrade>();
-              for (const t of [...prev, ...remoteTrades.closedTrades]) {
-                if (t && t.symbol) map.set(String(t.ticket || t.id), t);
-              }
-                const merged = Array.from(map.values())
-                  .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
-                  .slice(0, 200);
-              try {
-                localStorage.setItem(
-                  `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
-                  JSON.stringify(merged)
-                );
-              } catch {
-                // ignore
-              }
-              return merged;
-            });
+          if (Array.isArray(remoteTrades.closedTrades) && remoteTrades.closedTrades.length > 0) {
+            const cloudClosed = remoteTrades.closedTrades
+              .filter((t) => t && t.symbol)
+              .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
+              .slice(0, 500);
+
+            setClosedTrades(cloudClosed);
+            try {
+              localStorage.setItem(
+                `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
+                JSON.stringify(cloudClosed)
+              );
+            } catch {
+              // ignore
+            }
           }
         }
         isCloudTradesLoadedRef.current = true;
@@ -845,6 +847,7 @@ export default function App() {
   const lastLocalExtrasUpdateRef = useRef<number>(0);
   const lastLocalNotifsUpdateRef = useRef<number>(0);
   const lastLocalSettingsUpdateRef = useRef<number>(0);
+  const lastLocalTradeActionRef = useRef<number>(0);
 
 
 
@@ -2546,6 +2549,7 @@ export default function App() {
     accountId?: string;
     accountNumber?: string;
   }) => {
+    lastLocalTradeActionRef.current = Date.now();
     const inst = instruments.find((i) => i.symbol === params.symbol) || instruments[0];
 
     // Enforce market hours: if currency is closed, one cannot open any trade
@@ -2923,6 +2927,7 @@ export default function App() {
     reason: 'MANUAL' | 'TP' | 'SL' = 'MANUAL',
     customClosePrice?: number
   ) => {
+    lastLocalTradeActionRef.current = Date.now();
     if (closingPositionIdsRef.current.has(id)) return;
     const pos = positionsRef.current.find((p) => p.id === id) || positions.find((p) => p.id === id);
     if (!pos) return;

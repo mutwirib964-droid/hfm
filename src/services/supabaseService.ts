@@ -1081,9 +1081,34 @@ class SupabaseService {
       : userEmail.trim().toLowerCase();
 
     try {
-      // 1. Check if state record already exists for this user + stateType
+      // Primary: Atomic Upsert to vtm_cloud_states
+      const upsertRes = await fetch(
+        `${this.config.url}/rest/v1/vtm_cloud_states?on_conflict=user_email,state_key`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+            Prefer: 'resolution=merge-duplicates,return=representation',
+          },
+          body: JSON.stringify({
+            user_email: cleanEmail,
+            state_key: stateType,
+            data: metadata,
+            updated_at: new Date().toISOString(),
+          }),
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+
+      if (upsertRes.ok) {
+        return true;
+      }
+
+      // Secondary Fallback: Save to user_activities with case-insensitive ilike query
       const getRes = await fetch(
-        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+        `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(
           cleanEmail
         )}&activity_type=eq.${encodeURIComponent(stateType)}&select=id&order=created_at.desc&limit=20`,
         {
@@ -1099,7 +1124,6 @@ class SupabaseService {
       if (getRes.ok) {
         const rows = await getRes.json();
         if (Array.isArray(rows) && rows.length > 0 && rows[0].id) {
-          // Delete any older duplicate state rows so stale state never resurfaces
           if (rows.length > 1) {
             const duplicateIds = rows
               .slice(1)
@@ -1140,15 +1164,11 @@ class SupabaseService {
             }
           );
           if (patchRes.ok) {
-            const patchedRows = await patchRes.json().catch(() => []);
-            if (Array.isArray(patchedRows) && patchedRows.length > 0) {
-              return true;
-            }
+            return true;
           }
         }
       }
 
-      // 2. Insert new state record if none existed yet
       const postRes = await fetch(`${this.config.url}/rest/v1/user_activities`, {
         method: 'POST',
         headers: {
@@ -1184,8 +1204,31 @@ class SupabaseService {
       : userEmail.trim().toLowerCase();
 
     try {
+      // Primary: Query atomic vtm_cloud_states table with case-insensitive ilike
+      const cloudRes = await fetch(
+        `${this.config.url}/rest/v1/vtm_cloud_states?user_email=ilike.${encodeURIComponent(
+          cleanEmail
+        )}&state_key=eq.${encodeURIComponent(stateType)}&select=data&order=updated_at.desc&limit=1`,
+        {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+
+      if (cloudRes.ok) {
+        const cloudRows = await cloudRes.json();
+        if (Array.isArray(cloudRows) && cloudRows.length > 0 && cloudRows[0].data) {
+          return cloudRows[0].data as T;
+        }
+      }
+
+      // Secondary Fallback: Query user_activities with ilike
       const res = await fetch(
-        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+        `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(
           cleanEmail
         )}&activity_type=eq.${encodeURIComponent(stateType)}&select=metadata&order=created_at.desc&limit=1`,
         {
