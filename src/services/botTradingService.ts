@@ -448,10 +448,10 @@ export const evaluateTargetWinOrLoss = (
       seed = Math.abs(hash % 100) / 100;
     }
     
-    // Target 85% to 95% for marketers/demo
-    targetRate = 0.85 + (seed * 0.10);
+    // Target 90% to 95% for marketers/demo to reduce losses as requested
+    targetRate = 0.90 + (seed * 0.05);
   } else if (userRole === 'normal') {
-    // Standard retail live accounts get strictly lower win rates as requested
+    // Standard retail live accounts get strictly lower win rates (max 15%)
     targetRate = 0.12;
   }
 
@@ -461,7 +461,7 @@ export const evaluateTargetWinOrLoss = (
     if (!isNaN(parsed)) {
       // Use parsed rate if it's within a sane range for the user type
       if (isPrivileged) {
-        targetRate = Math.max(0.85, Math.min(0.96, parsed));
+        targetRate = Math.max(0.90, Math.min(0.96, parsed));
       } else {
         // Retail traders winrate should not exceed 15% ever on their real accounts
         targetRate = Math.min(0.15, parsed);
@@ -472,9 +472,9 @@ export const evaluateTargetWinOrLoss = (
   if (currentTotal > 3) {
     const actualRate = currentWins / currentTotal;
     // Force a win if way behind target
-    if (actualRate < targetRate - 0.12) return true;
-    // Force a loss if way ahead of target (ensures losses exist even for marketers)
-    if (actualRate > targetRate + 0.05) return false;
+    if (actualRate < targetRate - 0.05) return true;
+    // Force a loss if way ahead of target
+    if (actualRate > targetRate + 0.04) return false;
   }
   
   // Natural probability with bias towards target
