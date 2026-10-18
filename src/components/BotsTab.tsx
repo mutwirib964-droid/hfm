@@ -196,48 +196,37 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     };
   });
 
-  const adjustedClosedTrades = closedTrades.map((t) => {
-    let closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice;
-    const isWin = (t.profitUsd || 0) >= 0 || t.reason === 'TP' || t.closeReason === 'TAKE_PROFIT';
-    if (!closePriceVal || closePriceVal === t.openPrice) {
-      if (isWin) {
-        closePriceVal = t.tp ?? t.tpPrice ?? (t.side === 'BUY' ? t.openPrice + 30 * 0.0001 : t.openPrice - 30 * 0.0001);
-      } else {
-        closePriceVal = t.sl ?? t.slPrice ?? (t.side === 'BUY' ? t.openPrice - 20 * 0.0001 : t.openPrice + 20 * 0.0001);
+  const adjustedClosedTrades = closedTrades
+    .map((t) => {
+      let closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice;
+      const isWin = (t.profitUsd || 0) >= 0 || t.reason === 'TP' || t.closeReason === 'TAKE_PROFIT';
+      if (!closePriceVal || closePriceVal === t.openPrice) {
+        if (isWin) {
+          closePriceVal = t.tp ?? t.tpPrice ?? (t.side === 'BUY' ? t.openPrice + 30 * 0.0001 : t.openPrice - 30 * 0.0001);
+        } else {
+          closePriceVal = t.sl ?? t.slPrice ?? (t.side === 'BUY' ? t.openPrice - 20 * 0.0001 : t.openPrice + 20 * 0.0001);
+        }
       }
-    }
-    const exactPnl =
-      typeof t.profitUsd === 'number' && !isNaN(t.profitUsd)
-        ? t.profitUsd
-        : calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
-    return {
-      ...t,
-      closePrice: closePriceVal,
-      exitPrice: closePriceVal,
-      profitUsd: exactPnl,
-    };
-  });
+      const exactPnl =
+        typeof t.profitUsd === 'number' && !isNaN(t.profitUsd)
+          ? t.profitUsd
+          : calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
+      return {
+        ...t,
+        closePrice: closePriceVal,
+        exitPrice: closePriceVal,
+        profitUsd: exactPnl,
+      };
+    })
+    .sort((a, b) => {
+      const timeA = a.closeTime || a.openTime || 0;
+      const timeB = b.closeTime || b.openTime || 0;
+      return timeB - timeA; // Latest bot trades at the top
+    });
 
   const totalOpenProfit = liveOpenTrades.reduce((acc, t) => acc + t.profitUsd, 0);
   const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
-  const rawOverallProfit = totalOpenProfit + totalClosedProfit;
-  // Estimate starting capital of the account (current balance - realized bot profit) so total loss never exceeds starting capital
-  const estimatedStartingCapital = Math.max(
-    accountBalance,
-    Number((accountBalance - Math.min(0, totalClosedProfit)).toFixed(2))
-  );
-  const protectionFloorReserve =
-    estimatedStartingCapital >= 10
-      ? 1.1 + ((Math.round(estimatedStartingCapital * 100) % 130) / 100) // e.g., $1.10 to $2.39 reserve (stops at -$97.90, -$98.90, -$99.20 on $100)
-      : Math.max(0.8, Number((estimatedStartingCapital * 0.12).toFixed(2)));
-  const maxAllowedTotalLoss = Math.max(
-    0,
-    Number((estimatedStartingCapital - protectionFloorReserve).toFixed(2))
-  );
-  const overallProfit =
-    rawOverallProfit < 0 && maxAllowedTotalLoss > 0
-      ? Math.max(-maxAllowedTotalLoss, Number(rawOverallProfit.toFixed(2)))
-      : Number(rawOverallProfit.toFixed(2));
+  const overallProfit = Number((totalOpenProfit + totalClosedProfit).toFixed(2));
 
   const isHighWinRateContext = userRole === 'marketer' || accountType === 'Demo';
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
@@ -573,14 +562,26 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
                     </div>
 
-                    <button
-                      id={`btn-deploy-${bot.id}`}
-                      onClick={() => handleDeployToActiveBots(bot)}
-                      className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Deploy Bot</span>
-                    </button>
+                    {botRuns.some((r) => r.botId === bot.id || r.botName === bot.name) ? (
+                      <button
+                        id={`btn-deploy-${bot.id}`}
+                        onClick={() => setActiveSubTab('runs')}
+                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
+                        title="Bot is already deployed in Active Bots engine"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Deployed (Active)</span>
+                      </button>
+                    ) : (
+                      <button
+                        id={`btn-deploy-${bot.id}`}
+                        onClick={() => handleDeployToActiveBots(bot)}
+                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Deploy Bot</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -666,11 +667,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     (s, t) => s + (t.profitUsd || 0),
                     0
                   );
-                  const rawTotalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
-                  const totalProfit =
-                    rawTotalProfit < 0 && maxAllowedTotalLoss > 0
-                      ? Math.max(-maxAllowedTotalLoss, rawTotalProfit)
-                      : rawTotalProfit;
+                  const totalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
                   const rawRunWinRate =
                     totalTrades > 0
                       ? (winningTrades / totalTrades) * 100

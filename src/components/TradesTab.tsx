@@ -88,8 +88,10 @@ export const TradesTab: React.FC<TradesTabProps> = ({
       accountNumber: account?.accountNumber || '27330648',
       currentBalance: account?.balance || 0,
       userEmail: currentUser?.email || 'user@vtmmarkets.com',
+      closedTrades,
+      transactions: account?.transactions || [],
     });
-  }, [account?.accountNumber, account?.balance, currentUser?.email, userLedgerEntries]);
+  }, [account?.accountNumber, account?.balance, currentUser?.email, closedTrades, account?.transactions, userLedgerEntries]);
 
   // History time filter state: 'today' | '7days' | 'month' | 'all' | 'custom'
   const [historyFilter, setHistoryFilter] = useState<'today' | '7days' | 'month' | 'all' | 'custom'>('all');
@@ -185,22 +187,28 @@ export const TradesTab: React.FC<TradesTabProps> = ({
       }
     }
 
-    return closedTrades.filter((ct) => {
-      const ctTime = ct.closeTime || ct.openTime || Date.now();
-      if (historyFilter === 'today') {
-        return ctTime >= startOfToday;
-      }
-      if (historyFilter === '7days') {
-        return ctTime >= sevenDaysAgo;
-      }
-      if (historyFilter === 'month') {
-        return ctTime >= startOfMonth;
-      }
-      if (historyFilter === 'custom') {
-        return ctTime >= customStartMs && ctTime <= customEndMs;
-      }
-      return true; // 'all'
-    });
+    return closedTrades
+      .filter((ct) => {
+        const ctTime = ct.closeTime || ct.openTime || Date.now();
+        if (historyFilter === 'today') {
+          return ctTime >= startOfToday;
+        }
+        if (historyFilter === '7days') {
+          return ctTime >= sevenDaysAgo;
+        }
+        if (historyFilter === 'month') {
+          return ctTime >= startOfMonth;
+        }
+        if (historyFilter === 'custom') {
+          return ctTime >= customStartMs && ctTime <= customEndMs;
+        }
+        return true; // 'all'
+      })
+      .sort((a, b) => {
+        const timeA = a.closeTime || a.openTime || 0;
+        const timeB = b.closeTime || b.openTime || 0;
+        return timeB - timeA; // Latest trades at the top
+      });
   }, [closedTrades, historyFilter, customStartDate, customEndDate]);
 
   // Comprehensive summary statistics for the selected period
@@ -730,11 +738,13 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                   const spec = getInstrumentSpec(cl.symbol);
                   const isWin = (cl.pnl || 0) >= 0;
                   const decimals = spec.decimals;
-                  const closeDateStr = cl.closeTime ? new Date(cl.closeTime).toLocaleString('en-US', {
+                  const closeDateStr = cl.closeTime ? new Date(cl.closeTime).toLocaleString(undefined, {
+                    year: 'numeric',
                     month: 'short',
                     day: 'numeric',
                     hour: '2-digit',
                     minute: '2-digit',
+                    second: '2-digit',
                   }) : 'Recently';
 
                   return (

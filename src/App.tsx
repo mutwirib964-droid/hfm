@@ -4814,14 +4814,11 @@ export default function App() {
   };
 
   const handleCloseBotTrade = (tradeId: string) => {
-    if (closingPositionIdsRef.current.has(tradeId)) return;
-    if (currentUserRef.current?.email && isTradeSettled(currentUserRef.current.email, tradeId)) return;
-    const trade = botTradesRef.current.find((t) => t.id === tradeId);
+    const trade = botTradesRef.current.find((t) => t.id === tradeId || String(t.ticket) === String(tradeId));
     if (!trade || trade.status !== 'OPEN') return;
 
-    closingPositionIdsRef.current.add(tradeId);
     if (currentUserRef.current?.email) {
-      markTradeSettled(currentUserRef.current.email, tradeId);
+      markTradeSettled(currentUserRef.current.email, trade.id);
     }
 
     const inst = instrumentsRef.current.find((i) => i.symbol === trade.symbol);
@@ -4848,13 +4845,13 @@ export default function App() {
       currentPrice: exitPrice,
       closePrice: exitPrice,
       exitPrice,
-      profitUsd,
+      profitUsd: Number(profitUsd.toFixed(2)),
       closeReason: 'MANUAL',
       exitReason: 'MANUAL',
       closeTime: Date.now(),
     };
 
-    const nextBotTrades = botTradesRef.current.map((t) => (t.id === tradeId ? updatedTrade : t));
+    const nextBotTrades = botTradesRef.current.map((t) => (t.id === trade.id || String(t.ticket) === String(tradeId) ? updatedTrade : t));
     botTradesRef.current = nextBotTrades;
     lastLocalBotsUpdateRef.current = Date.now();
     setBotTrades(() => [...nextBotTrades]);
@@ -4946,6 +4943,16 @@ export default function App() {
         closeTime: closedRecord.closeTime,
         closeReason: 'MANUAL',
       });
+
+      // Synchronize updated bot trades to Supabase STATE_BOTS immediately
+      supabaseService
+        .syncBotState(currentUserRef.current, {
+          importedBots,
+          botRuns: botRunsRef.current,
+          botTrades: nextBotTrades,
+          deletedBotIds: getDeletedBotIds(),
+        })
+        .catch(() => {});
     }
 
     // Update run stats
