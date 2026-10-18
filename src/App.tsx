@@ -1801,11 +1801,13 @@ export default function App() {
           typeof pos.tpUsd === 'number' && pos.tpUsd > 0 && pnl >= pos.tpUsd;
 
         const hitSlByPrice =
+          !isMarketerOrDemo &&
           pos.sl !== null &&
           pos.sl > 0 &&
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl));
         const hitSlByUsd =
+          !isMarketerOrDemo &&
           typeof pos.slUsd === 'number' && pos.slUsd > 0 && pnl <= -pos.slUsd;
 
         if (hitTpByPrice || hitTpByUsd) {
@@ -1815,7 +1817,7 @@ export default function App() {
           return pos;
         }
 
-        if ((hitSlByPrice || hitSlByUsd) && effectiveOutcome !== 'WIN') {
+        if (hitSlByPrice || hitSlByUsd) {
           const exitPrice = pos.sl && pos.sl > 0 ? pos.sl : currentPrice;
           triggeredIds.add(pos.id);
           triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice });
@@ -3705,17 +3707,35 @@ export default function App() {
         : Number((amountUsd * rate).toFixed(2));
 
     const isMpesaMethod = (params.method || '').toLowerCase().includes('m-pesa') || (params.method || '').toLowerCase().includes('mpesa');
-    const maxSingleTx = isMpesaMethod ? 2000 : 10000;
-    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTx) {
+    const maxSingleTxUsd = isMpesaMethod ? Number((250000 / rate).toFixed(2)) : 10000;
+    const maxSingleTxKes = isMpesaMethod ? 250000 : 10000 * rate;
+    const maxWithholdKes = 500000;
+
+    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTxUsd || (isMpesaMethod && exactAmountKes > maxSingleTxKes)) {
       const failReason =
         amountUsd < 35
           ? 'Minimum withdrawal requirement is $35.00 USD.'
-          : amountUsd > maxSingleTx
-          ? `Maximum withdrawal is $${maxSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
-          : 'Insufficient withdrawable funds in selected source.';
+          : isMpesaMethod
+          ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString()} USD).`
+          : 'Maximum single transaction withdrawal limit is $10,000.00 USD.';
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
-        title: 'Withdrawal Unsuccessful',
+        title: 'Single Transaction Limit Exceeded',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+        },
+      });
+      return;
+    }
+
+    if (exactAmountKes > maxWithholdKes) {
+      const failReason = 'Customer wallet capacity exceeded';
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Customer wallet capacity exceeded',
         subtitle: failReason,
         details: {
           amount: amountUsd,
@@ -5052,35 +5072,20 @@ export default function App() {
           );
         }
 
+        const isMarketerOrDemoBot = currentRole === 'marketer' || isDemoAcc;
         const hitTp =
           activeTrade.side === 'BUY'
             ? currentMarketPrice >= activeTrade.tp
             : currentMarketPrice <= activeTrade.tp;
         const hitSl =
-          activeTrade.side === 'BUY'
+          !isMarketerOrDemoBot &&
+          (activeTrade.side === 'BUY'
             ? currentMarketPrice <= activeTrade.sl
-            : currentMarketPrice >= activeTrade.sl;
+            : currentMarketPrice >= activeTrade.sl);
 
-        // Realistic take profit and stop loss timing (20s - 38s)
-        const fastWinThresholdMs = 20000 + (activeTrade.ticket % 18000);
-        const lossThresholdMs = 22000 + (activeTrade.ticket % 18000);
-        const isProfitable = floatingProfit > 0.05;
-
-        // Take Profit triggers if price touches TP or if strategy reaches profit target while positive
-        const shouldTakeProfit =
-          isDesignatedWin &&
-          (hitTp ||
-            (isProfitable &&
-              (floatingProfit >= 0.5 * lotScale && durationMs >= 16000 ||
-                durationMs >= fastWinThresholdMs)));
-
-        // Stop loss triggers ONLY if trade is designated loss AND price touches SL or duration expires
-        const shouldCloseLoss =
-          !isDesignatedWin &&
-          (hitSl ||
-            (!isProfitable &&
-              (floatingProfit <= -0.5 * lotScale && durationMs >= 16000 ||
-                durationMs >= lossThresholdMs)));
+        // Strictly enforce TP and SL pips rules: bots close only when Take Profit (TP) or Stop Loss (SL) price is reached
+        const shouldTakeProfit = isDesignatedWin && hitTp;
+        const shouldCloseLoss = !isDesignatedWin && hitSl;
 
         if (shouldTakeProfit || shouldCloseLoss) {
           const finalExitPrice = currentMarketPrice;
@@ -5634,6 +5639,10 @@ export default function App() {
           />
         );
       case 'bots':
+        const isDemoAccActive = (selectedAccount?.type || 'Live') === 'Demo';
+        const filteredInbuiltBots = isDemoAccActive
+          ? DEFAULT_INBUILT_BOTS.filter((b) => b.id !== 'vtm-trend-matrix')
+          : DEFAULT_INBUILT_BOTS;
         return (
           <BotsTab
             instruments={instruments}
@@ -5641,7 +5650,7 @@ export default function App() {
             accountType={selectedAccount?.type || 'Live'}
             accountBalance={selectedAccount?.balance ?? 0}
             onUpdateUserRole={handleUpdateUserRole}
-            inbuiltBots={DEFAULT_INBUILT_BOTS}
+            inbuiltBots={filteredInbuiltBots}
             importedBots={importedBots}
             botRuns={botRuns.filter((r) => belongsToAccount(r, selectedAccount))}
             botTrades={botTrades.filter((t) => belongsToAccount(t, selectedAccount))}

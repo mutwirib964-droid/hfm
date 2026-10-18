@@ -327,17 +327,28 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       });
       return;
     }
-    const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
-    if (withdrawAmount > maxPerSingleTx) {
-      const methodTitle =
-        withdrawMethod === 'mpesa'
-          ? 'M-PESA'
-          : withdrawMethod === 'bank'
-          ? 'Bank Transfer'
-          : 'Crypto';
+    const isMpesaWithdrawal = withdrawMethod === 'mpesa';
+    const maxSingleTxUsd = isMpesaWithdrawal ? Number((250000 / effectiveWithdrawRate).toFixed(2)) : 10000;
+    const maxSingleTxKes = isMpesaWithdrawal ? 250000 : 10000 * effectiveWithdrawRate;
+
+    if (withdrawAmount > maxSingleTxUsd || (isMpesaWithdrawal && exactKesToDisburse > maxSingleTxKes)) {
+      const methodTitle = isMpesaWithdrawal ? 'M-PESA' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'Crypto';
       setWithdrawError(
-        `Maximum ${methodTitle} withdrawal is $${maxPerSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
+        isMpesaWithdrawal
+          ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD).`
+          : `Maximum ${methodTitle} withdrawal is $10,000.00 USD per single transaction.`
       );
+      onWithdraw({
+        method: methodLabel,
+        amount: withdrawAmount,
+        sourceAccount: withdrawSource,
+        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
+        status: 'FAILED' as any,
+      });
+      return;
+    }
+    if (exactKesToDisburse > 500000) {
+      setWithdrawError('Customer wallet capacity exceeded');
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
