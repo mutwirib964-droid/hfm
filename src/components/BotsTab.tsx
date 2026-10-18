@@ -197,7 +197,15 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   });
 
   const adjustedClosedTrades = closedTrades.map((t) => {
-    const closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice ?? t.openPrice;
+    let closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice;
+    const isWin = (t.profitUsd || 0) >= 0 || t.reason === 'TP' || t.closeReason === 'TAKE_PROFIT';
+    if (!closePriceVal || closePriceVal === t.openPrice) {
+      if (isWin) {
+        closePriceVal = t.tp ?? t.tpPrice ?? (t.side === 'BUY' ? t.openPrice + 30 * 0.0001 : t.openPrice - 30 * 0.0001);
+      } else {
+        closePriceVal = t.sl ?? t.slPrice ?? (t.side === 'BUY' ? t.openPrice - 20 * 0.0001 : t.openPrice + 20 * 0.0001);
+      }
+    }
     const exactPnl =
       typeof t.profitUsd === 'number' && !isNaN(t.profitUsd)
         ? t.profitUsd
@@ -233,18 +241,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   const isHighWinRateContext = userRole === 'marketer' || accountType === 'Demo';
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
-  const rawWinRate =
-    adjustedClosedTrades.length > 0
-      ? (totalWinningTrades / adjustedClosedTrades.length) * 100
-      : isHighWinRateContext
-      ? 89.5
-      : 8.5;
-  // Strictly ensure retail on Live is capped at <= 10.0% and Demo/Marketer stays in 85.0% - 94.8%
-  const winRate = (
-    isHighWinRateContext
-      ? Math.min(94.8, Math.max(85.2, rawWinRate))
-      : Math.min(10.0, Math.max(0, rawWinRate))
-  ).toFixed(1);
+  const winRate = (adjustedClosedTrades.length > 0 ? (totalWinningTrades / adjustedClosedTrades.length) * 100 : 0).toFixed(1);
 
   const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;
 
@@ -348,7 +345,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </span>
             </div>
 
-            <p className={`text-xs mt-0.5 max-w-2xl ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+            <p className={`text-xs mt-0.5 max-w-2xl ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
               High-frequency Bots &amp; EAs execution engine. Deploy quantitative algorithms with real-time market pricing, algorithmic entries, Take Profit, and Stop Loss order tracking.
             </p>
           </div>
@@ -373,7 +370,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-400 uppercase font-semibold">Active Bot Runs</div>
+            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Active Bot Runs</div>
             <div className="text-base font-black font-mono mt-0.5 flex items-center gap-1.5">
               <span className="text-emerald-400">{runningBotsCount}</span>
               <span className="text-xs text-neutral-500 font-normal">/ {botRuns.length} total</span>
@@ -385,10 +382,10 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-400 uppercase font-semibold">Algorithm Win Rate</div>
+            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Win Rate</div>
             <div className="text-base font-black font-mono mt-0.5 text-emerald-400 flex items-center gap-1">
               <span>{winRate}%</span>
-              <span className="text-[10px] text-neutral-400 font-normal">Verified</span>
+              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-normal">Verified</span>
             </div>
           </div>
 
@@ -397,7 +394,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-400 uppercase font-semibold">Open Bot Trades</div>
+            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Open Bot Trades</div>
             <div className="text-base font-black font-mono mt-0.5 text-sky-400">
               {openTrades.length} Positions
             </div>
@@ -408,7 +405,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-400 uppercase font-semibold">Total Bot Profit</div>
+            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Total Bot Profit</div>
             <div
               className={`text-base font-black font-mono mt-0.5 ${
                 overallProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -433,7 +430,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             activeSubTab === 'bots'
               ? 'bg-[#E51937] text-white shadow-xs'
               : isDarkMode
-              ? 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              ? 'text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800/60'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
           }`}
         >
@@ -448,7 +445,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             activeSubTab === 'runs'
               ? 'bg-[#E51937] text-white shadow-xs'
               : isDarkMode
-              ? 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              ? 'text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800/60'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
           }`}
         >
@@ -469,7 +466,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             activeSubTab === 'trades'
               ? 'bg-[#E51937] text-white shadow-xs'
               : isDarkMode
-              ? 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+              ? 'text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800/60'
               : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
           }`}
         >
@@ -491,7 +488,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <h2 className="text-sm sm:text-base font-bold">Quantitative Algorithmic Strategies ({allBots.length})</h2>
-                <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                <p className={`text-xs ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                   Select and deploy battle-tested quantitative algorithms. Bots and EAs run profit-taking and order management.
                 </p>
               </div>
@@ -522,13 +519,13 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             {bot.tag}
                           </span>
                         </div>
-                        <span className="text-[11px] text-neutral-400">
+                        <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
                           {bot.author} • {bot.version} ({bot.timeframe})
                         </span>
                       </div>
 
                       <div className="text-right shrink-0">
-                        <div className="text-[10px] text-neutral-400 uppercase font-semibold">Algorithm Winrate</div>
+                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Winrate</div>
                         <div className="font-mono text-sm font-black text-emerald-400">
                           {bot.claimedWinRate}
                         </div>
@@ -557,7 +554,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
                     {/* Recommended Pairs */}
                     <div className="flex items-center gap-2 text-xs mb-4">
-                      <span className="text-neutral-400 font-medium text-[11px]">Recommended:</span>
+                      <span className="text-neutral-500 dark:text-neutral-400 font-medium text-[11px]">Recommended:</span>
                       <div className="flex items-center gap-1 font-mono font-bold flex-wrap">
                         {bot.recommendedInstruments.map((sym) => (
                           <span
@@ -572,7 +569,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   </div>
 
                   <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-neutral-400 font-mono">
+                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400 font-mono">
                       Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
                     </div>
 
@@ -597,7 +594,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-sm sm:text-base font-bold">Active Bots &amp; Execution Engine</h2>
-                <p className="text-xs text-neutral-400">
+                <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Configure settings and click Run Bot to start autonomous market execution. Deployed bots stay here until deleted.
                 </p>
               </div>
@@ -617,11 +614,11 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
                 }`}
               >
-                <div className="w-12 h-12 rounded-2xl bg-neutral-800 flex items-center justify-center text-neutral-400">
+                <div className="w-12 h-12 rounded-2xl bg-neutral-800 flex items-center justify-center text-neutral-500 dark:text-neutral-400">
                   <Sliders className="w-6 h-6" />
                 </div>
                 <h3 className="text-base font-bold">No Active Bots Deployed Yet</h3>
-                <p className={`text-xs max-w-md ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                <p className={`text-xs max-w-md ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                   Click &ldquo;Deploy Bot&rdquo; on any strategy in the Bots catalog to add it here, configure its settings, and run it.
                 </p>
                 <button
@@ -722,7 +719,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                               </span>
                             </div>
 
-                            <div className="flex items-center gap-2 text-xs text-neutral-400 font-mono mt-0.5">
+                            <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 font-mono mt-0.5">
                               <span
                                 className={`font-bold ${
                                   isDarkMode ? 'text-white' : 'text-slate-900'
@@ -799,21 +796,21 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       {/* Live Run Metrics & Latest Signal */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3">
                         <div>
-                          <div className="text-[10px] text-neutral-400 uppercase">Trades Executed</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Trades Executed</div>
                           <div className="font-mono text-sm font-bold mt-0.5">
                             {totalTrades} ({winningTrades}W / {losingTrades}L)
                           </div>
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-400 uppercase">Run Win Rate</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Run Win Rate</div>
                           <div className="font-mono text-sm font-bold text-emerald-400 mt-0.5">
                             {runWinRate}%
                           </div>
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-400 uppercase">Total Profit Generated</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Total Profit Generated</div>
                           <div
                             className={`font-mono text-sm font-bold mt-0.5 ${
                               totalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -824,7 +821,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-400 uppercase">Execution Status</div>
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Execution Status</div>
                           <div className="text-xs text-sky-300 font-semibold truncate mt-0.5 flex items-center gap-1">
                             <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
                             <span>{run.lastSignal || 'Scanning order book for signals...'}</span>
@@ -854,7 +851,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
                 {liveOpenTrades.length > 0 && (
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-neutral-400 font-mono hidden sm:inline">
+                    <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono hidden sm:inline">
                       Live Floating PnL:
                     </span>
                     <span
@@ -870,7 +867,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {liveOpenTrades.length === 0 ? (
                 <div
-                  className={`p-6 rounded-2xl border text-center text-neutral-400 text-xs ${
+                  className={`p-6 rounded-2xl border text-center text-neutral-500 dark:text-neutral-400 text-xs ${
                     isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
                   }`}
                 >
@@ -884,7 +881,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     }`}
                   >
                     <thead
-                      className={`text-[10px] uppercase font-bold text-neutral-400 ${
+                      className={`text-[10px] uppercase font-bold text-neutral-500 dark:text-neutral-400 ${
                         isDarkMode ? 'bg-[#121418]' : 'bg-slate-100'
                       }`}
                     >
@@ -915,8 +912,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             }`}
                           >
                             <td className="p-2.5">
-                              <div className="font-bold text-white dark:text-white">#{t.ticket || t.id.slice(-6)}</div>
-                              <div className="text-[10px] text-neutral-400 font-sans truncate max-w-[140px]">{t.botName}</div>
+                              <div className={`font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>#{t.ticket || t.id.slice(-6)}</div>
+                              <div className={`text-[10px] font-sans truncate max-w-[140px] ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-neutral-600'}`}>{t.botName}</div>
                             </td>
                             <td className="p-2.5 font-bold">{t.symbol}</td>
                             <td className="p-2.5">
@@ -974,7 +971,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm sm:text-base font-bold">Closed Trade History & Performance</h3>
-                  <span className="text-xs text-neutral-400 font-mono">({closedTrades.length} Trades Completed)</span>
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">({closedTrades.length} Trades Completed)</span>
                 </div>
 
                 {closedTrades.length > 0 && (
@@ -989,7 +986,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {closedTrades.length === 0 ? (
                 <div
-                  className={`p-6 rounded-2xl border text-center text-neutral-400 text-xs ${
+                  className={`p-6 rounded-2xl border text-center text-neutral-500 dark:text-neutral-400 text-xs ${
                     isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
                   }`}
                 >
@@ -1003,7 +1000,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     }`}
                   >
                     <thead
-                      className={`text-[10px] uppercase font-bold text-neutral-400 sticky top-0 ${
+                      className={`text-[10px] uppercase font-bold text-neutral-500 dark:text-neutral-400 sticky top-0 ${
                         isDarkMode ? 'bg-[#121418]' : 'bg-slate-100'
                       }`}
                     >
@@ -1037,7 +1034,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             }`}
                           >
                             <td className="p-2.5 font-bold">#{t.ticket || t.id.slice(-6)}</td>
-                            <td className="p-2.5 text-neutral-400 text-[11px]">{dateStr}</td>
+                            <td className="p-2.5 text-neutral-500 dark:text-neutral-400 text-[11px]">{dateStr}</td>
                             <td className="p-2.5 font-sans font-medium truncate max-w-[140px]">{t.botName}</td>
                             <td className="p-2.5 font-bold">{t.symbol}</td>
                             <td className="p-2.5">
@@ -1095,12 +1092,12 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <Bot className="w-5 h-5 text-[#E51937]" />
                 <div>
                   <h3 className="font-black text-base leading-none">{selectedBotForConfig.name}</h3>
-                  <span className="text-[11px] text-neutral-400">{selectedBotForConfig.tag}</span>
+                  <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{selectedBotForConfig.tag}</span>
                 </div>
               </div>
               <button
                 onClick={() => setSelectedBotForConfig(null)}
-                className="text-neutral-400 hover:text-white text-lg cursor-pointer"
+                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-lg cursor-pointer"
               >
                 ✕
               </button>
@@ -1125,7 +1122,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     </option>
                   ))}
                 </select>
-                <span className="text-[10px] text-neutral-400 mt-1 block">
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1 block">
                   Current Live Bid: {fmt(selectedInst?.bid, selectedInst?.decimals)} | Ask:{' '}
                   {fmt(selectedInst?.ask, selectedInst?.decimals)}
                 </span>
@@ -1167,7 +1164,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         : 'bg-slate-50 border-slate-300 text-emerald-600'
                     }`}
                   />
-                  <span className="text-[10px] text-neutral-400">Target Profit Target</span>
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Target Profit Target</span>
                 </div>
 
                 <div>
@@ -1186,7 +1183,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         : 'bg-slate-50 border-slate-300 text-rose-600'
                     }`}
                   />
-                  <span className="text-[10px] text-neutral-400">Capital Protection Stop</span>
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Capital Protection Stop</span>
                 </div>
               </div>
 
@@ -1200,7 +1197,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   <ShieldCheck className="w-4 h-4" />
                   <span>Quantitative Execution Verification</span>
                 </div>
-                <p className="text-[11px] leading-tight text-neutral-400">
+                <p className="text-[11px] leading-tight text-neutral-500 dark:text-neutral-400">
                   Bot will autonomously execute trades according to {selectedBotForConfig.strategyLogic}. Real-time PnL will update directly with the live charts.
                 </p>
               </div>
@@ -1234,7 +1231,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </div>
               <button
                 onClick={() => setShowImportModal(false)}
-                className="text-neutral-400 hover:text-white text-lg cursor-pointer"
+                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-lg cursor-pointer"
               >
                 ✕
               </button>
@@ -1261,7 +1258,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   <span className="text-xs font-bold text-neutral-200">
                     {importFileName ? `Selected: ${importFileName}` : 'Click to select .vtm or .mq5 bot file'}
                   </span>
-                  <span className="text-[10px] text-neutral-400 mt-0.5">Supports MT5 EA exports & VTM strategy files</span>
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">Supports MT5 EA exports & VTM strategy files</span>
                 </label>
               </div>
 
@@ -1370,8 +1367,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-bold">EA Bot Settings & Parameters</h3>
-                  <div className="flex items-center gap-2 text-xs text-neutral-400">
-                    <span className="font-semibold text-white dark:text-white">{editingRun.botName}</span>
+                  <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
+                    <span className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{editingRun.botName}</span>
                     <span>•</span>
                     <span className="font-mono text-sky-400">{editingRun.symbol}</span>
                   </div>
@@ -1379,7 +1376,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </div>
               <button
                 onClick={() => setEditingRun(null)}
-                className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
+                className="p-1.5 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1518,7 +1515,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     className={`p-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all ${
                       editStatus === 'RUNNING'
                         ? 'bg-emerald-500/15 border-emerald-500 text-emerald-400 shadow-sm'
-                        : 'border-neutral-800 text-neutral-400 hover:bg-neutral-800/50'
+                        : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
                     }`}
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
@@ -1531,7 +1528,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     className={`p-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all ${
                       editStatus === 'PAUSED'
                         ? 'bg-amber-500/15 border-amber-500 text-amber-400 shadow-sm'
-                        : 'border-neutral-800 text-neutral-400 hover:bg-neutral-800/50'
+                        : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
                     }`}
                   >
                     <Pause className="w-3.5 h-3.5 fill-current" />
@@ -1610,12 +1607,12 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
                 <div>
                   <h3 className="text-base font-bold">Delete Deployed Bot</h3>
-                  <p className="text-xs text-neutral-400">Remove from active execution</p>
+                  <p className="text-xs text-neutral-500 dark:text-neutral-400">Remove from active execution</p>
                 </div>
               </div>
               <button
                 onClick={() => setRunToDelete(null)}
-                className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
+                className="p-1.5 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1623,7 +1620,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
             <div className="py-4 space-y-3">
               <p className="text-sm">
-                Are you sure you want to delete <span className="font-bold text-white dark:text-white">{runToDelete.botName}</span> on{' '}
+                Are you sure you want to delete <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{runToDelete.botName}</span> on{' '}
                 <span className="font-mono font-bold text-sky-400">{runToDelete.symbol}</span>?
               </p>
 
@@ -1633,19 +1630,19 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 }`}
               >
                 <div className="flex justify-between">
-                  <span className="text-neutral-400">Traded Symbol:</span>
+                  <span className="text-neutral-500 dark:text-neutral-400">Traded Symbol:</span>
                   <span className="font-bold">{runToDelete.symbol}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-neutral-400">Position Volume:</span>
+                  <span className="text-neutral-500 dark:text-neutral-400">Position Volume:</span>
                   <span className="font-bold">{runToDelete.lotSize} Lots</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-neutral-400">Take Profit / Stop Loss:</span>
+                  <span className="text-neutral-500 dark:text-neutral-400">Take Profit / Stop Loss:</span>
                   <span className="font-bold">+{runToDelete.tpPips}p / -{runToDelete.slPips}p</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-neutral-400">Total Profit Generated:</span>
+                  <span className="text-neutral-500 dark:text-neutral-400">Total Profit Generated:</span>
                   <span className={`font-bold ${runToDelete.totalProfitUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {runToDelete.totalProfitUsd >= 0 ? '+' : ''}${fmt(runToDelete.totalProfitUsd, 2)}
                   </span>

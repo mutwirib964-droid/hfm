@@ -32,6 +32,13 @@ interface MarketsTabProps {
   oneClickTrading?: boolean;
   priceAlerts?: PriceAlert[];
   onOpenPriceAlert?: (symbol: string) => void;
+  onExecuteMarketOrder: (params: {
+    symbol: string;
+    side: 'BUY' | 'SELL';
+    lots: number;
+    sl: number | null;
+    tp: number | null;
+  }) => void;
 }
 
 export const MarketsTab: React.FC<MarketsTabProps> = ({
@@ -44,6 +51,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   oneClickTrading = true,
   priceAlerts = [],
   onOpenPriceAlert,
+  onExecuteMarketOrder,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<MarketCategory>('Forex');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
@@ -253,7 +261,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] text-neutral-400 block truncate">{bench.name}</span>
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block truncate">{bench.name}</span>
                 </div>
 
                 <div className="text-right shrink-0">
@@ -305,13 +313,13 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                   : 'bg-neutral-100/90 border-neutral-200 text-neutral-900'
               }`}
             >
-              <Search className="w-4 h-4 text-neutral-400 shrink-0" />
+              <Search className="w-4 h-4 text-neutral-500 dark:text-neutral-400 shrink-0" />
               <input
                 type="text"
                 placeholder="Search symbols (e.g. XAUUSD, EURUSD, US500)..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-transparent text-xs w-full focus:outline-none placeholder:text-neutral-400 font-medium"
+                className="bg-transparent text-xs w-full focus:outline-none placeholder:text-neutral-500 dark:text-neutral-400 font-medium"
               />
             </div>
 
@@ -323,7 +331,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                   quickFilter === 'ALL'
                     ? 'bg-[#E51937] text-white'
                     : isDarkMode
-                    ? 'bg-[#181A20] border border-neutral-800 text-neutral-400 hover:text-white'
+                    ? 'bg-[#181A20] border border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-white'
                     : 'bg-white border border-neutral-200 text-neutral-600 hover:text-neutral-900'
                 }`}
               >
@@ -399,7 +407,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                           ? isDarkMode
                             ? 'text-white'
                             : 'text-neutral-900'
-                          : 'text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200'
+                          : 'text-neutral-500 dark:text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200'
                       }`}
                     >
                       <span>{cat.name}</span>
@@ -442,7 +450,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
           {/* Watchlist Cards Grid: 1 col on mobile, 2 cols on tablet/desktop */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-2.5 pt-1">
             {visibleInstruments.length === 0 ? (
-              <div className="col-span-full text-center py-12 text-neutral-400 text-xs">
+              <div className="col-span-full text-center py-12 text-neutral-500 dark:text-neutral-400 text-xs">
                 No instruments found matching your search.
               </div>
             ) : (
@@ -549,7 +557,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                             className={`w-4 h-4 ${
                               inst.isFavorite
                                 ? 'text-amber-400 fill-amber-400'
-                                : 'text-neutral-400'
+                                : 'text-neutral-500 dark:text-neutral-400'
                             }`}
                           />
                         </button>
@@ -568,7 +576,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                               className={`w-3.5 h-3.5 ${
                                 priceAlerts.some((a) => a.symbol === inst.symbol && a.status === 'ACTIVE')
                                   ? 'text-amber-400 fill-amber-400/20'
-                                  : 'text-neutral-400 hover:text-amber-400'
+                                  : 'text-neutral-500 dark:text-neutral-400 hover:text-amber-400'
                               }`}
                             />
                           </button>
@@ -587,7 +595,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                             d={smoothPath}
                           />
                         </svg>
-                        <span className="text-[10px] text-neutral-400 font-bold -mt-0.5">
+                        <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-bold -mt-0.5">
                           {spreadInt}
                         </span>
                       </div>
@@ -639,7 +647,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">
+                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-500 dark:text-neutral-400">
                           <span>{!mHours.isOpen ? '🔒 Closed' : 'Sell'}</span>
                           {mHours.isOpen && tick === 'DOWN' && <span className="text-rose-500 font-bold text-[10px]">▼</span>}
                         </div>
@@ -675,7 +683,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-400">
+                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-500 dark:text-neutral-400">
                           <span>{!mHours.isOpen ? '🔒 Closed' : 'Buy'}</span>
                           {mHours.isOpen && tick === 'UP' && <span className="text-emerald-500 font-bold text-[10px]">▲</span>}
                         </div>
@@ -683,14 +691,14 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                     </div>
 
                     {/* Quick Link to Full Chart on hover */}
-                    <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-400 pt-1 border-t border-neutral-800/40">
+                    <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-500 dark:text-neutral-400 pt-1 border-t border-neutral-800/40">
                       <span className="truncate">{inst.name}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           onSelectInstrument(inst.symbol);
                         }}
-                        className="flex items-center gap-0.5 text-neutral-400 hover:text-[#E51937] transition-colors"
+                        className="flex items-center gap-0.5 text-neutral-500 dark:text-neutral-400 hover:text-[#E51937] transition-colors"
                       >
                         <span>Trade</span>
                         <ArrowUpRight className="w-3 h-3" />
@@ -720,7 +728,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                     {activePreviewInst.category}
                   </span>
                 </div>
-                <span className="text-xs text-neutral-400 block">{activePreviewInst.name}</span>
+                <span className="text-xs text-neutral-500 dark:text-neutral-400 block">{activePreviewInst.name}</span>
               </div>
 
               <div className="flex items-center gap-3">
@@ -754,7 +762,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                     previewTimeframe === tf
                       ? 'bg-[#E51937] text-white'
                       : isDarkMode
-                      ? 'bg-neutral-800/80 text-neutral-400 hover:text-white'
+                      ? 'bg-neutral-800/80 text-neutral-500 dark:text-neutral-400 hover:text-white'
                       : 'bg-neutral-100 text-neutral-600 hover:text-black'
                   }`}
                 >
@@ -781,7 +789,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
 
             {/* Lot Size Selector */}
             <div className="mb-3">
-              <div className="flex items-center justify-between text-xs text-slate-500 dark:text-neutral-400 mb-1 font-semibold">
+              <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 mb-1 font-semibold">
                 <span>Execution Volume (Lots)</span>
                 <span className={`font-mono font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{previewLotSize} Lot</span>
               </div>
@@ -847,7 +855,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 <Flame className="w-4 h-4 text-[#E51937]" />
                 <h4 className="text-xs font-bold text-slate-900 dark:text-white">Top Market Movers</h4>
               </div>
-              <span className="text-[10px] text-slate-500 dark:text-neutral-400">Live 24h Volatility</span>
+              <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Live 24h Volatility</span>
             </div>
 
             <div className="space-y-1.5">
@@ -859,7 +867,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 >
                   <div className="flex items-center gap-2">
                     <span className="font-bold font-mono text-slate-900 dark:text-white">{g.symbol}</span>
-                    <span className="text-[10px] text-slate-500 dark:text-neutral-400">{g.category}</span>
+                    <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">{g.category}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="font-mono font-bold text-slate-900 dark:text-neutral-200">${g.bid.toFixed(g.decimals > 2 ? 2 : g.decimals)}</span>
@@ -883,14 +891,14 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                 <Globe className="w-4 h-4 text-sky-500 dark:text-sky-400" />
                 <h4 className="text-xs font-bold text-slate-900 dark:text-white">Global Trading Sessions</h4>
               </div>
-              <span className="text-[10px] text-slate-500 dark:text-neutral-400">GMT Standard</span>
+              <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">GMT Standard</span>
             </div>
 
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
                   <span className="font-semibold text-slate-800 dark:text-neutral-300 block">London</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">08:00 - 16:30</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">08:00 - 16:30</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -901,7 +909,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
                   <span className="font-semibold text-slate-800 dark:text-neutral-300 block">New York</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">13:00 - 21:00</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">13:00 - 21:00</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
@@ -912,22 +920,22 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
                   <span className="font-semibold text-slate-800 dark:text-neutral-300 block">Tokyo</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">00:00 - 09:00</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">00:00 - 09:00</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-slate-400 dark:bg-neutral-600" />
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Closed</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">Closed</span>
                 </div>
               </div>
 
               <div className="p-2 rounded-lg bg-slate-50 dark:bg-neutral-900/40 border border-slate-200 dark:border-neutral-800/60 flex items-center justify-between">
                 <div>
                   <span className="font-semibold text-slate-800 dark:text-neutral-300 block">Sydney</span>
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">21:00 - 06:00</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">21:00 - 06:00</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <span className="w-2 h-2 rounded-full bg-slate-400 dark:bg-neutral-600" />
-                  <span className="text-[10px] text-slate-500 dark:text-neutral-500">Closed</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-400 dark:text-neutral-500">Closed</span>
                 </div>
               </div>
             </div>
@@ -955,7 +963,13 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
           }
           side={orderModalParams.side}
           onExecute={(p) => {
-            onQuickTrade(p.symbol, p.side);
+            onExecuteMarketOrder({
+              symbol: p.symbol,
+              side: p.side,
+              lots: p.lots,
+              sl: p.sl,
+              tp: p.tp,
+            });
             setOrderModalParams(null);
           }}
           isDarkMode={isDarkMode}

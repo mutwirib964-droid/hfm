@@ -835,7 +835,7 @@ class SupabaseService {
                 fin.transactions = [
                   ...(fin.transactions || []),
                   {
-                    id: meta.id || act.id || `tx-${Date.now()}`,
+                    id: meta.id || act.id || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     type: 'DEPOSIT',
                     method: meta.method || 'Instant Deposit',
                     amount: amt,
@@ -1129,6 +1129,7 @@ class SupabaseService {
                 'Content-Type': 'application/json',
                 apikey: this.config.anonKey,
                 Authorization: `Bearer ${this.config.anonKey}`,
+                Prefer: 'return=representation',
               },
               body: JSON.stringify({
                 description,
@@ -1138,7 +1139,12 @@ class SupabaseService {
               signal: AbortSignal.timeout(5000),
             }
           );
-          if (patchRes.ok) return true;
+          if (patchRes.ok) {
+            const patchedRows = await patchRes.json().catch(() => []);
+            if (Array.isArray(patchedRows) && patchedRows.length > 0) {
+              return true;
+            }
+          }
         }
       }
 
@@ -1238,15 +1244,24 @@ class SupabaseService {
 
   public async syncTradingAccounts(
     user: UserAuthProfile | null | undefined,
-    accounts: TradingAccount[]
+    accounts: TradingAccount[],
+    selectedAccountId?: string | null
   ): Promise<boolean> {
     if (!this.config || !user || !accounts) return false;
     try {
       const currentFin = await this.fetchUserFinancials(user);
+      let localSelId: string | null = selectedAccountId || null;
+      if (!localSelId && user.email) {
+        try {
+          localSelId = localStorage.getItem(`vtm_selected_account_${user.email.trim().toLowerCase()}`);
+        } catch {
+          // ignore
+        }
+      }
       return await this.syncUserFinancials(user, {
         walletBalance: currentFin?.walletBalance ?? 0,
         accounts,
-        selectedAccountId: currentFin?.selectedAccountId || accounts[0]?.id || null,
+        selectedAccountId: localSelId || currentFin?.selectedAccountId || accounts[0]?.id || null,
         transactions: currentFin?.transactions || [],
         lastUpdated: Date.now(),
       });
@@ -1381,7 +1396,40 @@ class SupabaseService {
     }
 
     mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
-    const latestClosed = mergedClosed.slice(0, 50);
+    const latestClosed = mergedClosed.slice(0, 1000);
+
+    // Also persist directly into public.closed_trades table
+    try {
+      if (latestClosed.length > 0) {
+        const rows = latestClosed.slice(0, 1000).map((t) => ({
+          id: t.id || `ct-${t.ticket}-${t.closeTime}`,
+          user_email: user.email.trim().toLowerCase(),
+          ticket: t.ticket,
+          account_number: data.accountNumber || user.accountNumber || '',
+          symbol: t.symbol,
+          side: t.side,
+          lots: t.lots,
+          open_price: t.openPrice,
+          close_price: t.closePrice,
+          pnl: t.pnl,
+          open_time: t.openTime,
+          close_time: t.closeTime,
+          reason: t.reason || 'MANUAL',
+        }));
+        fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
+          method: 'POST',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates',
+          },
+          body: JSON.stringify(rows),
+        }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
 
     return await this.saveCloudStateRecord(
       user.email,
@@ -1432,6 +1480,8 @@ class SupabaseService {
               openPrice,
               closePrice,
               pnl: exactPnl,
+              accountId: ct.accountId || ct.account_id,
+              accountNumber: ct.accountNumber || ct.account_number,
             });
           }
         }
@@ -1475,6 +1525,8 @@ class SupabaseService {
                     openTime: Number(m.openTime || (row.created_at ? new Date(row.created_at).getTime() - 60000 : Date.now())),
                     closeTime: Number(m.closeTime || (row.created_at ? new Date(row.created_at).getTime() : Date.now())),
                     reason: m.closeReason === 'TP' || m.closeReason === 'SL' ? m.closeReason : 'MANUAL',
+                    accountId: m.accountId || m.account_id,
+                    accountNumber: m.accountNumber || m.account_number,
                   });
                 }
               }
@@ -1485,15 +1537,115 @@ class SupabaseService {
         // ignore
       }
 
+      // Direct query to public.closed_trades table
+      try {
+        const ctRes = await fetch(
+          `${this.config.url}/rest/v1/closed_trades?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=close_time.desc&limit=200`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(4500),
+          }
+        );
+        if (ctRes.ok) {
+          const ctRows = await ctRes.json();
+          if (Array.isArray(ctRows)) {
+            for (const row of ctRows) {
+              const key = String(row.ticket || row.id);
+              if (!closedMap.has(key)) {
+                closedMap.set(key, {
+                  id: row.id,
+                  ticket: Number(row.ticket),
+                  symbol: row.symbol,
+                  side: row.side === 'SELL' ? 'SELL' : 'BUY',
+                  lots: Number(row.lots),
+                  openPrice: Number(row.open_price ?? row.openPrice),
+                  closePrice: Number(row.close_price ?? row.closePrice),
+                  pnl: Number(row.pnl),
+                  openTime: Number(row.open_time ?? row.openTime),
+                  closeTime: Number(row.close_time ?? row.closeTime),
+                  reason: row.reason || 'MANUAL',
+                  accountNumber: row.account_number ?? row.accountNumber,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+
     const mergedClosedTrades = Array.from(closedMap.values())
       .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
-      .slice(0, 50);
+      .slice(0, 1000);
+
+    const rawPositions = data && Array.isArray(data.positions) ? data.positions : [];
+    const activePositions = rawPositions.filter((p) => {
+      if (!p) return false;
+      const ticketKey = String(p.ticket || '');
+      const idKey = String(p.id || '');
+      if (ticketKey && closedMap.has(ticketKey)) return false;
+      if (idKey && closedMap.has(idKey)) return false;
+      return true;
+    });
 
     return {
-      positions: data && Array.isArray(data.positions) ? data.positions : [],
+      positions: activePositions,
       pendingOrders: data && Array.isArray(data.pendingOrders) ? data.pendingOrders : [],
       closedTrades: mergedClosedTrades,
     };
+  }
+
+  /**
+   * Persists a financial ledger movement to Supabase public.financial_ledger
+   */
+  public async syncLedgerEntry(
+    user: UserAuthProfile | null | undefined,
+    entry: {
+      id: string;
+      accountNumber: string;
+      type: string;
+      amount: number;
+      previousBalance: number;
+      newBalance: number;
+      referenceId: string;
+      reason: string;
+      timestamp: number;
+      metadata?: any;
+    }
+  ): Promise<boolean> {
+    if (!this.config || !user?.email) return false;
+    try {
+      const row = {
+        id: entry.id,
+        user_email: user.email.trim().toLowerCase(),
+        account_number: entry.accountNumber,
+        type: entry.type,
+        amount: entry.amount,
+        previous_balance: entry.previousBalance,
+        new_balance: entry.newBalance,
+        reference_id: entry.referenceId,
+        reason: entry.reason,
+        timestamp: entry.timestamp,
+        metadata: entry.metadata || null,
+      };
+      const res = await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
+        method: 'POST',
+        headers: {
+          apikey: this.config.anonKey,
+          Authorization: `Bearer ${this.config.anonKey}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates',
+        },
+        body: JSON.stringify(row),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   public async syncBotState(
@@ -1529,7 +1681,7 @@ class SupabaseService {
       {
         importedBots: botState.importedBots || [],
         botRuns: cleanedRuns,
-        botTrades: cleanedTrades.slice(0, 100),
+        botTrades: cleanedTrades.slice(0, 1000),
         deletedBotIds,
         updatedAt: Date.now(),
       }
@@ -1567,8 +1719,45 @@ class SupabaseService {
     const mergedDeleted = markBotDeletedLocally(remoteDeleted);
     const rawRuns = Array.isArray(raw.botRuns) ? raw.botRuns : [];
     const rawTrades = Array.isArray(raw.botTrades) ? raw.botTrades : [];
+
+    // Safety: Recover closed trades from audit log to prevent stale 'OPEN' trades from resurfacing
+    const closedTradeKeys = new Set<string>();
+    try {
+      const res = await fetch(
+        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(user.email.trim().toLowerCase())}&activity_type=eq.TRADE_CLOSED&select=metadata&order=created_at.desc&limit=100`,
+        {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(4000),
+        }
+      );
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          for (const r of rows) {
+            const m = r?.metadata;
+            if (m?.id) closedTradeKeys.add(String(m.id));
+            if (m?.ticket) closedTradeKeys.add(String(m.ticket));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false);
-    const cleanedTrades = filterTradesForValidBotRuns(rawTrades, cleanedRuns);
+    const filteredTrades = rawTrades.filter((t) => {
+      if (!t) return false;
+      const tid = String(t.id || '');
+      const tkt = String(t.ticket || '');
+      if (tid && closedTradeKeys.has(tid)) return false;
+      if (tkt && closedTradeKeys.has(tkt)) return false;
+      return true;
+    });
+    const cleanedTrades = filterTradesForValidBotRuns(filteredTrades, cleanedRuns);
 
     return {
       importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
@@ -2056,23 +2245,65 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined,
     settings: UserPlatformSettings
   ): Promise<boolean> {
-    if (!this.config || !user?.email) return false;
+    if (!user?.email) return false;
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+    const nowTs = settings.updatedAt || Date.now();
+    const payload: UserPlatformSettings = {
+      ...settings,
+      updatedAt: nowTs,
+    };
+    try {
+      localStorage.setItem(`vtm_user_settings_${cleanEmail}`, JSON.stringify(payload));
+      localStorage.setItem('vtm_theme_mode', payload.isDarkMode ? 'dark' : 'light');
+    } catch {
+      // ignore
+    }
+    if (!this.config) return false;
     return await this.saveCloudStateRecord(
-      user.email,
+      cleanEmail,
       'STATE_SETTINGS',
       'Updated user platform settings',
-      {
-        ...settings,
-        updatedAt: Date.now(),
-      }
+      payload
     );
   }
 
   public async fetchUserSettings(
     user: UserAuthProfile | null | undefined
   ): Promise<UserPlatformSettings | null> {
-    if (!this.config || !user?.email) return null;
-    return await this.fetchCloudStateRecord<UserPlatformSettings>(user.email, 'STATE_SETTINGS');
+    if (!user?.email) return null;
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+    let localCached: UserPlatformSettings | null = null;
+    try {
+      const raw = localStorage.getItem(`vtm_user_settings_${cleanEmail}`);
+      if (raw) {
+        localCached = JSON.parse(raw);
+      }
+    } catch {
+      // ignore
+    }
+    if (!this.config) return localCached;
+    const remote = await this.fetchCloudStateRecord<UserPlatformSettings>(cleanEmail, 'STATE_SETTINGS');
+    if (localCached && remote) {
+      if ((localCached.updatedAt || 0) >= (remote.updatedAt || 0) || Date.now() - (localCached.updatedAt || 0) < 15000) {
+        // Local settings are newer or recently updated; push to cloud asynchronously and return authoritative local settings
+        this.saveCloudStateRecord(cleanEmail, 'STATE_SETTINGS', 'Updated user platform settings', localCached).catch(() => {});
+        return localCached;
+      }
+      try {
+        localStorage.setItem(`vtm_user_settings_${cleanEmail}`, JSON.stringify(remote));
+        if (remote.isDarkMode !== undefined) {
+          localStorage.setItem('vtm_theme_mode', remote.isDarkMode ? 'dark' : 'light');
+        }
+      } catch {
+        // ignore
+      }
+      return remote;
+    }
+    return localCached || remote;
   }
 
   // =========================================================================

@@ -670,7 +670,13 @@ function computeAlignedBidAsk(symbol, chartPrice, decimals, baseSpread) {
   } else if (decimals === 3) {
     priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
   } else {
-    priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+    if (bid < 250) {
+      priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+    } else if (bid < 1000) {
+      priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+    } else {
+      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+    }
   }
 
   const ask = Number((bid + priceGap).toFixed(decimals));
@@ -932,7 +938,8 @@ export async function handler(event) {
   if (isConfig) {
     const accountId = (process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
     const apiKey = (process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
-    const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 0);
+    const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 128.367);
+    const usdKesWithdrawRate = Number(process.env.USD_KES_WITHDRAW_RATE || process.env.VITE_USD_KES_WITHDRAW_RATE || 126.58);
 
     let merchantName = 'VTMMARKETS';
     if (accountId) {
@@ -954,7 +961,8 @@ export async function handler(event) {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
-        usdKesRate: Number.isFinite(usdKesRate) && usdKesRate > 0 ? usdKesRate : 0,
+        usdKesRate: Number.isFinite(usdKesRate) && usdKesRate > 0 ? usdKesRate : 128.367,
+        usdKesWithdrawRate: Number.isFinite(usdKesWithdrawRate) && usdKesWithdrawRate > 0 ? usdKesWithdrawRate : 126.58,
         merchantName,
         configured: Boolean(accountId && apiKey),
       }),
@@ -1080,7 +1088,103 @@ export async function handler(event) {
     }
   }
 
-  // 7. ForexFactory Calendar (/api/forexfactory-calendar)
+  // 7. Server-Side Trading & Accounting Engine (/api/engine/*)
+  if (rawPath.includes('/api/engine') || rawPath.includes('close-position') || rawPath.includes('reconcile-account') || rawPath.includes('evaluate-positions')) {
+    const sbUrl = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
+    const sbKey =
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+
+    const getSpec = (symStr) => {
+      const s = String(symStr || 'EURUSD').trim().toUpperCase();
+      if (s === 'XAUUSD') return { contractSize: 100, pipSize: 0.1, decimals: 2 };
+      if (s === 'XAGUSD') return { contractSize: 5000, pipSize: 0.01, decimals: 3 };
+      if (s === 'USOIL' || s === 'UKOIL') return { contractSize: 1000, pipSize: 0.01, decimals: 2 };
+      if (s === 'NGAS') return { contractSize: 10000, pipSize: 0.001, decimals: 3 };
+      if (['BTCUSD', 'ETHUSD', 'SOLUSD', 'BNBUSD', 'US30', 'NAS100', 'SPX500', 'GER40', 'UK100', 'JPN225'].includes(s)) {
+        return { contractSize: 1, pipSize: 1.0, decimals: 2 };
+      }
+      if (['XRPUSD', 'ADAUSD', 'DOGEUSD'].includes(s)) {
+        return { contractSize: 10000, pipSize: 0.0001, decimals: 4 };
+      }
+      if (s.endsWith('JPY')) return { contractSize: 100000, pipSize: 0.01, decimals: 3 };
+      return { contractSize: 100000, pipSize: 0.0001, decimals: 5 };
+    };
+
+    const calcPnl = (symStr, sideStr, openP, exitP, lotsVal) => {
+      const s = String(symStr || 'EURUSD').trim().toUpperCase();
+      const spec = getSpec(s);
+      const diff = sideStr === 'BUY' ? exitP - openP : openP - exitP;
+      let raw = diff * lotsVal * spec.contractSize;
+      if ((s.endsWith('JPY') || s.endsWith('CAD') || s.endsWith('CHF')) && exitP > 0) {
+        raw = raw / exitP;
+      }
+      return Number(raw.toFixed(2));
+    };
+
+    if (rawPath.includes('reconcile-account')) {
+      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const accountNumber = String(body.accountNumber || '').trim();
+      if (!userEmail) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'userEmail is required' }) };
+      }
+      try {
+        const finRes = await fetch(
+          `${sbUrl}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
+          { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } }
+        );
+        const finRows = finRes.ok ? await finRes.json() : [];
+        const fin = Array.isArray(finRows) && finRows.length > 0 ? finRows[0] : null;
+        const accounts = Array.isArray(fin?.accounts) ? fin.accounts : [];
+        const targetAcc = accountNumber
+          ? accounts.find((a) => a.accountNumber === accountNumber || a.id === accountNumber)
+          : accounts[0];
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            userEmail,
+            walletBalance: Number(fin?.wallet_balance || 0),
+            selectedAccountId: fin?.selected_account_id || null,
+            account: targetAcc || null,
+            reconciled: true,
+            timestamp: Date.now(),
+          }),
+        };
+      } catch (err) {
+        return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ success: false, error: err.message }) };
+      }
+    }
+
+    const positions = Array.isArray(body.positions) ? body.positions : [];
+    const quotes = body.quotes || cachedQuotes || {};
+    const evaluated = positions.map((pos) => {
+      const sym = String(pos.symbol || 'EURUSD').trim().toUpperCase();
+      const spec = getSpec(sym);
+      const side = pos.side === 'SELL' ? 'SELL' : 'BUY';
+      const lots = Math.max(0.01, Number(pos.lots || pos.lotSize || 0.01));
+      const openPrice = Number(pos.openPrice || 0);
+      const q = quotes[sym];
+      const execPrice = Number(
+        (side === 'BUY' ? q?.bid ?? pos.currentPrice ?? openPrice : q?.ask ?? pos.currentPrice ?? openPrice).toFixed(spec.decimals)
+      );
+      const floatingPnl = calcPnl(sym, side, openPrice, execPrice, lots);
+      return {
+        id: pos.id,
+        ticket: pos.ticket,
+        symbol: sym,
+        side,
+        lots,
+        openPrice,
+        currentPrice: execPrice,
+        pnl: floatingPnl,
+      };
+    });
+    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, evaluated, timestamp: Date.now() }) };
+  }
+
+  // 8. ForexFactory Calendar (/api/forexfactory-calendar)
   if (rawPath.includes('forexfactory-calendar')) {
     try {
       const response = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
@@ -1100,7 +1204,7 @@ export async function handler(event) {
     };
   }
 
-  // 8. Market News (/api/market-news & /api/forexfactory-news)
+  // 9. Market News (/api/market-news & /api/forexfactory-news)
   return {
     statusCode: 200,
     headers: corsHeaders,

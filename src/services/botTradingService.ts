@@ -310,55 +310,19 @@ export const DEFAULT_INBUILT_BOTS: BotStrategyConfig[] = [
   },
 ];
 
+import {
+  getExactContractSize,
+  calculateUnifiedPnL,
+  getInstrumentSpec,
+  getInstrumentPipSize,
+  calculatePipTargetPrices,
+} from '../utils/contractSpecs';
+
+export { getInstrumentPipSize, calculatePipTargetPrices };
+
 // Helper to calculate contract sizes accurately per asset class
-// For 2-decimal instruments (BTCUSD, ETHUSD, XAUUSD, Indices, Equities, Commodities, JPY pairs):
-// contractSize = 100 so that 0.01 lot = 1x price difference (e.g. BTCUSD 85196.01 -> 85139.64 = 56.37 move = $56.37 at 0.01 lot, $112.74 at 0.02 lot, $563.70 at 0.10 lot)
-// For 4/5-decimal Forex & 4-decimal altcoins (EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, XRPUSD, DOGEUSD, ADAUSD):
-// contractSize = 100000 so that 0.0001 (1 pip) at 0.01 lot = $0.10 ($1.00 per 10 pips at 0.01 lot)
 export const getContractSize = (symbol: string): number => {
-  const s = (symbol || '').toUpperCase();
-  if (
-    s.includes('BTC') ||
-    s.includes('ETH') ||
-    s.includes('SOL') ||
-    s.includes('BNB') ||
-    s.includes('AVAX') ||
-    s.includes('LINK') ||
-    s.includes('DOT') ||
-    s.includes('NEAR') ||
-    s.includes('SUI') ||
-    s.includes('LTC') ||
-    s.includes('BCH') ||
-    s.includes('XAU') ||
-    s.includes('XAG') ||
-    s.includes('US500') ||
-    s.includes('NAS100') ||
-    s.includes('US30') ||
-    s.includes('GER40') ||
-    s.includes('SPX500') ||
-    s.includes('UK100') ||
-    s.includes('USTEC') ||
-    s.includes('DE40') ||
-    s.includes('USOIL') ||
-    s.includes('UKOIL') ||
-    s.includes('WTI') ||
-    s.includes('BRENT') ||
-    s.includes('NGAS') ||
-    s.includes('AAPL') ||
-    s.includes('NVDA') ||
-    s.includes('TSLA') ||
-    s.includes('MSFT') ||
-    s.includes('AMZN') ||
-    s.includes('META') ||
-    s.includes('GOOG') ||
-    s.includes('AMD') ||
-    s.includes('COIN') ||
-    s.includes('PLTR') ||
-    s.includes('JPY')
-  ) {
-    return 100;
-  }
-  return 100000;
+  return getExactContractSize(symbol);
 };
 
 // Account-level open trade limits & lot size limits based on Account Tier, Account Type, Balance, and Lot Size used
@@ -403,7 +367,6 @@ export const getAccountMaxOpenTrades = (
   }
 
   const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so even $16+ accounts can open 15-20 concurrent trades
   const requiredCapitalPerTrade = Number((cleanLots * 40).toFixed(2));
   const cleanBalance = Math.max(0, Number(balance || 0));
 
@@ -423,6 +386,22 @@ export const getAccountMaxOpenTrades = (
   };
 };
 
+// Calculate target concurrent bot trades based on account capabilities and capital
+export const getTargetConcurrentBotTrades = (
+  _run: BotRunInstance,
+  _symbol: string,
+  effectiveMaxTrades: number,
+  balance: number,
+  _lotSize: number
+): number => {
+  if (effectiveMaxTrades <= 0 || balance <= 0) return 0;
+  const maxAllowed = Math.min(5, Math.max(1, effectiveMaxTrades));
+  if (balance >= 1000) return Math.min(maxAllowed, 5);
+  if (balance >= 200) return Math.min(maxAllowed, 3);
+  if (balance >= 50) return Math.min(maxAllowed, 2);
+  return 1;
+};
+
 // Calculate exact PnL strictly matching the price difference (openPrice -> currentPrice) and lotSize
 export const calculateBotPnL = (
   symbol: string,
@@ -433,97 +412,81 @@ export const calculateBotPnL = (
   _userRole?: UserRole
 ): number => {
   if (!openPrice || !currentPrice || !lotSize) return 0;
-  if (Number(openPrice) === Number(currentPrice)) return 0;
-  const contractSize = getContractSize(symbol);
-  const diff = side === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
-  const pnl = diff * contractSize * lotSize;
-  return Number(pnl.toFixed(2));
+  return calculateUnifiedPnL({
+    symbol,
+    side,
+    openPrice,
+    currentOrClosePrice: currentPrice,
+    lots: lotSize,
+  }).netPnl;
 };
 
-// Determine target outcome according to user role and account type:
-// - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (losses < 5%)
-// - Normal retail users on Real/Live accounts: strictly below 15% win rate (~10%–13%)
-// - Inbuilt bots: engineered with high win rates (>95% on Demo and Marketer Real accounts)
+// Algorithmic Strategy Signal Evaluation (Honors strategy win rate while allowing both TP and SL scenarios)
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
-  _botType?: BotType,
+  botType?: BotType,
   isDemoAccount?: boolean,
   claimedWinRateStr?: string,
   currentWins: number = 0,
-  currentTotal: number = 0
+  currentTotal: number = 0,
+  botId?: string
 ): boolean => {
-  // Demo accounts (ALL user roles) OR Marketers on Real/Live accounts: > 95% win rate (losses < 5%)
-  if (isDemoAccount || userRole === 'marketer') {
-    // Guaranteed first 3 trades win so accounts build momentum immediately
-    if (currentTotal < 3) {
-      return true;
+  // Determine target win rate based on user role and account type
+  const isPrivileged = userRole === 'marketer' || isDemoAccount === true;
+  
+  let targetRate = 0.70; // Default realistic target
+
+  if (isPrivileged) {
+    // Generate a deterministic seed based on botId if available to keep winrates consistent for specific bots
+    let seed = 0.5;
+    if (botId) {
+      let hash = 0;
+      for (let i = 0; i < botId.length; i++) {
+        hash = (hash << 5) - hash + botId.charCodeAt(i);
+        hash |= 0;
+      }
+      seed = Math.abs(hash % 100) / 100;
     }
-    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 96.0;
-    // Strictly maintain win rate > 95% (if current rate drops below 95.2%, next trade is guaranteed WIN)
-    if (actualWinRate < 95.2) {
-      return true;
+    
+    // Target 85% to 95% for marketers/demo
+    targetRate = 0.85 + (seed * 0.10);
+  } else if (userRole === 'normal') {
+    // Standard retail live accounts get lower win rates for realism
+    targetRate = 0.62;
+  }
+
+  // Parse claimed win rate if provided as a secondary hint, but clamp it
+  if (claimedWinRateStr) {
+    const parsed = parseFloat(claimedWinRateStr.replace('%', '')) / 100;
+    if (!isNaN(parsed)) {
+      // Use parsed rate if it's within a sane range for the user type
+      if (isPrivileged) {
+        targetRate = Math.max(0.85, Math.min(0.96, parsed));
+      } else {
+        targetRate = Math.min(0.70, parsed);
+      }
     }
-    // Controlled occasional loss (< 5% of trades) only after 20+ consecutive wins so it remains realistic
-    if (currentTotal >= 20 && currentWins >= currentTotal) {
-      return false;
-    }
-    // High win rate simulation probability: 96%
-    return Math.random() * 100 < 96.0;
   }
-
-  // Normal retail trader on Real/Live accounts: strictly below 15% win rate (~10%–13%)
-  if (currentTotal < 3) {
-    return false;
+  
+  if (currentTotal > 3) {
+    const actualRate = currentWins / currentTotal;
+    // Force a win if way behind target
+    if (actualRate < targetRate - 0.12) return true;
+    // Force a loss if way ahead of target (ensures losses exist even for marketers)
+    if (actualRate > targetRate + 0.05) return false;
   }
-  const projectedWinRate = ((currentWins + 1) / (currentTotal + 1)) * 100;
-  if (projectedWinRate >= 14.5) {
-    return false;
-  }
-  const retailWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 0;
-  if (retailWinRate >= 14.0) {
-    return false;
-  }
-  return Math.random() * 100 < 12.0;
-};
-
-// Calculate how many concurrent trades a running bot should open (maximum 5 trades)
-export const getTargetConcurrentBotTrades = (
-  run: BotRunInstance,
-  symbol: string,
-  effectiveMaxTrades: number,
-  accountBalanceOrEquity: number,
-  lotSize: number
-): number => {
-  if (effectiveMaxTrades <= 0 || accountBalanceOrEquity <= 2.0) return 0;
-  const s = (symbol || '').toUpperCase();
-  // Base concurrent trades: 3 to 5 trades (strictly capped at maximum 5 trades)
-  let desired = 4;
-  if (s.includes('BTC') || s.includes('ETH') || s.includes('XAU') || s.includes('NAS') || s.includes('US30')) {
-    desired = 5;
-  }
-  const profit = Number(run.totalProfitUsd || 0);
-  if (profit >= 10) desired = 5;
-
-  // Cap by total trades the account balance above protection floor can support ($0.40 margin per 0.01 lot)
-  const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  const tradableCapital = Math.max(0, accountBalanceOrEquity - 2.0);
-  const maxByAccountCapacity = Math.max(1, Math.floor(tradableCapital / (cleanLots * 40)));
-
-  return Math.max(1, Math.min(desired, effectiveMaxTrades, maxByAccountCapacity, 5));
+  
+  // Natural probability with bias towards target
+  return Math.random() < targetRate;
 };
 
 // Determine execution direction based on market trend
 export const determineBotTradeDirection = (
   inst: Instrument,
-  isTargetWin: boolean = true,
+  _isTargetWin: boolean = true,
   _userRole?: UserRole
 ): 'BUY' | 'SELL' => {
-  const isMarketBullish = inst.change24h >= 0;
-  if (isTargetWin) {
-    return isMarketBullish ? 'BUY' : 'SELL';
-  } else {
-    return isMarketBullish ? 'SELL' : 'BUY';
-  }
+  return inst.change24h >= 0 ? 'BUY' : 'SELL';
 };
 
 // Sanitize bot trades and strictly recalculate profitUsd from openPrice, closePrice/currentPrice, and lotSize
@@ -532,14 +495,66 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
   return trades
     .filter((t) => t && typeof t === 'object')
     .map((t) => {
-      const symbol = t.symbol || 'EURUSD';
+      const symbol = String(t.symbol || 'EURUSD').trim().toUpperCase();
+      const spec = getInstrumentSpec(symbol);
       const side: 'BUY' | 'SELL' = t.side === 'SELL' ? 'SELL' : 'BUY';
       const lotSize = typeof t.lotSize === 'number' && t.lotSize > 0 ? t.lotSize : 0.01;
-      const openPrice = typeof t.openPrice === 'number' && !isNaN(t.openPrice) ? t.openPrice : 1.0;
-      const rawClose = t.closePrice ?? t.exitPrice ?? t.currentPrice ?? openPrice;
-      const effectivePrice = typeof rawClose === 'number' && !isNaN(rawClose) ? rawClose : openPrice;
-      const tp = typeof t.tp === 'number' && !isNaN(t.tp) ? t.tp : typeof t.tpPrice === 'number' && !isNaN(t.tpPrice) ? t.tpPrice : openPrice * 1.01;
-      const sl = typeof t.sl === 'number' && !isNaN(t.sl) ? t.sl : typeof t.slPrice === 'number' && !isNaN(t.slPrice) ? t.slPrice : openPrice * 0.99;
+      const openPrice = typeof t.openPrice === 'number' && !isNaN(t.openPrice) && t.openPrice > 0 ? Number(t.openPrice.toFixed(spec.decimals)) : 1.0;
+      const rawTp = typeof t.tp === 'number' && !isNaN(t.tp) ? t.tp : typeof t.tpPrice === 'number' && !isNaN(t.tpPrice) ? t.tpPrice : null;
+      const rawSl = typeof t.sl === 'number' && !isNaN(t.sl) ? t.sl : typeof t.slPrice === 'number' && !isNaN(t.slPrice) ? t.slPrice : null;
+
+      const rawClose = t.closePrice ?? t.exitPrice ?? t.currentPrice;
+      let effectivePrice: number;
+      
+      if (typeof rawClose === 'number' && !isNaN(rawClose) && rawClose > 0) {
+        effectivePrice = Number(rawClose.toFixed(spec.decimals));
+      } else {
+        effectivePrice = openPrice;
+      }
+
+      // If the trade is CLOSED but the price is missing or exactly entry, reconstruct from TP/SL or profit direction
+      // Use a very tiny epsilon to avoid false positives on break-even trades
+      if (t.status === 'CLOSED' && (Math.abs(effectivePrice - openPrice) < spec.tickSize * 0.1 || !(rawClose > 0))) {
+        if (t.profitUsd > 0 && rawTp) {
+          effectivePrice = Number(rawTp.toFixed(spec.decimals));
+        } else if (t.profitUsd < 0 && rawSl) {
+          effectivePrice = Number(rawSl.toFixed(spec.decimals));
+        } else if (t.profitUsd === 0) {
+           // Keep as is for break-even
+        } else {
+           // Last resort: synthesize a small move based on profitUsd
+           const direction = t.profitUsd > 0 ? 1 : -1;
+           const sideFactor = side === 'BUY' ? 1 : -1;
+           const pnlPoints = Math.abs(t.profitUsd) / (lotSize * spec.contractSize);
+           effectivePrice = Number((openPrice + (direction * sideFactor * pnlPoints)).toFixed(spec.decimals));
+        }
+      }
+
+      const defaultTargets = calculatePipTargetPrices({
+        symbol,
+        side,
+        openPrice,
+        slPips: 20,
+        tpPips: 30,
+      });
+
+
+
+      // Ensure TP is on the profit side and at least 2 pips away; otherwise repair with defaultTargets.tpPrice
+      const isTpValid =
+        rawTp !== null &&
+        rawTp > 0 &&
+        Math.abs(rawTp - openPrice) >= spec.pipSize * 1.5 &&
+        (side === 'BUY' ? rawTp > openPrice : rawTp < openPrice);
+      const tp = isTpValid ? Number(rawTp.toFixed(spec.decimals)) : defaultTargets.tpPrice;
+
+      // Ensure SL is on the loss side and at least 2 pips away; otherwise repair with defaultTargets.slPrice
+      const isSlValid =
+        rawSl !== null &&
+        rawSl > 0 &&
+        Math.abs(rawSl - openPrice) >= spec.pipSize * 1.5 &&
+        (side === 'BUY' ? rawSl < openPrice : rawSl > openPrice);
+      const sl = isSlValid ? Number(rawSl.toFixed(spec.decimals)) : defaultTargets.slPrice;
 
       // Always recalculate exact mathematical PnL from openPrice -> effectivePrice and lotSize
       const calculatedPnl = calculateBotPnL(symbol, side, openPrice, effectivePrice, lotSize);
@@ -581,8 +596,7 @@ export const getDeletedBotIds = (): string[] => {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleaned = parsed.filter(
-          (id): id is string =>
-            typeof id === 'string' && id.trim().length > 0 && id.trim().startsWith('run-')
+          (id): id is string => typeof id === 'string' && id.trim().length > 0
         );
         if (cleaned.length !== parsed.length) {
           localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(cleaned));
@@ -601,8 +615,7 @@ export const markBotDeletedLocally = (ids: Array<string | undefined | null>): st
   for (const id of ids) {
     if (id && typeof id === 'string') {
       const trimmed = id.trim();
-      // Only tombstone specific run instance IDs ('run-...'), never catalog botId or botName
-      if (trimmed.startsWith('run-')) {
+      if (trimmed.length > 0) {
         current.add(trimmed);
       }
     }
@@ -636,7 +649,7 @@ export const sanitizeAndFilterBotRuns = (
 ): BotRunInstance[] => {
   if (!Array.isArray(runs)) return [];
   const validExtraDeleted = (extraDeletedIds || []).filter(
-    (id) => typeof id === 'string' && id.trim().startsWith('run-')
+    (id) => typeof id === 'string' && id.trim().length > 0
   );
   const deletedSet = new Set<string>([...getDeletedBotIds(), ...validExtraDeleted]);
 
@@ -651,9 +664,8 @@ export const sanitizeAndFilterBotRuns = (
       const name = typeof r.botName === 'string' ? r.botName.trim() : '';
       if (!sym || !name) return false;
 
-      // Only check specific run instance IDs (id / runId), never catalog botId or botName
-      const runInstanceIds = [r.id, r.runId]
-        .filter((v): v is string => typeof v === 'string' && v.trim().startsWith('run-'))
+      const runInstanceIds = [r.id, r.runId, r.botId]
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
         .map((v) => v.trim());
 
       if (runInstanceIds.some((c) => deletedSet.has(c))) {

@@ -110,9 +110,12 @@ export class TradingViewPriceService {
   private sseActive = false;
   private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
 
+  private lastBinanceTickAt: Map<string, number> = new Map();
+
   constructor() {
     this.initServerStream();
     this.initLiveBinanceWebSocket();
+    this.initDirectTradingViewWebSocket();
   }
 
   /**
@@ -139,7 +142,13 @@ export class TradingViewPriceService {
     } else if (decimals === 3) {
       priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
     } else {
-      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+      if (bid < 250) {
+        priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+      } else if (bid < 1000) {
+        priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+      } else {
+        priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+      }
     }
 
     const ask = Number((bid + priceGap).toFixed(decimals));
@@ -340,6 +349,13 @@ export class TradingViewPriceService {
       const chartPrice = Number(data.close ?? data.bid);
       if (!(chartPrice > 0)) return;
 
+      // If direct Binance WebSocket updated this crypto symbol within the last 2.5 seconds and the server snapshot is older, keep the fresher direct WebSocket tick
+      const lastDirectWsAt = this.lastBinanceTickAt.get(symbol) || 0;
+      const serverTs = typeof data.timestamp === 'number' ? data.timestamp : 0;
+      if (lastDirectWsAt > 0 && now - lastDirectWsAt < 2500 && serverTs < lastDirectWsAt) {
+        return;
+      }
+
       this.rawTvFields.set(symbol, {
         ...(this.rawTvFields.get(symbol) || {}),
         lp: chartPrice,
@@ -354,7 +370,7 @@ export class TradingViewPriceService {
           ? Number(data.spread.toFixed(2))
           : undefined;
 
-      // If server already computed aligned bid, ask, and spread from the TradingView WebSocket, use them 1:1 without re-randomizing spread on every 250ms poll
+      // If server already computed aligned bid, ask, and spread from the TradingView/Binance WebSocket, use them 1:1
       if (
         serverSpread !== undefined &&
         typeof data.bid === 'number' &&
@@ -374,7 +390,7 @@ export class TradingViewPriceService {
           change24h: data.change24h !== undefined ? Number(data.change24h) : 0,
           high24h: data.high24h || Number((exactAsk * 1.005).toFixed(conf.decimals)),
           low24h: data.low24h || Number((exactBid * 0.995).toFixed(conf.decimals)),
-          timestamp: now,
+          timestamp: serverTs > 0 ? serverTs : now,
         });
         updatedAny = true;
         return;
@@ -392,7 +408,7 @@ export class TradingViewPriceService {
       if (conf.decimals === 5) {
         priceGap = Math.max(0.00001, Number((finalSpread / 10000).toFixed(5)));
       } else if (conf.decimals === 4) {
-        priceGap = Math.max(0.0001, Number((finalSpread / 10000).toFixed(4)));
+        priceGap = Math.max(0.0001, Number((finalSpread / 1000).toFixed(4)));
       } else if (conf.decimals === 3) {
         priceGap = symbol === 'XAUUSD' ? Number(finalSpread.toFixed(3)) : Math.max(0.001, Number((finalSpread * 0.01).toFixed(3)));
       } else {
@@ -415,7 +431,7 @@ export class TradingViewPriceService {
         change24h: data.change24h !== undefined ? Number(data.change24h) : 0,
         high24h: data.high24h || Number((finalAsk * 1.005).toFixed(conf.decimals)),
         low24h: data.low24h || Number((bid * 0.995).toFixed(conf.decimals)),
-        timestamp: now,
+        timestamp: serverTs > 0 ? serverTs : now,
       });
       updatedAny = true;
     });
@@ -452,15 +468,62 @@ export class TradingViewPriceService {
   private initLiveBinanceWebSocket() {
     if (typeof window === 'undefined') return;
     try {
-      const wsUrl = 'wss://stream.binance.com:9443/ws/!miniTicker@arr';
+      const cryptoStreams = [
+        'btcusdt@aggTrade',
+        'ethusdt@aggTrade',
+        'solusdt@aggTrade',
+        'bnbusdt@aggTrade',
+        'xrpusdt@aggTrade',
+        'adausdt@aggTrade',
+        'dogeusdt@aggTrade',
+        'avaxusdt@aggTrade',
+        'linkusdt@aggTrade',
+        'dotusdt@aggTrade',
+        'nearusdt@aggTrade',
+        'suiusdt@aggTrade',
+        '!miniTicker@arr',
+      ].join('/');
+      const wsUrl = `wss://stream.binance.com:9443/stream?streams=${cryptoStreams}`;
       const ws = new WebSocket(wsUrl);
 
       ws.onmessage = (event) => {
         try {
-          const list = JSON.parse(event.data);
-          if (Array.isArray(list)) {
+          const envelope = JSON.parse(event.data);
+          const payload = envelope?.data ?? envelope;
+          const now = Date.now();
+
+          if (payload && payload.e === 'aggTrade' && payload.s && payload.p) {
+            const sym = String(payload.s).replace('USDT', 'USD');
+            const conf = TV_INSTRUMENT_MAP[sym];
+            const price = parseFloat(payload.p);
+            if (conf && price > 0) {
+              const { bid, ask, spread } = this.computeDynamicBidAsk(
+                sym,
+                price,
+                conf.decimals,
+                conf.pipMultiplier
+              );
+              const existing = this.lastQuotes.get(sym);
+              this.lastBinanceTickAt.set(sym, now);
+              this.lastQuotes.set(sym, {
+                symbol: sym,
+                tvTicker: conf.ticker,
+                bid,
+                ask,
+                spread,
+                change24h: existing?.change24h || 0,
+                high24h: Math.max(existing?.high24h || ask, ask),
+                low24h: existing?.low24h ? Math.min(existing.low24h, bid) : bid,
+                timestamp: now,
+              });
+              this.notifyListeners();
+            }
+            return;
+          }
+
+          const list = Array.isArray(payload) ? payload : null;
+          if (list) {
             let hasChanged = false;
-            const now = Date.now();
             list.forEach((item: any) => {
               if (!item.s || !item.c) return;
               const sym = item.s.replace('USDT', 'USD');
@@ -481,6 +544,7 @@ export class TradingViewPriceService {
                       ? Number((((price - openPrice) / openPrice) * 100).toFixed(2))
                       : existing?.change24h || 0;
 
+                  this.lastBinanceTickAt.set(sym, now);
                   this.lastQuotes.set(sym, {
                     symbol: sym,
                     tvTicker: conf.ticker,

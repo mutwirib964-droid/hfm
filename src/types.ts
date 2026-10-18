@@ -151,7 +151,7 @@ export interface Transaction {
   method: string;
   amount: number;
   currency: string;
-  status: 'COMPLETED' | 'PENDING' | 'CANCELLED' | 'FAILED';
+  status: 'COMPLETED' | 'PENDING' | 'CANCELLED' | 'FAILED' | 'REJECTED';
   timestamp: number;
   reference: string;
   accountNumber?: string;

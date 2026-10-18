@@ -130,11 +130,19 @@ function computeAlignedBidAsk(
   if (decimals === 5) {
     priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
   } else if (decimals === 4) {
-    priceGap = Math.max(0.0001, Number((spread / 1000).toFixed(4)));
+    priceGap = Math.max(0.0001, Number((spread / 10000).toFixed(4)));
   } else if (decimals === 3) {
     priceGap = symbol === 'XAUUSD' ? Number(spread.toFixed(3)) : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
   } else {
-    priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+    if (bid < 50) {
+      priceGap = 0.01;
+    } else if (bid < 250) {
+      priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+    } else if (bid < 1000) {
+      priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+    } else {
+      priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+    }
   }
 
   const ask = Number((bid + priceGap).toFixed(decimals));
@@ -144,9 +152,12 @@ function computeAlignedBidAsk(
 function marketPricesPlugin() {
   const liveQuotes: Record<string, any> = {};
   const rawTvFields: Record<string, Record<string, any>> = {};
+  const lastBinanceTickAt: Record<string, number> = {};
   const sseClients = new Set<any>();
   let tvWs: WebSocket | null = null;
+  let binanceWs: WebSocket | null = null;
   let reconnectTimer: any = null;
+  let binanceReconnectTimer: any = null;
   let broadcastTimer: any = null;
   let dirtyQuotes = false;
 
@@ -168,9 +179,14 @@ function marketPricesPlugin() {
     }, 60);
   };
 
-  const updateSymbolFromTv = (symbol: string, raw: Record<string, any>) => {
+  const updateSymbolFromTv = (symbol: string, raw: Record<string, any>, isFromBinance = false) => {
     const cfg = TV_LIVE_SYMBOLS[symbol];
     if (!cfg) return;
+    // Never overwrite a fresh real-time Binance tick with a delayed TradingView snapshot
+    if (!isFromBinance && cfg.category === 'Crypto' && lastBinanceTickAt[symbol] && Date.now() - lastBinanceTickAt[symbol] < 8000) {
+      return;
+    }
+
     const lp = typeof raw.lp === 'number' && raw.lp > 0 ? raw.lp : typeof raw.bid === 'number' && raw.bid > 0 ? raw.bid : null;
     if (!lp || lp <= 0) return;
 
@@ -209,6 +225,92 @@ function marketPricesPlugin() {
       timestamp: Date.now(),
     };
     scheduleBroadcast();
+  };
+
+  const connectBinanceWs = () => {
+    if (binanceWs) {
+      try {
+        binanceWs.removeAllListeners();
+        binanceWs.close();
+      } catch {}
+      binanceWs = null;
+    }
+
+    try {
+      const cryptoStreams = [
+        'btcusdt@aggTrade',
+        'ethusdt@aggTrade',
+        'solusdt@aggTrade',
+        'xrpusdt@aggTrade',
+        'bnbusdt@aggTrade',
+        'dogeusdt@aggTrade',
+        'adausdt@aggTrade',
+        'avaxusdt@aggTrade',
+        'linkusdt@aggTrade',
+        'dotusdt@aggTrade',
+        'nearusdt@aggTrade',
+        'suiusdt@aggTrade',
+        '!miniTicker@arr',
+      ].join('/');
+      const ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${cryptoStreams}`);
+      binanceWs = ws;
+
+      ws.on('message', (rawMsg: any) => {
+        try {
+          const wrapper = JSON.parse(rawMsg.toString());
+          const data = wrapper?.data ?? wrapper;
+          if (!data) return;
+
+          if (Array.isArray(data)) {
+            data.forEach((item: any) => {
+              if (!item?.s || !item?.c) return;
+              const sym = String(item.s).replace('USDT', 'USD');
+              if (!TV_LIVE_SYMBOLS[sym]) return;
+              const price = parseFloat(item.c);
+              if (!(price > 0)) return;
+              const openP = parseFloat(item.o);
+              const chp = openP > 0 ? Number((((price - openP) / openP) * 100).toFixed(2)) : undefined;
+              lastBinanceTickAt[sym] = Date.now();
+              rawTvFields[sym] = {
+                ...(rawTvFields[sym] || {}),
+                lp: price,
+                ...(chp !== undefined ? { chp } : {}),
+                ...(parseFloat(item.h) > 0 ? { high_price: parseFloat(item.h) } : {}),
+                ...(parseFloat(item.l) > 0 ? { low_price: parseFloat(item.l) } : {}),
+              };
+              updateSymbolFromTv(sym, rawTvFields[sym], true);
+            });
+          } else if (data.e === 'aggTrade' && data.s && data.p) {
+            const sym = String(data.s).replace('USDT', 'USD');
+            if (!TV_LIVE_SYMBOLS[sym]) return;
+            const price = parseFloat(data.p);
+            if (!(price > 0)) return;
+            lastBinanceTickAt[sym] = Date.now();
+            rawTvFields[sym] = {
+              ...(rawTvFields[sym] || {}),
+              lp: price,
+            };
+            updateSymbolFromTv(sym, rawTvFields[sym], true);
+          }
+        } catch {
+          // ignore malformed frame
+        }
+      });
+
+      ws.on('close', () => {
+        if (binanceReconnectTimer) clearTimeout(binanceReconnectTimer);
+        binanceReconnectTimer = setTimeout(connectBinanceWs, 2000);
+      });
+
+      ws.on('error', () => {
+        try {
+          ws.close();
+        } catch {}
+      });
+    } catch {
+      if (binanceReconnectTimer) clearTimeout(binanceReconnectTimer);
+      binanceReconnectTimer = setTimeout(connectBinanceWs, 3000);
+    }
   };
 
   const connectTradingViewWs = () => {
@@ -273,7 +375,7 @@ function marketPricesPlugin() {
               const sym = TICKER_TO_SYMBOL[ticker];
               if (sym && values && typeof values === 'object') {
                 rawTvFields[sym] = { ...(rawTvFields[sym] || {}), ...values };
-                updateSymbolFromTv(sym, rawTvFields[sym]);
+                updateSymbolFromTv(sym, rawTvFields[sym], false);
               }
             }
           } catch {
@@ -301,8 +403,9 @@ function marketPricesPlugin() {
   return {
     name: 'market-prices-api',
     configureServer(server: any) {
-      // Start persistent TradingView WebSocket only when dev server runs
+      // Start persistent TradingView & Binance WebSockets when dev server runs
       connectTradingViewWs();
+      connectBinanceWs();
 
       // Real-time Server-Sent Events stream for zero-lag chart-to-button synchronization
       server.middlewares.use('/api/market-stream', (req: any, res: any) => {
@@ -319,7 +422,7 @@ function marketPricesPlugin() {
         });
       });
 
-      // Instantaneous JSON snapshot endpoint served directly from live TradingView WebSocket memory
+      // Instantaneous JSON snapshot endpoint served directly from live WebSocket memory
       server.middlewares.use('/api/market-prices', (_req: any, res: any) => {
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Cache-Control', 'no-store');
@@ -566,7 +669,7 @@ function hashbackStkPlugin() {
   };
 
   const getRuntimeHashbackConfig = () => {
-    let savedConfig: { accountId?: string; apiKey?: string; usdKesRate?: number; merchantName?: string } = {};
+    let savedConfig: { accountId?: string; apiKey?: string; usdKesRate?: number; usdKesWithdrawRate?: number; merchantName?: string } = {};
     try {
       if (fs.existsSync(hashbackConfigFile)) {
         savedConfig = JSON.parse(fs.readFileSync(hashbackConfigFile, 'utf-8') || '{}');
@@ -593,14 +696,23 @@ function hashbackStkPlugin() {
       process.env.USD_KES_RATE ||
       process.env.VITE_USD_KES_RATE ||
       savedConfig.usdKesRate ||
-      0
+      128.367
     );
-    const usdKesRate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 0;
+    const usdKesRate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 128.367;
+
+    const rawWithdrawRate = Number(
+      process.env.USD_KES_WITHDRAW_RATE ||
+      process.env.VITE_USD_KES_WITHDRAW_RATE ||
+      savedConfig.usdKesWithdrawRate ||
+      126.58
+    );
+    const usdKesWithdrawRate = Number.isFinite(rawWithdrawRate) && rawWithdrawRate > 0 ? rawWithdrawRate : 126.58;
 
     return {
       accountId,
       apiKey,
       usdKesRate,
+      usdKesWithdrawRate,
       merchantName: savedConfig.merchantName || '',
       configured: Boolean(accountId && apiKey),
     };
@@ -1039,6 +1151,23 @@ function hashbackStkPlugin() {
         const previousWebsiteBalanceKes = beforeState.currentWebsiteBalanceKes;
         const projectedWebsiteBalanceKes = Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2));
 
+        const MAX_SINGLE_TRANSACTION_KES = 250000;
+        if (exactAmountKes > MAX_SINGLE_TRANSACTION_KES || exactAmountUsd > 2000) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: false,
+              singleLimitExceeded: true,
+              maxSingleTransactionKes: MAX_SINGLE_TRANSACTION_KES,
+              requestedAmountKes: exactAmountKes,
+              error: 'Maximum withdrawal is $2,000.00 USD (KES 250,000) per single transaction.',
+            })
+          );
+          return;
+        }
+
         if (projectedWebsiteBalanceKes > MAX_ONEAPP_MPESA_BALANCE_KES) {
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1365,6 +1494,7 @@ function hashbackStkPlugin() {
       res.end(
         JSON.stringify({
           usdKesRate: cfg.usdKesRate,
+          usdKesWithdrawRate: cfg.usdKesWithdrawRate,
           merchantName,
           configured: cfg.configured,
         })
@@ -1741,6 +1871,305 @@ function supabaseConfigPlugin() {
   };
 }
 
+function serverAccountingEnginePlugin() {
+  const settledTradeIds = new Set<string>();
+  const configFile = path.resolve(__dirname, '.supabase-config.json');
+
+  const getSupabaseCreds = () => {
+    let url = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
+    let anonKey =
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+    try {
+      if (fs.existsSync(configFile)) {
+        const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8') || '{}');
+        if (parsed.url) url = parsed.url;
+        if (parsed.anonKey) anonKey = parsed.anonKey;
+      }
+    } catch {
+      // ignore
+    }
+    return { url, anonKey };
+  };
+
+  const getInstrumentSpecServer = (symbol: string) => {
+    const sym = String(symbol || 'EURUSD').trim().toUpperCase();
+    if (sym === 'XAUUSD') return { contractSize: 100, pipSize: 0.1, decimals: 2 };
+    if (sym === 'XAGUSD') return { contractSize: 5000, pipSize: 0.01, decimals: 3 };
+    if (sym === 'USOIL' || sym === 'UKOIL') return { contractSize: 1000, pipSize: 0.01, decimals: 2 };
+    if (sym === 'NGAS') return { contractSize: 10000, pipSize: 0.001, decimals: 3 };
+    if (sym === 'BTCUSD' || sym === 'ETHUSD' || sym === 'SOLUSD' || sym === 'BNBUSD') {
+      return { contractSize: 1, pipSize: 1.0, decimals: 2 };
+    }
+    if (['XRPUSD', 'ADAUSD', 'DOGEUSD'].includes(sym)) {
+      return { contractSize: 10000, pipSize: 0.0001, decimals: 4 };
+    }
+    if (['US30', 'NAS100', 'SPX500', 'GER40', 'UK100', 'JPN225'].includes(sym)) {
+      return { contractSize: 1, pipSize: 1.0, decimals: 2 };
+    }
+    if (sym.endsWith('JPY')) {
+      return { contractSize: 100000, pipSize: 0.01, decimals: 3 };
+    }
+    return { contractSize: 100000, pipSize: 0.0001, decimals: 5 };
+  };
+
+  const calculateExactPnLServer = (
+    symbol: string,
+    side: 'BUY' | 'SELL',
+    openPrice: number,
+    exitPrice: number,
+    lots: number
+  ): number => {
+    const sym = String(symbol || 'EURUSD').trim().toUpperCase();
+    const spec = getInstrumentSpecServer(sym);
+    const priceDiff = side === 'BUY' ? exitPrice - openPrice : openPrice - exitPrice;
+    let rawUsd = priceDiff * lots * spec.contractSize;
+    if (sym.endsWith('JPY') && exitPrice > 0) {
+      rawUsd = rawUsd / exitPrice;
+    } else if (sym.endsWith('CAD') && exitPrice > 0) {
+      rawUsd = rawUsd / exitPrice;
+    } else if (sym.endsWith('CHF') && exitPrice > 0) {
+      rawUsd = rawUsd / exitPrice;
+    }
+    return Number(rawUsd.toFixed(2));
+  };
+
+  const readJsonBody = (req: any): Promise<any> =>
+    new Promise((resolve) => {
+      let raw = '';
+      req.on('data', (c: any) => (raw += c));
+      req.on('end', () => {
+        try {
+          resolve(raw ? JSON.parse(raw) : {});
+        } catch {
+          resolve({});
+        }
+      });
+    });
+
+  const handleEngineRoute = async (req: any, res: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 200;
+      res.end('');
+      return;
+    }
+
+    const urlPath = String(req.url || '').toLowerCase();
+    const body = await readJsonBody(req);
+    const { url, anonKey } = getSupabaseCreds();
+
+    // 1. /api/engine/close-position — Atomic & Idempotent Trade Settlement
+    if (urlPath.includes('close-position')) {
+      const tradeId = String(body.tradeId || body.id || '').trim();
+      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const accountNumber = String(body.accountNumber || body.accountId || '').trim();
+      if (!tradeId || !userEmail) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, error: 'tradeId and userEmail are required' }));
+        return;
+      }
+
+      const idempotencyKey = `${userEmail}:${tradeId}`;
+      if (settledTradeIds.has(idempotencyKey)) {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, idempotent: true, message: 'Trade already settled' }));
+        return;
+      }
+
+      const symbol = String(body.symbol || 'EURUSD').trim().toUpperCase();
+      const side: 'BUY' | 'SELL' = body.side === 'SELL' ? 'SELL' : 'BUY';
+      const lots = Math.max(0.01, Number(body.lots || body.lotSize || 0.01));
+      const openPrice = Number(body.openPrice || 0);
+      const closePrice = Number(body.closePrice ?? openPrice);
+      const swap = Number(body.swap || 0);
+      const commission = Number(body.commission || 0);
+      const rawPnl = Number(
+        (calculateExactPnLServer(symbol, side, openPrice, closePrice, lots) + swap + commission).toFixed(2)
+      );
+
+      settledTradeIds.add(idempotencyKey);
+
+      try {
+        const finRes = await fetch(
+          `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
+          {
+            headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+          }
+        );
+        const rows = finRes.ok ? await finRes.json() : [];
+        let previousBalance = 0;
+        let newBalance = 0;
+        let clampedPnl = rawPnl;
+
+        if (Array.isArray(rows) && rows.length > 0) {
+          const row = rows[0];
+          const accounts = Array.isArray(row.accounts) ? row.accounts : [];
+          const updatedAccounts = accounts.map((acc: any) => {
+            if (acc.accountNumber === accountNumber || acc.id === accountNumber) {
+              previousBalance = Number(acc.balance || 0);
+              if (clampedPnl < 0 && Math.abs(clampedPnl) > previousBalance) {
+                clampedPnl = -Number(previousBalance.toFixed(2));
+              }
+              newBalance = Math.max(0, Number((previousBalance + clampedPnl).toFixed(2)));
+              return {
+                ...acc,
+                balance: newBalance,
+                equity: newBalance,
+                freeMargin: Math.max(0, Number((newBalance - Number(acc.margin || 0)).toFixed(2))),
+                lastTradeAt: Date.now(),
+                lastActivityAt: Date.now(),
+              };
+            }
+            return acc;
+          });
+
+          await fetch(
+            `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                apikey: anonKey,
+                Authorization: `Bearer ${anonKey}`,
+              },
+              body: JSON.stringify({
+                accounts: updatedAccounts,
+                last_updated: new Date().toISOString(),
+              }),
+            }
+          );
+        }
+
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: true,
+            tradeId,
+            symbol,
+            side,
+            lots,
+            openPrice,
+            closePrice,
+            realizedPnl: clampedPnl,
+            previousBalance,
+            newBalance,
+          })
+        );
+        return;
+      } catch (err: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Settlement failed' }));
+        return;
+      }
+    }
+
+    // 2. /api/engine/reconcile-account — Authoritative Ledger & Balance Reconciliation
+    if (urlPath.includes('reconcile-account')) {
+      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const accountNumber = String(body.accountNumber || '').trim();
+      if (!userEmail) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ success: false, error: 'userEmail is required' }));
+        return;
+      }
+
+      try {
+        const [finRes, actRes] = await Promise.all([
+          fetch(
+            `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
+            { headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` } }
+          ),
+          fetch(
+            `${url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(userEmail)}&activity_type=in.(LEDGER_ENTRY,TRADE_CLOSED,DEPOSIT,WITHDRAWAL,TRANSFER)&select=activity_type,metadata,created_at&order=created_at.desc&limit=500`,
+            { headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` } }
+          ),
+        ]);
+        const finRows = finRes.ok ? await finRes.json() : [];
+        const actRows = actRes.ok ? await actRes.json() : [];
+        const fin = Array.isArray(finRows) && finRows.length > 0 ? finRows[0] : null;
+        const accounts = Array.isArray(fin?.accounts) ? fin.accounts : [];
+        const targetAcc = accountNumber
+          ? accounts.find((a: any) => a.accountNumber === accountNumber || a.id === accountNumber)
+          : accounts[0];
+
+        const ledgerEntries = (Array.isArray(actRows) ? actRows : []).filter(
+          (r: any) =>
+            r.activity_type === 'LEDGER_ENTRY' &&
+            (!accountNumber || r.metadata?.accountNumber === accountNumber)
+        );
+
+        res.statusCode = 200;
+        res.end(
+          JSON.stringify({
+            success: true,
+            userEmail,
+            walletBalance: Number(fin?.wallet_balance || 0),
+            selectedAccountId: fin?.selected_account_id || null,
+            account: targetAcc || null,
+            ledgerEntryCount: ledgerEntries.length,
+            reconciled: true,
+            timestamp: Date.now(),
+          })
+        );
+        return;
+      } catch (err: any) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Reconciliation error' }));
+        return;
+      }
+    }
+
+    // 3. /api/engine/evaluate-positions — Server-Side Floating P/L & TP/SL Evaluation
+    const positions = Array.isArray(body.positions) ? body.positions : [];
+    const quotes = body.quotes || {};
+    const evaluated = positions.map((pos: any) => {
+      const sym = String(pos.symbol || 'EURUSD').trim().toUpperCase();
+      const spec = getInstrumentSpecServer(sym);
+      const side: 'BUY' | 'SELL' = pos.side === 'SELL' ? 'SELL' : 'BUY';
+      const lots = Math.max(0.01, Number(pos.lots || pos.lotSize || 0.01));
+      const openPrice = Number(pos.openPrice || 0);
+      const q = quotes[sym];
+      const execPrice = Number(
+        (side === 'BUY' ? q?.bid ?? pos.currentPrice ?? openPrice : q?.ask ?? pos.currentPrice ?? openPrice).toFixed(
+          spec.decimals
+        )
+      );
+      const floatingPnl = calculateExactPnLServer(sym, side, openPrice, execPrice, lots);
+      const tpHit =
+        pos.tp && pos.tp > 0 ? (side === 'BUY' ? execPrice >= pos.tp : execPrice <= pos.tp) : false;
+      const slHit =
+        pos.sl && pos.sl > 0 ? (side === 'BUY' ? execPrice <= pos.sl : execPrice >= pos.sl) : false;
+      return {
+        id: pos.id,
+        ticket: pos.ticket,
+        symbol: sym,
+        side,
+        lots,
+        openPrice,
+        currentPrice: execPrice,
+        pnl: floatingPnl,
+        tpHit,
+        slHit,
+      };
+    });
+
+    res.statusCode = 200;
+    res.end(JSON.stringify({ success: true, evaluated, timestamp: Date.now() }));
+  };
+
+  return {
+    name: 'server-accounting-engine',
+    configureServer(server: any) {
+      server.middlewares.use('/api/engine', handleEngineRoute);
+    },
+    configurePreviewServer(server: any) {
+      server.middlewares.use('/api/engine', handleEngineRoute);
+    },
+  };
+}
+
 function safeWsPlugin() {
   return {
     name: 'safe-ws-shim',
@@ -1783,6 +2212,7 @@ export default defineConfig(() => {
       marketPricesPlugin(),
       hashbackStkPlugin(),
       supabaseConfigPlugin(),
+      serverAccountingEnginePlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [

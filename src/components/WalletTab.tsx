@@ -305,57 +305,33 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         : 'Safaricom M-PESA B2C';
 
     if (maxAvailable <= 0) {
-      setWithdrawError('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
-      onWithdraw({
-        method: methodLabel,
-        amount: withdrawAmount,
-        sourceAccount: withdrawSource,
-        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED' as any,
-      });
+      setWithdrawError(`Insufficient funds: Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.`);
       return;
     }
     const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
     if (withdrawAmount < minRequired) {
       setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'M-PESA'} is $${minRequired}.00 USD.`);
-      onWithdraw({
-        method: methodLabel,
-        amount: withdrawAmount,
-        sourceAccount: withdrawSource,
-        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED' as any,
-      });
       return;
     }
-    const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
-    if (withdrawAmount > maxPerSingleTx) {
-      const methodTitle =
-        withdrawMethod === 'mpesa'
-          ? 'M-PESA'
-          : withdrawMethod === 'bank'
-          ? 'Bank Transfer'
-          : 'Crypto';
+    const isMpesaWithdrawal = withdrawMethod === 'mpesa';
+    const maxSingleTxUsd = isMpesaWithdrawal ? Number((250000 / effectiveWithdrawRate).toFixed(2)) : 10000;
+    const maxSingleTxKes = isMpesaWithdrawal ? 250000 : 10000 * effectiveWithdrawRate;
+
+    if (withdrawAmount > maxSingleTxUsd || (isMpesaWithdrawal && exactKesToDisburse > maxSingleTxKes)) {
+      const methodTitle = isMpesaWithdrawal ? 'M-PESA' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'Crypto';
       setWithdrawError(
-        `Maximum ${methodTitle} withdrawal is $${maxPerSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
+        isMpesaWithdrawal
+          ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD).`
+          : `Maximum ${methodTitle} withdrawal is $10,000.00 USD per single transaction.`
       );
-      onWithdraw({
-        method: methodLabel,
-        amount: withdrawAmount,
-        sourceAccount: withdrawSource,
-        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED' as any,
-      });
+      return;
+    }
+    if (isMpesaWithdrawal && exactKesToDisburse > 500000) {
+      setWithdrawError('Customer wallet capacity exceeded: Maximum daily Safaricom M-PESA limit is KES 500,000.');
       return;
     }
     if (withdrawAmount > maxAvailable) {
-      setWithdrawError(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
-      onWithdraw({
-        method: methodLabel,
-        amount: withdrawAmount,
-        sourceAccount: withdrawSource,
-        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED' as any,
-      });
+      setWithdrawError(`Insufficient funds: You requested $${withdrawAmount.toFixed(2)} USD, but your available balance is only $${maxAvailable.toFixed(2)} USD.`);
       return;
     }
     if (withdrawMethod === 'crypto' && (!withdrawCryptoAddress.trim() || withdrawCryptoAddress.trim().length < 10)) {
@@ -489,7 +465,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <Wallet className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="text-[10px] text-neutral-400 uppercase tracking-wider font-semibold">
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase tracking-wider font-semibold">
                     VTM One Wallet
                   </span>
                   <h2 className="text-xs font-bold text-white">Central Client Balance</h2>
@@ -504,14 +480,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
             {/* Big Balance Number (Combined Wallet + Live Accounts) */}
             <div className="mt-4">
-              <span className="text-xs text-neutral-400 block font-medium">Available for Trading / Withdrawal</span>
+              <span className="text-xs text-neutral-500 dark:text-neutral-400 block font-medium">Available for Trading / Withdrawal</span>
               <div className="flex items-baseline gap-2 mt-1">
                 <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono tracking-tight">
                   ${totalCombinedAvailableUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
-                <span className="text-xs text-neutral-400 font-bold">USD</span>
+                <span className="text-xs text-neutral-500 dark:text-neutral-400 font-bold">USD</span>
               </div>
-              <div className="flex items-center gap-3 mt-1.5 text-[11px] font-mono text-neutral-400">
+              <div className="flex items-center gap-3 mt-1.5 text-[11px] font-mono text-neutral-500 dark:text-neutral-400">
                 <span>
                   Wallet: <strong className="text-neutral-200">${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
                 </span>
@@ -567,7 +543,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-bold px-1">
               <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-900'}>Linked Trading Accounts</span>
-              <span className={`text-[11px] font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+              <span className={`text-[11px] font-medium ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                 Live Accounts Require Deposit • Demo Non-Depositable
               </span>
             </div>
@@ -594,7 +570,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           #{acc.accountNumber}
                         </span>
                       </div>
-                      <span className={`text-[10px] font-mono mt-0.5 block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                      <span className={`text-[10px] font-mono mt-0.5 block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                         {acc.server} | {acc.leverage}
                       </span>
                     </div>
@@ -603,7 +579,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       <span className={`font-mono font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                         ${(acc.equity ?? acc.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
-                      <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600 font-medium'}`}>
+                      <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600 font-medium'}`}>
                         Settled: ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
@@ -630,7 +606,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <button
                           type="button"
                           onClick={() => handleOpenWithdraw(`Account #${acc.accountNumber}`)}
-                          className="text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
+                          className="text-neutral-500 dark:text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
                         >
                           <ArrowUpFromLine className="w-3 h-3" />
                           <span>Withdraw</span>
@@ -682,7 +658,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-900'}`}>
                   Recent Wallet &amp; Payout Activity
                 </span>
-                <span className="text-[10px] text-neutral-400 block">
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
                   Last 20 Transactions (Deposits &amp; Withdrawals)
                 </span>
               </div>
@@ -693,7 +669,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
             <div className="space-y-2 max-h-80 overflow-y-auto no-scrollbar">
               {transactions.filter((tx) => tx.type === 'DEPOSIT' || tx.type === 'WITHDRAWAL').length === 0 ? (
-                <div className="text-center py-6 text-neutral-400 text-xs">
+                <div className="text-center py-6 text-neutral-500 dark:text-neutral-400 text-xs">
                   No wallet transactions recorded yet. Deposits and withdrawals will appear here.
                 </div>
               ) : (
@@ -763,7 +739,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                               {statusLabel}
                             </span>
                           </div>
-                          <span className="text-[10px] text-neutral-400 font-mono">
+                          <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-mono">
                             {new Date(tx.timestamp).toLocaleString(undefined, {
                               month: 'short',
                               day: 'numeric',
@@ -790,7 +766,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         >
                           {isFailed ? '' : isDeposit ? '+' : isWithdrawal ? '-' : ''}${tx.amount.toFixed(2)}
                         </span>
-                        <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                        <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                           {isFailed
                             ? isDeposit
                               ? 'Request cancelled by user'
@@ -854,7 +830,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               </div>
               <button
                 onClick={handleCloseWithdraw}
-                className="text-neutral-400 hover:text-white cursor-pointer p-1"
+                className="text-neutral-500 dark:text-neutral-400 hover:text-white cursor-pointer p-1"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -872,7 +848,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                     withdrawMethod === 'mpesa'
                       ? 'bg-[#00A34F] text-white shadow-xs'
-                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                      : 'text-slate-600 dark:text-neutral-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   <Smartphone className="w-3.5 h-3.5 shrink-0" />
@@ -887,7 +863,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                     withdrawMethod === 'bank'
                       ? 'bg-[#0066FF] text-white shadow-xs'
-                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                      : 'text-slate-600 dark:text-neutral-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   <Building className="w-3.5 h-3.5 shrink-0" />
@@ -902,7 +878,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   className={`py-2 px-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition-all cursor-pointer ${
                     withdrawMethod === 'crypto'
                       ? 'bg-amber-600 text-white shadow-xs'
-                      : 'text-slate-600 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
+                      : 'text-slate-600 dark:text-neutral-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
                   <Coins className="w-3.5 h-3.5 shrink-0" />
@@ -1019,7 +995,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
                     isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}>
-                    <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1.5">
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 flex items-center gap-1.5">
                       <Lock className="w-3.5 h-3.5 text-emerald-500" />
                       <span>Registered M-PESA Number:</span>
                     </span>
@@ -1097,38 +1073,86 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                 {/* Amount Input with minimum $35 for M-PESA/Bank ($2,000 max per single tx on M-PESA, $10,000 on Bank/Crypto), $50 for Crypto */}
                 <div>
-                  <div className="flex justify-between text-xs mb-1 font-semibold">
+                  <div className="flex justify-between text-xs mb-1.5 font-semibold">
                     <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-700'}>
-                      Amount (USD){' '}
+                      Amount to Withdraw (USD){' '}
                       <span className="text-[#E51937] font-bold">
                         *{withdrawMethod === 'crypto' ? 'Min $50' : 'Min $35'}
                       </span>
                     </span>
-                    <span className="text-neutral-400 text-[11px]">
+                    <span className="text-neutral-500 dark:text-neutral-400 text-[11px]">
                       {withdrawMethod === 'mpesa'
-                        ? 'Min $35 • Max $2,000'
-                        : `Min $${withdrawMethod === 'crypto' ? '50' : '35'} • Max $10,000`}
+                        ? 'Max limit per transaction: $2,000'
+                        : withdrawMethod === 'bank'
+                        ? 'Max limit per transaction: $10,000'
+                        : 'Max limit per transaction: $10,000'}
                     </span>
                   </div>
-                  <input
-                    type="number"
-                    min={withdrawMethod === 'crypto' ? 50 : 35}
-                    max={withdrawMethod === 'mpesa' ? 2000 : 10000}
-                    step="any"
-                    placeholder={`Min $${withdrawMethod === 'crypto' ? 50 : 35}`}
-                    value={withdrawAmount}
-                    onChange={(e) => setWithdrawAmount(parseFloat(e.target.value) || 0)}
-                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm font-mono font-bold focus:outline-none focus:ring-2 ${
-                      withdrawMethod === 'crypto' ? 'focus:ring-amber-500' : 'focus:ring-[#E51937]'
-                    } ${
-                      isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
-                    }`}
-                  />
+
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 dark:text-neutral-500 font-mono">
+                      $
+                    </span>
+                    <input
+                      type="number"
+                      min={withdrawMethod === 'crypto' ? 50 : 35}
+                      max={withdrawMethod === 'mpesa' ? 2000 : 10000}
+                      step="any"
+                      placeholder={withdrawMethod === 'bank' ? '1000' : '100'}
+                      value={withdrawAmount === 0 ? '' : withdrawAmount}
+                      onChange={(e) => {
+                        const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
+                        setWithdrawAmount(isNaN(val) ? 0 : val);
+                      }}
+                      className={`w-full border rounded-xl pl-8 pr-16 py-2.5 text-base font-mono font-bold focus:outline-none focus:ring-2 ${
+                        withdrawAmount > currentWithdrawable
+                          ? 'border-red-500 bg-red-500/5 focus:ring-red-500 text-red-500'
+                          : withdrawMethod === 'crypto'
+                          ? 'focus:ring-amber-500'
+                          : 'focus:ring-[#0066FF]'
+                      } ${
+                        isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
+                      }`}
+                    />
+                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-neutral-500 font-mono">
+                      USD
+                    </span>
+                  </div>
+
+                  {/* Prominent Active Withdrawal Display */}
+                  <div className="mt-2 p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-center justify-between text-xs">
+                    <span className="text-blue-700 dark:text-blue-300 font-medium">
+                      You are withdrawing:
+                    </span>
+                    <span className="font-mono font-bold text-blue-900 dark:text-blue-100 text-sm">
+                      ${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                    </span>
+                  </div>
+
+                  {/* Inline Insufficient Funds Warning */}
+                  {withdrawAmount > currentWithdrawable && (
+                    <div className="mt-2.5 p-3 rounded-xl bg-red-500/15 border-2 border-red-500 text-red-500 dark:text-red-400 text-xs flex items-start gap-2.5 font-medium">
+                      <AlertCircle className="w-5 h-5 shrink-0 text-red-500 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <div className="font-bold text-sm text-red-600 dark:text-red-400">
+                          ⚠️ Insufficient Funds
+                        </div>
+                        <div>
+                          You entered <strong className="font-mono underline">${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> to withdraw, but your available balance in {withdrawSource} is only <strong className="font-mono">${currentWithdrawable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong>.
+                        </div>
+                        <div className="text-[11px] font-semibold text-red-700 dark:text-red-300">
+                          Shortfall: ${Math.max(0, withdrawAmount - currentWithdrawable).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD. Please reduce the withdrawal amount or fund your account first.
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Preset Pills */}
-                  <div className="grid grid-cols-5 gap-1.5 mt-2">
+                  <div className="grid grid-cols-5 gap-1.5 mt-2.5">
                     {(withdrawMethod === 'crypto'
                       ? [50, 100, 250, 500]
+                      : withdrawMethod === 'bank'
+                      ? [100, 500, 1000, 5000]
                       : [35, 50, 100, 500]
                     ).map((val) => (
                       <button
@@ -1139,6 +1163,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           withdrawAmount === val
                             ? withdrawMethod === 'crypto'
                               ? 'bg-amber-500/20 border-amber-500 text-amber-500 font-bold'
+                              : withdrawMethod === 'bank'
+                              ? 'bg-blue-50 dark:bg-blue-950/60 border-[#0066FF] text-[#0066FF] font-bold'
                               : 'bg-red-50 dark:bg-red-950/60 border-[#E51937] text-[#E51937] font-bold'
                             : isDarkMode
                             ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
@@ -1156,10 +1182,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         if (accountBalance <= 0) {
                           setWithdrawAmount(0);
                         } else if (accountBalance <= singleTxLimit) {
-                          // Account balance does not exceed the single-transaction max: write the exact maximum amount in the user's account
                           setWithdrawAmount(accountBalance);
                         } else {
-                          // Account balance exceeds the single-transaction max: write the maximum allowed per single transaction
                           setWithdrawAmount(singleTxLimit);
                         }
                       }}
@@ -1175,14 +1199,27 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 {/* EXACT AMOUNT SUMMARY */}
                 <div className="p-3.5 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 space-y-2">
                   <div className="flex justify-between items-center text-xs">
-                    <span className="text-slate-500 dark:text-neutral-400">Total Deducted from Balance:</span>
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Available Balance in {withdrawSource}:</span>
+                    <span className="font-mono font-bold text-slate-900 dark:text-white text-xs">
+                      ${currentWithdrawable.toFixed(2)} USD
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Amount to Withdraw:</span>
                     <span className="font-mono font-bold text-rose-500 text-sm">
-                      -${withdrawAmount.toFixed(2)} USD
+                      -${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                     </span>
                   </div>
 
                   {withdrawMethod === 'mpesa' || withdrawMethod === 'bank' ? (
                     <>
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Withdrawal Rate:</span>
+                        <span className="font-mono text-slate-600 dark:text-neutral-300 text-xs">
+                          1 USD = {effectiveWithdrawRate.toFixed(2)} KES
+                        </span>
+                      </div>
                       <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
                         <span className="text-slate-700 dark:text-neutral-200 font-bold">
                           {withdrawMethod === 'bank'
@@ -1193,8 +1230,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
-                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)} USD)</strong> will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 leading-tight">
+                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD)</strong> will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
                       </p>
                     </>
                   ) : (
@@ -1204,23 +1241,39 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           Crypto Payout Asset:
                         </span>
                         <span className="font-mono font-black text-amber-500 text-sm">
-                          ${withdrawAmount.toFixed(2)} USD in {withdrawCryptoCoin}
+                          ${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD in {withdrawCryptoCoin}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 dark:text-neutral-400 leading-tight">
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 leading-tight">
                         * Payout will be dispatched directly to your {withdrawCryptoCoin} address on blockchain.
                       </p>
                     </>
                   )}
                 </div>
 
-                {/* Submit Button */}
-                {currentWithdrawable < (withdrawMethod === 'crypto' ? 50 : 35) ? (
+                {/* Submit Button with dynamic validation and Insufficient Funds display */}
+                {currentWithdrawable <= 0 ? (
                   <button
                     disabled
-                    className="w-full py-3 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800 text-neutral-500 border-neutral-700"
+                    className="w-full py-3.5 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800/80 text-rose-400 border-rose-900/50 flex items-center justify-center gap-2"
                   >
-                    Insufficient Funds (Min ${withdrawMethod === 'crypto' ? '50.00' : '35.00'} • Available: ${currentWithdrawable.toFixed(2)})
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Insufficient Funds — Available: $0.00 USD</span>
+                  </button>
+                ) : withdrawAmount > currentWithdrawable ? (
+                  <button
+                    disabled
+                    className="w-full py-3.5 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800/80 text-rose-400 border-rose-900/50 flex items-center justify-center gap-2"
+                  >
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Insufficient Funds — Requested ${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (Available: ${currentWithdrawable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>
+                  </button>
+                ) : withdrawAmount < (withdrawMethod === 'crypto' ? 50 : 35) ? (
+                  <button
+                    disabled
+                    className="w-full py-3.5 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800 text-neutral-500 dark:text-neutral-400 border-neutral-700 flex items-center justify-center gap-2"
+                  >
+                    <span>Minimum Amount: ${withdrawMethod === 'crypto' ? '50.00' : '35.00'} USD</span>
                   </button>
                 ) : (
                   <button
@@ -1237,10 +1290,15 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <Coins className="w-4 h-4" />
                         <span>Withdraw ${withdrawAmount.toFixed(2)} to {withdrawCryptoCoin} Wallet</span>
                       </>
+                    ) : withdrawMethod === 'bank' ? (
+                      <>
+                        <Building className="w-4 h-4" />
+                        <span>Withdraw ${withdrawAmount.toFixed(2)} USD (KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) to {selectedBankInfo.shortName}</span>
+                      </>
                     ) : (
                       <>
                         <Smartphone className="w-4 h-4" />
-                        <span>Withdraw KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})</span>
+                        <span>Withdraw ${withdrawAmount.toFixed(2)} USD (KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) to M-PESA</span>
                       </>
                     )}
                   </button>
@@ -1267,7 +1325,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <h3 className="text-base font-bold text-slate-900 dark:text-white">
                     Processing {withdrawMethod === 'crypto' ? `${withdrawCryptoCoin} Crypto` : withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} Bank` : 'Safaricom M-PESA'} Payout
                   </h3>
-                  <p className="text-xs text-slate-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
+                  <p className="text-xs text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 mt-1 max-w-xs mx-auto">
                     {withdrawMethod === 'crypto'
                       ? `Broadcasting blockchain transaction to ${withdrawCryptoAddress.slice(0, 10)}...`
                       : withdrawMethod === 'bank'
@@ -1278,13 +1336,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                 {/* Amount badge */}
                 <div className="p-3 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 max-w-xs mx-auto text-xs">
-                  <span className="text-[10px] uppercase font-bold text-slate-500 dark:text-neutral-400 block">
+                  <span className="text-[10px] uppercase font-bold text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 block">
                     Disbursing Amount
                   </span>
                   <span className="text-xl font-black font-mono text-emerald-600 dark:text-emerald-400">
                     {withdrawMethod === 'crypto' ? `$${withdrawAmount.toFixed(2)} USD` : `KES ${exactKesToDisburse.toLocaleString()}`}
                   </span>
-                  <span className="text-[11px] text-slate-500 dark:text-neutral-400 block mt-0.5">
+                  <span className="text-[11px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 block mt-0.5">
                     (-${withdrawAmount.toFixed(2)} USD from {withdrawSource})
                   </span>
                 </div>
@@ -1316,7 +1374,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   <h3 className="text-lg font-bold text-slate-900 dark:text-white">
                     Withdrawal Successful!
                   </h3>
-                  <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
+                  <p className="text-xs text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 mt-0.5">
                     {withdrawMethod === 'crypto'
                       ? `Crypto withdrawal of $${withdrawAmount.toFixed(2)} USD has been dispatched.`
                       : withdrawMethod === 'bank'
@@ -1328,14 +1386,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 {/* Details Breakdown */}
                 <div className="p-4 rounded-xl bg-slate-50 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 text-xs space-y-2 text-left">
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Transaction Receipt:</span>
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Transaction Receipt:</span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white">
                       {withdrawReceipt}
                     </span>
                   </div>
 
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Destination:</span>
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Destination:</span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white truncate max-w-[200px]">
                       {withdrawMethod === 'crypto'
                         ? withdrawCryptoAddress
@@ -1346,7 +1404,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
 
                   <div className="flex justify-between items-center">
-                    <span className="text-slate-500 dark:text-neutral-400">Amount Deducted:</span>
+                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Amount Deducted:</span>
                     <span className="font-mono font-bold text-rose-500">
                       -${withdrawAmount.toFixed(2)} USD
                     </span>
@@ -1438,7 +1496,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <ArrowLeftRight className="w-4 h-4 text-[#E51937]" />
                 Internal Transfer Between Live Accounts
               </span>
-              <button onClick={() => setActiveModal(null)} className="text-neutral-400 hover:text-white">
+              <button onClick={() => setActiveModal(null)} className="text-neutral-500 dark:text-neutral-400 hover:text-white">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -1522,7 +1580,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <span className={isDarkMode ? 'text-neutral-300 font-semibold' : 'text-slate-800 font-semibold'}>
                   Transfer Amount (USD):
                 </span>
-                <span className={`font-mono font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-700'}`}>
+                <span className={`font-mono font-semibold ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-700'}`}>
                   Available: ${currentTransferable.toFixed(2)}
                 </span>
               </div>
@@ -1544,7 +1602,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 className={`w-full py-2.5 font-bold text-xs rounded-xl cursor-not-allowed border ${
                   isDarkMode
                     ? 'bg-neutral-800 text-neutral-500 border-neutral-700'
-                    : 'bg-slate-100 text-slate-500 border-slate-300 font-semibold'
+                    : 'bg-slate-100 text-slate-600 dark:text-slate-400 border-slate-300 font-semibold'
                 }`}
               >
                 Source Account has $0.00 to Transfer

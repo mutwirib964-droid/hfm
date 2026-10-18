@@ -60,7 +60,17 @@ export const checkInstrumentMarketHours = (
       upperSym.startsWith('BNB') ||
       upperSym.startsWith('DOGE') ||
       upperSym.startsWith('ADA') ||
-      upperSym.startsWith('AVAX')
+      upperSym.startsWith('AVAX') ||
+      upperSym.startsWith('LINK') ||
+      upperSym.startsWith('DOT') ||
+      upperSym.startsWith('NEAR') ||
+      upperSym.startsWith('SUI') ||
+      upperSym.startsWith('LTC') ||
+      upperSym.startsWith('SHIB') ||
+      upperSym.startsWith('PEPE') ||
+      upperSym.startsWith('TON') ||
+      upperSym.startsWith('TRX') ||
+      upperSym.startsWith('UNI')
     ) {
       upperCat = 'CRYPTO';
     } else if (
@@ -109,7 +119,17 @@ export const checkInstrumentMarketHours = (
     upperSym.startsWith('BNB') ||
     upperSym.startsWith('DOGE') ||
     upperSym.startsWith('ADA') ||
-    upperSym.startsWith('AVAX');
+    upperSym.startsWith('AVAX') ||
+    upperSym.startsWith('LINK') ||
+    upperSym.startsWith('DOT') ||
+    upperSym.startsWith('NEAR') ||
+    upperSym.startsWith('SUI') ||
+    upperSym.startsWith('LTC') ||
+    upperSym.startsWith('SHIB') ||
+    upperSym.startsWith('PEPE') ||
+    upperSym.startsWith('TON') ||
+    upperSym.startsWith('TRX') ||
+    upperSym.startsWith('UNI');
 
   // 1. Crypto pairs trade 24/7/365 unconditionally (never closes)
   if (isCrypto) {

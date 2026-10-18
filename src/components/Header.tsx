@@ -159,7 +159,7 @@ export const Header: React.FC<HeaderProps> = ({
                 activeTab === t.id
                   ? 'bg-[#E51937] text-white shadow-xs'
                   : isDarkMode
-                  ? 'text-neutral-400 hover:text-white hover:bg-neutral-800/60'
+                  ? 'text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800/60'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
               }`}
             >
@@ -181,9 +181,9 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-500 shrink-0" />
             <div className="flex flex-col min-w-0">
-              <span className="text-[8px] sm:text-[9px] uppercase font-bold text-neutral-400 leading-none">Wallet</span>
+              <span className="text-[8px] sm:text-[9px] uppercase font-bold text-neutral-500 dark:text-neutral-400 leading-none">Wallet</span>
               <span className="text-[11px] sm:text-xs font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5 truncate">
-                ${(walletBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-[9px] text-neutral-400 font-sans">USD</span>
+                ${(walletBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} <span className="text-[9px] text-neutral-500 dark:text-neutral-400 font-sans">USD</span>
               </span>
             </div>
           </div>
@@ -211,13 +211,13 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="text-xs sm:text-sm font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400 truncate">
                   ${(selectedAccount.equity ?? selectedAccount.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
-                <span className="text-[9px] sm:text-[10px] text-neutral-400 font-sans font-semibold shrink-0">
+                <span className="text-[9px] sm:text-[10px] text-neutral-500 dark:text-neutral-400 font-sans font-semibold shrink-0">
                   {selectedAccount.currency}
                 </span>
               </div>
             </div>
             <ChevronDown
-              className={`w-3.5 h-3.5 text-neutral-400 shrink-0 transition-transform duration-200 ${
+              className={`w-3.5 h-3.5 text-neutral-500 dark:text-neutral-400 shrink-0 transition-transform duration-200 ${
                 showAccountMenu ? 'rotate-180' : ''
               }`}
             />
@@ -235,7 +235,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <div className="flex items-center justify-between pb-2 border-b border-neutral-200 dark:border-neutral-700/50 mb-2">
-              <span className="font-semibold text-slate-600 dark:text-neutral-400">My Trading Accounts</span>
+              <span className="font-semibold text-slate-600 dark:text-neutral-500 dark:text-neutral-400">My Trading Accounts</span>
               <button
                 id="btn-open-new-acc"
                 onClick={() => {
@@ -299,7 +299,7 @@ export const Header: React.FC<HeaderProps> = ({
                     </div>
 
                     <div className="flex items-center justify-between mt-1 text-[11px]">
-                      <span className="text-slate-500 dark:text-neutral-400">
+                      <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">
                         Lev: <span className="font-semibold text-slate-800 dark:text-neutral-300">{acc.leverage}</span>
                       </span>
                       <span className="font-bold font-mono text-slate-900 dark:text-white">
@@ -381,7 +381,7 @@ export const Header: React.FC<HeaderProps> = ({
             oneClickTrading
               ? 'bg-amber-500/15 border-amber-500/40 text-amber-500'
               : isDarkMode
-              ? 'bg-neutral-800/80 border-neutral-700 text-neutral-400 hover:text-white'
+              ? 'bg-neutral-800/80 border-neutral-700 text-neutral-500 dark:text-neutral-400 hover:text-white'
               : 'bg-slate-100 border-slate-200 text-slate-600'
           }`}
         >
@@ -520,7 +520,7 @@ export const Header: React.FC<HeaderProps> = ({
                   )}
                   <button
                     onClick={() => setShowNotificationDrawer(false)}
-                    className="text-slate-400 hover:text-slate-900 dark:text-neutral-400 dark:hover:text-white cursor-pointer p-1"
+                    className="text-slate-400 hover:text-slate-900 dark:text-neutral-500 dark:text-neutral-400 dark:hover:text-white cursor-pointer p-1"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -537,22 +537,22 @@ export const Header: React.FC<HeaderProps> = ({
                     <div
                       key={n.id}
                       onClick={() => onToggleNotificationRead && onToggleNotificationRead(n.id)}
-                      className={`p-2.5 border rounded-lg text-left transition-colors cursor-pointer ${
+                      className={`w-full p-3 border rounded-xl text-left transition-all cursor-pointer ${
                         !n.read
                           ? isDarkMode
-                            ? 'bg-[#E51937]/10 border-[#E51937]/40'
-                            : 'bg-red-50/70 border-red-200'
+                            ? 'bg-[#E51937]/20 border-[#E51937]/60 shadow-sm border-l-4 border-l-[#E51937]'
+                            : 'bg-red-50 border-red-300 shadow-sm border-l-4 border-l-[#E51937]'
                           : isDarkMode
-                          ? 'bg-neutral-900/80 border-neutral-800'
-                          : 'bg-slate-50 border-slate-200'
+                          ? 'bg-neutral-900/90 border-neutral-800'
+                          : 'bg-white border-slate-200 shadow-2xs'
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-start gap-1.5">
+                      <div className="flex items-start justify-between gap-3 w-full">
+                        <div className="flex items-start gap-2 flex-1">
                           {!n.read && (
-                            <span className="w-2 h-2 rounded-full bg-[#E51937] shrink-0 mt-1" />
+                            <span className="w-2 h-2 rounded-full bg-[#E51937] shrink-0 mt-1.5" />
                           )}
-                          <p className={`text-xs ${!n.read ? 'font-bold' : 'font-medium'}`}>
+                          <p className={`text-xs leading-relaxed ${!n.read ? 'font-black' : 'font-medium opacity-90'}`}>
                             {n.title}
                           </p>
                         </div>
@@ -563,21 +563,21 @@ export const Header: React.FC<HeaderProps> = ({
                               e.stopPropagation();
                               onToggleNotificationRead(n.id);
                             }}
-                            className={`text-[10px] font-semibold shrink-0 px-1.5 py-0.5 rounded border cursor-pointer ${
+                            className={`text-[10px] font-bold shrink-0 px-2 py-1 rounded-md border cursor-pointer transition-colors ${
                               !n.read
                                 ? isDarkMode
-                                  ? 'border-neutral-700 text-neutral-300 hover:bg-neutral-800'
-                                  : 'border-slate-300 text-slate-700 hover:bg-white'
+                                  ? 'border-neutral-700 bg-neutral-800 text-white hover:bg-neutral-700'
+                                  : 'border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200'
                                 : isDarkMode
-                                ? 'border-neutral-800 text-neutral-500 hover:text-neutral-300'
-                                : 'border-slate-200 text-slate-500 hover:text-slate-800'
+                                ? 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-white'
+                                : 'border-slate-200 text-slate-600 dark:text-slate-400 hover:text-slate-800'
                             }`}
                           >
                             {!n.read ? 'Mark read' : 'Mark unread'}
                           </button>
                         )}
                       </div>
-                      <span className="text-[10px] text-neutral-500 font-mono mt-1 block">
+                      <span className="text-[10px] opacity-60 font-mono mt-1.5 block">
                         {n.time}
                       </span>
                     </div>
@@ -615,7 +615,7 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={onSignOut}
               className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
                 isDarkMode
-                  ? 'border-neutral-700/60 text-neutral-400 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30'
+                  ? 'border-neutral-700/60 text-neutral-500 dark:text-neutral-400 hover:text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/30'
                   : 'border-slate-300 text-slate-700 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-300 shadow-xs'
               }`}
               title="Sign Out to Landing Page"

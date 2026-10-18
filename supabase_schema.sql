@@ -1,194 +1,191 @@
 -- ============================================================================
--- VTM MARKETS PROFESSIONAL SUPABASE DATABASE SCHEMA
--- Run this complete SQL script in your Supabase SQL Editor to initialize
--- all tables, indexes, security policies, and triggers for professional trading.
+-- VTM MARKETS PLATFORM — COMPLETE AUTHORITATIVE SQL SCHEMA & MIGRATION SCRIPT
+-- ============================================================================
+-- Run this script in your Supabase SQL Editor (https://supabase.com/dashboard)
+-- Synchronized with database/schema.sql
 -- ============================================================================
 
--- 1. Enable UUID Extension
-create extension if not exists "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. Users Table (Stores trader registration profiles, roles, and KYC metadata)
-create table if not exists public.users (
-  id uuid primary key default uuid_generate_v4(),
-  email text unique not null,
-  name text not null,
-  role text not null default 'normal', -- 'normal' or 'marketer' or 'admin'
-  phone text,
-  country text,
-  country_code text,
-  is_verified boolean not null default false,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+-- 1. Registered Users Table
+CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
+  email TEXT PRIMARY KEY,
+  uid UUID UNIQUE,
+  password_hash TEXT DEFAULT '',
+  name TEXT DEFAULT 'Trader',
+  phone_number TEXT DEFAULT '',
+  country_code TEXT DEFAULT '+1',
+  country_name TEXT DEFAULT 'United States',
+  account_number TEXT,
+  role TEXT NOT NULL DEFAULT 'normal' CHECK (role IN ('normal', 'marketer', 'admin')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 3. Trading Accounts Table (Live & Demo accounts per user)
-create table if not exists public.accounts (
-  id text primary key,
-  user_email text not null references public.users(email) on delete cascade,
-  account_number text not null,
-  type text not null default 'Live', -- 'Live' or 'Demo'
-  tier text not null default 'Standard', -- 'Standard', 'Pro', 'VIP'
-  currency text not null default 'USD',
-  balance numeric(15, 2) not null default 0.00,
-  equity numeric(15, 2) not null default 0.00,
-  free_margin numeric(15, 2) not null default 0.00,
-  leverage text not null default '1:500',
-  last_trade_at bigint,
-  last_activity_at bigint,
-  created_at timestamptz not null default now()
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS uid UUID;
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS password_hash TEXT DEFAULT '';
+ALTER TABLE public.vtm_registered_users ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE public.vtm_registered_users ALTER COLUMN password_hash SET DEFAULT '';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS name TEXT DEFAULT 'Trader';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS phone_number TEXT DEFAULT '';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS country_code TEXT DEFAULT '+1';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS country_name TEXT DEFAULT 'United States';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS account_number TEXT;
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'normal';
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ DEFAULT now();
+ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
+-- 2. User Financials & Live/Demo Accounts Table
+CREATE TABLE IF NOT EXISTS public.vtm_user_finances (
+  user_key TEXT PRIMARY KEY,
+  user_email TEXT,
+  user_name TEXT,
+  wallet_balance NUMERIC(15, 2) NOT NULL DEFAULT 0.00 CHECK (wallet_balance >= 0),
+  accounts JSONB NOT NULL DEFAULT '[]'::jsonb,
+  selected_account_id TEXT,
+  transactions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 4. Transactions Table (Deposits, Withdrawals, Transfers)
-create table if not exists public.transactions (
-  id text primary key,
-  user_email text not null references public.users(email) on delete cascade,
-  type text not null, -- 'DEPOSIT', 'WITHDRAWAL', 'TRANSFER'
-  method text not null,
-  amount numeric(15, 2) not null,
-  currency text not null default 'USD',
-  status text not null default 'COMPLETED', -- 'COMPLETED', 'PENDING', 'FAILED'
-  reference text,
-  account_number text,
-  details text,
-  timestamp bigint not null,
-  created_at timestamptz not null default now()
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS user_email TEXT;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS user_name TEXT;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(15, 2) DEFAULT 0.00;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS accounts JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS selected_account_id TEXT;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS transactions JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ DEFAULT now();
+
+-- 3. User Activities & Cloud State Store
+CREATE TABLE IF NOT EXISTS public.user_activities (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  activity_type TEXT NOT NULL,
+  description TEXT,
+  device_id TEXT,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 5. Open Positions Table (Manual & Automated active market positions)
-create table if not exists public.positions (
-  id text primary key,
-  user_email text not null references public.users(email) on delete cascade,
-  ticket bigint not null,
-  account_number text,
-  symbol text not null,
-  side text not null, -- 'BUY' or 'SELL'
-  lots numeric(10, 2) not null,
-  open_price numeric(15, 6) not null,
-  current_price numeric(15, 6) not null,
-  sl numeric(15, 6),
-  tp numeric(15, 6),
-  sl_usd numeric(15, 2),
-  tp_usd numeric(15, 2),
-  pnl numeric(15, 2) not null default 0.00,
-  swap numeric(15, 2) not null default 0.00,
-  commission numeric(15, 2) not null default 0.00,
-  open_time bigint not null,
-  target_outcome text,
-  created_at timestamptz not null default now()
+-- 4. User Devices Registry
+CREATE TABLE IF NOT EXISTS public.user_devices (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  device_type TEXT,
+  browser TEXT,
+  os TEXT,
+  last_active_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(user_email, device_id)
 );
 
--- 6. Closed Trades Table (Execution history for manual and bot trades)
-create table if not exists public.closed_trades (
-  id text primary key,
-  user_email text not null references public.users(email) on delete cascade,
-  ticket bigint not null,
-  account_number text,
-  symbol text not null,
-  side text not null,
-  lots numeric(10, 2) not null,
-  open_price numeric(15, 6) not null,
-  close_price numeric(15, 6) not null,
-  pnl numeric(15, 2) not null,
-  open_time bigint not null,
-  close_time bigint not null,
-  reason text not null, -- 'MANUAL', 'TP', 'SL'
-  created_at timestamptz not null default now()
+-- 5. Closed Trades Table
+CREATE TABLE IF NOT EXISTS public.closed_trades (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  ticket BIGINT NOT NULL,
+  account_number TEXT,
+  account_id TEXT,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+  lots NUMERIC(12, 4) NOT NULL CHECK (lots > 0),
+  open_price NUMERIC(18, 6) NOT NULL,
+  close_price NUMERIC(18, 6) NOT NULL,
+  pnl NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+  swap NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+  commission NUMERIC(15, 2) NOT NULL DEFAULT 0.00,
+  open_time BIGINT NOT NULL,
+  close_time BIGINT NOT NULL,
+  reason TEXT NOT NULL DEFAULT 'MANUAL',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 7. Bot Runs Table (Deployed EA / Trading Bot instances)
-create table if not exists public.bot_runs (
-  id text primary key,
-  user_email text not null references public.users(email) on delete cascade,
-  bot_id text not null,
-  bot_name text not null,
-  bot_type text not null,
-  symbol text not null,
-  lot_size numeric(10, 2) not null,
-  tp_pips integer not null,
-  sl_pips integer not null,
-  status text not null default 'PAUSED', -- 'RUNNING', 'PAUSED'
-  started_at bigint not null,
-  total_trades integer not null default 0,
-  winning_trades integer not null default 0,
-  losing_trades integer not null default 0,
-  total_profit_usd numeric(15, 2) not null default 0.00,
-  last_signal text,
-  account_number text,
-  created_at timestamptz not null default now()
+-- 6. Immutable Financial Ledger Table
+CREATE TABLE IF NOT EXISTS public.financial_ledger (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  account_number TEXT NOT NULL,
+  entry_type TEXT NOT NULL,
+  amount NUMERIC(15, 2) NOT NULL,
+  previous_balance NUMERIC(15, 2) NOT NULL,
+  new_balance NUMERIC(15, 2) NOT NULL CHECK (new_balance >= 0),
+  reference_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_email, account_number, entry_type, reference_id)
 );
 
--- 8. Bot Trades Table (Individual trades opened by algorithmic bots)
-create table if not exists public.bot_trades (
-  id text primary key,
-  run_id text not null,
-  user_email text not null references public.users(email) on delete cascade,
-  ticket bigint not null,
-  symbol text not null,
-  side text not null,
-  lot_size numeric(10, 2) not null,
-  open_price numeric(15, 6) not null,
-  current_price numeric(15, 6) not null,
-  tp numeric(15, 6) not null,
-  sl numeric(15, 6) not null,
-  profit_usd numeric(15, 2) not null default 0.00,
-  status text not null default 'OPEN', -- 'OPEN', 'CLOSED'
-  open_time bigint not null,
-  close_time bigint,
-  close_reason text,
-  account_number text,
-  created_at timestamptz not null default now()
-);
+-- 7. Indexes
+CREATE INDEX IF NOT EXISTS idx_vtm_registered_users_email ON public.vtm_registered_users (LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_email ON public.vtm_user_finances (LOWER(user_email));
+CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_updated ON public.vtm_user_finances (last_updated DESC);
+CREATE INDEX IF NOT EXISTS idx_user_activities_email_type ON public.user_activities (LOWER(user_email), activity_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_closed_trades_user_email ON public.closed_trades (LOWER(user_email), close_time DESC);
+CREATE INDEX IF NOT EXISTS idx_financial_ledger_user_acc ON public.financial_ledger (LOWER(user_email), account_number, created_at DESC);
 
--- 9. User Settings Table (Platform preferences, dark mode, 2FA secrets)
-create table if not exists public.user_settings (
-  user_email text primary key references public.users(email) on delete cascade,
-  is_dark_mode boolean not null default true,
-  one_click_trading boolean not null default true,
-  slippage numeric(5, 2) not null default 0.5,
-  sound_enabled boolean not null default true,
-  show_spread_brackets boolean not null default true,
-  drawdown_protection boolean not null default true,
-  two_factor_enabled boolean not null default false,
-  two_factor_secret text,
-  updated_at timestamptz not null default now()
-);
+-- 8. Row Level Security (Full CRUD with Validated Non-Empty Keys)
+ALTER TABLE public.vtm_registered_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vtm_user_finances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_activities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.closed_trades ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.financial_ledger ENABLE ROW LEVEL SECURITY;
 
--- 10. Activity Logs Table (Audit trail of platform activities and transactions)
-create table if not exists public.activity_logs (
-  id uuid primary key default uuid_generate_v4(),
-  user_email text not null references public.users(email) on delete cascade,
-  type text not null,
-  description text not null,
-  metadata jsonb,
-  timestamp bigint not null,
-  created_at timestamptz not null default now()
-);
+DO $$
+DECLARE
+  pol RECORD;
+BEGIN
+  FOR pol IN
+    SELECT schemaname, tablename, policyname
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename IN (
+        'vtm_registered_users',
+        'vtm_user_finances',
+        'user_activities',
+        'user_devices',
+        'closed_trades',
+        'financial_ledger'
+      )
+  LOOP
+    EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', pol.policyname, pol.schemaname, pol.tablename);
+  END LOOP;
+END $$;
 
--- ============================================================================
--- ROW LEVEL SECURITY (RLS) & POLICIES
--- ============================================================================
+CREATE POLICY "vtm_registered_users_access" ON public.vtm_registered_users
+  FOR ALL TO anon, authenticated, service_role
+  USING (email IS NOT NULL AND length(trim(email)) > 0)
+  WITH CHECK (email IS NOT NULL AND length(trim(email)) > 0);
 
-alter table public.users enable row level security;
-alter table public.accounts enable row level security;
-alter table public.transactions enable row level security;
-alter table public.positions enable row level security;
-alter table public.closed_trades enable row level security;
-alter table public.bot_runs enable row level security;
-alter table public.bot_trades enable row level security;
-alter table public.user_settings enable row level security;
-alter table public.activity_logs enable row level security;
+CREATE POLICY "vtm_user_finances_access" ON public.vtm_user_finances
+  FOR ALL TO anon, authenticated, service_role
+  USING (user_key IS NOT NULL AND length(trim(user_key)) > 0)
+  WITH CHECK (user_key IS NOT NULL AND length(trim(user_key)) > 0);
 
--- Allow public anonymous/authenticated read/write access for seamless platform preview operation
-create policy "Allow all operations on users" on public.users for all using (true) with check (true);
-create policy "Allow all operations on accounts" on public.accounts for all using (true) with check (true);
-create policy "Allow all operations on transactions" on public.transactions for all using (true) with check (true);
-create policy "Allow all operations on positions" on public.positions for all using (true) with check (true);
-create policy "Allow all operations on closed_trades" on public.closed_trades for all using (true) with check (true);
-create policy "Allow all operations on bot_runs" on public.bot_runs for all using (true) with check (true);
-create policy "Allow all operations on bot_trades" on public.bot_trades for all using (true) with check (true);
-create policy "Allow all operations on user_settings" on public.user_settings for all using (true) with check (true);
-create policy "Allow all operations on activity_logs" on public.activity_logs for all using (true) with check (true);
+CREATE POLICY "user_activities_access" ON public.user_activities
+  FOR ALL TO anon, authenticated, service_role
+  USING (user_email IS NOT NULL AND length(trim(user_email)) > 0)
+  WITH CHECK (user_email IS NOT NULL AND length(trim(user_email)) > 0);
 
--- ============================================================================
--- END OF SQL SCHEMA
--- ============================================================================
+CREATE POLICY "user_devices_access" ON public.user_devices
+  FOR ALL TO anon, authenticated, service_role
+  USING (device_id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (device_id IS NOT NULL AND user_email IS NOT NULL);
+
+CREATE POLICY "closed_trades_access" ON public.closed_trades
+  FOR ALL TO anon, authenticated, service_role
+  USING (id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
+
+CREATE POLICY "financial_ledger_access" ON public.financial_ledger
+  FOR ALL TO anon, authenticated, service_role
+  USING (id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;

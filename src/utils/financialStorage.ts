@@ -2,7 +2,7 @@ import { TradingAccount, Transaction } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
 import { INITIAL_ACCOUNTS, INITIAL_TRANSACTIONS } from '../data/initialData';
 import { supabaseService } from '../services/supabaseService';
-import { getUsdKesRate } from '../services/hashbackService';
+import { getUsdKesRate, getUsdKesWithdrawRate } from '../services/hashbackService';
 
 export interface UserFinancialState {
   walletBalance: number;
@@ -837,6 +837,23 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
   return result;
 }
 
+export interface PlatformTransactionRecord {
+  id: string;
+  type: 'DEPOSIT' | 'WITHDRAWAL' | 'INTERNAL_TRANSFER';
+  userEmail: string;
+  userName: string;
+  userId: string;
+  accountNumber?: string;
+  amountUsd: number;
+  amountKes?: number;
+  method: string;
+  status: 'COMPLETED' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'REJECTED';
+  timestamp: number;
+  dateStr: string;
+  referenceId?: string;
+  details?: string;
+}
+
 /**
  * Super Admin function: Gathers all deposits made across the entire platform.
  * Strictly sums ONLY COMPLETED deposits (failed, cancelled, or pending are never included in totalDepositedUsd).
@@ -902,6 +919,106 @@ export function getAllPlatformDeposits(): {
     totalDepositedUsd,
     totalDepositedKes,
     deposits,
+  };
+}
+
+/**
+ * Super Admin function: Gathers all deposits and withdrawals across the entire platform
+ * with full transaction audit fields, status mapping, and period metrics.
+ */
+export function getAllPlatformTransactions(): {
+  totalVolumeUsd: number;
+  approvedVolumeUsd: number;
+  pendingVolumeUsd: number;
+  failedVolumeUsd: number;
+  successRate: number;
+  transactions: PlatformTransactionRecord[];
+} {
+  const users = getAllRegisteredUsers();
+  const transactions: PlatformTransactionRecord[] = [];
+  const USD_KES = getUsdKesRate();
+  const WITHDRAW_RATE = getUsdKesWithdrawRate();
+
+  users.forEach((u) => {
+    const finances = loadUserFinancials(u);
+    const txs = sanitizeRealTransactions(finances?.transactions);
+
+    txs.forEach((tx) => {
+      const amt = Math.abs(Number(tx.amount || 0));
+      const rawStatus = String(tx.status || '').toUpperCase();
+      let status: PlatformTransactionRecord['status'] = 'COMPLETED';
+      if (rawStatus === 'PENDING') status = 'PENDING';
+      else if (rawStatus === 'FAILED') status = 'FAILED';
+      else if (rawStatus === 'CANCELLED' || rawStatus === 'CANCELED') status = 'CANCELLED';
+      else if (rawStatus === 'REJECTED') status = 'REJECTED';
+      else status = 'COMPLETED';
+
+      const type: PlatformTransactionRecord['type'] =
+        tx.type === 'WITHDRAWAL'
+          ? 'WITHDRAWAL'
+          : tx.type === 'INTERNAL_TRANSFER'
+          ? 'INTERNAL_TRANSFER'
+          : 'DEPOSIT';
+
+      const rate = type === 'WITHDRAWAL' ? WITHDRAW_RATE : USD_KES;
+      const dateObj = new Date(tx.timestamp || Date.now());
+
+      transactions.push({
+        id: tx.id || `tx-${u.id}-${tx.timestamp}`,
+        type,
+        userEmail: u.email || 'Trader',
+        userName: u.name || 'Trader',
+        userId: u.id,
+        accountNumber: tx.accountNumber || u.accountNumber,
+        amountUsd: amt,
+        amountKes: Number((amt * rate).toFixed(2)),
+        method: tx.method || (type === 'WITHDRAWAL' ? 'Bank / M-PESA B2C' : 'M-PESA Express'),
+        status,
+        timestamp: tx.timestamp || Date.now(),
+        dateStr: dateObj.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+        referenceId: tx.reference || (tx as any).referenceId || `REF-${String(tx.id || '').slice(-8).toUpperCase()}`,
+        details: tx.details,
+      });
+    });
+  });
+
+  // Sort chronologically descending
+  transactions.sort((a, b) => b.timestamp - a.timestamp);
+
+  let approvedVolumeUsd = 0;
+  let pendingVolumeUsd = 0;
+  let failedVolumeUsd = 0;
+  let totalVolumeUsd = 0;
+  let completedCount = 0;
+
+  transactions.forEach((t) => {
+    totalVolumeUsd += t.amountUsd;
+    if (t.status === 'COMPLETED') {
+      approvedVolumeUsd += t.amountUsd;
+      completedCount++;
+    } else if (t.status === 'PENDING') {
+      pendingVolumeUsd += t.amountUsd;
+    } else {
+      failedVolumeUsd += t.amountUsd;
+    }
+  });
+
+  const totalCount = transactions.length;
+  const successRate = totalCount > 0 ? Number(((completedCount / totalCount) * 100).toFixed(1)) : 100;
+
+  return {
+    totalVolumeUsd: Number(totalVolumeUsd.toFixed(2)),
+    approvedVolumeUsd: Number(approvedVolumeUsd.toFixed(2)),
+    pendingVolumeUsd: Number(pendingVolumeUsd.toFixed(2)),
+    failedVolumeUsd: Number(failedVolumeUsd.toFixed(2)),
+    successRate,
+    transactions,
   };
 }
 
@@ -1258,7 +1375,7 @@ export function executeInternalTransfer(
   // Record transaction
   const ref = `VTM-TRF-${Math.floor(10000000 + Math.random() * 90000000)}`;
   const newTx: Transaction = {
-    id: `tx-${Date.now()}`,
+    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     type: 'INTERNAL_TRANSFER',
     method: 'Internal Transfer',
     amount,
@@ -1356,7 +1473,7 @@ export function adminUpdateUserAccount(
     if (addedDepositUsd > 0) {
       const ref = `ADM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
       const newTx: Transaction = {
-        id: `tx-${Date.now()}`,
+        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         type: 'DEPOSIT',
         method: 'Institutional Direct Deposit',
         amount: Number(addedDepositUsd.toFixed(2)),

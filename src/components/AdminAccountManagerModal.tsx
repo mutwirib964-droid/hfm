@@ -18,6 +18,9 @@ import {
   Calendar,
   SlidersHorizontal,
   Hash,
+  Download,
+  ArrowUpRight,
+  FileText,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -28,8 +31,10 @@ import {
   saveUserFinancials,
   assignUserRole,
   getAllPlatformDeposits,
+  getAllPlatformTransactions,
   getAllPlatformUsersWithMetrics,
   PlatformDepositTransaction,
+  PlatformTransactionRecord,
   PlatformUserMetric,
   MASTER_ADMIN_EMAIL,
   MASTER_ADMIN_UID,
@@ -81,15 +86,21 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'admin' | 'marketer' | 'normal'>('ALL');
+  const [txStatusFilter, setTxStatusFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'FAILED'>('ALL');
+  const [txTypeFilter, setTxTypeFilter] = useState<'ALL' | 'DEPOSIT' | 'WITHDRAWAL'>('ALL');
+  const [txDateFilter, setTxDateFilter] = useState<'today' | 'yesterday' | '7days' | 'month' | 'all' | 'custom'>('all');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
 
-  // Users and Deposits state
+  // Users, Deposits, and Transactions state
   const [userMetrics, setUserMetrics] = useState<PlatformUserMetric[]>([]);
   const [depositsData, setDepositsData] = useState<{
     totalDepositedUsd: number;
     totalDepositedKes: number;
     deposits: PlatformDepositTransaction[];
   }>({ totalDepositedUsd: 0, totalDepositedKes: 0, deposits: [] });
+  const [allTransactions, setAllTransactions] = useState<PlatformTransactionRecord[]>([]);
 
   // Selected user for Account Balances & Role Editor
   const [selectedUserEmail, setSelectedUserEmail] = useState<string>('');
@@ -108,6 +119,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     setUserMetrics(metrics);
     const deposits = getAllPlatformDeposits();
     setDepositsData(deposits);
+    const txObj = getAllPlatformTransactions();
+    setAllTransactions(txObj.transactions);
     return metrics;
   }, []);
 
@@ -392,18 +405,138 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     });
   }, [userMetrics, searchQuery, roleFilter]);
 
-  // Filtered deposits
-  const filteredDeposits = useMemo(() => {
+  // Comprehensive Filtered Transactions (Deposits and Withdrawals)
+  const filteredTransactions = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    if (!q) return depositsData.deposits;
-    return depositsData.deposits.filter(
-      (d) =>
-        d.userEmail.toLowerCase().includes(q) ||
-        d.userName.toLowerCase().includes(q) ||
-        (d.referenceId && d.referenceId.toLowerCase().includes(q)) ||
-        d.method.toLowerCase().includes(q)
-    );
-  }, [depositsData.deposits, searchQuery]);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
+    const sevenDaysAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+
+    let customStartMs = 0;
+    let customEndMs = Infinity;
+    if (txDateFilter === 'custom') {
+      if (customStartDate) customStartMs = new Date(`${customStartDate}T00:00:00`).getTime();
+      if (customEndDate) customEndMs = new Date(`${customEndDate}T23:59:59.999`).getTime();
+    }
+
+    return allTransactions.filter((tx) => {
+      // 1. Text Search
+      const matchesSearch =
+        !q ||
+        tx.userEmail.toLowerCase().includes(q) ||
+        tx.userName.toLowerCase().includes(q) ||
+        (tx.referenceId && tx.referenceId.toLowerCase().includes(q)) ||
+        tx.method.toLowerCase().includes(q) ||
+        (tx.accountNumber && tx.accountNumber.toLowerCase().includes(q));
+
+      // 2. Transaction Type Filter
+      const matchesType =
+        txTypeFilter === 'ALL' || tx.type === txTypeFilter;
+
+      // 3. Status Filter
+      const rawStatus = (tx.status || '').toUpperCase().trim();
+      const isFailed =
+        rawStatus.includes('FAIL') ||
+        rawStatus.includes('REJECT') ||
+        rawStatus.includes('CANCEL') ||
+        rawStatus.includes('ERROR');
+      const isPending =
+        rawStatus.includes('PEND') ||
+        rawStatus.includes('PROCESS') ||
+        rawStatus === 'PENDING';
+      const isCompleted = !isFailed && !isPending;
+
+      const matchesStatus =
+        txStatusFilter === 'ALL' ||
+        (txStatusFilter === 'PENDING' && isPending) ||
+        (txStatusFilter === 'COMPLETED' && isCompleted) ||
+        (txStatusFilter === 'FAILED' && isFailed);
+
+      // 4. Date Range Filter
+      const ts = tx.timestamp || 0;
+      let matchesDate = true;
+      if (txDateFilter === 'today') {
+        matchesDate = ts >= startOfToday;
+      } else if (txDateFilter === 'yesterday') {
+        matchesDate = ts >= startOfYesterday && ts < startOfToday;
+      } else if (txDateFilter === '7days') {
+        matchesDate = ts >= sevenDaysAgo;
+      } else if (txDateFilter === 'month') {
+        matchesDate = ts >= startOfMonth;
+      } else if (txDateFilter === 'custom') {
+        matchesDate = ts >= customStartMs && ts <= customEndMs;
+      }
+
+      return matchesSearch && matchesType && matchesStatus && matchesDate;
+    });
+  }, [allTransactions, searchQuery, txTypeFilter, txStatusFilter, txDateFilter, customStartDate, customEndDate]);
+
+  // Backward-compatible filteredDeposits
+  const filteredDeposits = useMemo(() => {
+    return filteredTransactions.filter((t) => t.type === 'DEPOSIT');
+  }, [filteredTransactions]);
+
+  // Filtered period transaction metrics
+  const transactionPeriodMetrics = useMemo(() => {
+    let totalVolume = 0;
+    let approvedVolume = 0;
+    let pendingVolume = 0;
+    let failedVolume = 0;
+    let completedCount = 0;
+
+    filteredTransactions.forEach((tx) => {
+      totalVolume += tx.amountUsd;
+      if (tx.status === 'COMPLETED') {
+        approvedVolume += tx.amountUsd;
+        completedCount++;
+      } else if (tx.status === 'PENDING') {
+        pendingVolume += tx.amountUsd;
+      } else {
+        failedVolume += tx.amountUsd;
+      }
+    });
+
+    const totalCount = filteredTransactions.length;
+    const successRate = totalCount > 0 ? Number(((completedCount / totalCount) * 100).toFixed(1)) : 100;
+
+    return {
+      totalVolume: Number(totalVolume.toFixed(2)),
+      approvedVolume: Number(approvedVolume.toFixed(2)),
+      pendingVolume: Number(pendingVolume.toFixed(2)),
+      failedVolume: Number(failedVolume.toFixed(2)),
+      totalCount,
+      completedCount,
+      successRate,
+    };
+  }, [filteredTransactions]);
+
+  // CSV Export for filtered transactions
+  const handleExportTransactionsCsv = () => {
+    if (filteredTransactions.length === 0) return;
+    const headers = ['Date', 'Type', 'User Name', 'User Email', 'Account', 'Payment Method', 'Reference', 'Amount USD', 'Amount KES', 'Status'];
+    const rows = filteredTransactions.map((t) => [
+      `"${t.dateStr}"`,
+      `"${t.type}"`,
+      `"${t.userName.replace(/"/g, '""')}"`,
+      `"${t.userEmail}"`,
+      `"${t.accountNumber || ''}"`,
+      `"${t.method.replace(/"/g, '""')}"`,
+      `"${t.referenceId || ''}"`,
+      t.amountUsd.toFixed(2),
+      (t.amountKes || 0).toFixed(2),
+      `"${t.status}"`,
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `vtm_financial_transactions_${Date.now()}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   // Platform Aggregate Totals (Live Trading Accounts strictly in terms of numbers/count)
   const platformStats = useMemo(() => {
@@ -1354,39 +1487,230 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           </section>
         )}
 
-        {/* TAB 3: MONEY DEPOSITED LEDGER */}
+        {/* TAB 3: MONEY DEPOSITED & WITHDRAWALS TRANSACTION LEDGER */}
         {activeTab === 'deposits' && (
-          <section className={`rounded-xl border overflow-hidden ${cardBg}`}>
-            <div
-              className={`p-4 border-b flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 ${
-                isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'
-              }`}
-            >
-              <div className="relative flex-1 max-w-md">
-                <Search className={`w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 ${mutedText}`} />
-                <input
-                  type="text"
-                  placeholder="Search deposits by name, email, or payment method..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`w-full pl-9 pr-4 py-2 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
-                />
+          <section className={`rounded-xl border overflow-hidden ${cardBg} space-y-4 p-4`}>
+            {/* Header: Title, Search, and Export */}
+            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pb-3 border-b border-white/[0.08]">
+              <div>
+                <h2 className="text-base font-bold flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-[#E51937]" />
+                  <span>Financial Transactions &amp; Audit Ledger</span>
+                </h2>
+                <p className={`text-xs ${mutedText} mt-0.5`}>
+                  Complete verifiable transaction history of all deposits, withdrawals, and account movements.
+                </p>
               </div>
 
-              <div className={`text-xs font-mono tabular-nums ${mutedText}`}>
-                Total Deposited:{' '}
-                <strong className="text-emerald-600 dark:text-emerald-400">
-                  ${depositsData.totalDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </strong>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleExportTransactionsCsv}
+                  disabled={filteredTransactions.length === 0}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+                    isDarkMode
+                      ? 'border-white/[0.1] bg-white/[0.05] hover:bg-white/[0.1] text-slate-200'
+                      : 'border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-800'
+                  }`}
+                  title="Export filtered records to CSV"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Export CSV</span>
+                </button>
               </div>
             </div>
 
-            {filteredDeposits.length === 0 ? (
+            {/* Filter Controls Row */}
+            <div className="space-y-3">
+              {/* Row 1: Search and Type Filters */}
+              <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search className={`w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 ${mutedText}`} />
+                  <input
+                    type="text"
+                    placeholder="Search by name, email, reference, method, or account..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className={`w-full pl-9 pr-4 py-2 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                  />
+                </div>
+
+                {/* Transaction Type Filter */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`text-xs font-semibold ${mutedText} mr-1`}>Type:</span>
+                  {(['ALL', 'DEPOSIT', 'WITHDRAWAL'] as const).map((tp) => (
+                    <button
+                      key={tp}
+                      type="button"
+                      onClick={() => setTxTypeFilter(tp)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        txTypeFilter === tp
+                          ? 'bg-[#E51937] text-white'
+                          : isDarkMode
+                          ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      {tp === 'ALL' ? 'All Types' : tp === 'DEPOSIT' ? 'Deposits' : 'Withdrawals'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Row 2: Status & Date Filters */}
+              <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 pt-2 border-t border-white/[0.06]">
+                {/* Status Filter */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`text-xs font-semibold ${mutedText} mr-1`}>Status:</span>
+                  <button
+                    type="button"
+                    onClick={() => setTxStatusFilter('ALL')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      txStatusFilter === 'ALL'
+                        ? 'bg-[#E51937] text-white'
+                        : isDarkMode
+                        ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
+                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                    }`}
+                  >
+                    All Statuses
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTxStatusFilter('COMPLETED')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      txStatusFilter === 'COMPLETED'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                        : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span>Completed</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTxStatusFilter('PENDING')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      txStatusFilter === 'PENDING'
+                        ? 'bg-amber-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'bg-amber-500/10 text-amber-400 hover:bg-amber-500/20'
+                        : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>Pending</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTxStatusFilter('FAILED')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      txStatusFilter === 'FAILED'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'bg-rose-500/10 text-rose-400 hover:bg-rose-500/20'
+                        : 'bg-rose-50 text-rose-700 hover:bg-rose-100'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                    <span>Cancelled / Failed</span>
+                  </button>
+                </div>
+
+                {/* Date Filter */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className={`text-xs font-semibold ${mutedText} mr-1`}>Date:</span>
+                  {[
+                    { key: 'today', label: 'Today' },
+                    { key: 'yesterday', label: 'Yesterday' },
+                    { key: '7days', label: '7 Days' },
+                    { key: 'month', label: 'This Month' },
+                    { key: 'all', label: 'All History' },
+                    { key: 'custom', label: 'Custom' },
+                  ].map((df) => (
+                    <button
+                      key={df.key}
+                      type="button"
+                      onClick={() => setTxDateFilter(df.key as any)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                        txDateFilter === df.key
+                          ? 'bg-[#E51937] text-white'
+                          : isDarkMode
+                          ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      {df.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom Date Pickers */}
+              {txDateFilter === 'custom' && (
+                <div className="flex items-center gap-2 text-xs font-mono pt-1">
+                  <span className={mutedText}>From:</span>
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className={`px-2 py-1 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                  />
+                  <span className={mutedText}>To:</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className={`px-2 py-1 rounded-lg border text-xs focus:outline-none focus:border-[#E51937] ${inputBg}`}
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* PERIOD SUMMARY METRICS KPI CARD */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Total Volume</span>
+                <span className="text-base font-bold font-mono tracking-tight text-white dark:text-white">
+                  ${transactionPeriodMetrics.totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>{transactionPeriodMetrics.totalCount} transactions</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Approved Volume</span>
+                <span className="text-base font-bold font-mono tracking-tight text-emerald-500">
+                  ${transactionPeriodMetrics.approvedVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 text-emerald-500/80`}>{transactionPeriodMetrics.completedCount} completed</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Pending Volume</span>
+                <span className="text-base font-bold font-mono tracking-tight text-amber-500">
+                  ${transactionPeriodMetrics.pendingVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>In flight</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Success Rate</span>
+                <span className="text-base font-bold font-mono tracking-tight text-sky-400">
+                  {transactionPeriodMetrics.successRate}%
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Execution reliability</span>
+              </div>
+            </div>
+
+            {/* TRANSACTIONS TABLE */}
+            {filteredTransactions.length === 0 ? (
               <div className={`p-10 text-center text-xs ${mutedText}`}>
-                No deposit records found.
+                No transaction records match the current filters.
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr
@@ -1394,13 +1718,14 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                         isDarkMode ? 'border-white/[0.08] bg-white/[0.02]' : 'border-slate-200 bg-slate-50'
                       }`}
                     >
-                      <th className="py-3.5 px-4">Date</th>
-                      <th className="py-3.5 px-4">User Name &amp; Email</th>
-                      <th className="py-3.5 px-4">Payment Method</th>
-                      <th className="py-3.5 px-4">Reference</th>
-                      <th className="py-3.5 px-4 text-right">Amount (USD)</th>
-                      <th className="py-3.5 px-4 text-right">Amount (KES)</th>
-                      <th className="py-3.5 px-4 text-right">Status</th>
+                      <th className="py-3 px-4">Date &amp; Time</th>
+                      <th className="py-3 px-4">Type</th>
+                      <th className="py-3 px-4">User &amp; Account</th>
+                      <th className="py-3 px-4">Payment Method</th>
+                      <th className="py-3 px-4">Reference</th>
+                      <th className="py-3 px-4 text-right">Amount (USD)</th>
+                      <th className="py-3 px-4 text-right">Amount (KES)</th>
+                      <th className="py-3 px-4 text-right">Status</th>
                     </tr>
                   </thead>
                   <tbody
@@ -1408,39 +1733,72 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                       isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-200'
                     }`}
                   >
-                    {filteredDeposits.map((d) => (
-                      <tr
-                        key={d.id}
-                        className={`transition-colors ${
-                          isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        <td className={`py-3.5 px-4 whitespace-nowrap ${mutedText}`}>
-                          {d.dateStr}
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <div className="font-semibold">
-                            {d.userName}
-                          </div>
-                          <div className={`text-[11px] ${mutedText}`}>{d.userEmail}</div>
-                        </td>
-                        <td className={`py-3.5 px-4 font-medium ${secondaryText}`}>
-                          {d.method}
-                        </td>
-                        <td className={`py-3.5 px-4 font-mono ${mutedText}`}>
-                          {d.referenceId}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
-                          +${d.amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className={`py-3.5 px-4 text-right font-mono tabular-nums ${secondaryText}`}>
-                          KES {(d.amountKes || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3.5 px-4 text-right text-emerald-600 dark:text-emerald-400 font-medium">
-                          {d.status}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredTransactions.map((tx) => {
+                      const isDeposit = tx.type === 'DEPOSIT';
+                      const isCompleted = tx.status === 'COMPLETED';
+                      const isPending = tx.status === 'PENDING';
+                      return (
+                        <tr
+                          key={tx.id}
+                          className={`transition-colors ${
+                            isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <td className={`py-3 px-4 whitespace-nowrap ${mutedText}`}>
+                            {tx.dateStr}
+                          </td>
+                          <td className="py-3 px-4">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                                isDeposit
+                                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                  : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                              }`}
+                            >
+                              {tx.type}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="font-semibold">{tx.userName}</div>
+                            <div className={`text-[11px] ${mutedText}`}>{tx.userEmail}</div>
+                            {tx.accountNumber && (
+                              <div className="text-[10px] font-mono text-slate-400">
+                                Acc: {tx.accountNumber}
+                              </div>
+                            )}
+                          </td>
+                          <td className={`py-3 px-4 font-medium ${secondaryText}`}>
+                            {tx.method}
+                          </td>
+                          <td className={`py-3 px-4 font-mono text-[11px] ${mutedText}`}>
+                            {tx.referenceId}
+                          </td>
+                          <td
+                            className={`py-3 px-4 text-right font-mono tabular-nums font-semibold ${
+                              isDeposit ? 'text-emerald-500' : 'text-rose-400'
+                            }`}
+                          >
+                            {isDeposit ? '+' : '-'}${tx.amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className={`py-3 px-4 text-right font-mono tabular-nums ${secondaryText}`}>
+                            KES {(tx.amountKes || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                isCompleted
+                                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                                  : isPending
+                                  ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                                  : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                              }`}
+                            >
+                              {tx.status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
