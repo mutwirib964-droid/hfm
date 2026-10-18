@@ -323,33 +323,7 @@ export default function App() {
           return updated;
         });
       } else if (safeRole === 'normal') {
-        setBotTrades((prevTrades) => {
-          const updated = prevTrades.map((t) => {
-            const owningAcc = accountsRef.current.find(
-              (a) => a.id === t.accountId || a.accountNumber === t.accountNumber
-            );
-            if (t.status === 'OPEN' && owningAcc && owningAcc.type === 'Live') {
-              return { ...t, targetOutcome: 'LOSS' as const };
-            }
-            return t;
-          });
-          botTradesRef.current = updated;
-          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
-          return updated;
-        });
-        setPositions((prevPositions) => {
-          const updated = prevPositions.map((p) => {
-            const owningAcc = accountsRef.current.find(
-              (a) => a.id === p.accountId || a.accountNumber === p.accountNumber
-            );
-            if (owningAcc && owningAcc.type === 'Live') {
-              return { ...p, targetOutcome: 'LOSS' as const };
-            }
-            return p;
-          });
-          positionsRef.current = updated;
-          return updated;
-        });
+        // Retail live account winrates are handled by evaluateTargetWinOrLoss (max 15%)
       }
     };
 
@@ -600,17 +574,20 @@ export default function App() {
               false
             );
             const mergedMap = new Map<string, BotRunInstance>();
-            // Use instance ID (r.id or r.runId) as key, NOT template ID (r.botId), to support multiple instances of the same bot
-            for (const r of botRunsRef.current) {
+            // Remote runs from Supabase cloud take priority across all devices for the same user account
+            for (const r of cleanedRemoteRuns) {
               if (r && r.explicitUserRun !== false) {
                 const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
                 mergedMap.set(key, r);
               }
             }
-            for (const r of cleanedRemoteRuns) {
-              const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
-              if (r && r.explicitUserRun !== false && !mergedMap.has(key)) {
-                mergedMap.set(key, r);
+            // Add local-only runs if not yet present
+            for (const r of botRunsRef.current) {
+              if (r && r.explicitUserRun !== false) {
+                const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
+                if (!mergedMap.has(key)) {
+                  mergedMap.set(key, r);
+                }
               }
             }
             const finalRuns = sanitizeAndFilterBotRuns(
@@ -633,23 +610,21 @@ export default function App() {
                 .catch(() => {});
             }
 
-            if (isInitialMount) {
-              const rawTrades = [
-                ...(Array.isArray(remoteBots.botTrades) ? remoteBots.botTrades : []),
-                ...botTradesRef.current,
-              ];
-              const dedupTradesMap = new Map<string, BotTrade>();
-              for (const t of rawTrades) {
-                if (t && t.id) dedupTradesMap.set(t.id, t);
-              }
-              const cleanedTrades = filterTradesForValidBotRuns(
-                Array.from(dedupTradesMap.values()),
-                finalRuns
-              );
-              botTradesRef.current = cleanedTrades;
-              setBotTrades(cleanedTrades);
-              saveStoredBotTrades(cleanedTrades, remote.profile.email);
+            const rawTrades = [
+              ...(Array.isArray(remoteBots.botTrades) ? remoteBots.botTrades : []),
+              ...botTradesRef.current,
+            ];
+            const dedupTradesMap = new Map<string, BotTrade>();
+            for (const t of rawTrades) {
+              if (t && t.id) dedupTradesMap.set(t.id, t);
             }
+            const cleanedTrades = filterTradesForValidBotRuns(
+              Array.from(dedupTradesMap.values()),
+              finalRuns
+            );
+            botTradesRef.current = cleanedTrades;
+            setBotTrades(cleanedTrades);
+            saveStoredBotTrades(cleanedTrades, remote.profile.email);
           }
         }
         isCloudBotsLoadedRef.current = true;
@@ -5334,6 +5309,12 @@ export default function App() {
             finalExitPrice,
             activeTrade.lotSize
           );
+
+          if (shouldTakeProfit) {
+            profitUsd = Math.max(profitUsd, Number(tpTargetUsd.toFixed(2)));
+          } else if (shouldCloseLoss) {
+            profitUsd = -Math.min(Math.abs(profitUsd), Number(slTargetUsd.toFixed(2)));
+          }
 
           // Capital protection: clamp loss to available account balance so balance never goes negative
           const currentAccForClamp = tradeOwningAcc;
