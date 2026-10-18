@@ -731,7 +731,7 @@ export interface PlatformDepositTransaction {
   amountUsd: number;
   amountKes?: number;
   method: string;
-  status: 'COMPLETED' | 'PENDING' | 'FAILED' | 'REJECTED';
+  status: 'COMPLETED' | 'PENDING' | 'FAILED';
   timestamp: number;
   dateStr: string;
   referenceId?: string;
@@ -857,13 +857,12 @@ export function getAllPlatformDeposits(): {
     txs.forEach((tx) => {
       if (tx.type === 'DEPOSIT') {
         const amt = Math.abs(Number(tx.amount || 0));
-        const status: 'COMPLETED' | 'PENDING' | 'FAILED' | 'REJECTED' =
+        const rawStatus = String(tx.status || '').toUpperCase();
+        const status: 'COMPLETED' | 'PENDING' | 'FAILED' =
           rawStatus === 'COMPLETED'
             ? 'COMPLETED'
             : rawStatus === 'PENDING'
             ? 'PENDING'
-            : rawStatus === 'REJECTED'
-            ? 'REJECTED'
             : 'FAILED';
         const dateObj = new Date(tx.timestamp || Date.now());
         deposits.push({

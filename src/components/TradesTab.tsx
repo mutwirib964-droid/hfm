@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import {
   Position,
   PendingOrder,
@@ -10,19 +10,17 @@ import {
   ChartType,
 } from '../types';
 import {
-  Smartphone,
-  Clock,
   TrendingUp,
   TrendingDown,
   X,
-  Edit3,
-  Check,
   Sliders,
-  DollarSign,
-  AlertCircle,
-  ChevronDown,
+  Check,
+  Smartphone,
+  ChevronRight,
+  Clock,
+  CheckCircle2,
 } from 'lucide-react';
-import { getTradeHistoryDateBoundaries, calculateTradeHistorySummary } from '../utils/tradingEngine';
+import { calculateBotPnL } from '../services/botTradingService';
 
 interface TradesTabProps {
   account: TradingAccount | null;
@@ -34,15 +32,17 @@ interface TradesTabProps {
   onCancelPendingOrder: (id: string) => void;
   onUpdatePositionTpSl?: (id: string, sl: number | null, tp: number | null) => void;
   isDarkMode?: boolean;
+  // Chart synchronization
   instruments?: Instrument[];
   selectedSymbol?: string;
-  onSelectSymbol?: (sym: string) => void;
+  onSelectSymbol?: (symbol: string) => void;
+  candles?: Candle[];
+  timeframe?: Timeframe;
+  onTimeframeChange?: (tf: Timeframe) => void;
+  chartType?: ChartType;
+  onChartTypeChange?: (type: ChartType) => void;
+  tickDirection?: 'UP' | 'DOWN' | 'NEUTRAL';
 }
-
-const fmt = (val: number | undefined | null, decimals = 4): string => {
-  if (val === undefined || val === null || isNaN(Number(val))) return '0.00';
-  return Number(val).toFixed(decimals);
-};
 
 export const TradesTab: React.FC<TradesTabProps> = ({
   account,
@@ -53,97 +53,67 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   onCloseAllPositions,
   onCancelPendingOrder,
   onUpdatePositionTpSl,
-  isDarkMode = true,
+  isDarkMode = false,
   instruments = [],
   selectedSymbol = 'EURUSD',
   onSelectSymbol,
+  candles = [],
+  timeframe = '1H',
+  onTimeframeChange = () => {},
+  chartType = 'candles',
+  onChartTypeChange = () => {},
+  tickDirection = 'NEUTRAL',
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'open' | 'pending' | 'closed'>('open');
-  
-  // History time filter state: 'day' | 'week' | 'month' | 'all'
-  const [historyFilter, setHistoryFilter] = useState<'day' | 'week' | 'month' | 'all'>('week');
+  const [editingPosId, setEditingPosId] = useState<string | null>(null);
+  const [editSlValue, setEditSlValue] = useState<string>('');
+  const [editTpValue, setEditTpValue] = useState<string>('');
 
-  // Modify SL/TP state
-  const [modifyingPosId, setModifyingPosId] = useState<string | null>(null);
-  const [editSl, setEditSl] = useState<string>('');
-  const [editTp, setEditTp] = useState<string>('');
-
-  const totalFloatingPnl = positions.reduce((sum, p) => sum + (p.pnl || 0), 0);
-
-  const handleStartModify = (pos: Position) => {
-    setModifyingPosId(pos.id);
-    setEditSl(pos.sl !== null && pos.sl !== undefined ? String(pos.sl) : '');
-    setEditTp(pos.tp !== null && pos.tp !== undefined ? String(pos.tp) : '');
-  };
-
-  const handleSaveModify = (posId: string) => {
-    if (onUpdatePositionTpSl) {
-      const slVal = editSl.trim() === '' ? null : Number(editSl);
-      const tpVal = editTp.trim() === '' ? null : Number(editTp);
-      onUpdatePositionTpSl(
-        posId,
-        slVal !== null && !isNaN(slVal) ? slVal : null,
-        tpVal !== null && !isNaN(tpVal) ? tpVal : null
-      );
-    }
-    setModifyingPosId(null);
-  };
-
-  // Filter closed trades history based on exact date boundaries (Exact Day, Past 7 Days, Month, All)
-  const filteredClosedTrades = useMemo(() => {
-    const boundaries = getTradeHistoryDateBoundaries(historyFilter);
-    return closedTrades.filter((ct) => {
-      const ctTime = ct.closeTime || ct.openTime || Date.now();
-      return ctTime >= boundaries.start && ctTime <= boundaries.end;
-    });
-  }, [closedTrades, historyFilter]);
-
-  const historySummary = useMemo(() => {
-    return calculateTradeHistorySummary(filteredClosedTrades);
-  }, [filteredClosedTrades]);
-
-  const historyTotalProfit = historySummary.netProfit;
+  const totalFloatingPnl = positions.reduce((sum, p) => sum + p.pnl, 0);
 
   return (
     <div
       id="vtm-trades-screen"
-      className={`min-h-[calc(100vh-120px)] flex flex-col pb-20 transition-colors duration-200 ${
-        isDarkMode ? 'text-white bg-[#101216]' : 'text-neutral-900 bg-neutral-50'
+      className={`min-h-[calc(100vh-120px)] flex flex-col pb-16 transition-colors duration-200 ${
+        isDarkMode ? 'text-white' : 'text-neutral-900'
       }`}
     >
-      {/* Header and Subtabs */}
+      {/* Header and Subtabs: Open, Pending, Closed */}
       <div
-        className={`px-4 pt-3 pb-2 border-b sticky top-0 z-10 backdrop-blur-md ${
-          isDarkMode ? 'border-neutral-800 bg-[#14161C]/95' : 'border-neutral-200 bg-white/95'
+        className={`px-4 pt-3 pb-2 border-b ${
+          isDarkMode ? 'border-neutral-800 bg-[#14161C]' : 'border-neutral-200 bg-white'
         }`}
       >
         <div className="flex items-center justify-between mb-2">
-          <div>
-            <h1 className="text-base sm:text-lg font-black tracking-tight">Manual Trading &amp; Open Positions</h1>
-            <p className="text-[11px] text-neutral-400">
-              Account #{account?.accountNumber || 'Demo'} • {account?.type || 'Live'} ({account?.tier || 'Standard'})
-            </p>
+          <div className="flex items-center gap-2">
+            <h1 className="text-base sm:text-lg font-bold tracking-tight">Order Positions &amp; History</h1>
           </div>
-
           {positions.length > 0 && (
             <button
               onClick={onCloseAllPositions}
-              className="px-3 py-1 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
+              className="text-xs text-red-500 hover:text-red-600 font-bold cursor-pointer transition-colors"
             >
               Close All ({positions.length})
             </button>
           )}
         </div>
 
-        {/* Subtabs */}
-        <div className="flex items-center justify-around border-b border-neutral-200 dark:border-neutral-800/80 -mb-2">
+        {/* 3 Subtabs: Open, Pending, Closed */}
+        <div className="flex items-center justify-around border-b border-neutral-100 dark:border-neutral-800/80 -mb-2">
           <button
             onClick={() => setActiveSubTab('open')}
-            className={`pb-2.5 px-4 text-xs sm:text-sm font-bold relative transition-colors cursor-pointer ${
-              activeSubTab === 'open' ? (isDarkMode ? 'text-white' : 'text-neutral-900') : 'text-neutral-400'
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
+              activeSubTab === 'open'
+                ? isDarkMode ? 'text-white' : 'text-neutral-900'
+                : 'text-neutral-400'
             }`}
           >
-            <span>Open Positions ({positions.length})</span>
+            <span>Open</span>
+            {positions.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-emerald-500/20 text-emerald-500 font-bold">
+                {positions.length}
+              </span>
+            )}
             {activeSubTab === 'open' && (
               <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-[#E51937] rounded-full" />
             )}
@@ -151,23 +121,39 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('pending')}
-            className={`pb-2.5 px-4 text-xs sm:text-sm font-bold relative transition-colors cursor-pointer ${
-              activeSubTab === 'pending' ? (isDarkMode ? 'text-white' : 'text-neutral-900') : 'text-neutral-400'
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
+              activeSubTab === 'pending'
+                ? isDarkMode ? 'text-white' : 'text-neutral-900'
+                : 'text-neutral-400'
             }`}
           >
-            <span>Pending ({pendingOrders.length})</span>
+            <span>Pending</span>
+            {pendingOrders.length > 0 && (
+              <span className="ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full bg-neutral-200 dark:bg-neutral-800 font-bold">
+                {pendingOrders.length}
+              </span>
+            )}
             {activeSubTab === 'pending' && (
               <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-[#E51937] rounded-full" />
             )}
           </button>
 
-          <button
+            <button
             onClick={() => setActiveSubTab('closed')}
-            className={`pb-2.5 px-4 text-xs sm:text-sm font-bold relative transition-colors cursor-pointer ${
-              activeSubTab === 'closed' ? (isDarkMode ? 'text-white' : 'text-neutral-900') : 'text-neutral-400'
+            className={`pb-2.5 px-4 text-xs sm:text-sm font-semibold relative transition-colors cursor-pointer ${
+              activeSubTab === 'closed'
+                ? isDarkMode ? 'text-white' : 'text-neutral-900'
+                : 'text-neutral-400'
             }`}
           >
-            <span>History ({closedTrades.length})</span>
+            <span>Closed</span>
+            {closedTrades.length > 0 && (
+              <span className={`ml-1.5 px-1.5 py-0.2 text-[10px] rounded-full font-bold ${
+                isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-200 text-slate-700'
+              }`}>
+                {closedTrades.length}
+              </span>
+            )}
             {activeSubTab === 'closed' && (
               <span className="absolute bottom-0 left-0 right-0 h-[2.5px] bg-[#E51937] rounded-full" />
             )}
@@ -175,179 +161,205 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         </div>
       </div>
 
-      {/* Content Body */}
-      <div className="flex-1 p-3 sm:p-4">
-        {/* SUBTAB 1: OPEN POSITIONS (MT5 / HFM Style) */}
-        {activeSubTab === 'open' && (
-          <div className="space-y-3">
-            {/* Floating PnL Summary Banner */}
-            {positions.length > 0 && (
-              <div
-                className={`p-3 rounded-2xl border flex items-center justify-between ${
-                  isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <div className="text-xs font-bold uppercase tracking-wider text-neutral-400">Total Floating Profit / Loss</div>
-                <div
-                  className={`text-base font-black font-mono ${
-                    totalFloatingPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
-                >
-                  {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
-                </div>
-              </div>
-            )}
+      {/* Floating P/L, Equity, and Free Margin Metrics Banner */}
+      <div
+        className={`px-4 py-3 border-b grid grid-cols-3 gap-2 text-xs ${
+          isDarkMode ? 'border-neutral-800 bg-neutral-900/40' : 'border-neutral-200 bg-slate-50'
+        }`}
+      >
+        <div>
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Floating P/L</span>
+          <span
+            className={`font-black text-sm ${
+              totalFloatingPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+            }`}
+          >
+            {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
+          </span>
+        </div>
 
-            {positions.length === 0 ? (
-              <div
-                className={`p-10 rounded-2xl border text-center flex flex-col items-center justify-center space-y-3 ${
-                  isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <div className="w-12 h-12 rounded-2xl bg-neutral-800 flex items-center justify-center text-neutral-400">
-                  <Smartphone className="w-6 h-6" />
-                </div>
-                <h3 className="text-base font-bold">No Open Positions</h3>
-                <p className="text-xs text-neutral-400 max-w-sm">
-                  Open trades from the Markets or Trade tab will appear here in exact MT5 / HFM terminal style with TP &amp; SL modification.
-                </p>
+        <div>
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Equity</span>
+          <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>${(account?.equity ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        </div>
+
+        <div className="text-right">
+          <span className={`block text-[10px] uppercase font-semibold ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Free Margin</span>
+          <span className={`font-bold text-sm ${(account?.freeMargin ?? 0) <= 0 ? 'text-red-500' : isDarkMode ? 'text-white' : 'text-slate-900'}`}>${(account?.freeMargin ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        </div>
+      </div>
+
+      {/* OPEN POSITIONS SUBVIEW */}
+      {activeSubTab === 'open' && (
+        <div className="flex-1 flex flex-col">
+          {/* List or Empty State */}
+          {positions.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[220px]">
+              <div className={`w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed ${
+                isDarkMode ? 'border-neutral-700 bg-neutral-800/50 text-neutral-400' : 'border-slate-300 bg-slate-50 text-slate-400'
+              }`}>
+                <Smartphone className="w-10 h-10 stroke-[1.5]" />
               </div>
-            ) : (
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                There are no open trades at this time
+              </p>
+            </div>
+          ) : (
+            <div className="p-3 sm:p-4">
+              <div className="flex items-center justify-between px-1 mb-3">
+                <span className={`text-xs font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                  {positions.length} Open Position{positions.length > 1 ? 's' : ''}
+                </span>
+                <button
+                  onClick={onCloseAllPositions}
+                  className="text-xs text-red-500 hover:text-red-600 font-semibold cursor-pointer"
+                >
+                  Close All
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {positions.map((pos) => {
-                  const isProfit = (pos.pnl || 0) >= 0;
-                  const isModifying = modifyingPosId === pos.id;
-                  const decimals = pos.symbol.includes('JPY') ? 3 : 5;
-
+                  const isBuy = pos.side === 'BUY';
                   return (
                     <div
                       key={pos.id}
-                      className={`p-4 rounded-2xl border transition-all shadow-xs flex flex-col justify-between ${
-                        isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
+                      className={`p-3.5 rounded-2xl border shadow-xs transition-all ${
+                        isDarkMode
+                          ? 'bg-[#181A20] border-neutral-800'
+                          : 'bg-white border-neutral-200'
                       }`}
                     >
-                      <div>
-                        {/* Top Row: Symbol, Side Badge, Lots, Ticket */}
-                        <div className="flex items-start justify-between gap-2 mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="font-black text-base">{pos.symbol}</span>
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
-                                pos.side === 'BUY'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                  : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                              }`}
-                            >
-                              {pos.side} {pos.lots}
-                            </span>
-                          </div>
-
-                          <div className="text-right">
-                            <span className="text-[10px] font-mono text-neutral-400">#{pos.ticket || pos.id.slice(-6)}</span>
-                          </div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-black text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{pos.symbol}</span>
+                          <span
+                            className={`text-[10px] font-black px-1.5 py-0.5 rounded-md uppercase ${
+                              isBuy
+                                ? isDarkMode ? 'bg-emerald-950/60 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                                : isDarkMode ? 'bg-red-950/60 text-red-400' : 'bg-red-100 text-red-700'
+                            }`}
+                          >
+                            {pos.side} {pos.lots}
+                          </span>
+                          <span className={`text-[10px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>#{pos.ticket}</span>
                         </div>
 
-                        {/* Price Details */}
-                        <div className="grid grid-cols-2 gap-2 my-2 py-2 border-y border-neutral-800/60 font-mono text-xs">
-                          <div>
-                            <span className="text-[10px] text-neutral-400 uppercase block">Open Price</span>
-                            <span className="font-bold">{fmt(pos.openPrice, decimals)}</span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-[10px] text-neutral-400 uppercase block">Current Market</span>
-                            <span className="font-bold text-sky-400">{fmt(pos.currentPrice || pos.openPrice, decimals)}</span>
-                          </div>
-                        </div>
-
-                        {/* SL & TP Display or Inline Modifier Form */}
-                        {isModifying ? (
-                          <div className="my-2 p-2.5 rounded-xl bg-neutral-900/80 border border-neutral-700 space-y-2">
-                            <div className="text-[11px] font-bold text-sky-400 flex items-center justify-between">
-                              <span>Modify Stop Loss &amp; Take Profit</span>
-                              <button onClick={() => setModifyingPosId(null)} className="text-neutral-400 hover:text-white">
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="text-[10px] text-neutral-400 uppercase font-semibold block mb-0.5">Stop Loss (SL)</label>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={editSl}
-                                  onChange={(e) => setEditSl(e.target.value)}
-                                  placeholder="0.0000"
-                                  className="w-full px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-xs font-mono text-white focus:outline-none focus:border-sky-500"
-                                />
-                              </div>
-
-                              <div>
-                                <label className="text-[10px] text-neutral-400 uppercase font-semibold block mb-0.5">Take Profit (TP)</label>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  value={editTp}
-                                  onChange={(e) => setEditTp(e.target.value)}
-                                  placeholder="0.0000"
-                                  className="w-full px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-xs font-mono text-white focus:outline-none focus:border-sky-500"
-                                />
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-end gap-2 pt-1">
-                              <button
-                                onClick={() => setModifyingPosId(null)}
-                                className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                onClick={() => handleSaveModify(pos.id)}
-                                className="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white cursor-pointer flex items-center gap-1"
-                              >
-                                <Check className="w-3 h-3" />
-                                <span>Save SL / TP</span>
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-between my-2 text-xs font-mono">
-                            <div className="flex items-center gap-2">
-                              <div>
-                                <span className="text-[10px] text-neutral-400 uppercase block">SL</span>
-                                <span className="text-rose-400 font-bold">{pos.sl ? fmt(pos.sl, decimals) : 'None'}</span>
-                              </div>
-                              <span className="text-neutral-600">|</span>
-                              <div>
-                                <span className="text-[10px] text-neutral-400 uppercase block">TP</span>
-                                <span className="text-emerald-400 font-bold">{pos.tp ? fmt(pos.tp, decimals) : 'None'}</span>
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={() => handleStartModify(pos)}
-                              className="px-2.5 py-1 rounded-lg bg-sky-500/15 border border-sky-500/30 text-sky-400 hover:bg-sky-500/25 text-xs font-bold flex items-center gap-1 cursor-pointer transition-all"
-                            >
-                              <Edit3 className="w-3 h-3" />
-                              <span>Modify</span>
-                            </button>
-                          </div>
-                        )}
+                        {/* Profit */}
+                        <span
+                          className={`text-base font-black ${
+                            pos.pnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                          }`}
+                        >
+                          {pos.pnl >= 0 ? '+' : ''}${pos.pnl.toFixed(2)}
+                        </span>
                       </div>
 
-                      {/* Bottom Row: Profit & Close Button */}
-                      <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between">
+                      <div className={`flex items-center justify-between text-xs pt-1 border-t ${
+                        isDarkMode ? 'text-neutral-400 border-neutral-800/80' : 'text-slate-500 border-slate-100'
+                      }`}>
                         <div>
-                          <span className="text-[10px] text-neutral-400 uppercase block">Profit (USD)</span>
-                          <span className={`text-sm font-black font-mono ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isProfit ? '+' : ''}${Number(pos.pnl || 0).toFixed(2)}
+                          <span>{pos.openPrice}</span> ➔{' '}
+                          <span className={isDarkMode ? 'text-white font-semibold' : 'text-slate-900 font-semibold'}>
+                            {pos.currentPrice}
                           </span>
                         </div>
+                        <div className="flex items-center gap-2">
+                          <span className={pos.sl ? 'text-red-400 font-semibold' : ''}>
+                            SL: {pos.sl ?? '—'}{pos.slUsd ? ` (-$${pos.slUsd})` : ''}
+                          </span>
+                          <span className={pos.tp ? 'text-emerald-400 font-semibold' : ''}>
+                            TP: {pos.tp ?? '—'}{pos.tpUsd ? ` (+$${pos.tpUsd})` : ''}
+                          </span>
+                        </div>
+                      </div>
 
+                      {editingPosId === pos.id && onUpdatePositionTpSl && (
+                        <div className={`mt-2 p-2.5 rounded-xl border grid grid-cols-2 gap-2 ${
+                          isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
+                        }`}>
+                          <div>
+                            <label className="text-[10px] font-bold text-red-400 block mb-1">Stop Loss (Price or $)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="Price or $"
+                              value={editSlValue}
+                              onChange={(e) => setEditSlValue(e.target.value)}
+                              className={`w-full px-2 py-1 text-xs font-mono rounded border focus:outline-none ${
+                                isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                              }`}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-bold text-emerald-400 block mb-1">Take Profit (Price or $)</label>
+                            <input
+                              type="number"
+                              step="any"
+                              placeholder="Price or $"
+                              value={editTpValue}
+                              onChange={(e) => setEditTpValue(e.target.value)}
+                              className={`w-full px-2 py-1 text-xs font-mono rounded border focus:outline-none ${
+                                isDarkMode ? 'bg-neutral-950 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                              }`}
+                            />
+                          </div>
+                          <div className="col-span-2 flex justify-end gap-2 pt-1">
+                            <button
+                              onClick={() => setEditingPosId(null)}
+                              className="px-2.5 py-1 text-[11px] font-semibold rounded bg-neutral-500/20 text-neutral-400 hover:bg-neutral-500/30 cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => {
+                                const nextSl = editSlValue.trim() !== '' ? parseFloat(editSlValue) : null;
+                                const nextTp = editTpValue.trim() !== '' ? parseFloat(editTpValue) : null;
+                                onUpdatePositionTpSl(
+                                  pos.id,
+                                  nextSl && !isNaN(nextSl) && nextSl > 0 ? nextSl : null,
+                                  nextTp && !isNaN(nextTp) && nextTp > 0 ? nextTp : null
+                                );
+                                setEditingPosId(null);
+                              }}
+                              className="px-3 py-1 text-[11px] font-bold rounded bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer"
+                            >
+                              Save TP/SL
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className={`mt-2 pt-2 border-t flex items-center justify-between gap-2 ${
+                        isDarkMode ? 'border-neutral-800' : 'border-slate-100'
+                      }`}>
+                        {onUpdatePositionTpSl ? (
+                          <button
+                            onClick={() => {
+                              if (editingPosId === pos.id) {
+                                setEditingPosId(null);
+                              } else {
+                                setEditingPosId(pos.id);
+                                setEditSlValue(pos.sl ? String(pos.sl) : '');
+                                setEditTpValue(pos.tp ? String(pos.tp) : '');
+                              }
+                            }}
+                            className={`py-1 px-2.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300'
+                                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {editingPosId === pos.id ? 'Close Editor' : 'Set TP / SL'}
+                          </button>
+                        ) : <span />}
                         <button
                           onClick={() => onClosePosition(pos.id)}
-                          className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
+                          className={`py-1 px-3 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-red-950/40 hover:bg-red-900/60 text-red-400'
+                              : 'bg-red-50 hover:bg-red-100 text-red-600'
+                          }`}
                         >
                           Close Position
                         </button>
@@ -356,199 +368,197 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                   );
                 })}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* SUBTAB 2: PENDING ORDERS */}
-        {activeSubTab === 'pending' && (
-          <div className="space-y-3">
-            {pendingOrders.length === 0 ? (
-              <div
-                className={`p-10 rounded-2xl border text-center flex flex-col items-center justify-center space-y-3 ${
-                  isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <Clock className="w-10 h-10 text-neutral-500 opacity-60" />
-                <h3 className="text-base font-bold">No Pending Orders</h3>
-                <p className="text-xs text-neutral-400 max-w-sm">
-                  Limit and stop pending orders placed on instruments will appear here until triggered.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {pendingOrders.map((ord) => (
-                  <div
-                    key={ord.id}
-                    className={`p-4 rounded-2xl border flex flex-col justify-between ${
-                      isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold">{ord.symbol}</span>
-                          <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[10px] font-bold">
-                            {ord.type}
-                          </span>
-                        </div>
-                        <span className="text-[10px] font-mono text-neutral-400">#{ord.ticket}</span>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs font-mono my-2 py-1.5 border-y border-neutral-800/60">
-                        <div>
-                          <span className="text-[10px] text-neutral-400 block">Target Price</span>
-                          <span className="font-bold text-sky-400">{ord.targetPrice}</span>
-                        </div>
-                        <div>
-                          <span className="text-[10px] text-neutral-400 block">Volume</span>
-                          <span className="font-bold">{ord.lots} Lots</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => onCancelPendingOrder(ord.id)}
-                      className="w-full mt-3 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-rose-400 text-xs font-bold transition-all cursor-pointer border border-neutral-700"
-                    >
-                      Cancel Order
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* SUBTAB 3: CLOSED TRADES HISTORY (Categorized by Exact Day, Past 7 Days, Month) */}
-        {activeSubTab === 'closed' && (
-          <div className="space-y-4">
-            {/* History Time Filter Bar & Total Profit Generated */}
-            <div
-              className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-              }`}
-            >
-              <div>
-                <div className="text-xs font-bold text-neutral-400 uppercase tracking-wide">Total Profit Generated</div>
-                <div
-                  className={`text-lg sm:text-xl font-black font-mono mt-0.5 ${
-                    historyTotalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                  }`}
-                >
-                  {historyTotalProfit >= 0 ? '+' : ''}${historyTotalProfit.toFixed(2)}
-                  <span className="text-xs font-normal text-neutral-400 ml-2">
-                    ({filteredClosedTrades.length} trades • {historySummary.winningTrades}W / {historySummary.losingTrades}L • {historySummary.winRate}% Win Rate in {historyFilter === 'day' ? 'Exact Day' : historyFilter === 'week' ? 'Past 7 Days' : historyFilter === 'month' ? 'A Month' : 'All Time'})
-                  </span>
-                </div>
-              </div>
-
-              {/* Filter Buttons */}
-              <div className="flex items-center gap-1.5 bg-neutral-900/60 p-1 rounded-xl border border-neutral-800">
-                <button
-                  onClick={() => setHistoryFilter('day')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    historyFilter === 'day' ? 'bg-[#E51937] text-white shadow-xs' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  Exact Day
-                </button>
-                <button
-                  onClick={() => setHistoryFilter('week')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    historyFilter === 'week' ? 'bg-[#E51937] text-white shadow-xs' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  Past 7 Days
-                </button>
-                <button
-                  onClick={() => setHistoryFilter('month')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    historyFilter === 'month' ? 'bg-[#E51937] text-white shadow-xs' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  A Month
-                </button>
-                <button
-                  onClick={() => setHistoryFilter('all')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    historyFilter === 'all' ? 'bg-[#E51937] text-white shadow-xs' : 'text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  All
-                </button>
-              </div>
             </div>
+          )}
 
-            {filteredClosedTrades.length === 0 ? (
-              <div
-                className={`p-10 rounded-2xl border text-center flex flex-col items-center justify-center space-y-3 ${
-                  isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <Clock className="w-10 h-10 text-neutral-500 opacity-60" />
-                <h3 className="text-base font-bold">No Closed Trade History</h3>
-                <p className="text-xs text-neutral-400 max-w-sm">
-                  No completed manual trades found for the selected time filter ({historyFilter}).
-                </p>
+          {/* Latest 20 Closed Trades Preview directly visible below Open Positions */}
+          {closedTrades.length > 0 && (
+            <div className={`p-3 sm:p-4 border-t ${isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'}`}>
+              <div className="flex items-center justify-between px-1 mb-3">
+                <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+                  Latest {Math.min(20, closedTrades.length)} Closed Trades
+                </span>
+                <button
+                  onClick={() => setActiveSubTab('closed')}
+                  className="text-xs text-[#E51937] hover:underline font-semibold cursor-pointer"
+                >
+                  View Full History
+                </button>
               </div>
-            ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {filteredClosedTrades.map((cl) => {
-                  const isWin = (cl.pnl || 0) >= 0;
-                  const decimals = cl.symbol.includes('JPY') ? 3 : 5;
-                  const closeDateStr = cl.closeTime ? new Date(cl.closeTime).toLocaleString() : 'Recently';
-
+                {closedTrades.map((cl) => {
+                  const exactPnl =
+                    cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
+                      ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
+                      : cl.pnl;
                   return (
                     <div
                       key={cl.id}
-                      className={`p-4 rounded-2xl border flex flex-col justify-between ${
-                        isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-neutral-200'
+                      className={`p-3 rounded-2xl border ${
+                        isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
                       }`}
                     >
-                      <div>
-                        <div className="flex justify-between items-center mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm">{cl.symbol}</span>
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                cl.side === 'BUY'
-                                  ? 'bg-emerald-500/20 text-emerald-400'
-                                  : 'bg-rose-500/20 text-rose-400'
-                              }`}
-                            >
-                              {cl.side} {cl.lots}
-                            </span>
-                          </div>
-                          <span className={`font-mono text-xs font-black ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isWin ? '+' : ''}${Number(cl.pnl || 0).toFixed(2)}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{cl.symbol}</span>
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              cl.side === 'BUY'
+                                ? isDarkMode ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                                : isDarkMode ? 'bg-red-950 text-red-400' : 'bg-red-100 text-red-700'
+                            }`}
+                          >
+                            {cl.side} {cl.lots}
+                          </span>
+                          <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-500' : 'text-slate-400'}`}>
+                            #{cl.ticket}
                           </span>
                         </div>
-
-                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono my-2 py-1.5 border-y border-neutral-800/60">
-                          <div>
-                            <span className="text-[10px] text-neutral-400 block">Open ➔ Close</span>
-                            <span>{fmt(cl.openPrice, decimals)} ➔ {fmt(cl.closePrice, decimals)}</span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-[10px] text-neutral-400 block">Reason</span>
-                            <span className="font-bold uppercase text-sky-400">{cl.reason || 'MANUAL'}</span>
-                          </div>
-                        </div>
+                        <span
+                          className={`font-black text-xs ${
+                            exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                          }`}
+                        >
+                          {exactPnl >= 0 ? '+' : ''}${exactPnl.toFixed(2)}
+                        </span>
                       </div>
-
-                      <div className="flex justify-between items-center text-[10px] text-neutral-400 font-mono mt-2 pt-2 border-t border-neutral-800/60">
-                        <span>Ticket #{cl.ticket || cl.id.slice(-6)}</span>
-                        <span>{closeDateStr}</span>
+                      <div className={`flex items-center justify-between text-[11px] mt-1.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                        <span>
+                          {cl.openPrice} ➔ <strong className={isDarkMode ? 'text-neutral-200' : 'text-slate-800'}>{cl.closePrice}</strong>
+                        </span>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                          isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-100 text-slate-700'
+                        }`}>
+                          {cl.reason}
+                        </span>
                       </div>
                     </div>
                   );
                 })}
               </div>
-            )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* PENDING ORDERS SUBVIEW */}
+      {activeSubTab === 'pending' && (
+        <div className="flex-1 p-4">
+          {pendingOrders.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[300px]">
+              <div className={`w-20 h-20 mb-4 rounded-2xl flex items-center justify-center border border-dashed ${
+                isDarkMode ? 'border-neutral-700 bg-neutral-800/50 text-neutral-400' : 'border-slate-300 bg-slate-50 text-slate-400'
+              }`}>
+                <Clock className="w-10 h-10 stroke-[1.5]" />
+              </div>
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                No pending orders active
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {pendingOrders.map((ord) => (
+                <div
+                  key={ord.id}
+                  className={`p-3.5 rounded-2xl border shadow-xs ${
+                    isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{ord.symbol}</span>
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        isDarkMode ? 'bg-blue-950/60 text-blue-400' : 'bg-blue-100 text-blue-700'
+                      }`}>
+                        {ord.type} {ord.lots}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => onCancelPendingOrder(ord.id)}
+                      className="text-xs text-red-500 hover:text-red-600 font-semibold cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                    Target Price: <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{ord.targetPrice}</strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CLOSED TRADES SUBVIEW */}
+      {activeSubTab === 'closed' && (
+        <div className="flex-1 p-3 sm:p-4">
+          <div className="flex items-center justify-between px-1 mb-3">
+            <span className={`text-xs font-bold ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+              Showing Latest {Math.min(20, closedTrades.length)} Closed Trades
+            </span>
           </div>
-        )}
-      </div>
+          {closedTrades.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center min-h-[260px]">
+              <p className={`text-sm font-medium ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                No closed trades recorded yet
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {closedTrades.map((cl) => {
+                const exactPnl =
+                  cl.openPrice && cl.closePrice && cl.openPrice !== cl.closePrice
+                    ? calculateBotPnL(cl.symbol, cl.side, cl.openPrice, cl.closePrice, cl.lots)
+                    : cl.pnl;
+                return (
+                  <div
+                    key={cl.id}
+                    className={`p-3.5 rounded-2xl border ${
+                      isDarkMode ? 'bg-[#181A20] border-neutral-800' : 'bg-white border-neutral-200 shadow-xs'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>{cl.symbol}</span>
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                            cl.side === 'BUY'
+                              ? isDarkMode ? 'bg-emerald-950 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
+                              : isDarkMode ? 'bg-red-950 text-red-400' : 'bg-red-100 text-red-700'
+                          }`}
+                        >
+                          {cl.side} {cl.lots}
+                        </span>
+                        <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                          #{cl.ticket}
+                        </span>
+                      </div>
+                      <span
+                        className={`font-black text-sm ${
+                          exactPnl >= 0 ? 'text-emerald-500' : 'text-red-500'
+                        }`}
+                      >
+                        {exactPnl >= 0 ? '+' : ''}${exactPnl.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className={`flex items-center justify-between text-xs mt-2 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                      <span>
+                        {cl.openPrice} ➔ <strong className={isDarkMode ? 'text-white' : 'text-slate-900'}>{cl.closePrice}</strong>
+                      </span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                        isDarkMode ? 'bg-neutral-800 text-neutral-300' : 'bg-slate-100 text-slate-700'
+                      }`}>
+                        Reason: {cl.reason}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

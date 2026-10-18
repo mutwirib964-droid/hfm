@@ -304,84 +304,58 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         ? `${selectedBankInfo.shortName} Transfer`
         : 'Safaricom M-PESA B2C';
 
-    // 1. Check if source account has zero or insufficient balance
     if (maxAvailable <= 0) {
-      const errorMsg = 'Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.';
-      setWithdrawError(errorMsg);
+      setWithdrawError('Selected source has $0.00 withdrawable balance. Live accounts must be funded before withdrawal.');
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
         status: 'FAILED' as any,
-        reason: errorMsg,
-      } as any);
+      });
       return;
     }
-
-    if (withdrawAmount > maxAvailable) {
-      const errorMsg = `Insufficient funds: Withdrawal amount ($${withdrawAmount.toFixed(2)} USD) exceeds available balance ($${maxAvailable.toFixed(2)} USD).`;
-      setWithdrawError(errorMsg);
-      onWithdraw({
-        method: methodLabel,
-        amount: withdrawAmount,
-        sourceAccount: withdrawSource,
-        reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
-        status: 'FAILED' as any,
-        reason: errorMsg,
-      } as any);
-      return;
-    }
-
-    // 2. Minimum amount check
     const minRequired = withdrawMethod === 'crypto' ? 50 : 35;
     if (withdrawAmount < minRequired) {
-      const errorMsg = `Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'M-PESA'} is $${minRequired}.00 USD.`;
-      setWithdrawError(errorMsg);
+      setWithdrawError(`Minimum withdrawal amount for ${withdrawMethod === 'crypto' ? 'Crypto' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'M-PESA'} is $${minRequired}.00 USD.`);
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
         status: 'FAILED' as any,
-        reason: errorMsg,
-      } as any);
+      });
       return;
     }
-
-    // 3. Single transaction limits: M-PESA max KES 250,000; Bank/Crypto max $10,000 USD
-    const isMpesaWithdrawal = withdrawMethod === 'mpesa';
-    const maxSingleTxUsd = isMpesaWithdrawal ? Number((250000 / effectiveWithdrawRate).toFixed(2)) : 10000;
-    const maxSingleTxKes = isMpesaWithdrawal ? 250000 : 10000 * effectiveWithdrawRate;
-
-    if (withdrawAmount > maxSingleTxUsd || (isMpesaWithdrawal && exactKesToDisburse > maxSingleTxKes)) {
-      const methodTitle = isMpesaWithdrawal ? 'M-PESA' : withdrawMethod === 'bank' ? 'Bank Transfer' : 'Crypto';
-      const errorMsg = isMpesaWithdrawal
-        ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD).`
-        : `Maximum ${methodTitle} withdrawal is $10,000.00 USD per single transaction.`;
-      setWithdrawError(errorMsg);
+    const maxPerSingleTx = withdrawMethod === 'mpesa' ? 2000 : 10000;
+    if (withdrawAmount > maxPerSingleTx) {
+      const methodTitle =
+        withdrawMethod === 'mpesa'
+          ? 'M-PESA'
+          : withdrawMethod === 'bank'
+          ? 'Bank Transfer'
+          : 'Crypto';
+      setWithdrawError(
+        `Maximum ${methodTitle} withdrawal is $${maxPerSingleTx.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD per single transaction.`
+      );
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
         status: 'FAILED' as any,
-        reason: errorMsg,
-      } as any);
+      });
       return;
     }
-
-    // 4. M-PESA customer wallet capacity limit (KES 500,000 withhold limit)
-    if (isMpesaWithdrawal && exactKesToDisburse > 500000) {
-      setWithdrawError('Customer wallet capacity exceeded');
+    if (withdrawAmount > maxAvailable) {
+      setWithdrawError(`Withdrawal amount exceeds available balance ($${maxAvailable.toFixed(2)}).`);
       onWithdraw({
         method: methodLabel,
         amount: withdrawAmount,
         sourceAccount: withdrawSource,
         reference: `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`,
         status: 'FAILED' as any,
-        reason: 'Customer wallet capacity exceeded',
-      } as any);
+      });
       return;
     }
     if (withdrawMethod === 'crypto' && (!withdrawCryptoAddress.trim() || withdrawCryptoAddress.trim().length < 10)) {
@@ -1132,14 +1106,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     </span>
                     <span className="text-neutral-400 text-[11px]">
                       {withdrawMethod === 'mpesa'
-                        ? `Min $35 • Max $${(250000 / effectiveWithdrawRate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (KES 250k)`
+                        ? 'Min $35 • Max $2,000'
                         : `Min $${withdrawMethod === 'crypto' ? '50' : '35'} • Max $10,000`}
                     </span>
                   </div>
                   <input
                     type="number"
                     min={withdrawMethod === 'crypto' ? 50 : 35}
-                    max={withdrawMethod === 'mpesa' ? Number((250000 / effectiveWithdrawRate).toFixed(2)) : 10000}
+                    max={withdrawMethod === 'mpesa' ? 2000 : 10000}
                     step="any"
                     placeholder={`Min $${withdrawMethod === 'crypto' ? 50 : 35}`}
                     value={withdrawAmount}
@@ -1177,10 +1151,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        const singleTxLimit =
-                          withdrawMethod === 'mpesa'
-                            ? Number((250000 / effectiveWithdrawRate).toFixed(2))
-                            : 10000;
+                        const singleTxLimit = withdrawMethod === 'mpesa' ? 2000 : 10000;
                         const accountBalance = Number(currentWithdrawable.toFixed(2));
                         if (accountBalance <= 0) {
                           setWithdrawAmount(0);
@@ -1250,14 +1221,6 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     className="w-full py-3 font-bold text-xs rounded-xl cursor-not-allowed border bg-neutral-800 text-neutral-500 border-neutral-700"
                   >
                     Insufficient Funds (Min ${withdrawMethod === 'crypto' ? '50.00' : '35.00'} • Available: ${currentWithdrawable.toFixed(2)})
-                  </button>
-                ) : withdrawAmount > currentWithdrawable ? (
-                  <button
-                    disabled
-                    className="w-full py-3.5 font-bold text-xs rounded-xl cursor-not-allowed border bg-rose-950/40 text-rose-300 border-rose-800/60 flex items-center justify-center gap-1.5"
-                  >
-                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                    <span>Insufficient Funds (Available: ${currentWithdrawable.toFixed(2)} USD • Requested: ${withdrawAmount.toFixed(2)})</span>
                   </button>
                 ) : (
                   <button

@@ -491,9 +491,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   // Submit Crypto Deposit - Verification Only
   const handleConfirmCryptoDeposit = () => {
     setErrorMessage(null);
-    const minRequired = 50;
+    const minRequired = selectedCrypto === 'BTC' ? 50 : 16;
     if (numUsd < minRequired) {
-      setErrorMessage(`Minimum deposit for cryptocurrency (${activeCryptoConfig.symbol}) is $50.00 USD.`);
+      setErrorMessage(`Minimum deposit for ${selectedCrypto === 'BTC' ? 'Bitcoin (BTC)' : 'cryptocurrency'} is $${minRequired}.00 USD.`);
       return;
     }
 
@@ -881,7 +881,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   Cryptocurrency Direct Deposit
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-neutral-400 mt-0.5">
-                  Select your token below to copy the verified deposit address. Min: $50.00 USD for all cryptocurrencies.
+                  Select your token below to copy the verified deposit address. {selectedCrypto === 'BTC' ? 'Min: $50.00' : 'Min: $16.00'}
                 </p>
               </div>
 
@@ -894,7 +894,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     onClick={() => {
                       setSelectedCrypto(coin.id as any);
                       setErrorMessage(null);
-                      if ((parseFloat(amountInput) || 0) < 50) {
+                      if (coin.id === 'BTC' && (parseFloat(amountInput) || 0) < 50) {
                         setAmountInput('50');
                       }
                     }}
@@ -910,9 +910,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     <span className="block text-[10px] text-slate-500 dark:text-neutral-400 font-mono mt-0.5">
                       {coin.symbol}
                     </span>
-                    <span className="inline-block text-[9px] px-1.5 py-0.2 bg-amber-500/20 text-amber-500 dark:text-amber-400 font-bold rounded mt-1">
-                      Min $50
-                    </span>
+                    {coin.id === 'BTC' && (
+                      <span className="inline-block text-[9px] px-1.5 py-0.2 bg-amber-500/20 text-amber-500 dark:text-amber-400 font-bold rounded mt-1">
+                        Min $50
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -970,12 +972,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      Amount (USD) <span className="text-[#0066FF] font-bold">*Min $50</span>
+                      Amount (USD) <span className="text-[#0066FF] font-bold">{selectedCrypto === 'BTC' ? '*Min $50 for Bitcoin' : '*Min $16'}</span>
                     </label>
                     <input
                       type="number"
-                      min={50}
-                      placeholder="Min $50"
+                      min={selectedCrypto === 'BTC' ? 50 : 16}
+                      placeholder={selectedCrypto === 'BTC' ? 'Min $50' : 'Min $16'}
                       value={amountInput}
                       onChange={(e) => setAmountInput(e.target.value)}
                       className={`w-full border rounded-xl px-3 py-2 text-xs font-mono font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
@@ -1000,7 +1002,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-neutral-800/80 border border-slate-200 dark:border-neutral-700 text-[11px] text-slate-600 dark:text-neutral-300 font-medium">
-                  Notice: Please transfer only {activeCryptoConfig.symbol} to the designated wallet address. Minimum deposit is $50.00 USD. Enter your transaction hash above after transferring.
+                  Notice: Please transfer only {activeCryptoConfig.symbol} to the designated wallet address. Minimum deposit is {selectedCrypto === 'BTC' ? '$50.00' : '$16.00'} USD. Enter your transaction hash above after transferring.
                 </div>
 
                 <button
