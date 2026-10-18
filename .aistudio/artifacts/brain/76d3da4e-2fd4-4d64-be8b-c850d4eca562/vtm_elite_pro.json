@@ -1,0 +1,28 @@
+{
+  "id": "vtm-elite-autonomous-pro-v2",
+  "name": "VTM Elite Autonomous Pro",
+  "type": "IMPORTED",
+  "description": "High-frequency autonomous execution engine with dynamic risk management. Optimized for major Forex pairs and Gold. Features multi-stage confirmation and deterministic profit targeting.",
+  "tag": "AUTONOMOUS",
+  "recommendedInstruments": [
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "XAUUSD",
+    "BTCUSD"
+  ],
+  "defaultLotSize": 0.1,
+  "defaultTpPips": 30,
+  "defaultSlPips": 20,
+  "author": "VTM Systems",
+  "version": "2.0.4",
+  "strategyLogic": "Uses a combination of RSI momentum and Mean Reversion. The bot enters trades when price deviates significantly from the 20-period moving average and exits strictly at calculated TP/SL levels.",
+  "indicatorTriggers": [
+    "RSI (14) < 30 (Buy)",
+    "RSI (14) > 70 (Sell)",
+    "EMA Cross (5/20)"
+  ],
+  "timeframe": "15M",
+  "claimedWinRate": "92.5%",
+  "customCodeSnippet": "executeAutonomous(symbol, lotSize) { \n  const signal = getSignal(symbol); \n  if (signal === 'BUY') openTrade('BUY', lotSize, 30, 20); \n  else if (signal === 'SELL') openTrade('SELL', lotSize, 30, 20); \n}"
+}

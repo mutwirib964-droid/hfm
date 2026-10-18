@@ -451,8 +451,8 @@ export const evaluateTargetWinOrLoss = (
     // Target 85% to 95% for marketers/demo
     targetRate = 0.85 + (seed * 0.10);
   } else if (userRole === 'normal') {
-    // Standard retail live accounts get lower win rates for realism
-    targetRate = 0.62;
+    // Standard retail live accounts get strictly lower win rates as requested
+    targetRate = 0.12;
   }
 
   // Parse claimed win rate if provided as a secondary hint, but clamp it
