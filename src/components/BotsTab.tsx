@@ -164,6 +164,17 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   // Combined all bots into a single list
   const allBots: BotStrategyConfig[] = [...inbuiltBots, ...importedBots];
 
+  // Demo vs Real account filter: VTM Trend Matrix EA is strictly reserved for Real accounts.
+  // When switched to Demo, display only demo-eligible bots; on Real, display all bots.
+  const isDemo = accountType === 'Demo';
+  const visibleBots: BotStrategyConfig[] = isDemo
+    ? allBots.filter(
+        (b) =>
+          b.id !== 'vtm-trend-matrix' &&
+          !b.name.toLowerCase().includes('vtm trend matrix')
+      )
+    : allBots;
+
   // Map for fast instrument lookup
   const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
 
@@ -258,6 +269,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   // Deploy bot to Active Bots tab in standby (PAUSED) so user can configure settings and click Run from Active Bots
   const handleDeployToActiveBots = (bot: BotStrategyConfig) => {
+    if (isDemo && (bot.id === 'vtm-trend-matrix' || bot.name.toLowerCase().includes('vtm trend matrix'))) {
+      return;
+    }
     onStartBotRun({
       botId: bot.id,
       symbol: bot.recommendedInstruments[0] || 'XAUUSD',
@@ -270,6 +284,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   const handleDeployBot = () => {
     if (!selectedBotForConfig) return;
+    if (isDemo && (selectedBotForConfig.id === 'vtm-trend-matrix' || selectedBotForConfig.name.toLowerCase().includes('vtm trend matrix'))) {
+      return;
+    }
     onStartBotRun({
       botId: selectedBotForConfig.id,
       symbol: configSymbol,
@@ -438,7 +455,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
           }`}
         >
           <Bot className="w-3.5 h-3.5" />
-          <span>Bots ({allBots.length})</span>
+          <span>Bots ({visibleBots.length})</span>
         </button>
 
         <button
@@ -490,7 +507,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
           <div className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm sm:text-base font-bold">Quantitative Algorithmic Strategies ({allBots.length})</h2>
+                <h2 className="text-sm sm:text-base font-bold">Quantitative Algorithmic Strategies ({visibleBots.length})</h2>
                 <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                   Select and deploy battle-tested quantitative algorithms. Bots and EAs run profit-taking and order management.
                 </p>
@@ -506,7 +523,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-              {allBots.map((bot) => (
+              {visibleBots.map((bot) => (
                 <div
                   key={bot.id}
                   className={`p-4 rounded-2xl border transition-all hover:border-[#E51937]/50 shadow-xs flex flex-col justify-between ${

@@ -81,7 +81,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const [activeTab, setActiveTab] = useState<AdminTab>('users');
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | 'admin' | 'marketer' | 'normal'>('ALL');
-  const [txStatusFilter, setTxStatusFilter] = useState<'ALL' | 'PENDING' | 'COMPLETED' | 'FAILED'>('ALL');
+  const [txStatusFilter, setTxStatusFilter] = useState<'ALL' | 'COMPLETED' | 'PENDING' | 'FAILED' | 'REJECTED'>('ALL');
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
 
   // Users and Deposits state
@@ -405,22 +405,17 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         d.method.toLowerCase().includes(q);
 
       const rawStatus = (d.status || '').toUpperCase().trim();
-      const isFailed =
-        rawStatus.includes('FAIL') ||
-        rawStatus.includes('REJECT') ||
-        rawStatus.includes('CANCEL') ||
-        rawStatus.includes('ERROR');
-      const isPending =
-        rawStatus.includes('PEND') ||
-        rawStatus.includes('PROCESS') ||
-        rawStatus === 'PENDING';
-      const isCompleted = !isFailed && !isPending;
+      const isRejected = rawStatus.includes('REJECT');
+      const isFailed = (rawStatus.includes('FAIL') || rawStatus.includes('CANCEL') || rawStatus.includes('ERROR')) && !isRejected;
+      const isPending = rawStatus.includes('PEND') || rawStatus.includes('PROCESS');
+      const isCompleted = !isFailed && !isPending && !isRejected && (rawStatus === 'COMPLETED' || rawStatus === 'SUCCESS' || rawStatus === 'SUCCESSFUL');
 
       const matchesStatus =
         txStatusFilter === 'ALL' ||
-        (txStatusFilter === 'PENDING' && isPending) ||
         (txStatusFilter === 'COMPLETED' && isCompleted) ||
-        (txStatusFilter === 'FAILED' && isFailed);
+        (txStatusFilter === 'PENDING' && isPending) ||
+        (txStatusFilter === 'FAILED' && isFailed) ||
+        (txStatusFilter === 'REJECTED' && isRejected);
 
       return matchesSearch && matchesStatus;
     });
@@ -1403,29 +1398,63 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 </div>
               </div>
 
-              {/* Transaction Status Filter Tabs */}
+              {/* Transaction Status Filter Tabs with distinct indicators and counts */}
               <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-white/[0.06]">
-                {(['ALL', 'PENDING', 'COMPLETED', 'FAILED'] as const).map((st) => (
-                  <button
-                    key={st}
-                    onClick={() => setTxStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                      txStatusFilter === st
-                        ? 'bg-[#E51937] text-white'
-                        : isDarkMode
-                        ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
-                        : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                    }`}
-                  >
-                    {st === 'ALL' ? 'All Transactions' : st.charAt(0) + st.slice(1).toLowerCase()}
-                  </button>
-                ))}
+                {(
+                  [
+                    { key: 'ALL', label: 'All', color: 'bg-neutral-400' },
+                    { key: 'COMPLETED', label: 'Completed', color: 'bg-emerald-500' },
+                    { key: 'PENDING', label: 'Pending', color: 'bg-amber-500' },
+                    { key: 'FAILED', label: 'Failed', color: 'bg-rose-500' },
+                    { key: 'REJECTED', label: 'Rejected', color: 'bg-red-600' },
+                  ] as const
+                ).map(({ key, label, color }) => {
+                  const count =
+                    key === 'ALL'
+                      ? depositsData.deposits.length
+                      : depositsData.deposits.filter((d) => {
+                          const s = (d.status || '').toUpperCase();
+                          if (key === 'REJECTED') return s.includes('REJECT');
+                          if (key === 'FAILED') return (s.includes('FAIL') || s.includes('CANCEL') || s.includes('ERROR')) && !s.includes('REJECT');
+                          if (key === 'PENDING') return s.includes('PEND') || s.includes('PROCESS');
+                          if (key === 'COMPLETED') return s === 'COMPLETED' || s === 'SUCCESS' || s === 'SUCCESSFUL';
+                          return false;
+                        }).length;
+
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setTxStatusFilter(key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                        txStatusFilter === key
+                          ? 'bg-[#E51937] text-white shadow-xs'
+                          : isDarkMode
+                          ? 'bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]'
+                          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+                      }`}
+                    >
+                      <span className={`w-2 h-2 rounded-full ${color}`} />
+                      <span>{label}</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+                          txStatusFilter === key
+                            ? 'bg-white/20 text-white'
+                            : isDarkMode
+                            ? 'bg-neutral-800 text-neutral-400'
+                            : 'bg-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
             {filteredDeposits.length === 0 ? (
               <div className={`p-10 text-center text-xs ${mutedText}`}>
-                No deposit records found.
+                No deposit records found for the selected status.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1450,43 +1479,69 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                       isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-200'
                     }`}
                   >
-                    {filteredDeposits.map((d) => (
-                      <tr
-                        key={d.id}
-                        className={`transition-colors ${
-                          isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        <td className={`py-3.5 px-4 whitespace-nowrap ${mutedText}`}>
-                          {d.dateStr}
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <div className="font-semibold">
-                            {d.userName}
-                          </div>
-                          <div className={`text-[11px] ${mutedText}`}>{d.userEmail}</div>
-                        </td>
-                        <td className={`py-3.5 px-4 font-medium ${secondaryText}`}>
-                          {d.method}
-                        </td>
-                        <td className={`py-3.5 px-4 font-mono ${mutedText}`}>
-                          {d.referenceId}
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
-                          +${d.amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className={`py-3.5 px-4 text-right font-mono tabular-nums ${secondaryText}`}>
-                          KES {(d.amountKes || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                        </td>
-                        <td className={`py-3.5 px-4 text-right font-medium ${
-                          (d.status || '').toUpperCase() === 'COMPLETED' ? 'text-emerald-600 dark:text-emerald-400' :
-                          (d.status || '').toUpperCase() === 'FAILED' || (d.status || '').toUpperCase() === 'REJECTED' || (d.status || '').toUpperCase() === 'CANCELED' ? 'text-rose-600 dark:text-rose-400' :
-                          'text-amber-600 dark:text-amber-400'
-                        }`}>
-                          {d.status}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredDeposits.map((d) => {
+                      const rawSt = (d.status || '').toUpperCase();
+                      const isCompleted = rawSt === 'COMPLETED' || rawSt === 'SUCCESS' || rawSt === 'SUCCESSFUL';
+                      const isPending = rawSt.includes('PEND') || rawSt.includes('PROCESS');
+                      const isRejected = rawSt.includes('REJECT');
+                      const isFailed = !isCompleted && !isPending && !isRejected;
+
+                      const statusBadge = isCompleted ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                          COMPLETED
+                        </span>
+                      ) : isPending ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                          PENDING
+                        </span>
+                      ) : isRejected ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                          REJECTED
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                          FAILED
+                        </span>
+                      );
+
+                      return (
+                        <tr
+                          key={d.id}
+                          className={`transition-colors ${
+                            isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          <td className={`py-3.5 px-4 whitespace-nowrap ${mutedText}`}>
+                            {d.dateStr}
+                          </td>
+                          <td className="py-3.5 px-4">
+                            <div className="font-semibold">
+                              {d.userName}
+                            </div>
+                            <div className={`text-[11px] ${mutedText}`}>{d.userEmail}</div>
+                          </td>
+                          <td className={`py-3.5 px-4 font-medium ${secondaryText}`}>
+                            {d.method}
+                          </td>
+                          <td className={`py-3.5 px-4 font-mono ${mutedText}`}>
+                            {d.referenceId}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-mono tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                            +${d.amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className={`py-3.5 px-4 text-right font-mono tabular-nums ${secondaryText}`}>
+                            KES {(d.amountKes || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </td>
+                          <td className="py-3.5 px-4 text-right">
+                            {statusBadge}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

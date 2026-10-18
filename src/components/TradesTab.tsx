@@ -22,6 +22,7 @@ import {
   AlertCircle,
   ChevronDown,
 } from 'lucide-react';
+import { getTradeHistoryDateBoundaries, calculateTradeHistorySummary } from '../utils/tradingEngine';
 
 interface TradesTabProps {
   account: TradingAccount | null;
@@ -88,30 +89,20 @@ export const TradesTab: React.FC<TradesTabProps> = ({
     setModifyingPosId(null);
   };
 
-  // Filter and calculate profit for closed trades history based on selected history filter
+  // Filter closed trades history based on exact date boundaries (Exact Day, Past 7 Days, Month, All)
   const filteredClosedTrades = useMemo(() => {
-    const now = Date.now();
-    const oneDayMs = 24 * 60 * 60 * 1000;
-    const sevenDaysMs = 7 * oneDayMs;
-    const thirtyDaysMs = 30 * oneDayMs;
-
+    const boundaries = getTradeHistoryDateBoundaries(historyFilter);
     return closedTrades.filter((ct) => {
-      const ctTime = ct.closeTime || ct.openTime || now;
-      const diff = now - ctTime;
-      if (historyFilter === 'day') {
-        return diff <= oneDayMs;
-      } else if (historyFilter === 'week') {
-        return diff <= sevenDaysMs;
-      } else if (historyFilter === 'month') {
-        return diff <= thirtyDaysMs;
-      }
-      return true; // 'all'
+      const ctTime = ct.closeTime || ct.openTime || Date.now();
+      return ctTime >= boundaries.start && ctTime <= boundaries.end;
     });
   }, [closedTrades, historyFilter]);
 
-  const historyTotalProfit = useMemo(() => {
-    return filteredClosedTrades.reduce((sum, ct) => sum + (ct.pnl || 0), 0);
+  const historySummary = useMemo(() => {
+    return calculateTradeHistorySummary(filteredClosedTrades);
   }, [filteredClosedTrades]);
+
+  const historyTotalProfit = historySummary.netProfit;
 
   return (
     <div
@@ -447,7 +438,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                 >
                   {historyTotalProfit >= 0 ? '+' : ''}${historyTotalProfit.toFixed(2)}
                   <span className="text-xs font-normal text-neutral-400 ml-2">
-                    ({filteredClosedTrades.length} trades in {historyFilter === 'day' ? 'Exact Day' : historyFilter === 'week' ? 'Past 7 Days' : historyFilter === 'month' ? 'A Month' : 'All Time'})
+                    ({filteredClosedTrades.length} trades • {historySummary.winningTrades}W / {historySummary.losingTrades}L • {historySummary.winRate}% Win Rate in {historyFilter === 'day' ? 'Exact Day' : historyFilter === 'week' ? 'Past 7 Days' : historyFilter === 'month' ? 'A Month' : 'All Time'})
                   </span>
                 </div>
               </div>

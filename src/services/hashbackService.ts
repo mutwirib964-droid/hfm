@@ -55,21 +55,25 @@ export const WELL_KNOWN_AFRICAN_BANKS = [
 ];
 
 const STORAGE_KEY_USD_KES_RATE = 'vtm_hashback_usd_kes_rate';
+const STORAGE_KEY_USD_KES_WITHDRAW_RATE = 'vtm_hashback_usd_kes_withdraw_rate';
 const STORAGE_KEY_MERCHANT_NAME = 'vtm_hashback_merchant_name';
 
 // Live mutable exports hydrated from `/api/hashback-config` (sensitive credentials remain strictly server-side)
 export let HASHBACK_MERCHANT_NAME: string = 'VTMMARKETS';
 export let USD_KES_RATE: number =
-  Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 125.56;
-export let USD_KES_WITHDRAW_RATE: number = USD_KES_RATE;
+  Number(import.meta.env.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_RATE) : 128.29;
+export let USD_KES_WITHDRAW_RATE: number =
+  Number(import.meta.env.VITE_USD_KES_WITHDRAW_RATE) > 0 ? Number(import.meta.env.VITE_USD_KES_WITHDRAW_RATE) : 126.367;
 
 let runtimeSecretsCache: {
   usdKesRate: number;
+  usdKesWithdrawRate: number;
   merchantName: string;
   isConfigured: boolean;
   loaded: boolean;
 } = {
   usdKesRate: USD_KES_RATE,
+  usdKesWithdrawRate: USD_KES_WITHDRAW_RATE,
   merchantName: 'VTMMARKETS',
   isConfigured: false,
   loaded: false,
@@ -189,20 +193,17 @@ if (typeof window !== 'undefined') {
 export function getUsdKesRate(): number {
   if (runtimeSecretsCache.usdKesRate > 0) {
     USD_KES_RATE = runtimeSecretsCache.usdKesRate;
-    USD_KES_WITHDRAW_RATE = runtimeSecretsCache.usdKesRate;
     return runtimeSecretsCache.usdKesRate;
   }
   const envRate = Number(import.meta.env.VITE_USD_KES_RATE);
   if (!Number.isNaN(envRate) && envRate > 0) {
     USD_KES_RATE = envRate;
-    USD_KES_WITHDRAW_RATE = envRate;
     return envRate;
   }
   try {
     const storedRate = Number(localStorage.getItem(STORAGE_KEY_USD_KES_RATE));
     if (!Number.isNaN(storedRate) && storedRate > 0) {
       USD_KES_RATE = storedRate;
-      USD_KES_WITHDRAW_RATE = storedRate;
       return storedRate;
     }
   } catch {
@@ -212,7 +213,25 @@ export function getUsdKesRate(): number {
 }
 
 export function getUsdKesWithdrawRate(): number {
-  return getUsdKesRate();
+  if (runtimeSecretsCache.usdKesWithdrawRate > 0) {
+    USD_KES_WITHDRAW_RATE = runtimeSecretsCache.usdKesWithdrawRate;
+    return runtimeSecretsCache.usdKesWithdrawRate;
+  }
+  const envWithdrawRate = Number(import.meta.env.VITE_USD_KES_WITHDRAW_RATE);
+  if (!Number.isNaN(envWithdrawRate) && envWithdrawRate > 0) {
+    USD_KES_WITHDRAW_RATE = envWithdrawRate;
+    return envWithdrawRate;
+  }
+  try {
+    const storedRate = Number(localStorage.getItem(STORAGE_KEY_USD_KES_WITHDRAW_RATE));
+    if (!Number.isNaN(storedRate) && storedRate > 0) {
+      USD_KES_WITHDRAW_RATE = storedRate;
+      return storedRate;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return USD_KES_WITHDRAW_RATE;
 }
 
 export function getHashbackMerchantName(): string {

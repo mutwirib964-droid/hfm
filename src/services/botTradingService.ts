@@ -310,56 +310,19 @@ export const DEFAULT_INBUILT_BOTS: BotStrategyConfig[] = [
   },
 ];
 
+import { getInstrumentContractSize, calculateTradePnL, getInstrumentPipSize } from '../utils/tradingEngine';
+
 // Helper to calculate contract sizes accurately per asset class
-// For 2-decimal instruments (BTCUSD, ETHUSD, XAUUSD, Indices, Equities, Commodities, JPY pairs):
-// contractSize = 100 so that 0.01 lot = 1x price difference (e.g. BTCUSD 85196.01 -> 85139.64 = 56.37 move = $56.37 at 0.01 lot, $112.74 at 0.02 lot, $563.70 at 0.10 lot)
-// For 4/5-decimal Forex & 4-decimal altcoins (EURUSD, GBPUSD, AUDUSD, USDCAD, USDCHF, NZDUSD, XRPUSD, DOGEUSD, ADAUSD):
-// contractSize = 100000 so that 0.0001 (1 pip) at 0.01 lot = $0.10 ($1.00 per 10 pips at 0.01 lot)
+// Uses validated market specifications (BTCUSD=1, XAUUSD=100, Forex=100000)
 export const getContractSize = (symbol: string): number => {
-  const s = (symbol || '').toUpperCase();
-  if (
-    s.includes('BTC') ||
-    s.includes('ETH') ||
-    s.includes('SOL') ||
-    s.includes('BNB') ||
-    s.includes('AVAX') ||
-    s.includes('LINK') ||
-    s.includes('DOT') ||
-    s.includes('NEAR') ||
-    s.includes('SUI') ||
-    s.includes('LTC') ||
-    s.includes('BCH') ||
-    s.includes('XAU') ||
-    s.includes('XAG') ||
-    s.includes('US500') ||
-    s.includes('NAS100') ||
-    s.includes('US30') ||
-    s.includes('GER40') ||
-    s.includes('SPX500') ||
-    s.includes('UK100') ||
-    s.includes('USTEC') ||
-    s.includes('DE40') ||
-    s.includes('USOIL') ||
-    s.includes('UKOIL') ||
-    s.includes('WTI') ||
-    s.includes('BRENT') ||
-    s.includes('NGAS') ||
-    s.includes('AAPL') ||
-    s.includes('NVDA') ||
-    s.includes('TSLA') ||
-    s.includes('MSFT') ||
-    s.includes('AMZN') ||
-    s.includes('META') ||
-    s.includes('GOOG') ||
-    s.includes('AMD') ||
-    s.includes('COIN') ||
-    s.includes('PLTR') ||
-    s.includes('JPY')
-  ) {
-    return 100;
-  }
-  return 100000;
+  return getInstrumentContractSize(symbol);
 };
+
+export const getPipSize = (symbol: string): number => {
+  return getInstrumentPipSize(symbol);
+};
+
+export { getInstrumentPipSize };
 
 // Account-level open trade limits & lot size limits based on Account Tier, Account Type, Balance, and Lot Size used
 export const getAccountMaxOpenTrades = (
@@ -403,7 +366,7 @@ export const getAccountMaxOpenTrades = (
   }
 
   const cleanLots = Math.max(0.01, Number(lotSize || 0.01));
-  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so even $16+ accounts can open 15-20 concurrent trades
+  // Required capital per trade proportional to lot size: $0.40 per 0.01 lot so accounts can trade micro-lots comfortably
   const requiredCapitalPerTrade = Number((cleanLots * 40).toFixed(2));
   const cleanBalance = Math.max(0, Number(balance || 0));
 
@@ -423,7 +386,7 @@ export const getAccountMaxOpenTrades = (
   };
 };
 
-// Calculate exact PnL strictly matching the price difference (openPrice -> currentPrice) and lotSize
+// Calculate exact PnL strictly matching executable market price difference and contract specification
 export const calculateBotPnL = (
   symbol: string,
   side: 'BUY' | 'SELL',
@@ -432,58 +395,29 @@ export const calculateBotPnL = (
   lotSize: number,
   _userRole?: UserRole
 ): number => {
-  if (!openPrice || !currentPrice || !lotSize) return 0;
-  if (Number(openPrice) === Number(currentPrice)) return 0;
-  const contractSize = getContractSize(symbol);
-  const diff = side === 'BUY' ? currentPrice - openPrice : openPrice - currentPrice;
-  const pnl = diff * contractSize * lotSize;
-  return Number(pnl.toFixed(2));
+  return calculateTradePnL(symbol, side, openPrice, currentPrice, lotSize);
 };
 
-// Determine target outcome according to user role and account type:
-// - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (losses < 5%)
-// - Normal retail users on Real/Live accounts: strictly below 15% win rate (~10%–13%)
-// - Inbuilt bots: engineered with high win rates (>95% on Demo and Marketer Real accounts)
+// Transparent strategy outcome evaluation based on strategy parameters and market conditions
+// (fair execution rules without secret rigging or forced retail blowout)
 export const evaluateTargetWinOrLoss = (
-  userRole?: UserRole,
+  _userRole?: UserRole,
   _botType?: BotType,
-  isDemoAccount?: boolean,
+  _isDemoAccount?: boolean,
   claimedWinRateStr?: string,
-  currentWins: number = 0,
-  currentTotal: number = 0
+  _currentWins: number = 0,
+  _currentTotal: number = 0
 ): boolean => {
-  // Demo accounts (ALL user roles) OR Marketers / Admins on Real/Live accounts: > 95% win rate (losses < 5%)
-  if (isDemoAccount || userRole === 'marketer' || userRole === 'admin') {
-    // Guaranteed first 3 trades win so accounts build momentum immediately
-    if (currentTotal < 3) {
-      return true;
+  // Parse claimed strategy win rate or use standard baseline (58-64%)
+  let targetRate = 60.0;
+  if (claimedWinRateStr) {
+    const parsed = parseFloat(claimedWinRateStr.replace('%', ''));
+    if (!isNaN(parsed) && parsed > 30 && parsed < 95) {
+      targetRate = parsed;
     }
-    const actualWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 96.0;
-    // Strictly maintain win rate > 95% (if current rate drops below 95.2%, next trade is guaranteed WIN)
-    if (actualWinRate < 95.2) {
-      return true;
-    }
-    // Controlled occasional loss (< 5% of trades) only after 20+ consecutive wins so it remains realistic
-    if (currentTotal >= 20 && currentWins >= currentTotal) {
-      return false;
-    }
-    // High win rate simulation probability: 96%
-    return Math.random() * 100 < 96.0;
   }
-
-  // Normal retail trader on Real/Live accounts: strictly below 15% win rate (~10%–13%)
-  if (currentTotal < 3) {
-    return false;
-  }
-  const projectedWinRate = ((currentWins + 1) / (currentTotal + 1)) * 100;
-  if (projectedWinRate >= 14.5) {
-    return false;
-  }
-  const retailWinRate = currentTotal > 0 ? (currentWins / currentTotal) * 100 : 0;
-  if (retailWinRate >= 14.0) {
-    return false;
-  }
-  return Math.random() * 100 < 12.0;
+  // Fair statistical execution based on transparent strategy parameters
+  return Math.random() * 100 < targetRate;
 };
 
 // Calculate how many concurrent trades a running bot should open (maximum 5 trades)

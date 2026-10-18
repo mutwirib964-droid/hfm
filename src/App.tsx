@@ -73,6 +73,7 @@ import {
   determineBotTradeDirection,
   calculateBotPnL,
   getContractSize,
+  getInstrumentPipSize,
   getAccountMaxOpenTrades,
   getTargetConcurrentBotTrades,
 } from './services/botTradingService';
@@ -1769,27 +1770,17 @@ export default function App() {
           }
         }
 
-        // 2. Realistic, natural market-paced P&L calculation (never racing like a fast timer):
-        // Scale high-nominal instrument raw swings so 0.01 lot moves in realistic cents/pips per tick
-        // Pure market volatility P&L calculation: driven strictly by live market quotes and tick fluctuations
-        const rawDiff =
-          pos.side === 'BUY'
-            ? rawMarketPrice - pos.openPrice
-            : pos.openPrice - rawMarketPrice;
-        const tickSlot = Math.floor(nowMs / 1000);
-        const volatilityWave =
-          Math.sin(tickSlot * 0.6 + (pos.ticket % 13) * 0.5) * (inst.spread || 0.30) * 0.4 +
-          Math.cos(tickSlot * 1.3 + (pos.ticket % 7) * 0.3) * 0.15;
-        const adjustedDiff = rawDiff + volatilityWave * Math.pow(10, -inst.decimals);
-        let currentPrice =
-          pos.side === 'BUY'
-            ? Number((pos.openPrice + adjustedDiff).toFixed(inst.decimals))
-            : Number((pos.openPrice - adjustedDiff).toFixed(inst.decimals));
-        let priceDiff =
-          pos.side === 'BUY'
-            ? currentPrice - pos.openPrice
-            : pos.openPrice - currentPrice;
-        let pnl = Number((priceDiff * pos.lots * contractSize + (pos.swap || 0)).toFixed(2));
+        // 2. Real-time executable market price & exact PnL calculation directly from market quotes:
+        const currentPrice = rawMarketPrice;
+        const pnl = calculateTradePnL(
+          pos.symbol,
+          pos.side,
+          pos.openPrice,
+          currentPrice,
+          pos.lots,
+          pos.swap || 0,
+          pos.commission || 0
+        );
 
         // 3. Authoritative SL / TP check on both currentPrice AND floating PnL (tpUsd / slUsd)
         const hitTpByPrice =
@@ -1801,13 +1792,11 @@ export default function App() {
           typeof pos.tpUsd === 'number' && pos.tpUsd > 0 && pnl >= pos.tpUsd;
 
         const hitSlByPrice =
-          !isMarketerOrDemo &&
           pos.sl !== null &&
           pos.sl > 0 &&
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl));
         const hitSlByUsd =
-          !isMarketerOrDemo &&
           typeof pos.slUsd === 'number' && pos.slUsd > 0 && pnl <= -pos.slUsd;
 
         if (hitTpByPrice || hitTpByUsd) {
@@ -3700,24 +3689,117 @@ export default function App() {
     status?: 'COMPLETED' | 'PENDING' | 'FAILED';
   }) => {
     const amountUsd = Number((params.amount || 0).toFixed(2));
-    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.367;
     const exactAmountKes =
       params.amountKes && params.amountKes > 0
         ? Number(params.amountKes.toFixed(2))
         : Number((amountUsd * rate).toFixed(2));
 
+    const isCrypto = (params.method || '').toLowerCase().includes('crypto');
     const isMpesaMethod = (params.method || '').toLowerCase().includes('m-pesa') || (params.method || '').toLowerCase().includes('mpesa');
+    const minRequired = isCrypto ? 50 : 35;
     const maxSingleTxUsd = isMpesaMethod ? Number((250000 / rate).toFixed(2)) : 10000;
     const maxSingleTxKes = isMpesaMethod ? 250000 : 10000 * rate;
     const maxWithholdKes = 500000;
+    const customReason = (params as any).reason || '';
 
-    if (params.status === 'FAILED' || amountUsd < 35 || amountUsd > maxSingleTxUsd || (isMpesaMethod && exactAmountKes > maxSingleTxKes)) {
-      const failReason =
-        amountUsd < 35
-          ? 'Minimum withdrawal requirement is $35.00 USD.'
-          : isMpesaMethod
-          ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString()} USD).`
-          : 'Maximum single transaction withdrawal limit is $10,000.00 USD.';
+    // Verify source account/wallet available balance
+    const sourceAcc = params.sourceAccount || 'VTM Wallet';
+    let availableSourceBal = 0;
+    if (
+      sourceAcc === 'VTM Wallet' ||
+      sourceAcc === 'VTM One Wallet' ||
+      sourceAcc === 'HF Wallet' ||
+      sourceAcc.toLowerCase().includes('wallet')
+    ) {
+      availableSourceBal = Number(walletBalanceRef.current.toFixed(2));
+    } else {
+      const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
+      const acc = accountsRef.current.find(
+        (a) =>
+          a.accountNumber === cleanSource ||
+          a.accountNumber === sourceAcc ||
+          `Account #${a.accountNumber}` === sourceAcc ||
+          a.id === sourceAcc
+      );
+      availableSourceBal = acc ? Number(Math.max(0, acc.balance - (acc.margin || 0)).toFixed(2)) : 0;
+    }
+
+    if (params.status === 'FAILED') {
+      const isInsufficientFunds =
+        customReason.toLowerCase().includes('insufficient') ||
+        customReason.toLowerCase().includes('$0.00') ||
+        customReason.toLowerCase().includes('exceeds available') ||
+        amountUsd > availableSourceBal;
+      const isCapacityExceeded = customReason.toLowerCase().includes('capacity exceeded');
+      const isMinViolated = customReason.toLowerCase().includes('minimum');
+
+      const title = isInsufficientFunds
+        ? 'Insufficient Funds'
+        : isCapacityExceeded
+        ? 'Customer wallet capacity exceeded'
+        : isMinViolated
+        ? 'Minimum Withdrawal Amount Not Met'
+        : 'Single Transaction Limit Exceeded';
+
+      const subtitle =
+        customReason ||
+        (isInsufficientFunds
+          ? `Insufficient funds: Requested $${amountUsd.toFixed(2)} USD exceeds available balance of $${availableSourceBal.toFixed(2)} USD.`
+          : amountUsd > maxSingleTxUsd
+          ? `Maximum single transaction withdrawal limit is ${isMpesaMethod ? `KES 250,000 (~$${maxSingleTxUsd.toLocaleString()} USD)` : '$10,000.00 USD'}.`
+          : 'Unable to process withdrawal request.');
+
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title,
+        subtitle,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: subtitle,
+          accountNumber: sourceAcc,
+        },
+      });
+      return;
+    }
+
+    // Guard: Insufficient funds check must always run BEFORE single transaction limit checks
+    if (amountUsd > availableSourceBal) {
+      const failReason = `Insufficient funds: Requested withdrawal of $${amountUsd.toFixed(2)} USD exceeds your available balance ($${availableSourceBal.toFixed(2)} USD).`;
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Insufficient Funds',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+          accountNumber: sourceAcc,
+        },
+      });
+      return;
+    }
+
+    if (amountUsd < minRequired) {
+      const failReason = `Minimum withdrawal requirement is $${minRequired}.00 USD.`;
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Minimum Withdrawal Not Met',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+        },
+      });
+      return;
+    }
+
+    if (amountUsd > maxSingleTxUsd || (isMpesaMethod && exactAmountKes > maxSingleTxKes)) {
+      const failReason = isMpesaMethod
+        ? `Maximum single transaction withdrawal limit is KES 250,000 (~$${maxSingleTxUsd.toLocaleString()} USD).`
+        : 'Maximum single transaction withdrawal limit is $10,000.00 USD.';
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
         title: 'Single Transaction Limit Exceeded',
@@ -3730,8 +3812,18 @@ export default function App() {
       });
       return;
     }
+        title: 'Single Transaction Limit Exceeded',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+        },
+      });
+      return;
+    }
 
-    if (exactAmountKes > maxWithholdKes) {
+    if (isMpesaMethod && exactAmountKes > maxWithholdKes) {
       const failReason = 'Customer wallet capacity exceeded';
       triggerActionPopup({
         type: 'WITHDRAWAL_FAILED',
@@ -4344,13 +4436,7 @@ export default function App() {
 
         for (let w = 0; w < maxInitialWave; w++) {
           const candidateSym = recPool[w % recPool.length];
-          const waveInst = resolveActiveBotInstrument(candidateSym, botCfg) || activeInst;
-          const wavePipVal =
-            waveInst.decimals === 5 || waveInst.decimals === 3
-              ? 0.0001
-              : waveInst.decimals === 2
-              ? 0.01
-              : 0.0001;
+          const wavePipVal = getInstrumentPipSize(waveInst.symbol);
 
           const isTargetWin = evaluateTargetWinOrLoss(
             userRoleRef.current,
@@ -4362,7 +4448,7 @@ export default function App() {
           );
           const side = determineBotTradeDirection(waveInst, isTargetWin, userRoleRef.current);
           const baseEntry = side === 'BUY' ? waveInst.ask : waveInst.bid;
-          const microStep = (w % 5) * wavePipVal * 1.2;
+          const microStep = (w % 5) * wavePipVal * 0.4;
           const entryPriceNum = Number(
             (side === 'BUY' ? baseEntry + microStep : baseEntry - microStep).toFixed(waveInst.decimals)
           );
@@ -4371,14 +4457,14 @@ export default function App() {
           );
           const tpNum = Number(
             (side === 'BUY'
-              ? entryPriceNum + cleanTp * wavePipVal * 10
-              : entryPriceNum - cleanTp * wavePipVal * 10
+              ? entryPriceNum + cleanTp * wavePipVal
+              : entryPriceNum - cleanTp * wavePipVal
             ).toFixed(waveInst.decimals)
           );
           const slNum = Number(
             (side === 'BUY'
-              ? entryPriceNum - cleanSl * wavePipVal * 10
-              : entryPriceNum + cleanSl * wavePipVal * 10
+              ? entryPriceNum - cleanSl * wavePipVal
+              : entryPriceNum + cleanSl * wavePipVal
             ).toFixed(waveInst.decimals)
           );
           const rawInitPnl = calculateBotPnL(
@@ -4834,12 +4920,7 @@ export default function App() {
     const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
     const isTargetWin = evaluateTargetWinOrLoss(userRoleRef.current, run.botType, isDemoAcc);
     const side = determineBotTradeDirection(inst, isTargetWin, userRoleRef.current);
-    const pipVal =
-      inst.decimals === 5 || inst.decimals === 3
-        ? 0.0001
-        : inst.decimals === 2
-        ? 0.01
-        : 0.0001;
+    const pipSize = getInstrumentPipSize(inst.symbol);
     const openPrice = side === 'BUY' ? inst.ask : inst.bid;
 
     // Strict check: Never open signal trade if free margin is 0 or lot size exceeds account capital
@@ -4856,12 +4937,12 @@ export default function App() {
     }
     const tpPrice =
       side === 'BUY'
-        ? openPrice + run.tpPips * pipVal * 10
-        : openPrice - run.tpPips * pipVal * 10;
+        ? openPrice + run.tpPips * pipSize
+        : openPrice - run.tpPips * pipSize;
     const slPrice =
       side === 'BUY'
-        ? openPrice - run.slPips * pipVal * 10
-        : openPrice + run.slPips * pipVal * 10;
+        ? openPrice - run.slPips * pipSize
+        : openPrice + run.slPips * pipSize;
 
     const openPriceNum = Number(openPrice.toFixed(inst.decimals));
     const currentExitNum = Number((side === 'BUY' ? inst.bid : inst.ask).toFixed(inst.decimals));
@@ -5023,14 +5104,11 @@ export default function App() {
         if (isDesignatedWin) {
           // Spread buffer in first 2.5 seconds
           const spreadBuffer = -Math.max(0.03, (tradeInst.spread || 0.42) * lotScale * 0.08);
-          // Realistic, measured progression: steady pip variation across 20-40 seconds
-          const maxWinCap = Math.max(
-            3.0 * lotScale,
-            Math.abs(activeTrade.tp - activeTrade.openPrice) * contractSize * activeTrade.lotSize * 0.92
-          );
+          // Realistic, measured progression: smoothly reaches full user-configured TP
+          const fullTpTargetPnl = Math.abs(activeTrade.tp - activeTrade.openPrice) * contractSize * activeTrade.lotSize;
           const progressivePnl = Math.min(
-            maxWinCap,
-            0.04 * lotScale + (elapsedSec - 2.5) * 0.022 * lotScale + wave * lotScale
+            fullTpTargetPnl,
+            0.04 * lotScale + (elapsedSec - 2.5) * Math.max(0.02 * lotScale, fullTpTargetPnl / 25) + wave * lotScale
           );
           const initialTargetPnl = elapsedSec >= 2.5 ? Number(progressivePnl.toFixed(2)) : spreadBuffer;
           const priceOffset = initialTargetPnl / (activeTrade.lotSize * contractSize);
@@ -5047,14 +5125,11 @@ export default function App() {
             activeTrade.lotSize
           );
         } else {
-          // Designated loss: moves against position at realistic measured pace
-          const maxLossCap = Math.max(
-            2.5 * lotScale,
-            Math.abs(activeTrade.openPrice - activeTrade.sl) * contractSize * activeTrade.lotSize * 0.90
-          );
+          // Designated loss: moves towards user-configured Stop Loss (SL)
+          const fullSlTargetLoss = Math.abs(activeTrade.openPrice - activeTrade.sl) * contractSize * activeTrade.lotSize;
           const progressiveLoss = -Math.min(
-            maxLossCap,
-            0.05 * lotScale + (elapsedSec - 2.5) * 0.02 * lotScale - wave * lotScale
+            fullSlTargetLoss,
+            0.05 * lotScale + (elapsedSec - 2.5) * Math.max(0.02 * lotScale, fullSlTargetLoss / 25) - wave * lotScale
           );
           const initialTargetLoss = elapsedSec >= 2.5 ? Number(progressiveLoss.toFixed(2)) : -0.08 * lotScale;
           const priceOffset = Math.abs(initialTargetLoss) / (activeTrade.lotSize * contractSize);
@@ -5372,23 +5447,18 @@ export default function App() {
             break;
           }
 
-          const pipVal =
-            targetInst.decimals === 5 || targetInst.decimals === 3
-              ? 0.0001
-              : targetInst.decimals === 2
-              ? 0.01
-              : 0.0001;
+          const pipSize = getInstrumentPipSize(targetInst.symbol);
 
           const tpPrice =
             side === 'BUY'
-              ? openPrice + cleanRunTpPips * pipVal * 10
-              : openPrice - cleanRunTpPips * pipVal * 10;
+              ? openPrice + cleanRunTpPips * pipSize
+              : openPrice - cleanRunTpPips * pipSize;
           const slPrice =
             side === 'BUY'
-              ? openPrice - cleanRunSlPips * pipVal * 10
-              : openPrice + cleanRunSlPips * pipVal * 10;
+              ? openPrice - cleanRunSlPips * pipSize
+              : openPrice + cleanRunSlPips * pipSize;
 
-          const microOffset = bIdx * pipVal * 1.2;
+          const microOffset = bIdx * pipSize * 0.4;
           const openPriceNum = Number(
             (side === 'BUY' ? openPrice + microOffset : openPrice - microOffset).toFixed(targetInst.decimals)
           );
