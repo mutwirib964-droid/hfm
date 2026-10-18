@@ -1490,7 +1490,7 @@ class SupabaseService {
       // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so the latest 20 closed trades are always recovered
       try {
         const res = await fetch(
-          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=30`,
+          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=100`,
           {
             method: 'GET',
             headers: {
@@ -1679,7 +1679,7 @@ class SupabaseService {
       'STATE_BOTS',
       `Synchronized ${cleanedRuns.length} bot runs and ${cleanedTrades.length} bot trades`,
       {
-        importedBots: botState.importedBots || [],
+        importedBots: Array.isArray(botState.importedBots) && botState.importedBots.length > 0 ? botState.importedBots : (await this.fetchBotState(user))?.importedBots || [],
         botRuns: cleanedRuns,
         botTrades: cleanedTrades.slice(0, 1000),
         deletedBotIds,

@@ -463,7 +463,8 @@ export const evaluateTargetWinOrLoss = (
       if (isPrivileged) {
         targetRate = Math.max(0.85, Math.min(0.96, parsed));
       } else {
-        targetRate = Math.min(0.70, parsed);
+        // Retail traders winrate should not exceed 15% ever on their real accounts
+        targetRate = Math.min(0.15, parsed);
       }
     }
   }

@@ -371,8 +371,8 @@ export default function App() {
       }
       setCurrentUser((prevUser) => {
         if (!prevUser) return null;
-        if (prevUser.role !== remoteRole || prevUser.id !== remote.profile.id) {
-          const updated = { ...prevUser, id: remote.profile.id, role: remoteRole };
+        if (prevUser.role !== remoteRole || String(prevUser.id) !== String(remote.profile.id)) {
+          const updated = { ...prevUser, id: String(remote.profile.id), role: remoteRole };
           localStorage.setItem('vtm_auth_user', JSON.stringify(updated));
           return updated;
         }
@@ -600,16 +600,17 @@ export default function App() {
               false
             );
             const mergedMap = new Map<string, BotRunInstance>();
-            // Put local runs first so user's custom lot size and settings are always preserved
+            // Use instance ID (r.id or r.runId) as key, not template ID (r.botId), to support multiple instances of the same bot
             for (const r of botRunsRef.current) {
               if (r && r.explicitUserRun !== false) {
-                mergedMap.set(r.botId || r.id || r.runId, r);
+                const key = r.id || r.runId || r.botId;
+                mergedMap.set(key, r);
               }
             }
             for (const r of cleanedRemoteRuns) {
-              const k = r.botId || r.id || r.runId;
-              if (r && r.explicitUserRun !== false && !mergedMap.has(k)) {
-                mergedMap.set(k, r);
+              const key = r.id || r.runId || r.botId;
+              if (r && r.explicitUserRun !== false && !mergedMap.has(key)) {
+                mergedMap.set(key, r);
               }
             }
             const finalRuns = sanitizeAndFilterBotRuns(

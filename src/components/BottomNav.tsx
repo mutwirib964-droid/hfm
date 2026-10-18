@@ -65,7 +65,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
     <nav
       id="vtm-bottom-navigation"
       aria-label="VTM Markets Mobile Navigation"
-      className={`sticky bottom-0 z-40 w-full border-t py-1.5 px-2 flex items-center justify-around select-none transition-colors duration-200 ${
+      className={`sticky bottom-0 z-40 w-full border-t py-1.5 px-1 sm:px-2 flex items-center justify-around select-none transition-colors duration-200 overflow-hidden ${
         isDarkMode
           ? 'bg-[#111317] border-neutral-800'
           : 'bg-white border-neutral-200'
@@ -84,7 +84,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
             key={tab.id}
             id={`bottom-nav-${tab.id}`}
             onClick={() => onSelectTab(tab.id)}
-            className={`relative flex flex-col items-center justify-center py-1 px-3 min-w-[58px] rounded-lg transition-colors cursor-pointer ${
+            className={`relative flex flex-col items-center justify-center py-1 px-1 sm:px-2 flex-1 min-w-0 rounded-lg transition-colors cursor-pointer ${
               isActive
                 ? 'text-[#E51937]'
                 : isDarkMode
@@ -92,21 +92,21 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                 : 'text-neutral-500 hover:text-neutral-800'
             }`}
           >
-            {/* Top red indicator bar when active (matching video) */}
+            {/* Top red indicator bar when active */}
             {isActive && (
               <span className="absolute -top-1.5 w-6 h-[2px] bg-[#E51937] rounded-full" />
             )}
 
             <div className="relative">
-              <Icon className="w-[21px] h-[21px] stroke-[1.75]" />
+              <Icon className="w-[20px] h-[20px] stroke-[1.75]" />
               {tab.badge !== null && (
-                <span className="absolute -top-1 -right-3 bg-[#E51937] text-white text-[9px] font-bold px-1 rounded-full min-w-[15px] text-center leading-tight">
+                <span className="absolute -top-1 -right-2.5 bg-[#E51937] text-white text-[9px] font-bold px-1 rounded-full min-w-[14px] text-center leading-tight">
                   {tab.badge}
                 </span>
               )}
             </div>
 
-            <span className={`text-[10px] tracking-tight mt-1 ${isActive ? 'font-semibold' : 'font-normal'}`}>
+            <span className={`text-[10px] tracking-tight mt-1 truncate max-w-full ${isActive ? 'font-semibold' : 'font-normal'}`}>
               {tab.label}
             </span>
           </button>

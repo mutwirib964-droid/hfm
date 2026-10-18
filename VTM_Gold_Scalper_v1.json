@@ -1,0 +1,19 @@
+{
+  "name": "VTM Gold Scalper Institutional",
+  "tag": "XAUUSD High-Frequency EA",
+  "description": "Premium institutional-grade gold scalping strategy designed for high-precision entries on XAUUSD. Utilizes dynamic volatility breakout logic and RSI-based trend confirmation for consistent scalp targets.",
+  "recommendedInstruments": ["XAUUSD"],
+  "defaultLotSize": 0.1,
+  "defaultTpPips": 30,
+  "defaultSlPips": 20,
+  "author": "VTM Markets Institutional",
+  "version": "v1.2 Stable",
+  "timeframe": "M15",
+  "claimedWinRate": "14.5%",
+  "strategyLogic": "High-frequency scalping based on M15 candle breakouts and volume-weighted EMA crosses. Designed specifically for retail risk management compliance.",
+  "indicatorTriggers": [
+    "EMA 9/21 Trend Filter",
+    "Relative Strength Index (RSI) Overbought/Oversold",
+    "Volatility Expansion Signal"
+  ]
+}

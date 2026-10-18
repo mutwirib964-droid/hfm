@@ -92,7 +92,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   }, [account?.accountNumber, account?.balance, currentUser?.email, userLedgerEntries]);
 
   // History time filter state: 'today' | '7days' | 'month' | 'all' | 'custom'
-  const [historyFilter, setHistoryFilter] = useState<'today' | '7days' | 'month' | 'all' | 'custom'>('7days');
+  const [historyFilter, setHistoryFilter] = useState<'today' | '7days' | 'month' | 'all' | 'custom'>('all');
   const [customStartDate, setCustomStartDate] = useState<string>(() => {
     const d = new Date();
     d.setDate(d.getDate() - 7);
@@ -312,11 +312,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           </div>
         </div>
 
-        {/* SUBTABS: Open (N) | Pending (N) | History (N) */}
-        <div className="flex items-center gap-1 mt-3 border-t border-neutral-800/60 pt-2">
+        {/* SUBTABS: Open (N) | Pending (N) | History (N) | Audit & Reconciliation */}
+        <div className="flex items-center gap-1.5 mt-3 border-t border-neutral-800/60 pt-2 overflow-x-auto no-scrollbar w-full max-w-full pb-1">
           <button
             onClick={() => setActiveSubTab('open')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'open'
                 ? 'bg-[#E51937] text-white shadow-xs'
                 : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
@@ -330,7 +330,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('pending')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'pending'
                 ? 'bg-[#E51937] text-white shadow-xs'
                 : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
@@ -344,7 +344,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('closed')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'closed'
                 ? 'bg-[#E51937] text-white shadow-xs'
                 : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
@@ -358,13 +358,13 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
           <button
             onClick={() => setActiveSubTab('reconciliation')}
-            className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'reconciliation'
                 ? 'bg-[#E51937] text-white shadow-xs'
                 : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
             }`}
           >
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>Audit &amp; Reconciliation</span>
           </button>
         </div>
