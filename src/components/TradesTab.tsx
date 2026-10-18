@@ -246,7 +246,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   return (
     <div
       id="vtm-trades-screen"
-      className={`min-h-[calc(100vh-120px)] flex flex-col pb-20 transition-colors duration-200 ${
+      className={`min-h-[calc(100vh-120px)] w-full max-w-full overflow-x-hidden flex flex-col pb-20 transition-colors duration-200 ${
         isDarkMode ? 'text-white bg-[#0e1015]' : 'text-neutral-900 bg-neutral-50'
       }`}
     >

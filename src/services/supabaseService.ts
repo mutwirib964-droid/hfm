@@ -1480,11 +1480,49 @@ class SupabaseService {
               openPrice,
               closePrice,
               pnl: exactPnl,
-              accountId: ct.accountId || ct.account_id,
-              accountNumber: ct.accountNumber || ct.account_number,
+              accountId: ct.accountId || (ct as any).account_id,
+              accountNumber: ct.accountNumber || (ct as any).account_number,
             });
           }
         }
+      }
+
+      // Also query STATE_BOTS for any closed bot trades so bot history is never missed
+      try {
+        const botData = await this.fetchCloudStateRecord<{
+          botTrades?: any[];
+        }>(cleanEmail, 'STATE_BOTS');
+        if (botData && Array.isArray(botData.botTrades)) {
+          for (const bt of botData.botTrades) {
+            if (bt && bt.status === 'CLOSED' && bt.symbol) {
+              const key = String(bt.ticket || bt.id);
+              if (!closedMap.has(key)) {
+                const lots = Number(bt.lotSize || bt.lots || 0.01);
+                const openPrice = Number(bt.openPrice || 0);
+                const closePrice = Number(bt.closePrice ?? bt.exitPrice ?? openPrice);
+                const side: 'BUY' | 'SELL' = bt.side === 'SELL' ? 'SELL' : 'BUY';
+                const exactPnl = calculateBotPnL(bt.symbol, side, openPrice, closePrice, lots);
+                closedMap.set(key, {
+                  id: `cl-bot-${bt.id}`,
+                  ticket: Number(bt.ticket || Math.floor(700000 + Math.random() * 99999)),
+                  symbol: bt.symbol,
+                  side,
+                  lots,
+                  openPrice,
+                  closePrice,
+                  pnl: exactPnl,
+                  openTime: Number(bt.openTime || Date.now() - 60000),
+                  closeTime: Number(bt.closeTime || Date.now()),
+                  reason: bt.closeReason === 'TAKE_PROFIT' || bt.exitReason === 'TP' ? 'TP' : bt.closeReason === 'STOP_LOSS' || bt.exitReason === 'SL' ? 'SL' : 'MANUAL',
+                  accountId: bt.accountId,
+                  accountNumber: bt.accountNumber,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
       }
 
       // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so the latest 20 closed trades are always recovered

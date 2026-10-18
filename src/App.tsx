@@ -600,15 +600,15 @@ export default function App() {
               false
             );
             const mergedMap = new Map<string, BotRunInstance>();
-            // Use instance ID (r.id or r.runId) as key, not template ID (r.botId), to support multiple instances of the same bot
+            // Use instance ID (r.id or r.runId) as key, NOT template ID (r.botId), to support multiple instances of the same bot
             for (const r of botRunsRef.current) {
               if (r && r.explicitUserRun !== false) {
-                const key = r.id || r.runId || r.botId;
+                const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
                 mergedMap.set(key, r);
               }
             }
             for (const r of cleanedRemoteRuns) {
-              const key = r.id || r.runId || r.botId;
+              const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
               if (r && r.explicitUserRun !== false && !mergedMap.has(key)) {
                 mergedMap.set(key, r);
               }
