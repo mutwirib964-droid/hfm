@@ -32,7 +32,7 @@ interface MarketsTabProps {
   oneClickTrading?: boolean;
   priceAlerts?: PriceAlert[];
   onOpenPriceAlert?: (symbol: string) => void;
-  onExecuteMarketOrder: (params: {
+  onExecuteMarketOrder?: (params: {
     symbol: string;
     side: 'BUY' | 'SELL';
     lots: number;
@@ -963,13 +963,17 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
           }
           side={orderModalParams.side}
           onExecute={(p) => {
-            onExecuteMarketOrder({
-              symbol: p.symbol,
-              side: p.side,
-              lots: p.lots,
-              sl: p.sl,
-              tp: p.tp,
-            });
+            if (typeof onExecuteMarketOrder === 'function') {
+              onExecuteMarketOrder({
+                symbol: p.symbol,
+                side: p.side,
+                lots: p.lots,
+                sl: p.sl,
+                tp: p.tp,
+              });
+            } else if (typeof onQuickTrade === 'function') {
+              onQuickTrade(p.symbol, p.side);
+            }
             setOrderModalParams(null);
           }}
           isDarkMode={isDarkMode}

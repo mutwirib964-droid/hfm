@@ -19,6 +19,8 @@ import {
   loadStoredBotRuns,
 } from './botTradingService';
 import { getUsdKesWithdrawRate } from './hashbackService';
+import { LedgerEntry } from '../utils/financialLedger';
+
 
 const ONEAPP_SYNCED_WITHDRAWALS_KEY = 'vtm_synced_oneapp_withdrawals';
 const syncedOneAppWithdrawalsMemory = new Set<string>();
@@ -1729,6 +1731,134 @@ class SupabaseService {
     }
   }
 
+  /**
+   * Fetches the complete immutable financial ledger from Supabase cloud database
+   */
+  public async fetchUserLedger(
+    user: UserAuthProfile | null | undefined
+  ): Promise<LedgerEntry[]> {
+    if (!user?.email) return [];
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
+    const ledgerMap = new Map<string, LedgerEntry>();
+
+    if (this.config) {
+      // 1. Read from STATE_LEDGER cloud state record
+      try {
+        const cloudState = await this.fetchCloudStateRecord<{
+          entries?: LedgerEntry[];
+        }>(cleanEmail, 'STATE_LEDGER');
+        if (cloudState && Array.isArray(cloudState.entries)) {
+          for (const e of cloudState.entries) {
+            if (e && e.id) {
+              ledgerMap.set(e.id, e);
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 2. Query public.financial_ledger table directly
+      try {
+        const res = await fetch(
+          `${this.config.url}/rest/v1/financial_ledger?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=timestamp.desc&limit=500`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(4500),
+          }
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          if (Array.isArray(rows)) {
+            for (const r of rows) {
+              const entryId = r.id || `ledg-${r.timestamp}-${r.reference_id || ''}`;
+              if (!ledgerMap.has(entryId)) {
+                ledgerMap.set(entryId, {
+                  id: entryId,
+                  userEmail: cleanEmail,
+                  accountNumber: r.account_number || '',
+                  type: r.type,
+                  amount: Number(r.amount || 0),
+                  previousBalance: Number(r.previous_balance || 0),
+                  newBalance: Number(r.new_balance || 0),
+                  referenceId: r.reference_id || '',
+                  reason: r.reason || '',
+                  timestamp: Number(r.timestamp || Date.now()),
+                  metadata: r.metadata,
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return Array.from(ledgerMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  /**
+   * Syncs complete array of ledger entries to Supabase cloud state & financial_ledger table
+   */
+  public async syncUserLedger(
+    user: UserAuthProfile | null | undefined,
+    entries: LedgerEntry[]
+  ): Promise<boolean> {
+    if (!user?.email || !Array.isArray(entries)) return false;
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
+    if (!this.config) return false;
+
+    this.saveCloudStateRecord(
+      cleanEmail,
+      'STATE_LEDGER',
+      `Synchronized ${entries.length} immutable double-entry ledger movements`,
+      { entries, updatedAt: Date.now() }
+    ).catch(() => {});
+
+    try {
+      const rows = entries.slice(0, 500).map((e) => ({
+        id: e.id,
+        user_email: cleanEmail,
+        account_number: e.accountNumber,
+        type: e.type,
+        amount: e.amount,
+        previous_balance: e.previousBalance,
+        new_balance: e.newBalance,
+        reference_id: e.referenceId,
+        reason: e.reason,
+        timestamp: e.timestamp,
+        metadata: e.metadata || null,
+      }));
+      if (rows.length > 0) {
+        await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
+          method: 'POST',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates',
+          },
+          body: JSON.stringify(rows),
+        });
+      }
+    } catch {
+      // ignore
+    }
+    return true;
+  }
+
+
   public async syncBotState(
     user: UserAuthProfile | null | undefined,
     botState: {
@@ -1830,13 +1960,14 @@ class SupabaseService {
     }
 
     const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false);
-    const filteredTrades = rawTrades.filter((t) => {
-      if (!t) return false;
+    const filteredTrades = rawTrades.map((t) => {
+      if (!t) return t;
       const tid = String(t.id || '');
       const tkt = String(t.ticket || '');
-      if (tid && closedTradeKeys.has(tid)) return false;
-      if (tkt && closedTradeKeys.has(tkt)) return false;
-      return true;
+      if ((tid && closedTradeKeys.has(tid)) || (tkt && closedTradeKeys.has(tkt))) {
+        return { ...t, status: 'CLOSED' };
+      }
+      return t;
     });
     const cleanedTrades = filterTradesForValidBotRuns(filteredTrades, cleanedRuns);
 

@@ -111,8 +111,10 @@ import {
   isTradeSettled,
   markTradeSettled,
   loadUserLedger,
+  syncUserLedgerFromCloud,
   LedgerEntry,
 } from './utils/financialLedger';
+
 
 let isAudioMuted = false;
 
@@ -190,6 +192,7 @@ export default function App() {
       return '';
     }
   });
+  const [ledgerSyncCounter, setLedgerSyncCounter] = useState<number>(0);
 
   // Market & Accounts State
   const [instruments, setInstruments] = useState<Instrument[]>(INITIAL_INSTRUMENTS);
@@ -561,8 +564,17 @@ export default function App() {
         isCloudTradesLoadedRef.current = true;
       });
 
+      // Synchronize complete immutable double-entry financial ledger across all devices
+      supabaseService.fetchUserLedger(remote.profile).then((remoteLedger) => {
+        if (Array.isArray(remoteLedger) && remoteLedger.length > 0) {
+          syncUserLedgerFromCloud(remote.profile.email, remoteLedger);
+          setLedgerSyncCounter((c) => c + 1);
+        }
+      });
+
+
       supabaseService.fetchBotState(remote.profile).then((remoteBots) => {
-        const isRecentLocalBotAction = Date.now() - lastLocalBotsUpdateRef.current < 8000;
+        const isRecentLocalBotAction = Date.now() - lastLocalBotsUpdateRef.current < 2000;
         if (remoteBots && !isRecentLocalBotAction) {
           if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
             setImportedBots(remoteBots.importedBots);
@@ -732,19 +744,22 @@ export default function App() {
 
   // Helper: Check if a position, order, closed trade, bot run, or bot trade belongs to a given TradingAccount
   const belongsToAccount = (
-    item: { accountId?: string; accountNumber?: string } | null | undefined,
+    item: { accountId?: string; accountNumber?: string; account_number?: string } | null | undefined,
     acc: TradingAccount | null | undefined
   ): boolean => {
     if (!item || !acc) return false;
-    if (item.accountId || item.accountNumber) {
+    const itemAccNum = (item.accountNumber || item.account_number || '').replace('Account #', '').trim();
+    const targetAccNum = (acc.accountNumber || '').replace('Account #', '').trim();
+    if (item.accountId || itemAccNum) {
       return (
         (Boolean(item.accountId) && item.accountId === acc.id) ||
-        (Boolean(item.accountNumber) && item.accountNumber === acc.accountNumber)
+        (Boolean(itemAccNum) && itemAccNum === targetAccNum)
       );
     }
-    // Legacy items without an explicit account tag only match Demo accounts so an untagged legacy item can NEVER affect a Live account
+    // Legacy items without an explicit account tag match default Demo account
     return String(acc.type).toLowerCase() === 'demo';
   };
+
 
   // Admin Account & Wallet Management Modal
   const [isAdminManagerOpen, setIsAdminManagerOpen] = useState<boolean>(false);
@@ -758,10 +773,10 @@ export default function App() {
   }, [currentUser?.id]);
 
   const [accountsState, setAccounts] = useState<TradingAccount[]>(() =>
-    currentUser && !isMasterAdminEmail(currentUser.email) ? initialFinancials.accounts : []
+    currentUser ? initialFinancials.accounts : []
   );
   const [selectedAccountState, setSelectedAccount] = useState<TradingAccount | null>(() => {
-    if (!currentUser || isMasterAdminEmail(currentUser.email)) return null;
+    if (!currentUser) return null;
     let savedSelId = initialFinancials.selectedAccountId;
     try {
       const localSel = localStorage.getItem(`vtm_selected_account_${currentUser.email.trim().toLowerCase()}`);
@@ -776,9 +791,8 @@ export default function App() {
     );
   });
 
-
   const [walletBalance, setWalletBalance] = useState<number>(() =>
-    currentUser && !isMasterAdminEmail(currentUser.email) ? initialFinancials.walletBalance : 0
+    currentUser ? initialFinancials.walletBalance : 0
   );
 
   // Trading Positions, Orders, and History (Restore open positions across reloads & logins; restore closed trade history)
@@ -1429,6 +1443,8 @@ export default function App() {
   const transactionsRef = useRef<Transaction[]>(transactions);
   const currentUserRef = useRef<UserAuthProfile | null>(currentUser);
   const positionsRef = useRef<Position[]>(positions);
+  const pendingOrdersRef = useRef<PendingOrder[]>(pendingOrders);
+  const closedTradesRef = useRef<ClosedTrade[]>(closedTrades);
   const botTradesRef = useRef<BotTrade[]>(botTrades);
   const botRunsRef = useRef<BotRunInstance[]>(botRuns);
   const instrumentsRef = useRef<Instrument[]>(instruments);
@@ -1441,6 +1457,8 @@ export default function App() {
     transactionsRef.current = transactions;
     currentUserRef.current = currentUser;
     positionsRef.current = positions;
+    pendingOrdersRef.current = pendingOrders;
+    closedTradesRef.current = closedTrades;
     botTradesRef.current = botTrades;
     botRunsRef.current = botRuns;
     instrumentsRef.current = instruments;
@@ -2695,9 +2713,10 @@ export default function App() {
       `Order Executed: ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`
     );
 
-    // Save open trade to Supabase cloud database
-    if (currentUser) {
-      supabaseService.saveTrade(currentUser, {
+    // Save open trade & sync master trade state to Supabase cloud database for multi-device parity
+    const activeUser = currentUserRef.current || currentUser;
+    if (activeUser) {
+      supabaseService.saveTrade(activeUser, {
         id: newPos.id,
         ticket: newPos.ticket,
         accountNumber: selectedAccount?.accountNumber,
@@ -2713,10 +2732,16 @@ export default function App() {
         status: 'OPEN',
         openTime: newPos.openTime,
       });
-      supabaseService.syncActivity(currentUser, {
+      supabaseService.syncActivity(activeUser, {
         type: 'TRADE_OPENED',
         description: `Market ${params.side} ${params.lots} ${params.symbol} @ ${fillPrice}`,
         metadata: { ticket, symbol: params.symbol, lots: params.lots, price: fillPrice },
+      });
+      supabaseService.syncTrades(activeUser, {
+        positions: nextManualPositions,
+        pendingOrders: pendingOrdersRef.current,
+        closedTrades: closedTradesRef.current,
+        accountNumber: ownerAccountNumber || selectedAccountRef.current?.accountNumber,
       });
     }
 
@@ -2767,17 +2792,18 @@ export default function App() {
     positionsRef.current = updatedList;
     setPositions(() => [...updatedList]);
 
-    if (currentUserRef.current?.email) {
+    const activeUser = currentUserRef.current || currentUser;
+    if (activeUser?.email) {
       try {
         localStorage.setItem(
-          `vtm_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
+          `vtm_positions_${activeUser.email.trim().toLowerCase()}`,
           JSON.stringify(updatedList)
         );
       } catch {
         // ignore
       }
       supabaseService
-        .saveTrade(currentUserRef.current, {
+        .saveTrade(activeUser, {
           id: targetPos.id,
           ticket: targetPos.ticket,
           accountNumber: targetPos.accountNumber || selectedAccountRef.current?.accountNumber,
@@ -2794,6 +2820,13 @@ export default function App() {
           openTime: targetPos.openTime,
         })
         .catch(() => {});
+
+      supabaseService.syncTrades(activeUser, {
+        positions: updatedList,
+        pendingOrders: pendingOrdersRef.current,
+        closedTrades: closedTradesRef.current,
+        accountNumber: targetPos.accountNumber || selectedAccountRef.current?.accountNumber,
+      });
     }
 
     addNotification(
@@ -2882,9 +2915,10 @@ export default function App() {
       `Placed Pending ${params.type}: ${params.lots} ${params.symbol} @ ${params.targetPrice}`
     );
 
-    // Save pending order to Supabase
-    if (currentUser) {
-      supabaseService.saveTrade(currentUser, {
+    // Save pending order & sync cloud trade state
+    const activeUser = currentUserRef.current || currentUser;
+    if (activeUser) {
+      supabaseService.saveTrade(activeUser, {
         id: newOrd.id,
         ticket: newOrd.ticket,
         accountNumber: selectedAccount?.accountNumber,
@@ -2898,10 +2932,16 @@ export default function App() {
         status: 'PENDING',
         openTime: newOrd.createdAt,
       });
-      supabaseService.syncActivity(currentUser, {
+      supabaseService.syncActivity(activeUser, {
         type: 'ORDER_PENDING',
         description: `Placed ${newOrd.type} ${newOrd.lots} ${newOrd.symbol} @ ${newOrd.targetPrice}`,
         metadata: { ticket, symbol: newOrd.symbol, targetPrice: newOrd.targetPrice },
+      });
+      supabaseService.syncTrades(activeUser, {
+        positions: positionsRef.current,
+        pendingOrders: [newOrd, ...pendingOrdersRef.current.filter((o) => o.id !== newOrd.id)],
+        closedTrades: closedTradesRef.current,
+        accountNumber: selectedAccountRef.current?.accountNumber || selectedAccount?.accountNumber,
       });
     }
 
@@ -3068,9 +3108,10 @@ export default function App() {
       setTimeout(handleZeroBalanceStopOut, 0);
     }
 
-    // Save closed trade to Supabase cloud database (updates the same trade_id row from OPEN to CLOSED)
-    if (currentUserRef.current) {
-      supabaseService.saveTrade(currentUserRef.current, {
+    // Save closed trade & sync cloud trade state
+    const activeUser = currentUserRef.current || currentUser;
+    if (activeUser) {
+      supabaseService.saveTrade(activeUser, {
         id: closed.id,
         ticket: closed.ticket,
         accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
@@ -3089,7 +3130,7 @@ export default function App() {
         closeTime: closed.closeTime,
         closeReason: closed.reason,
       });
-      supabaseService.syncActivity(currentUserRef.current, {
+      supabaseService.syncActivity(activeUser, {
         type: 'TRADE_CLOSED',
         description: `${reason === 'TP' ? 'Take Profit Hit' : reason === 'SL' ? 'Stop Loss Hit' : 'Closed'} #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)}) • New Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`,
         metadata: {
@@ -3107,6 +3148,12 @@ export default function App() {
           closeTime: closed.closeTime,
           newBalance: updatedAcc?.balance ?? 0,
         },
+      });
+      supabaseService.syncTrades(activeUser, {
+        positions: nextPositions,
+        pendingOrders: pendingOrdersRef.current,
+        closedTrades: [closed, ...closedTradesRef.current.filter((c) => c.id !== closed.id)],
+        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
       });
     }
 
@@ -3164,27 +3211,39 @@ export default function App() {
     setPendingOrders((prev) => prev.filter((o) => o.id !== id));
     addNotification('Pending order cancelled');
 
-    if (currentUser && ord) {
-      supabaseService.saveTrade(currentUser, {
-        id: ord.id,
-        ticket: ord.ticket,
-        accountNumber: selectedAccount?.accountNumber,
-        symbol: ord.symbol,
-        side: ord.side,
-        orderType: ord.type,
-        lots: ord.lots,
-        openPrice: ord.targetPrice,
-        sl: ord.sl,
-        tp: ord.tp,
-        status: 'CANCELLED',
-        openTime: ord.createdAt,
-        closeTime: Date.now(),
-        closeReason: 'CANCELLED_BY_USER',
-      });
-      supabaseService.syncActivity(currentUser, {
-        type: 'ORDER_CANCELLED',
-        description: `Cancelled pending ${ord.type} #${ord.ticket} for ${ord.lots} ${ord.symbol}`,
-        metadata: { ticket: ord.ticket, symbol: ord.symbol },
+    const activeUser = currentUserRef.current || currentUser;
+    const nextPending = pendingOrdersRef.current.filter((o) => o.id !== id);
+    pendingOrdersRef.current = nextPending;
+
+    if (activeUser) {
+      if (ord) {
+        supabaseService.saveTrade(activeUser, {
+          id: ord.id,
+          ticket: ord.ticket,
+          accountNumber: selectedAccount?.accountNumber,
+          symbol: ord.symbol,
+          side: ord.side,
+          orderType: ord.type,
+          lots: ord.lots,
+          openPrice: ord.targetPrice,
+          sl: ord.sl,
+          tp: ord.tp,
+          status: 'CANCELLED',
+          openTime: ord.createdAt,
+          closeTime: Date.now(),
+          closeReason: 'CANCELLED_BY_USER',
+        });
+        supabaseService.syncActivity(activeUser, {
+          type: 'ORDER_CANCELLED',
+          description: `Cancelled pending ${ord.type} #${ord.ticket} for ${ord.lots} ${ord.symbol}`,
+          metadata: { ticket: ord.ticket, symbol: ord.symbol },
+        });
+      }
+      supabaseService.syncTrades(activeUser, {
+        positions: positionsRef.current,
+        pendingOrders: nextPending,
+        closedTrades: closedTradesRef.current,
+        accountNumber: selectedAccountRef.current?.accountNumber || selectedAccount?.accountNumber,
       });
     }
 
@@ -5715,7 +5774,7 @@ export default function App() {
     lastLocalSettingsUpdateRef.current = Date.now();
 
     const activeUser = currentUserRef.current;
-    if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+    if (activeUser && activeUser.email) {
       const cleanEmail = activeUser.email.trim().toLowerCase();
       try {
         localStorage.setItem(`vtm_selected_account_${cleanEmail}`, resolvedAcc.id);
@@ -5794,7 +5853,7 @@ export default function App() {
     .map((p) => `${p.id}:${p.sl ?? ''}:${p.tp ?? ''}:${p.lots}`)
     .join('|');
   useEffect(() => {
-    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email)) return;
+    if (!currentUser || !currentUser.email) return;
     if (!isCloudTradesLoadedRef.current && closedTrades.length === 0 && positions.length === 0) return;
     const timer = setTimeout(() => {
       supabaseService.syncTrades(currentUser, {
@@ -5821,7 +5880,7 @@ export default function App() {
   }, [currentUser?.email, importedBots, botRuns, botTrades]);
 
   useEffect(() => {
-    if (!currentUser || !currentUser.email || isMasterAdminEmail(currentUser.email) || !isCloudExtrasLoadedRef.current) return;
+    if (!currentUser || !currentUser.email || !isCloudExtrasLoadedRef.current) return;
     const timer = setTimeout(() => {
       supabaseService.syncExtrasState(currentUser, {
         priceAlerts,
@@ -5892,6 +5951,7 @@ export default function App() {
             oneClickTrading={oneClickTrading}
             priceAlerts={priceAlerts}
             onOpenPriceAlert={handleOpenPriceAlertModal}
+            onExecuteMarketOrder={handleExecuteMarketOrder}
           />
         );
       case 'instrument-detail':
@@ -5930,6 +5990,7 @@ export default function App() {
             onChartTypeChange={setChartType}
             tickDirection={currentTickDirection}
             currentUser={currentUser}
+            ledgerSyncCounter={ledgerSyncCounter}
           />
         );
       case 'bots':
@@ -6066,6 +6127,7 @@ export default function App() {
             oneClickTrading={oneClickTrading}
             priceAlerts={priceAlerts}
             onOpenPriceAlert={handleOpenPriceAlertModal}
+            onExecuteMarketOrder={handleExecuteMarketOrder}
           />
         );
     }

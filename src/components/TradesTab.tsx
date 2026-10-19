@@ -48,6 +48,7 @@ interface TradesTabProps {
   onChartTypeChange?: (ct: any) => void;
   tickDirection?: 'up' | 'down';
   currentUser?: UserAuthProfile | null;
+  ledgerSyncCounter?: number;
 }
 
 const fmt = (val: number | undefined | null, decimals = 2): string => {
@@ -67,20 +68,21 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   isDarkMode = true,
   instruments = [],
   currentUser,
+  ledgerSyncCounter = 0,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'open' | 'pending' | 'closed' | 'reconciliation'>('open');
 
   const userLedgerEntries = useMemo(() => {
     return loadUserLedger(currentUser?.email);
-  }, [currentUser?.email, account?.balance, closedTrades.length]);
+  }, [currentUser?.email, account?.balance, closedTrades.length, ledgerSyncCounter]);
 
   const accountLedgerEntries = useMemo(() => {
     if (!account?.accountNumber) return userLedgerEntries;
-    return userLedgerEntries.filter(
-      (e) =>
-        e.accountNumber === account.accountNumber ||
-        e.accountNumber === `Account #${account.accountNumber}`
-    );
+    const accNumClean = account.accountNumber.replace('Account #', '').trim();
+    return userLedgerEntries.filter((e) => {
+      const eAccNumClean = (e.accountNumber || '').replace('Account #', '').trim();
+      return !eAccNumClean || eAccNumClean === accNumClean;
+    });
   }, [userLedgerEntries, account?.accountNumber]);
 
   const reconciliationReport = useMemo(() => {
@@ -92,6 +94,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
       transactions: account?.transactions || [],
     });
   }, [account?.accountNumber, account?.balance, currentUser?.email, closedTrades, account?.transactions, userLedgerEntries]);
+
 
   // History time filter state: 'today' | '7days' | 'month' | 'all' | 'custom'
   const [historyFilter, setHistoryFilter] = useState<'today' | '7days' | 'month' | 'all' | 'custom'>('all');

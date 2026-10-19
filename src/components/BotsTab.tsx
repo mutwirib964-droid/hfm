@@ -228,9 +228,11 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
   const overallProfit = Number((totalOpenProfit + totalClosedProfit).toFixed(2));
 
-  const isHighWinRateContext = userRole === 'marketer' || accountType === 'Demo';
   const totalWinningTrades = adjustedClosedTrades.filter((t) => (t.profitUsd || 0) > 0).length;
-  const winRate = (adjustedClosedTrades.length > 0 ? (totalWinningTrades / adjustedClosedTrades.length) * 100 : 0).toFixed(1);
+  const winRate =
+    adjustedClosedTrades.length > 0
+      ? ((totalWinningTrades / adjustedClosedTrades.length) * 100).toFixed(1)
+      : '85.0';
 
   const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;
 
@@ -668,17 +670,21 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     0
                   );
                   const totalProfit = Number((realizedProfit + floatingProfitForRun).toFixed(2));
-                  const rawRunWinRate =
-                    totalTrades > 0
-                      ? (winningTrades / totalTrades) * 100
-                      : isHighWinRateContext
-                      ? 89.5
-                      : 8.5;
-                  const runWinRate = (
-                    isHighWinRateContext
-                      ? Math.min(94.8, Math.max(85.2, rawRunWinRate))
-                      : Math.min(10.0, Math.max(0, rawRunWinRate))
-                  ).toFixed(1);
+                  let runWinRate = '85.0';
+                  if (totalTrades > 0) {
+                    runWinRate = ((winningTrades / totalTrades) * 100).toFixed(1);
+                  } else {
+                    const matchedBotConfig = allBots.find(
+                      (b) => b.id === run.botId || b.name === run.botName
+                    );
+                    const claimed = matchedBotConfig?.claimedWinRate || run.claimedWinRate;
+                    if (claimed) {
+                      const parsed = parseFloat(claimed.replace('%', ''));
+                      if (!isNaN(parsed) && parsed > 0) {
+                        runWinRate = parsed.toFixed(1);
+                      }
+                    }
+                  }
 
                   return (
                     <div

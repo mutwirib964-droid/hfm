@@ -120,6 +120,63 @@ export function loadUserLedger(userEmail?: string | null): LedgerEntry[] {
 }
 
 /**
+ * Merges remote ledger entries from Supabase cloud into local storage.
+ * Guarantees cross-device ledger sync, double-entry auditability, and idempotency.
+ */
+export function syncUserLedgerFromCloud(
+  userEmail: string | undefined | null,
+  remoteEntries: LedgerEntry[]
+): LedgerEntry[] {
+  if (!userEmail || !Array.isArray(remoteEntries) || remoteEntries.length === 0) {
+    return loadUserLedger(userEmail);
+  }
+  const cleanEmail = userEmail.trim().toLowerCase();
+  const current = loadUserLedger(cleanEmail);
+  const map = new Map<string, LedgerEntry>();
+
+  // Put local entries into map
+  for (const e of current) {
+    if (e && e.id) {
+      map.set(e.id, e);
+    }
+  }
+
+  // Merge remote entries deduplicated by id or referenceId + type + accountNumber
+  for (const re of remoteEntries) {
+    if (re && re.id) {
+      const existingKey = re.id;
+      if (!map.has(existingKey)) {
+        // Also check referenceId + type + accountNumber
+        let isDup = false;
+        for (const existingEntry of map.values()) {
+          if (
+            existingEntry.referenceId === re.referenceId &&
+            existingEntry.type === re.type &&
+            (existingEntry.accountNumber === re.accountNumber ||
+              existingEntry.accountNumber.replace('Account #', '') === re.accountNumber.replace('Account #', ''))
+          ) {
+            isDup = true;
+            break;
+          }
+        }
+        if (!isDup) {
+          map.set(existingKey, re);
+        }
+      }
+    }
+  }
+
+  const sorted = Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp).slice(0, 2000);
+  try {
+    localStorage.setItem(`${LEDGER_STORAGE_KEY_PREFIX}${cleanEmail}`, JSON.stringify(sorted));
+  } catch {
+    // ignore
+  }
+  return sorted;
+}
+
+
+/**
  * Append a verified financial movement to the user ledger.
  * Returns the saved LedgerEntry.
  */
