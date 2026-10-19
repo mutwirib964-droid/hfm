@@ -1416,23 +1416,71 @@ class SupabaseService {
       pendingOrders: PendingOrder[];
       closedTrades: ClosedTrade[];
       accountNumber?: string;
+      updatedAt?: number;
+      lastUpdated?: string;
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
 
-    // Never overwrite existing cloud closedTrades with an empty array on initial mount/login
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
+    const nowMs = Date.now();
+    const incomingMs = data.updatedAt || (data.lastUpdated ? new Date(data.lastUpdated).getTime() : nowMs);
+    const nowIso = new Date(nowMs).toISOString();
+
     let mergedClosed = Array.isArray(data.closedTrades) ? [...data.closedTrades] : [];
+    let mergedPositions = Array.isArray(data.positions) ? [...data.positions] : [];
+    let mergedPending = Array.isArray(data.pendingOrders) ? [...data.pendingOrders] : [];
+    let cloudUpdatedAtMs = 0;
+
     try {
       const existing = await this.fetchCloudStateRecord<{
+        positions?: Position[];
+        pendingOrders?: PendingOrder[];
         closedTrades?: ClosedTrade[];
-      }>(user.email, 'STATE_TRADES');
-      if (existing && Array.isArray(existing.closedTrades) && existing.closedTrades.length > 0) {
-        const seenTickets = new Set(mergedClosed.map((t) => `${t.ticket}-${t.openTime}`));
-        for (const oldTrade of existing.closedTrades) {
-          const key = `${oldTrade.ticket}-${oldTrade.openTime}`;
-          if (!seenTickets.has(key)) {
-            seenTickets.add(key);
-            mergedClosed.push(oldTrade);
+        updatedAt?: number;
+        lastUpdated?: string;
+      }>(cleanEmail, 'STATE_TRADES');
+
+      if (existing) {
+        cloudUpdatedAtMs =
+          existing.updatedAt ||
+          (existing.lastUpdated ? new Date(existing.lastUpdated).getTime() : 0);
+
+        // High-resolution timestamp check: If existing cloud trade record is strictly newer than incoming payload, merge cloud positions/orders
+        const isCloudNewer = cloudUpdatedAtMs > incomingMs + 1000;
+        if (isCloudNewer) {
+          if (Array.isArray(existing.positions)) {
+            const posIds = new Set(mergedPositions.map((p) => p.id));
+            for (const p of existing.positions) {
+              if (p && p.id && !posIds.has(p.id)) {
+                posIds.add(p.id);
+                mergedPositions.push(p);
+              }
+            }
+          }
+          if (Array.isArray(existing.pendingOrders)) {
+            const ordIds = new Set(mergedPending.map((o) => o.id));
+            for (const o of existing.pendingOrders) {
+              if (o && o.id && !ordIds.has(o.id)) {
+                ordIds.add(o.id);
+                mergedPending.push(o);
+              }
+            }
+          }
+        }
+
+        // Always preserve all closed trades across all devices
+        if (Array.isArray(existing.closedTrades) && existing.closedTrades.length > 0) {
+          const seenTickets = new Set(mergedClosed.map((t) => `${t.ticket}-${t.openTime}`));
+          for (const oldTrade of existing.closedTrades) {
+            const key = `${oldTrade.ticket}-${oldTrade.openTime}`;
+            if (!seenTickets.has(key)) {
+              seenTickets.add(key);
+              mergedClosed.push(oldTrade);
+            }
           }
         }
       }
@@ -1443,12 +1491,12 @@ class SupabaseService {
     mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
     const latestClosed = mergedClosed.slice(0, 1000);
 
-    // Also persist directly into public.closed_trades table
+    // Atomic UPSERT into public.closed_trades using on_conflict=id and Prefer: resolution=merge-duplicates
     try {
       if (latestClosed.length > 0) {
         const rows = latestClosed.slice(0, 1000).map((t) => ({
           id: t.id || `ct-${t.ticket}-${t.closeTime}`,
-          user_email: user.email.trim().toLowerCase(),
+          user_email: cleanEmail,
           ticket: t.ticket,
           account_number: data.accountNumber || user.accountNumber || '',
           symbol: t.symbol,
@@ -1461,7 +1509,7 @@ class SupabaseService {
           close_time: t.closeTime,
           reason: t.reason || 'MANUAL',
         }));
-        fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
+        await fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
           method: 'POST',
           headers: {
             apikey: this.config.anonKey,
@@ -1476,16 +1524,21 @@ class SupabaseService {
       // ignore
     }
 
+    const winningTimestamp = Math.max(nowMs, cloudUpdatedAtMs);
+    const winningIso = new Date(winningTimestamp).toISOString();
+
+    // Persist atomically to vtm_cloud_states (STATE_TRADES) via POST with resolution=merge-duplicates
     return await this.saveCloudStateRecord(
-      user.email,
+      cleanEmail,
       'STATE_TRADES',
-      `Synchronized ${data.positions.length} open positions, ${data.pendingOrders.length} pending orders, ${latestClosed.length} closed trades`,
+      `Synchronized ${mergedPositions.length} open positions, ${mergedPending.length} pending orders, ${latestClosed.length} closed trades`,
       {
-        positions: data.positions,
-        pendingOrders: data.pendingOrders,
+        positions: mergedPositions,
+        pendingOrders: mergedPending,
         closedTrades: latestClosed,
         accountNumber: data.accountNumber || user.accountNumber || '',
-        updatedAt: Date.now(),
+        updatedAt: winningTimestamp,
+        lastUpdated: winningIso,
       }
     );
   }
@@ -2557,7 +2610,16 @@ class SupabaseService {
       const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
       const accountMap = new Map<string, TradingAccount>();
 
-      // Fetch current cloud accounts first so no non-deleted Live account is ever wiped by a stale device sync
+      // High-resolution timestamps for incoming update
+      const nowMs = Date.now();
+      const incomingClientMs = state.lastUpdated
+        ? (typeof state.lastUpdated === 'number' ? state.lastUpdated : new Date(state.lastUpdated).getTime())
+        : nowMs;
+
+      let cloudLastUpdatedMs = 0;
+      let cloudWalletBalance: number | undefined = undefined;
+
+      // Build OR query clauses
       const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
       if (cleanEmail) {
         orClauses.push(`user_email.eq.${encodeURIComponent(cleanEmail)}`);
@@ -2566,9 +2628,10 @@ class SupabaseService {
         orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
       }
 
+      // Fetch current cloud accounts and high-resolution last_updated timestamp to prevent stale state drift
       try {
         const existingRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts&order=last_updated.desc`,
+          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts,wallet_balance,last_updated&order=last_updated.desc`,
           {
             method: 'GET',
             headers: {
@@ -2580,8 +2643,22 @@ class SupabaseService {
         );
         if (existingRes.ok) {
           const existingRows = await existingRes.json();
-          if (Array.isArray(existingRows)) {
+          if (Array.isArray(existingRows) && existingRows.length > 0) {
             for (const row of existingRows) {
+              if (row?.last_updated) {
+                const rowTime = new Date(row.last_updated).getTime();
+                if (!isNaN(rowTime) && rowTime > cloudLastUpdatedMs) {
+                  cloudLastUpdatedMs = rowTime;
+                }
+              }
+              if (typeof row?.wallet_balance === 'number' && !isNaN(row.wallet_balance)) {
+                if (
+                  cloudWalletBalance === undefined ||
+                  (row.last_updated && new Date(row.last_updated).getTime() >= cloudLastUpdatedMs)
+                ) {
+                  cloudWalletBalance = row.wallet_balance;
+                }
+              }
               if (Array.isArray(row?.accounts)) {
                 for (const acc of row.accounts) {
                   if (!acc) continue;
@@ -2601,7 +2678,10 @@ class SupabaseService {
         // Proceed with incoming accounts if read times out
       }
 
-      // Apply incoming accounts (overriding matching accounts with latest balance/equity, while blocking $0 skeleton overwrites)
+      // Check if cloud state is strictly newer than incoming client update snapshot
+      const isCloudNewer = cloudLastUpdatedMs > incomingClientMs + 1000; // 1 second tolerance
+
+      // Apply incoming accounts
       if (Array.isArray(state.accounts)) {
         for (const acc of state.accounts) {
           if (!acc) continue;
@@ -2610,8 +2690,14 @@ class SupabaseService {
           const k = accNum || acc.id;
           if (k) {
             const prev = accountMap.get(k);
-            if (prev && isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev)) {
-              accountMap.set(k, prev);
+            if (prev) {
+              if (isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev)) {
+                accountMap.set(k, prev);
+              } else if (isCloudNewer && !isSkeletonZeroAccount(prev)) {
+                accountMap.set(k, pickAuthoritativeAccount(prev, acc, false));
+              } else {
+                accountMap.set(k, pickAuthoritativeAccount(acc, prev, false));
+              }
             } else {
               accountMap.set(k, acc);
             }
@@ -2620,26 +2706,38 @@ class SupabaseService {
       }
 
       const mergedAccounts = Array.from(accountMap.values());
-      const nowIso = new Date().toISOString();
+      const finalWalletBalance =
+        isCloudNewer && cloudWalletBalance !== undefined
+          ? cloudWalletBalance
+          : Number((state.walletBalance || 0).toFixed(2));
+
+      // Winning high-resolution ISO timestamp
+      const winningMs = Math.max(nowMs, cloudLastUpdatedMs);
+      const winningIso = new Date(winningMs).toISOString();
+
       const payload = {
         user_key: userKey,
         user_email: cleanEmail,
         user_name: isAdmin ? 'mutwiri' : user.name || '',
-        wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
+        wallet_balance: finalWalletBalance,
         accounts: mergedAccounts,
         selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
         transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
-        last_updated: nowIso,
+        last_updated: winningIso,
       };
 
+      // Atomic UPSERT using on_conflict=user_key and Prefer: resolution=merge-duplicates
       const res = await fetch(`${this.config.url}/rest/v1/vtm_user_finances?on_conflict=user_key`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: {
+          ...this.getHeaders(),
+          Prefer: 'resolution=merge-duplicates,return=representation',
+        },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(6000),
       });
 
-      // Always patch any rows matching user_email or user_key or user.id so all rows stay 100% in sync
+      // Always patch any matching rows so user_email, user_key, and user.id stay 100% in sync
       if (cleanEmail) {
         await fetch(
           `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
@@ -2653,16 +2751,31 @@ class SupabaseService {
             body: JSON.stringify({
               user_email: cleanEmail,
               user_name: isAdmin ? 'mutwiri' : user.name || '',
-              wallet_balance: Number((state.walletBalance || 0).toFixed(2)),
+              wallet_balance: finalWalletBalance,
               accounts: mergedAccounts,
               selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
               transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
-              last_updated: nowIso,
+              last_updated: winningIso,
             }),
             signal: AbortSignal.timeout(5000),
           }
         ).catch(() => {});
       }
+
+      // Also persist atomically to vtm_cloud_states (STATE_FINANCIALS)
+      await this.saveCloudStateRecord(
+        cleanEmail,
+        'STATE_FINANCIALS',
+        `Synchronized ${mergedAccounts.length} trading accounts, balance $${finalWalletBalance}`,
+        {
+          walletBalance: finalWalletBalance,
+          accounts: mergedAccounts,
+          selectedAccountId: state.selectedAccountId,
+          transactions: state.transactions,
+          lastUpdated: winningIso,
+          updatedAt: winningMs,
+        }
+      );
 
       return res.ok;
     } catch (err) {

@@ -295,9 +295,12 @@ export default function App() {
 
     const applyRoleUpdateToUser = (nextRole: UserRole) => {
       const safeRole: UserRole = nextRole === 'marketer' ? 'marketer' : 'normal';
+      if (userRoleRef.current === safeRole && currentUser?.role === safeRole) {
+        return;
+      }
       userRoleRef.current = safeRole;
       setUserRole(safeRole);
-      setCurrentUser((prev) => (prev ? { ...prev, role: safeRole } : null));
+      setCurrentUser((prev) => (prev && prev.role !== safeRole ? { ...prev, role: safeRole } : prev));
       try {
         localStorage.setItem('vtm_user_role', safeRole);
         const activeRaw = localStorage.getItem('vtm_auth_user');
@@ -325,8 +328,6 @@ export default function App() {
           positionsRef.current = updated;
           return updated;
         });
-      } else if (safeRole === 'normal') {
-        // Retail live account winrates are handled by evaluateTargetWinOrLoss (max 15%)
       }
     };
 
@@ -397,12 +398,25 @@ export default function App() {
           const shouldSyncMergedBackToCloud =
             stateToApply.accounts.length > (remoteFin.accounts?.length || 0);
           saveUserFinancials(remote.profile, stateToApply, shouldSyncMergedBackToCloud);
-          walletBalanceRef.current = stateToApply.walletBalance;
-          setWalletBalance(stateToApply.walletBalance);
+          if (walletBalanceRef.current !== stateToApply.walletBalance) {
+            walletBalanceRef.current = stateToApply.walletBalance;
+            setWalletBalance(stateToApply.walletBalance);
+          }
 
           if (stateToApply.accounts) {
-            accountsRef.current = stateToApply.accounts;
-            setAccounts(stateToApply.accounts);
+            const prevAccs = accountsRef.current;
+            const accsChanged =
+              prevAccs.length !== stateToApply.accounts.length ||
+              stateToApply.accounts.some((a, i) => {
+                const pa = prevAccs[i];
+                return !pa || pa.id !== a.id || pa.balance !== a.balance || pa.equity !== a.equity || pa.margin !== a.margin;
+              });
+
+            if (accsChanged) {
+              accountsRef.current = stateToApply.accounts;
+              setAccounts(stateToApply.accounts);
+            }
+
             setSelectedAccount((curr) => {
               if (stateToApply.accounts.length === 0) {
                 selectedAccountRef.current = null;
@@ -422,13 +436,31 @@ export default function App() {
                   : null) ||
                 stateToApply.accounts.find((a) => a.id === stateToApply.selectedAccountId) ||
                 stateToApply.accounts[0];
+
+              if (
+                curr &&
+                nextSel &&
+                curr.id === nextSel.id &&
+                curr.accountNumber === nextSel.accountNumber &&
+                curr.balance === nextSel.balance &&
+                curr.equity === nextSel.equity &&
+                curr.margin === nextSel.margin
+              ) {
+                return curr;
+              }
               selectedAccountRef.current = nextSel;
               return nextSel;
             });
           }
           if (mergedTransactions && mergedTransactions.length > 0) {
-            transactionsRef.current = mergedTransactions;
-            setTransactions(mergedTransactions);
+            const prevTx = transactionsRef.current;
+            if (
+              prevTx.length !== mergedTransactions.length ||
+              mergedTransactions.some((mt, i) => !prevTx[i] || prevTx[i].id !== mt.id || prevTx[i].status !== mt.status)
+            ) {
+              transactionsRef.current = mergedTransactions;
+              setTransactions(mergedTransactions);
+            }
           }
         } else if (localFin && (localFin.lastUpdated || 0) > (remoteFin.lastUpdated || 0)) {
           // Local state is newer (e.g. from a recent trade or withdrawal) - push merged state to Supabase
@@ -537,11 +569,33 @@ export default function App() {
           const isRecentLocalAction = Date.now() - lastLocalTradeActionRef.current < 6000;
           if (!isRecentLocalAction) {
             if (Array.isArray(remoteTrades.positions)) {
-              setPositions(remoteTrades.positions);
-              positionsRef.current = remoteTrades.positions;
+              setPositions((prevPos) => {
+                const isDiff =
+                  prevPos.length !== remoteTrades.positions.length ||
+                  remoteTrades.positions.some((p, i) => {
+                    const cp = prevPos[i];
+                    return !cp || cp.id !== p.id || cp.sl !== p.sl || cp.tp !== p.tp || cp.lots !== p.lots || cp.currentPrice !== p.currentPrice;
+                  });
+                if (isDiff) {
+                  positionsRef.current = remoteTrades.positions;
+                  return remoteTrades.positions;
+                }
+                return prevPos;
+              });
             }
             if (Array.isArray(remoteTrades.pendingOrders)) {
-              setPendingOrders(remoteTrades.pendingOrders);
+              setPendingOrders((prevOrders) => {
+                if (
+                  prevOrders.length === remoteTrades.pendingOrders.length &&
+                  remoteTrades.pendingOrders.every((o, i) => {
+                    const po = prevOrders[i];
+                    return po && po.id === o.id && po.targetPrice === o.targetPrice && po.sl === o.sl && po.tp === o.tp;
+                  })
+                ) {
+                  return prevOrders;
+                }
+                return remoteTrades.pendingOrders;
+              });
             }
           }
           if (Array.isArray(remoteTrades.closedTrades) && remoteTrades.closedTrades.length > 0) {
@@ -550,15 +604,23 @@ export default function App() {
               .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
               .slice(0, 500);
 
-            setClosedTrades(cloudClosed);
-            try {
-              localStorage.setItem(
-                `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
-                JSON.stringify(cloudClosed)
-              );
-            } catch {
-              // ignore
-            }
+            setClosedTrades((prevClosed) => {
+              if (
+                prevClosed.length === cloudClosed.length &&
+                (cloudClosed.length === 0 || prevClosed[0]?.id === cloudClosed[0]?.id)
+              ) {
+                return prevClosed;
+              }
+              try {
+                localStorage.setItem(
+                  `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
+                  JSON.stringify(cloudClosed)
+                );
+              } catch {
+                // ignore
+              }
+              return cloudClosed;
+            });
           }
         }
         isCloudTradesLoadedRef.current = true;
@@ -567,8 +629,11 @@ export default function App() {
       // Synchronize complete immutable double-entry financial ledger across all devices
       supabaseService.fetchUserLedger(remote.profile).then((remoteLedger) => {
         if (Array.isArray(remoteLedger) && remoteLedger.length > 0) {
-          syncUserLedgerFromCloud(remote.profile.email, remoteLedger);
-          setLedgerSyncCounter((c) => c + 1);
+          const mergedLedger = syncUserLedgerFromCloud(remote.profile.email, remoteLedger);
+          if (mergedLedger.length > userLedgerLengthRef.current) {
+            userLedgerLengthRef.current = mergedLedger.length;
+            setLedgerSyncCounter((c) => c + 1);
+          }
         }
       });
 
@@ -577,8 +642,16 @@ export default function App() {
         const isRecentLocalBotAction = Date.now() - lastLocalBotsUpdateRef.current < 2000;
         if (remoteBots && !isRecentLocalBotAction) {
           if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
-            setImportedBots(remoteBots.importedBots);
-            saveStoredImportedBots(remoteBots.importedBots);
+            setImportedBots((prevBots) => {
+              if (
+                prevBots.length === remoteBots.importedBots.length &&
+                remoteBots.importedBots.every((b, i) => prevBots[i]?.id === b.id)
+              ) {
+                return prevBots;
+              }
+              saveStoredImportedBots(remoteBots.importedBots);
+              return remoteBots.importedBots;
+            });
           }
           if (Array.isArray(remoteBots.botRuns)) {
             const localDeletedIds = getDeletedBotIds();
@@ -609,9 +682,27 @@ export default function App() {
               localDeletedIds,
               false
             );
-            botRunsRef.current = finalRuns;
-            setBotRuns(finalRuns);
-            saveStoredBotRuns(finalRuns, remote.profile.email);
+
+            setBotRuns((prevRuns) => {
+              if (
+                prevRuns.length === finalRuns.length &&
+                finalRuns.every((r, i) => {
+                  const pr = prevRuns[i];
+                  return (
+                    pr &&
+                    pr.id === r.id &&
+                    pr.status === r.status &&
+                    pr.totalProfitUsd === r.totalProfitUsd &&
+                    pr.totalTrades === r.totalTrades
+                  );
+                })
+              ) {
+                return prevRuns;
+              }
+              botRunsRef.current = finalRuns;
+              saveStoredBotRuns(finalRuns, remote.profile.email);
+              return finalRuns;
+            });
 
             if (finalRuns.length > cleanedRemoteRuns.length) {
               supabaseService
@@ -636,9 +727,21 @@ export default function App() {
               Array.from(dedupTradesMap.values()),
               finalRuns
             );
-            botTradesRef.current = cleanedTrades;
-            setBotTrades(cleanedTrades);
-            saveStoredBotTrades(cleanedTrades, remote.profile.email);
+
+            setBotTrades((prevTrades) => {
+              if (
+                prevTrades.length === cleanedTrades.length &&
+                cleanedTrades.every((t, i) => {
+                  const pt = prevTrades[i];
+                  return pt && pt.id === t.id && pt.status === t.status && pt.profitUsd === t.profitUsd;
+                })
+              ) {
+                return prevTrades;
+              }
+              botTradesRef.current = cleanedTrades;
+              saveStoredBotTrades(cleanedTrades, remote.profile.email);
+              return cleanedTrades;
+            });
           }
         }
         isCloudBotsLoadedRef.current = true;
@@ -1449,6 +1552,7 @@ export default function App() {
   const botRunsRef = useRef<BotRunInstance[]>(botRuns);
   const instrumentsRef = useRef<Instrument[]>(instruments);
   const userRoleRef = useRef<UserRole>(userRole);
+  const userLedgerLengthRef = useRef<number>(0);
 
   useEffect(() => {
     accountsRef.current = accounts;
