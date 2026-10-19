@@ -114,6 +114,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   const [editingPosId, setEditingPosId] = useState<string | null>(null);
   const [editSlVal, setEditSlVal] = useState<string>('');
   const [editTpVal, setEditTpVal] = useState<string>('');
+  const [editError, setEditError] = useState<string | null>(null);
 
   const [activeBottomSection, setActiveBottomSection] = useState<
     'positions' | 'orders' | 'history'
@@ -1144,19 +1145,23 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                               onClick={() => {
                                 if (editingPosId === pos.id) {
                                   setEditingPosId(null);
+                                  setEditError(null);
                                 } else {
                                   setEditingPosId(pos.id);
                                   setEditSlVal(pos.sl ? String(pos.sl) : '');
                                   setEditTpVal(pos.tp ? String(pos.tp) : '');
+                                  setEditError(null);
                                 }
                               }}
                               className={`px-2.5 py-1.5 border rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                                isDarkMode
+                                editingPosId === pos.id
+                                  ? 'bg-sky-600 text-white border-sky-500 shadow-sm'
+                                  : isDarkMode
                                   ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700'
                                   : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
                               }`}
                             >
-                              SL/TP
+                              Modify (SL/TP)
                             </button>
                           )}
 
@@ -1169,45 +1174,146 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                         </div>
 
                         {editingPosId === pos.id && onUpdatePositionTpSl && (
-                          <div className={`w-full sm:w-80 p-2 rounded-lg border flex items-center gap-1.5 text-xs ${
-                            isDarkMode ? 'bg-neutral-950 border-neutral-800' : 'bg-white border-slate-200'
+                          <div className={`w-full sm:w-96 p-3 rounded-xl border space-y-2 text-xs shadow-md mt-2 ${
+                            isDarkMode ? 'bg-neutral-900 border-sky-500/50' : 'bg-slate-50 border-sky-400'
                           }`}>
-                            <input
-                              type="number"
-                              step="any"
-                              placeholder="SL Price or $"
-                              value={editSlVal}
-                              onChange={(e) => setEditSlVal(e.target.value)}
-                              className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
-                                isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
-                              }`}
-                            />
-                            <input
-                              type="number"
-                              step="any"
-                              placeholder="TP Price or $"
-                              value={editTpVal}
-                              onChange={(e) => setEditTpVal(e.target.value)}
-                              className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
-                                isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
-                              }`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const newSl = editSlVal.trim() !== '' ? parseFloat(editSlVal) : null;
-                                const newTp = editTpVal.trim() !== '' ? parseFloat(editTpVal) : null;
-                                onUpdatePositionTpSl(
-                                  pos.id,
-                                  newSl !== null && !isNaN(newSl) ? newSl : null,
-                                  newTp !== null && !isNaN(newTp) ? newTp : null
-                                );
-                                setEditingPosId(null);
-                              }}
-                              className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[11px] shrink-0 cursor-pointer"
-                            >
-                              Save
-                            </button>
+                            <div className="flex items-center justify-between border-b border-neutral-800 pb-1">
+                              <span className="text-[11px] font-bold text-sky-400">Modify Position #{pos.ticket}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono">
+                                Price: {(pos.currentPrice || pos.openPrice).toFixed(currentInstrument.decimals)}
+                              </span>
+                            </div>
+
+                            {editError && (
+                              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-1.5 rounded border border-rose-500/30">
+                                {editError}
+                              </div>
+                            )}
+
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <div className="flex items-center justify-between mb-0.5">
+                                  <label className="text-[10px] text-neutral-400 font-semibold uppercase">Stop Loss</label>
+                                  {editSlVal && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditSlVal('')}
+                                      className="text-[9px] text-rose-400 hover:underline cursor-pointer"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder={pos.sl ? String(pos.sl) : 'None (0 to remove)'}
+                                  value={editSlVal}
+                                  onChange={(e) => setEditSlVal(e.target.value)}
+                                  className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
+                                    isDarkMode ? 'bg-neutral-800 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                                  }`}
+                                />
+                              </div>
+
+                              <div>
+                                <div className="flex items-center justify-between mb-0.5">
+                                  <label className="text-[10px] text-neutral-400 font-semibold uppercase">Take Profit</label>
+                                  {editTpVal && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditTpVal('')}
+                                      className="text-[9px] text-emerald-400 hover:underline cursor-pointer"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  placeholder={pos.tp ? String(pos.tp) : 'None (0 to remove)'}
+                                  value={editTpVal}
+                                  onChange={(e) => setEditTpVal(e.target.value)}
+                                  className={`w-full px-2 py-1 rounded border font-mono text-[11px] ${
+                                    isDarkMode ? 'bg-neutral-800 border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
+                                  }`}
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60">
+                              <span className="text-[10px] text-neutral-500">
+                                Leave blank or 0 to clear
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPosId(null);
+                                    setEditError(null);
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-neutral-800 text-neutral-300 hover:bg-neutral-700 text-xs font-semibold cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const trimmedSl = editSlVal.trim();
+                                    const trimmedTp = editTpVal.trim();
+                                    const newSl = trimmedSl !== '' && trimmedSl !== '0' ? parseFloat(trimmedSl) : null;
+                                    const newTp = trimmedTp !== '' && trimmedTp !== '0' ? parseFloat(trimmedTp) : null;
+                                    const curP = pos.currentPrice || pos.openPrice;
+
+                                    if (newSl !== null) {
+                                      if (isNaN(newSl) || newSl < 0) {
+                                        setEditError('Invalid SL value');
+                                        return;
+                                      }
+                                      if (Math.abs(newSl - curP) / curP < 0.7) {
+                                        if (pos.side === 'BUY' && newSl >= curP) {
+                                          setEditError(`BUY SL must be below market price (${curP.toFixed(currentInstrument.decimals)})`);
+                                          return;
+                                        }
+                                        if (pos.side === 'SELL' && newSl <= curP) {
+                                          setEditError(`SELL SL must be above market price (${curP.toFixed(currentInstrument.decimals)})`);
+                                          return;
+                                        }
+                                      }
+                                    }
+
+                                    if (newTp !== null) {
+                                      if (isNaN(newTp) || newTp < 0) {
+                                        setEditError('Invalid TP value');
+                                        return;
+                                      }
+                                      if (Math.abs(newTp - curP) / curP < 0.7) {
+                                        if (pos.side === 'BUY' && newTp <= curP) {
+                                          setEditError(`BUY TP must be above market price (${curP.toFixed(currentInstrument.decimals)})`);
+                                          return;
+                                        }
+                                        if (pos.side === 'SELL' && newTp >= curP) {
+                                          setEditError(`SELL TP must be below market price (${curP.toFixed(currentInstrument.decimals)})`);
+                                          return;
+                                        }
+                                      }
+                                    }
+
+                                    onUpdatePositionTpSl(
+                                      pos.id,
+                                      newSl,
+                                      newTp
+                                    );
+                                    setEditingPosId(null);
+                                    setEditError(null);
+                                  }}
+                                  className="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs shrink-0 cursor-pointer shadow-sm"
+                                >
+                                  Save Changes
+                                </button>
+                              </div>
+                            </div>
                           </div>
                         )}
                       </div>

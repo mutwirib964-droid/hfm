@@ -409,7 +409,7 @@ export default function App() {
               prevAccs.length !== stateToApply.accounts.length ||
               stateToApply.accounts.some((a, i) => {
                 const pa = prevAccs[i];
-                return !pa || pa.id !== a.id || pa.balance !== a.balance || pa.equity !== a.equity || pa.margin !== a.margin;
+                return !pa || pa.id !== a.id || pa.accountNumber !== a.accountNumber || pa.balance !== a.balance;
               });
 
             if (accsChanged) {
@@ -442,9 +442,7 @@ export default function App() {
                 nextSel &&
                 curr.id === nextSel.id &&
                 curr.accountNumber === nextSel.accountNumber &&
-                curr.balance === nextSel.balance &&
-                curr.equity === nextSel.equity &&
-                curr.margin === nextSel.margin
+                curr.balance === nextSel.balance
               ) {
                 return curr;
               }
@@ -1567,7 +1565,20 @@ export default function App() {
     botRunsRef.current = botRuns;
     instrumentsRef.current = instruments;
     userRoleRef.current = userRole;
-  });
+  }, [
+    accounts,
+    selectedAccount,
+    walletBalance,
+    transactions,
+    currentUser,
+    positions,
+    pendingOrders,
+    closedTrades,
+    botTrades,
+    botRuns,
+    instruments,
+    userRole,
+  ]);
 
   // records verified double-entry entry in financialLedger, keeps selectedAccount and accounts array
   // 100% in sync, and persists immediately to localStorage & Supabase.
@@ -1860,6 +1871,16 @@ export default function App() {
           }, 800);
         }
 
+        if (!hasPriceChanged) {
+          const anyItemChanged = updated.some((inst, idx) => {
+            const prev = prevInstruments[idx];
+            return !prev || prev.bid !== inst.bid || prev.ask !== inst.ask || prev.spread !== inst.spread;
+          });
+          if (!anyItemChanged) {
+            return prevInstruments;
+          }
+        }
+
         return updated;
       });
     };
@@ -1890,8 +1911,9 @@ export default function App() {
     const candleCheckInterval = setInterval(() => {
       if (!isMounted) return;
 
-      setInstruments((prevInsts) =>
-        prevInsts.map((item) => {
+      setInstruments((prevInsts) => {
+        let hasAnyChanged = false;
+        const nextInsts = prevInsts.map((item) => {
           const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
           const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
           const lockedSpread = Number(
@@ -1925,6 +1947,7 @@ export default function App() {
 
           const nextAsk = Number((lockedBid + gap).toFixed(item.decimals));
           if (item.bid !== lockedBid || item.ask !== nextAsk || item.spread !== lockedSpread) {
+            hasAnyChanged = true;
             return {
               ...item,
               bid: lockedBid,
@@ -1933,8 +1956,9 @@ export default function App() {
             };
           }
           return item;
-        })
-      );
+        });
+        return hasAnyChanged ? nextInsts : prevInsts;
+      });
 
       const activeSym = selectedSymbolRef.current;
       const inst = instrumentsRef.current.find((i) => i.symbol === activeSym);
@@ -2010,14 +2034,17 @@ export default function App() {
 
 
 
-        // Authoritative SL / TP check on both currentPrice AND floating PnL (tpUsd / slUsd)
+        // Authoritative SL / TP check: Trigger when market price hits SL/TP price, or fallback to USD target if no price set
         const hitTpByPrice =
           pos.tp !== null &&
           pos.tp > 0 &&
           ((pos.side === 'BUY' && currentPrice >= pos.tp) ||
             (pos.side === 'SELL' && currentPrice <= pos.tp));
         const hitTpByUsd =
-          typeof pos.tpUsd === 'number' && pos.tpUsd > 0 && pnl >= pos.tpUsd;
+          (!pos.tp || pos.tp <= 0) &&
+          typeof pos.tpUsd === 'number' &&
+          pos.tpUsd > 0 &&
+          pnl >= pos.tpUsd;
 
         const hitSlByPrice =
           pos.sl !== null &&
@@ -2025,7 +2052,10 @@ export default function App() {
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl));
         const hitSlByUsd =
-          typeof pos.slUsd === 'number' && pos.slUsd > 0 && pnl <= -pos.slUsd;
+          (!pos.sl || pos.sl <= 0) &&
+          typeof pos.slUsd === 'number' &&
+          pos.slUsd > 0 &&
+          pnl <= -pos.slUsd;
 
         if (hitTpByPrice || hitTpByUsd) {
           const exitPrice = pos.tp && pos.tp > 0 ? pos.tp : currentPrice;
@@ -2309,76 +2339,9 @@ export default function App() {
     });
   };
 
-  // Memoized accounts with live calculated equity, margins, and free margin (prevents any state update loops)
-  const accountsWithEquity = useMemo(() => {
-    return accounts.map((acc) => {
-      const accPositions = positions.filter((p) => belongsToAccount(p, acc));
-      const openBotTradesList = botTrades.filter(
-        (bt) => bt.status === 'OPEN' && belongsToAccount(bt, acc)
-      );
-      const manualPnl = accPositions.reduce((sum, p) => sum + p.pnl, 0);
-      const openBotPnl = openBotTradesList.reduce((sum, bt) => sum + (bt.profitUsd || 0), 0);
-      const totalPnl = manualPnl + openBotPnl;
-      const totalMargin =
-        accPositions.reduce((sum, p) => sum + p.lots * 40, 0) +
-        openBotTradesList.reduce((sum, bt) => sum + bt.lotSize * 40, 0);
-      const calculatedEquity = Number(((acc.balance ?? 0) + totalPnl).toFixed(2));
-      const newEquity = Math.max(0, calculatedEquity);
-      const roundedMargin = Number(totalMargin.toFixed(2));
-      const freeMargin = Number(Math.max(0, newEquity - roundedMargin).toFixed(2));
-      const marginLevel = roundedMargin > 0 ? Number(((newEquity / roundedMargin) * 100).toFixed(1)) : 0;
-      return {
-        ...acc,
-        equity: newEquity,
-        margin: roundedMargin,
-        freeMargin,
-        marginLevel,
-      };
-    });
-  }, [accounts, positions, botTrades]);
-
-  const selectedAccountWithEquity = useMemo(() => {
-    if (!selectedAccount) return null;
-    const found = accountsWithEquity.find(
-      (a) => a.id === selectedAccount.id || a.accountNumber === selectedAccount.accountNumber
-    );
-    if (found) {
-      selectedAccountRef.current = found;
-      return found;
-    }
-    const accPositions = positions.filter((p) => belongsToAccount(p, selectedAccount));
-    const openBotTradesList = botTrades.filter(
-      (bt) => bt.status === 'OPEN' && belongsToAccount(bt, selectedAccount)
-    );
-    const manualPnl = accPositions.reduce((sum, p) => sum + p.pnl, 0);
-    const openBotPnl = openBotTradesList.reduce((sum, bt) => sum + (bt.profitUsd || 0), 0);
-    const totalPnl = manualPnl + openBotPnl;
-    const totalMargin =
-      accPositions.reduce((sum, p) => sum + p.lots * 40, 0) +
-      openBotTradesList.reduce((sum, bt) => sum + bt.lotSize * 40, 0);
-    const calculatedEquity = Number(((selectedAccount.balance ?? 0) + totalPnl).toFixed(2));
-    const newEquity = Math.max(0, calculatedEquity);
-    const roundedMargin = Number(totalMargin.toFixed(2));
-    const freeMargin = Number(Math.max(0, newEquity - roundedMargin).toFixed(2));
-    const marginLevel = roundedMargin > 0 ? Number(((newEquity / roundedMargin) * 100).toFixed(1)) : 0;
-    const updated = {
-      ...selectedAccount,
-      equity: newEquity,
-      margin: roundedMargin,
-      freeMargin,
-      marginLevel,
-    };
-    selectedAccountRef.current = updated;
-    return updated;
-  }, [selectedAccount, accountsWithEquity, positions, botTrades]);
-
-  // Keep refs synchronized
-  useEffect(() => {
-    accountsRef.current = accountsWithEquity;
-    if (selectedAccountWithEquity) {
-      selectedAccountRef.current = selectedAccountWithEquity;
-    }
-  }, [accountsWithEquity, selectedAccountWithEquity]);
+  // Reference memoized accounts and selectedAccount directly (already calculated with live equity & margin)
+  const accountsWithEquity = accounts;
+  const selectedAccountWithEquity = selectedAccount;
 
   // Capital Protection Stop-Out check (side effect without state update loop)
   useEffect(() => {
@@ -2590,6 +2553,8 @@ export default function App() {
   // Smart normalizer for manual Stop Loss & Take Profit:
   // Supports both exact Target Prices (e.g. 1.12600 / 4150.00) AND USD profit/loss amounts (e.g. 2 / 5 / 10),
   // and ensures TP is always placed on the profit side of openPrice and SL on the loss side of openPrice.
+  // Smart normalizer for manual Stop Loss & Take Profit:
+  // Preserves exact target prices or converts dollar targets, and supports clearing with null or 0.
   const normalizeManualTpSl = (params: {
     symbol: string;
     side: 'BUY' | 'SELL';
@@ -2614,16 +2579,13 @@ export default function App() {
     if (rawTp !== null && rawTp !== undefined && !isNaN(Number(rawTp)) && Number(rawTp) > 0) {
       const val = Number(rawTp);
       const relDiff = Math.abs(val - openPrice) / Math.max(0.0001, openPrice);
-      if (relDiff < 0.35) {
-        // Entered as a Target Price
-        const dist = Math.max(minStep * 2, Math.abs(val - openPrice));
-        tp =
-          side === 'BUY'
-            ? Number((openPrice + dist).toFixed(decimals))
-            : Number((openPrice - dist).toFixed(decimals));
+      if (relDiff < 0.6) {
+        // Entered as an exact Target Price
+        tp = Number(val.toFixed(decimals));
+        const dist = Math.abs(tp - openPrice);
         tpUsd = Math.max(0.01, Number((dist * unitVal).toFixed(2)));
       } else {
-        // Entered as a USD Profit Target (e.g. 2, 5, 10 dollars)
+        // Entered as a USD Profit Target (e.g. 5, 10, 20 dollars)
         tpUsd = Math.max(0.05, Number(Math.abs(val).toFixed(2)));
         const priceOffset = Math.max(minStep * 2, tpUsd / unitVal);
         tp =
@@ -2635,20 +2597,17 @@ export default function App() {
 
     let sl: number | null = null;
     let slUsd: number | null = null;
-    if (rawSl !== null && rawSl !== undefined && !isNaN(Number(rawSl)) && Number(rawSl) !== 0) {
-      const val = Math.abs(Number(rawSl));
+    if (rawSl !== null && rawSl !== undefined && !isNaN(Number(rawSl)) && Number(rawSl) > 0) {
+      const val = Number(rawSl);
       const relDiff = Math.abs(val - openPrice) / Math.max(0.0001, openPrice);
-      if (relDiff < 0.35) {
-        // Entered as a Target Price
-        const dist = Math.max(minStep * 2, Math.abs(openPrice - val));
-        sl =
-          side === 'BUY'
-            ? Number((openPrice - dist).toFixed(decimals))
-            : Number((openPrice + dist).toFixed(decimals));
+      if (relDiff < 0.6) {
+        // Entered as an exact Target Price
+        sl = Number(val.toFixed(decimals));
+        const dist = Math.abs(openPrice - sl);
         slUsd = Math.max(0.01, Number((dist * unitVal).toFixed(2)));
       } else {
-        // Entered as a USD Stop Loss Target (e.g. 2, 5, 10 dollars)
-        slUsd = Math.max(0.05, Number(val.toFixed(2)));
+        // Entered as a USD Stop Loss Target (e.g. 5, 10, 20 dollars)
+        slUsd = Math.max(0.05, Number(Math.abs(val).toFixed(2)));
         const priceOffset = Math.max(minStep * 2, slUsd / unitVal);
         sl =
           side === 'BUY'
@@ -2866,7 +2825,9 @@ export default function App() {
   };
 
   // Update SL / TP on an already open manual position
+  // Update SL / TP on an already open manual position
   const handleUpdatePositionTpSl = (id: string, rawSl: number | null, rawTp: number | null) => {
+    lastLocalTradeActionRef.current = Date.now();
     const targetPos = positionsRef.current.find((p) => p.id === id);
     if (!targetPos) return;
     const inst = instrumentsRef.current.find((i) => i.symbol === targetPos.symbol) || instruments[0];
@@ -2933,9 +2894,26 @@ export default function App() {
       });
     }
 
+    const slLabel = normalized.sl !== null ? normalized.sl.toFixed(decimals) : 'None';
+    const tpLabel = normalized.tp !== null ? normalized.tp.toFixed(decimals) : 'None';
+
+    playOrderSound(true);
     addNotification(
-      `Updated #${targetPos.ticket} ${targetPos.symbol} • SL: ${normalized.sl ?? 'Off'} | TP: ${normalized.tp ?? 'Off'}`
+      `Modified #${targetPos.ticket} ${targetPos.symbol} • SL: ${slLabel} | TP: ${tpLabel}`
     );
+
+    triggerActionPopup({
+      type: 'SUCCESS',
+      title: `Modified #${targetPos.ticket} ${targetPos.symbol}`,
+      subtitle: `Stop Loss: ${slLabel} • Take Profit: ${tpLabel}`,
+      details: {
+        symbol: targetPos.symbol,
+        ticket: targetPos.ticket,
+        sl: normalized.sl,
+        tp: normalized.tp,
+        accountNumber: targetPos.accountNumber || selectedAccountRef.current?.accountNumber,
+      },
+    });
 
     // Immediately evaluate in case the position has already reached the new TP or SL
     evaluateManualPositionsAndTpSl(instrumentsRef.current);

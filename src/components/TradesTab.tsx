@@ -128,29 +128,46 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
   const handleSaveModify = (pos: Position) => {
     if (onUpdatePositionTpSl) {
-      const slVal = editSl.trim() === '' ? null : Number(editSl);
-      const tpVal = editTp.trim() === '' ? null : Number(editTp);
+      const trimmedSl = editSl.trim();
+      const trimmedTp = editTp.trim();
+      const slVal = trimmedSl === '' || trimmedSl === '0' ? null : Number(trimmedSl);
+      const tpVal = trimmedTp === '' || trimmedTp === '0' ? null : Number(trimmedTp);
 
       // Validate SL & TP logically
       const currentPrice = pos.currentPrice || pos.openPrice;
       if (slVal !== null) {
-        if (pos.side === 'BUY' && slVal >= currentPrice) {
-          setModifyError(`BUY Stop Loss must be below current price (${currentPrice})`);
+        if (isNaN(slVal) || slVal < 0) {
+          setModifyError('Please enter a valid numeric Stop Loss price or leave blank to remove.');
           return;
         }
-        if (pos.side === 'SELL' && slVal <= currentPrice) {
-          setModifyError(`SELL Stop Loss must be above current price (${currentPrice})`);
-          return;
+        const isSlPrice = Math.abs(slVal - currentPrice) / currentPrice < 0.7;
+        if (isSlPrice) {
+          if (pos.side === 'BUY' && slVal >= currentPrice) {
+            setModifyError(`BUY Stop Loss (${slVal}) must be below current market price (${currentPrice})`);
+            return;
+          }
+          if (pos.side === 'SELL' && slVal <= currentPrice) {
+            setModifyError(`SELL Stop Loss (${slVal}) must be above current market price (${currentPrice})`);
+            return;
+          }
         }
       }
+
       if (tpVal !== null) {
-        if (pos.side === 'BUY' && tpVal <= currentPrice) {
-          setModifyError(`BUY Take Profit must be above current price (${currentPrice})`);
+        if (isNaN(tpVal) || tpVal < 0) {
+          setModifyError('Please enter a valid numeric Take Profit price or leave blank to remove.');
           return;
         }
-        if (pos.side === 'SELL' && tpVal >= currentPrice) {
-          setModifyError(`SELL Take Profit must be below current price (${currentPrice})`);
-          return;
+        const isTpPrice = Math.abs(tpVal - currentPrice) / currentPrice < 0.7;
+        if (isTpPrice) {
+          if (pos.side === 'BUY' && tpVal <= currentPrice) {
+            setModifyError(`BUY Take Profit (${tpVal}) must be above current market price (${currentPrice})`);
+            return;
+          }
+          if (pos.side === 'SELL' && tpVal >= currentPrice) {
+            setModifyError(`SELL Take Profit (${tpVal}) must be below current market price (${currentPrice})`);
+            return;
+          }
         }
       }
 
@@ -460,76 +477,120 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
                         {/* SL & TP Modifier Form if active */}
                         {isModifying ? (
-                          <div className="my-2 p-3 rounded-xl bg-neutral-900 border border-sky-500/40 space-y-2">
-                            <div className="text-[11px] font-bold text-sky-400 flex items-center justify-between">
-                              <span>Modify Stop Loss &amp; Take Profit</span>
-                              <button onClick={() => setModifyingPosId(null)} className="text-neutral-500 dark:text-neutral-400 hover:text-white">
+                          <div className="my-2 p-3 rounded-xl bg-neutral-900 border border-sky-500/50 space-y-2.5 shadow-lg">
+                            <div className="flex items-center justify-between border-b border-neutral-800 pb-1.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-bold text-sky-400">Modify SL / TP (#{pos.ticket})</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono">
+                                  Price: {fmt(pos.currentPrice || pos.openPrice, decimals)}
+                                </span>
+                              </div>
+                              <button onClick={() => setModifyingPosId(null)} className="text-neutral-500 dark:text-neutral-400 hover:text-white cursor-pointer">
                                 <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
 
                             {modifyError && (
-                              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-1.5 rounded border border-rose-500/30">
+                              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/30">
                                 {modifyError}
                               </div>
                             )}
 
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-2 gap-2.5">
                               <div>
-                                <label className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold block mb-0.5">
-                                  Stop Loss (SL)
-                                </label>
+                                <div className="flex items-center justify-between mb-1">
+                                  <label className="text-[10px] text-neutral-400 uppercase font-semibold">
+                                    Stop Loss (SL)
+                                  </label>
+                                  {editSl && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditSl('')}
+                                      className="text-[9px] text-rose-400 hover:underline cursor-pointer"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
                                 <input
                                   type="number"
                                   step="any"
                                   value={editSl}
                                   onChange={(e) => setEditSl(e.target.value)}
-                                  placeholder={pos.sl ? String(pos.sl) : 'None'}
-                                  className="w-full px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-xs font-mono text-white focus:outline-none focus:border-sky-500"
+                                  placeholder={pos.sl ? String(pos.sl) : 'None (0 to remove)'}
+                                  className="w-full px-2.5 py-1.5 bg-neutral-800 border border-neutral-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-sky-500"
                                 />
+                                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                                  {pos.side === 'BUY' ? `< ${fmt(pos.currentPrice || pos.openPrice, decimals)}` : `> ${fmt(pos.currentPrice || pos.openPrice, decimals)}`}
+                                </span>
                               </div>
 
                               <div>
-                                <label className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold block mb-0.5">
-                                  Take Profit (TP)
-                                </label>
+                                <div className="flex items-center justify-between mb-1">
+                                  <label className="text-[10px] text-neutral-400 uppercase font-semibold">
+                                    Take Profit (TP)
+                                  </label>
+                                  {editTp && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditTp('')}
+                                      className="text-[9px] text-emerald-400 hover:underline cursor-pointer"
+                                    >
+                                      Clear
+                                    </button>
+                                  )}
+                                </div>
                                 <input
                                   type="number"
                                   step="any"
                                   value={editTp}
                                   onChange={(e) => setEditTp(e.target.value)}
-                                  placeholder={pos.tp ? String(pos.tp) : 'None'}
-                                  className="w-full px-2 py-1 bg-neutral-800 border border-neutral-700 rounded text-xs font-mono text-white focus:outline-none focus:border-sky-500"
+                                  placeholder={pos.tp ? String(pos.tp) : 'None (0 to remove)'}
+                                  className="w-full px-2.5 py-1.5 bg-neutral-800 border border-neutral-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-sky-500"
                                 />
+                                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                                  {pos.side === 'BUY' ? `> ${fmt(pos.currentPrice || pos.openPrice, decimals)}` : `< ${fmt(pos.currentPrice || pos.openPrice, decimals)}`}
+                                </span>
                               </div>
                             </div>
 
-                            <div className="flex items-center justify-end gap-2 pt-1">
-                              <button
-                                onClick={() => setModifyingPosId(null)}
-                                className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 cursor-pointer"
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                onClick={() => handleSaveModify(pos)}
-                                className="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white cursor-pointer flex items-center gap-1"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                                <span>Save Changes</span>
-                              </button>
+                            <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60">
+                              <span className="text-[10px] text-neutral-500">
+                                Leave blank or enter 0 to remove
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setModifyingPosId(null)}
+                                  className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 cursor-pointer"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveModify(pos)}
+                                  className="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white cursor-pointer flex items-center gap-1 shadow-sm"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>Save Changes</span>
+                                </button>
+                              </div>
                             </div>
                           </div>
                         ) : null}
                       </div>
 
-                      {/* Bottom Row: Set TP / SL | Close Position */}
+                      {/* Bottom Row: Modify (SL / TP) | Close Position */}
                       <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-3">
                         <button
                           onClick={() => handleStartModify(pos)}
-                          className="px-3.5 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold transition-all border border-neutral-700/60 cursor-pointer"
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                            isModifying
+                              ? 'bg-sky-600 text-white border-sky-500 shadow-md'
+                              : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700/60'
+                          }`}
                         >
-                          Set TP / SL
+                          Modify (SL / TP)
                         </button>
 
                         <button
