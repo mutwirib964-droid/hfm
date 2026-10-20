@@ -3,6 +3,7 @@ import { X, Minus, Plus, ShieldAlert, Check, Lock } from 'lucide-react';
 import { Instrument } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
+import { getInstrumentSpec } from '../utils/contractSpecs';
 
 interface QuickOrderSheetProps {
   isOpen: boolean;
@@ -42,8 +43,9 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   const askParts = formatPipPrice(instrument.ask, instrument.decimals, isForex);
   const currentPrice = side === 'BUY' ? instrument.ask : instrument.bid;
   const priceParts = formatPipPrice(currentPrice, instrument.decimals, isForex);
-  const contractSize = isForex ? 100000 : 100;
-  const pipValue = ((1 / instrument.pipMultiplier) * lots * contractSize).toFixed(2);
+  const spec = getInstrumentSpec(instrument.symbol);
+  const contractSize = spec.contractSize;
+  const pipValue = (contractSize * spec.pipSize * lots).toFixed(2);
 
   const handleAdjustLots = (delta: number) => {
     setLots((prev) => Math.max(0.01, Number((prev + delta).toFixed(2))));

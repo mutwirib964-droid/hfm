@@ -69,33 +69,33 @@ export const INSTRUMENT_SPECS: Record<string, InstrumentSpec> = {
   NEARUSD: { symbol: 'NEARUSD', category: 'Crypto', contractSize: 200, minLot: 0.01, maxLot: 200, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.05, marginRate: 0.02 },
   SUIUSD: { symbol: 'SUIUSD', category: 'Crypto', contractSize: 200, minLot: 0.01, maxLot: 200, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.05, marginRate: 0.02 },
 
-  // US Equities (10 shares per 1.00 lot, 1 pip = $0.10)
-  AAPL: { symbol: 'AAPL', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  NVDA: { symbol: 'NVDA', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  TSLA: { symbol: 'TSLA', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  MSFT: { symbol: 'MSFT', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  AMZN: { symbol: 'AMZN', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  GOOGL: { symbol: 'GOOGL', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  META: { symbol: 'META', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  AMD: { symbol: 'AMD', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  NFLX: { symbol: 'NFLX', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  COIN: { symbol: 'COIN', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  PLTR: { symbol: 'PLTR', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  BABA: { symbol: 'BABA', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  MSTR: { symbol: 'MSTR', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  DIS: { symbol: 'DIS', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  UBER: { symbol: 'UBER', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  INTC: { symbol: 'INTC', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  JPM: { symbol: 'JPM', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  V: { symbol: 'V', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
-  WMT: { symbol: 'WMT', category: 'Stocks', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  // US Equities (100 shares per 1.00 standard lot, 1 pip = $0.10 -> $10.00 per pip on 1.00 lot, $0.10 per pip on 0.01 lot)
+  AAPL: { symbol: 'AAPL', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  NVDA: { symbol: 'NVDA', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  TSLA: { symbol: 'TSLA', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  MSFT: { symbol: 'MSFT', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  AMZN: { symbol: 'AMZN', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  GOOGL: { symbol: 'GOOGL', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  META: { symbol: 'META', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  AMD: { symbol: 'AMD', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  NFLX: { symbol: 'NFLX', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  COIN: { symbol: 'COIN', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  PLTR: { symbol: 'PLTR', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  BABA: { symbol: 'BABA', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  MSTR: { symbol: 'MSTR', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  DIS: { symbol: 'DIS', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  UBER: { symbol: 'UBER', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  INTC: { symbol: 'INTC', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  JPM: { symbol: 'JPM', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  V: { symbol: 'V', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
+  WMT: { symbol: 'WMT', category: 'Stocks', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.05 },
 
   // ETFs & Bonds
-  SPY: { symbol: 'SPY', category: 'ETFs', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.02 },
-  XLE: { symbol: 'XLE', category: 'ETFs', contractSize: 10, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.02 },
-  'EUBUND.F': { symbol: 'EUBUND.F', category: 'Bonds', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
-  'UKGILT.F': { symbol: 'UKGILT.F', category: 'Bonds', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
-  'US10YR.F': { symbol: 'US10YR.F', category: 'Bonds', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
+  SPY: { symbol: 'SPY', category: 'ETFs', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.02 },
+  XLE: { symbol: 'XLE', category: 'ETFs', contractSize: 100, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.10, marginRate: 0.02 },
+  'EUBUND.F': { symbol: 'EUBUND.F', category: 'Bonds', contractSize: 1000, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
+  'UKGILT.F': { symbol: 'UKGILT.F', category: 'Bonds', contractSize: 1000, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
+  'US10YR.F': { symbol: 'US10YR.F', category: 'Bonds', contractSize: 1000, minLot: 0.01, maxLot: 100, lotStep: 0.01, decimals: 2, tickSize: 0.01, pipSize: 0.01, marginRate: 0.01 },
 };
 
 /**
@@ -265,16 +265,14 @@ export function calculateUnifiedPnL(
  * Default leverage 1:500 (0.2%).
  */
 export function calculateRequiredMargin(
-  symbol: string,
+  _symbol: string,
   lots: number,
-  price: number,
+  _price?: number,
   leverageRatio = 500
 ): number {
-  if (!lots || lots <= 0 || !price || price <= 0) return 0;
-  const spec = getInstrumentSpec(symbol);
-  const nominalValue = lots * spec.contractSize * price;
-  const leverage = Math.max(1, leverageRatio);
-  const margin = nominalValue / leverage;
+  if (!lots || lots <= 0) return 0;
+  const leverage = Math.max(1, leverageRatio || 500);
+  const margin = (lots * 20000) / leverage;
   return Number(margin.toFixed(2));
 }
 

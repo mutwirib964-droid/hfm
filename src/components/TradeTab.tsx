@@ -29,6 +29,7 @@ import {
   BellRing,
 } from 'lucide-react';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
+import { getInstrumentSpec, calculateUnifiedPnL, calculateRequiredMargin } from '../utils/contractSpecs';
 import { PriceAlert } from '../types';
 
 interface TradeTabProps {
@@ -209,12 +210,11 @@ export const TradeTab: React.FC<TradeTabProps> = ({
       : Math.min(1.2, Math.max(0.18, Math.abs(currentInstrument.ask - currentInstrument.bid)))
   ).toFixed(2);
 
-  // Calculate Pip value and required margin
-  const leverageNum = parseInt(account?.leverage ? account.leverage.split(':')[1] || '500' : '500', 10);
-  const contractSize = currentInstrument.category === 'Forex' ? 100000 : 100;
-  const notionalValue = lots * contractSize * currentInstrument.ask;
-  const requiredMargin = notionalValue / leverageNum;
-  const pipValue = (contractSize * lots) / currentInstrument.pipMultiplier;
+  // Calculate Pip value and required margin using unified contract specifications
+  const currentSpec = getInstrumentSpec(currentInstrument.symbol);
+  const contractSize = currentSpec.contractSize;
+  const requiredMargin = calculateRequiredMargin(currentInstrument.symbol, lots, currentInstrument.ask);
+  const pipValue = Number((contractSize * currentSpec.pipSize * lots).toFixed(2));
 
   // Preset lot buttons
   const lotPresets = [0.01, 0.05, 0.1, 0.5, 1.0, 5.0];
@@ -299,8 +299,34 @@ export const TradeTab: React.FC<TradeTabProps> = ({
     }
   };
 
+  const livePositions = React.useMemo(() => {
+    const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
+    return positions.map((pos) => {
+      const inst = instMap.get(pos.symbol);
+      const spec = getInstrumentSpec(pos.symbol);
+      const rawLivePrice = inst ? (pos.side === 'BUY' ? inst.bid : inst.ask) : pos.currentPrice;
+      const liveCurrentPrice =
+        rawLivePrice && rawLivePrice > 0
+          ? Number(rawLivePrice.toFixed(spec.decimals))
+          : pos.currentPrice || pos.openPrice;
+      const grossPnl = calculateUnifiedPnL(
+        pos.symbol,
+        pos.side,
+        pos.openPrice,
+        liveCurrentPrice,
+        pos.lots
+      );
+      const livePnl = Number((grossPnl + (pos.swap || 0) + (pos.commission || 0)).toFixed(2));
+      return {
+        ...pos,
+        currentPrice: liveCurrentPrice,
+        pnl: livePnl,
+      };
+    });
+  }, [positions, instruments]);
+
   // Open positions total floating PnL
-  const totalFloatingPnl = positions.reduce((acc, p) => acc + p.pnl, 0);
+  const totalFloatingPnl = livePositions.reduce((acc, p) => acc + p.pnl, 0);
 
   // Dynamic Highlight Styling for Buy / Sell boxes based on tick direction and user action
   const isPriceUp = curMarketStatus.isOpen && tickDirection === 'UP';
@@ -1073,12 +1099,12 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           {/* 1. Open Positions */}
           {activeBottomSection === 'positions' && (
             <div className="space-y-2">
-              {positions.length === 0 ? (
+              {livePositions.length === 0 ? (
                 <div className="py-8 text-center text-xs text-neutral-500">
                   No active open positions. Place an order above to start trading.
                 </div>
               ) : (
-                positions.map((pos) => {
+                livePositions.map((pos) => {
                   const isBuy = pos.side === 'BUY';
                   return (
                     <div

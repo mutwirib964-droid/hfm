@@ -24,7 +24,7 @@ import {
   Filter,
   CheckCircle2,
 } from 'lucide-react';
-import { getInstrumentSpec } from '../utils/contractSpecs';
+import { getInstrumentSpec, calculateUnifiedPnL, calculateRequiredMargin } from '../utils/contractSpecs';
 import { reconcileAccount, loadUserLedger, LedgerEntry, ReconciliationReport } from '../utils/financialLedger';
 import { UserAuthProfile } from '../types/botTypes';
 
@@ -112,12 +112,37 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   const [modifyError, setModifyError] = useState<string | null>(null);
   const [closingId, setClosingId] = useState<string | null>(null);
 
-  const totalFloatingPnl = positions.reduce((sum, p) => sum + (p.pnl || 0), 0);
-  const totalMarginUsed = positions.reduce((sum, p) => {
-    const spec = getInstrumentSpec(p.symbol);
-    const nominal = p.lots * spec.contractSize * (p.openPrice || 1);
-    return sum + nominal / 500;
-  }, 0);
+  const livePositions = useMemo(() => {
+    const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
+    return positions.map((pos) => {
+      const inst = instMap.get(pos.symbol);
+      const spec = getInstrumentSpec(pos.symbol);
+      const rawLivePrice = inst ? (pos.side === 'BUY' ? inst.bid : inst.ask) : pos.currentPrice;
+      const liveCurrentPrice =
+        rawLivePrice && rawLivePrice > 0
+          ? Number(rawLivePrice.toFixed(spec.decimals))
+          : pos.currentPrice || pos.openPrice;
+      const grossPnl = calculateUnifiedPnL(
+        pos.symbol,
+        pos.side,
+        pos.openPrice,
+        liveCurrentPrice,
+        pos.lots
+      );
+      const livePnl = Number((grossPnl + (pos.swap || 0) + (pos.commission || 0)).toFixed(2));
+      return {
+        ...pos,
+        currentPrice: liveCurrentPrice,
+        pnl: livePnl,
+      };
+    });
+  }, [positions, instruments]);
+
+  const totalFloatingPnl = livePositions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+  const totalMarginUsed = livePositions.reduce(
+    (sum, p) => sum + calculateRequiredMargin(p.symbol, p.lots, p.openPrice),
+    0
+  );
 
   const handleStartModify = (pos: Position) => {
     setModifyingPosId(pos.id);
@@ -421,12 +446,12 @@ export const TradesTab: React.FC<TradesTabProps> = ({
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {positions.map((pos) => {
+                {livePositions.map((pos) => {
                   const spec = getInstrumentSpec(pos.symbol);
                   const isProfit = (pos.pnl || 0) >= 0;
                   const isModifying = modifyingPosId === pos.id;
                   const decimals = spec.decimals;
-                  const usedMargin = Number(((pos.lots * spec.contractSize * (pos.openPrice || 1)) / 500).toFixed(2));
+                  const usedMargin = calculateRequiredMargin(pos.symbol, pos.lots, pos.openPrice);
                   const openDateStr = pos.openTime ? new Date(pos.openTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
 
                   return (

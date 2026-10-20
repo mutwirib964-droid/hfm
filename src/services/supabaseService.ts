@@ -13,6 +13,8 @@ import {
   calculateBotPnL,
   sanitizeBotTrades,
   getDeletedBotIds,
+  getDeletedBotTimestamps,
+  mergeRemoteDeletedBotMap,
   markBotDeletedLocally,
   sanitizeAndFilterBotRuns,
   filterTradesForValidBotRuns,
@@ -1952,6 +1954,7 @@ class SupabaseService {
       botRuns: any[];
       botTrades: any[];
       deletedBotIds?: string[];
+      deletedBotMap?: Record<string, number>;
     },
     isExplicitStatusChange = false
   ): Promise<boolean> {
@@ -1964,20 +1967,78 @@ class SupabaseService {
       this.cachedImportedBots = botState.importedBots;
     }
 
+    // Fetch existing cloud state to merge CRDT deletion timestamps and runs across all devices
+    const remoteRaw = await this.fetchCloudStateRecord<{
+      importedBots?: any[];
+      botRuns?: any[];
+      botTrades?: any[];
+      deletedBotIds?: string[];
+      deletedBotMap?: Record<string, number>;
+    }>(user.email, 'STATE_BOTS').catch(() => null);
+
+    // If a newer explicit status change started while awaiting remoteRaw on a background sync, abort stale sync
+    if (!isExplicitStatusChange && this.explicitBotSyncSeq !== seqAtStart) {
+      return false;
+    }
+
+    if (
+      remoteRaw &&
+      Array.isArray(remoteRaw.importedBots) &&
+      remoteRaw.importedBots.length > 0 &&
+      this.cachedImportedBots.length === 0
+    ) {
+      this.cachedImportedBots = remoteRaw.importedBots;
+    }
+
+    const { deletedIds: mergedDeletedIds, deletedMap: mergedDeletedMap } =
+      mergeRemoteDeletedBotMap(
+        {
+          ...(remoteRaw?.deletedBotMap || {}),
+          ...getDeletedBotTimestamps(),
+          ...(botState.deletedBotMap || {}),
+        },
+        [
+          ...(Array.isArray(remoteRaw?.deletedBotIds) ? remoteRaw.deletedBotIds : []),
+          ...getDeletedBotIds(),
+          ...(botState.deletedBotIds || []),
+        ]
+      );
+
+    // If the user explicitly deployed a run whose startedAt is newer than an older tombstone for that botId/botName, clear the older tombstone
+    for (const r of botState.botRuns || []) {
+      if (r && typeof r === 'object') {
+        const startedAt = Number(r.startedAt || 0);
+        for (const k of [r.botId, r.botName, r.id, r.runId]) {
+          if (typeof k === 'string' && k.trim()) {
+            const cleanK = k.trim();
+            if (mergedDeletedMap[cleanK] && startedAt > mergedDeletedMap[cleanK]) {
+              delete mergedDeletedMap[cleanK];
+            }
+          }
+        }
+      }
+    }
+
     const activeRunIds = new Set<string>(
       (botState.botRuns || [])
         .flatMap((r: any) => [r?.id, r?.runId])
         .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
     );
-    const deletedBotIds = Array.from(
-      new Set([...getDeletedBotIds(), ...(botState.deletedBotIds || [])])
-    ).filter(
+    const deletedBotIds = mergedDeletedIds.filter(
       (id) =>
         typeof id === 'string' &&
         id.trim().startsWith('run-') &&
         !activeRunIds.has(id.trim())
     );
-    let cleanedRuns = sanitizeAndFilterBotRuns(botState.botRuns || [], deletedBotIds, false);
+
+    const remoteRuns = Array.isArray(remoteRaw?.botRuns) ? remoteRaw.botRuns : [];
+    const combinedRunsInput = [...(botState.botRuns || []), ...remoteRuns];
+    let cleanedRuns = sanitizeAndFilterBotRuns(
+      combinedRunsInput,
+      deletedBotIds,
+      false,
+      mergedDeletedMap
+    );
 
     if (isExplicitStatusChange) {
       for (const r of cleanedRuns) {
@@ -1996,23 +2057,6 @@ class SupabaseService {
         }
       }
     } else {
-      // Background sync (e.g. trade opened/closed): check cloud first so another device's background tick
-      // can NEVER overwrite a newer Pause or Run click from any device.
-      const remoteRaw = await this.fetchCloudStateRecord<{
-        importedBots?: any[];
-        botRuns?: any[];
-      }>(user.email, 'STATE_BOTS').catch(() => null);
-
-      // If an explicit user status change occurred while we were checking, abort this stale background sync
-      if (this.explicitBotSyncSeq !== seqAtStart) {
-        return false;
-      }
-
-      if (remoteRaw && Array.isArray(remoteRaw.importedBots) && remoteRaw.importedBots.length > 0 && this.cachedImportedBots.length === 0) {
-        this.cachedImportedBots = remoteRaw.importedBots;
-      }
-
-      const remoteRuns = Array.isArray(remoteRaw?.botRuns) ? remoteRaw.botRuns : [];
       for (const rr of remoteRuns) {
         if (!rr) continue;
         const rTs = Number(rr.statusUpdatedAt || rr.stoppedAt || rr.startedAt || 0);
@@ -2056,7 +2100,23 @@ class SupabaseService {
       return false;
     }
 
-    const cleanedTrades = filterTradesForValidBotRuns(botState.botTrades || [], cleanedRuns);
+    const combinedTradesInput = [
+      ...(botState.botTrades || []),
+      ...(Array.isArray(remoteRaw?.botTrades) ? remoteRaw.botTrades : []),
+    ];
+    const dedupTradesMap = new Map<string, any>();
+    for (const t of combinedTradesInput) {
+      if (t && t.id) {
+        const existing = dedupTradesMap.get(t.id);
+        if (!existing || (t.status === 'CLOSED' && existing.status !== 'CLOSED')) {
+          dedupTradesMap.set(t.id, t);
+        }
+      }
+    }
+    const cleanedTrades = filterTradesForValidBotRuns(
+      Array.from(dedupTradesMap.values()),
+      cleanedRuns
+    );
 
     return await this.saveCloudStateRecord(
       user.email,
@@ -2070,6 +2130,7 @@ class SupabaseService {
         botRuns: cleanedRuns,
         botTrades: cleanedTrades.slice(0, 1000),
         deletedBotIds,
+        deletedBotMap: mergedDeletedMap,
         updatedAt: Date.now(),
       }
     );
@@ -2082,6 +2143,7 @@ class SupabaseService {
     botRuns: any[];
     botTrades: any[];
     deletedBotIds: string[];
+    deletedBotMap?: Record<string, number>;
   } | null> {
     if (!this.config || !user?.email) return null;
     const raw = await this.fetchCloudStateRecord<{
@@ -2089,6 +2151,7 @@ class SupabaseService {
       botRuns?: any[];
       botTrades?: any[];
       deletedBotIds?: string[];
+      deletedBotMap?: Record<string, number>;
     }>(user.email, 'STATE_BOTS');
     if (!raw) return null;
 
@@ -2096,20 +2159,28 @@ class SupabaseService {
       this.cachedImportedBots = raw.importedBots;
     }
 
-    // Only keep run-instance IDs ('run-...') and never tombstone any currently stored local bot run
-    const localRuns = loadStoredBotRuns(user.email);
-    const localActiveIds = new Set<string>(
-      localRuns.flatMap((r) => [r.id, r.runId]).filter(Boolean) as string[]
-    );
-    const remoteDeleted = (Array.isArray(raw.deletedBotIds) ? raw.deletedBotIds : []).filter(
-      (id): id is string =>
-        typeof id === 'string' &&
-        id.trim().startsWith('run-') &&
-        !localActiveIds.has(id.trim())
-    );
-    const mergedDeleted = markBotDeletedLocally(remoteDeleted);
     const rawRuns = Array.isArray(raw.botRuns) ? raw.botRuns : [];
     const rawTrades = Array.isArray(raw.botTrades) ? raw.botTrades : [];
+
+    // Clear stale tombstones for any run whose startedAt is newer than the tombstone
+    const cleanedRemoteDeletedMap: Record<string, number> = { ...(raw.deletedBotMap || {}) };
+    for (const r of rawRuns) {
+      if (r && typeof r === 'object') {
+        const startedAt = Number(r.startedAt || 0);
+        for (const k of [r.botId, r.botName, r.id, r.runId]) {
+          if (typeof k === 'string' && k.trim()) {
+            const cleanK = k.trim();
+            if (cleanedRemoteDeletedMap[cleanK] && startedAt >= cleanedRemoteDeletedMap[cleanK]) {
+              delete cleanedRemoteDeletedMap[cleanK];
+            }
+          }
+        }
+      }
+    }
+
+    // Merge remote deletion tombstones with local tombstones using CRDT timestamps so deleted bots are removed on ALL devices
+    const { deletedIds: mergedDeleted, deletedMap: mergedDeletedMap } =
+      mergeRemoteDeletedBotMap(cleanedRemoteDeletedMap, raw.deletedBotIds);
 
     // Safety: Recover closed trades from audit log to prevent stale 'OPEN' trades from resurfacing
     const closedTradeKeys = new Set<string>();
@@ -2139,7 +2210,12 @@ class SupabaseService {
       // ignore
     }
 
-    const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false).map((r) => {
+    const cleanedRuns = sanitizeAndFilterBotRuns(
+      rawRuns,
+      mergedDeleted,
+      false,
+      mergedDeletedMap
+    ).map((r) => {
       const remoteTs = Number(r.statusUpdatedAt || 0);
       const intent =
         (r.id && this.latestBotStatusMap.get(r.id)) ||
@@ -2189,6 +2265,7 @@ class SupabaseService {
       botRuns: cleanedRuns,
       botTrades: cleanedTrades,
       deletedBotIds: mergedDeleted,
+      deletedBotMap: mergedDeletedMap,
     };
   }
 

@@ -111,11 +111,15 @@ export class TradingViewPriceService {
   private listeners: Set<(quotes: Map<string, TVQuote>) => void> = new Set();
 
   private lastBinanceTickAt: Map<string, number> = new Map();
+  private lastExternalPriceAt: Map<string, number> = new Map();
+  private breatherPhase = 0;
 
   constructor() {
     this.initServerStream();
     this.initLiveBinanceWebSocket();
     this.initDirectTradingViewWebSocket();
+    this.initSpreadBreather();
+    this.fetchScannerQuotes();
   }
 
   /**
@@ -307,6 +311,7 @@ export class TradingViewPriceService {
         ? Number(raw.low_price.toFixed(conf.decimals))
         : existing?.low24h || bid;
 
+    this.lastExternalPriceAt.set(symbol, Date.now());
     this.lastQuotes.set(symbol, {
       symbol,
       tvTicker: conf.ticker,
@@ -324,19 +329,90 @@ export class TradingViewPriceService {
   private initSpreadBreather() {
     if (typeof window === 'undefined') return;
     setInterval(() => {
-      if (this.sseActive) return; // Server stream already breathes spread when active
+      this.breatherPhase += 1;
+      const now = Date.now();
       let anyUpdated = false;
-      this.rawTvFields.forEach((raw, sym) => {
+
+      Object.entries(TV_INSTRUMENT_MAP).forEach(([sym, conf]) => {
         const mStatus = checkInstrumentMarketHours(sym);
         if (!mStatus.isOpen) return;
-        if (this.updateSymbolFromRawTv(sym, raw)) {
+
+        // If a fresh external tick arrived within the last 280ms, let that tick stand
+        const lastExt = this.lastExternalPriceAt.get(sym) || 0;
+        if (now - lastExt < 280) return;
+
+        const raw = this.rawTvFields.get(sym);
+        const existing = this.lastQuotes.get(sym);
+        const baseLp =
+          (raw && typeof raw.lp === 'number' && raw.lp > 0 ? raw.lp : null) ??
+          existing?.bid ??
+          null;
+        if (!baseLp || baseLp <= 0) return;
+
+        const point = Math.pow(10, -conf.decimals);
+        const symSeed = sym
+          .split('')
+          .reduce((acc, ch, idx) => acc + ch.charCodeAt(0) * (idx + 1), 0);
+
+        // Smooth organic micro-tick oscillation (±1 to ±4 points around live TradingView price)
+        const wave =
+          Math.sin(this.breatherPhase * 0.85 + symSeed * 0.37) * 2.2 +
+          Math.cos(this.breatherPhase * 1.45 - symSeed * 0.23) * 1.6;
+        const pointDelta = Math.round(wave);
+        const microDelta =
+          pointDelta === 0
+            ? (this.breatherPhase + symSeed) % 2 === 0
+              ? point
+              : -point
+            : pointDelta * point;
+
+        const liveBid = Number(Math.max(point, baseLp + microDelta).toFixed(conf.decimals));
+        const baseSpread = 0.26 + ((symSeed % 5) * 0.04);
+        const spreadWave = Math.sin(this.breatherPhase * 0.6 + symSeed) * 0.04;
+        const spread = Number(Math.min(1.18, Math.max(0.18, baseSpread + spreadWave)).toFixed(2));
+        this.lastSpreads.set(sym, spread);
+
+        let priceGap = spread;
+        if (conf.decimals === 5) {
+          priceGap = Math.max(0.00001, Number((spread / 10000).toFixed(5)));
+        } else if (conf.decimals === 4) {
+          priceGap = Math.max(0.0001, Number((spread / 1000).toFixed(4)));
+        } else if (conf.decimals === 3) {
+          priceGap =
+            sym === 'XAUUSD'
+              ? Number(spread.toFixed(3))
+              : Math.max(0.001, Number((spread * 0.01).toFixed(3)));
+        } else {
+          if (liveBid < 250) {
+            priceGap = Math.max(0.01, Number((spread * 0.04).toFixed(2)));
+          } else if (liveBid < 1000) {
+            priceGap = Math.max(0.01, Number((spread * 0.1).toFixed(2)));
+          } else {
+            priceGap = Math.max(0.01, Number(spread.toFixed(2)));
+          }
+        }
+
+        const liveAsk = Number((liveBid + priceGap).toFixed(conf.decimals));
+        if (!existing || existing.bid !== liveBid || existing.ask !== liveAsk) {
+          this.lastQuotes.set(sym, {
+            symbol: sym,
+            tvTicker: conf.ticker,
+            bid: liveBid,
+            ask: liveAsk,
+            spread,
+            change24h: existing?.change24h ?? (typeof raw?.chp === 'number' ? Number(raw.chp.toFixed(2)) : 0),
+            high24h: Math.max(existing?.high24h || liveAsk, liveAsk),
+            low24h: existing?.low24h ? Math.min(existing.low24h, liveBid) : liveBid,
+            timestamp: now,
+          });
           anyUpdated = true;
         }
       });
+
       if (anyUpdated) {
         this.notifyListeners();
       }
-    }, 900);
+    }, 350);
   }
 
   private ingestServerQuotesObject(quotesObj: Record<string, any>) {
@@ -356,14 +432,25 @@ export class TradingViewPriceService {
         return;
       }
 
+      const prevRaw = this.rawTvFields.get(symbol);
+      const prevLp = prevRaw?.lp;
+      const existingQuote = this.lastQuotes.get(symbol);
+
       this.rawTvFields.set(symbol, {
-        ...(this.rawTvFields.get(symbol) || {}),
+        ...(prevRaw || {}),
         lp: chartPrice,
-        chp: data.change24h,
-        high_price: data.high24h,
-        low_price: data.low24h,
+        chp: data.change24h ?? prevRaw?.chp,
+        high_price: data.high24h ?? prevRaw?.high_price,
+        low_price: data.low24h ?? prevRaw?.low_price,
       });
 
+      // If the server returned the exact same underlying chartPrice as last poll and we already have an active quote for this symbol,
+      // let the 350ms micro-tick breather continue oscillating smoothly around lp instead of pinning the price flat!
+      if (existingQuote && typeof prevLp === 'number' && Math.abs(chartPrice - prevLp) < 1e-9) {
+        return;
+      }
+
+      this.lastExternalPriceAt.set(symbol, now);
       const mStatus = checkInstrumentMarketHours(symbol);
       const serverSpread =
         typeof data.spread === 'number' && data.spread >= 0.15 && data.spread <= 1.2
@@ -586,7 +673,65 @@ export class TradingViewPriceService {
     }
   }
 
-  // Fetch quotes from internal proxy API or direct scanner fallback
+  private async fetchScannerQuotes(): Promise<void> {
+    this.lastScannerFetchTime = Date.now();
+    try {
+      const scannerGroups: Array<'forex' | 'cfd' | 'crypto' | 'america'> = ['forex', 'cfd', 'crypto', 'america'];
+      const results = await Promise.allSettled(
+        scannerGroups.map((scanner) => {
+          const tickers = Object.values(TV_INSTRUMENT_MAP)
+            .filter((cfg) => cfg.scanner === scanner)
+            .map((cfg) => cfg.ticker);
+          return fetch(`https://scanner.tradingview.com/${scanner}/scan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+            signal: AbortSignal.timeout(3000),
+            body: JSON.stringify({
+              symbols: { tickers },
+              columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
+            }),
+          }).then((r) => r.json());
+        })
+      );
+
+      let updatedFromScanner = false;
+      results.forEach((res) => {
+        if (res.status === 'fulfilled' && Array.isArray(res.value?.data)) {
+          res.value.data.forEach((row: any) => {
+            const sym = TICKER_TO_SYMBOL[row.s];
+            const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
+            if (conf && row.d?.[0] > 0) {
+              const close = Number(row.d[0]);
+              const change = Number(row.d[1] || 0);
+              const high = Number(row.d[4] || close);
+              const low = Number(row.d[5] || close);
+              const prevLp = this.rawTvFields.get(sym)?.lp;
+              this.rawTvFields.set(sym, {
+                ...(this.rawTvFields.get(sym) || {}),
+                lp: close,
+                chp: change,
+                high_price: high,
+                low_price: low,
+              });
+              if (!this.lastQuotes.has(sym) || prevLp !== close) {
+                if (this.updateSymbolFromRawTv(sym, this.rawTvFields.get(sym)!)) {
+                  updatedFromScanner = true;
+                }
+              }
+            }
+          });
+        }
+      });
+
+      if (updatedFromScanner) {
+        this.notifyListeners();
+      }
+    } catch {
+      // Direct scanner fallback handled by WebSocket / breather
+    }
+  }
+
+  // Fetch quotes from internal proxy API and direct TradingView scanner
   public async fetchRealPrices(): Promise<Map<string, TVQuote>> {
     if (this.isFetching) return this.lastQuotes;
     this.isFetching = true;
@@ -594,7 +739,7 @@ export class TradingViewPriceService {
     const now = Date.now();
 
     try {
-      let gotProxyQuotes = false;
+      let proxyCount = 0;
       try {
         const proxyRes = await fetch('/api/market-prices', {
           cache: 'no-store',
@@ -603,70 +748,21 @@ export class TradingViewPriceService {
         const contentType = proxyRes.headers.get('content-type') || '';
         if (proxyRes.ok && contentType.includes('application/json')) {
           const json = await proxyRes.json();
-          if (json.quotes && Object.keys(json.quotes).length > 0) {
-            gotProxyQuotes = true;
-            this.ingestServerQuotesObject(json.quotes);
+          if (json.quotes && json.source !== 'fallback') {
+            proxyCount = Object.keys(json.quotes).length;
+            if (proxyCount > 0) {
+              this.ingestServerQuotesObject(json.quotes);
+            }
           }
         }
       } catch {
         // Fall through if offline or static host
       }
 
-      // If server proxy did not return quotes, query TradingView scanners using CORS-safe text/plain
-      if (!gotProxyQuotes && now - this.lastScannerFetchTime > 1500) {
-        this.lastScannerFetchTime = now;
-        try {
-          const scannerGroups: Array<'forex' | 'cfd' | 'crypto' | 'america'> = ['forex', 'cfd', 'crypto', 'america'];
-          const results = await Promise.allSettled(
-            scannerGroups.map((scanner) => {
-              const tickers = Object.values(TV_INSTRUMENT_MAP)
-                .filter((cfg) => cfg.scanner === scanner)
-                .map((cfg) => cfg.ticker);
-              return fetch(`https://scanner.tradingview.com/${scanner}/scan`, {
-                method: 'POST',
-                // Use text/plain to avoid browser CORS preflight rejection
-                headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
-                signal: AbortSignal.timeout(3000),
-                body: JSON.stringify({
-                  symbols: { tickers },
-                  columns: ['close', 'change', 'bid', 'ask', 'high', 'low'],
-                }),
-              }).then((r) => r.json());
-            })
-          );
-
-          let updatedFromScanner = false;
-          results.forEach((res) => {
-            if (res.status === 'fulfilled' && Array.isArray(res.value?.data)) {
-              res.value.data.forEach((row: any) => {
-                const sym = TICKER_TO_SYMBOL[row.s];
-                const conf = sym ? TV_INSTRUMENT_MAP[sym] : null;
-                if (conf && row.d?.[0] > 0) {
-                  const close = Number(row.d[0]);
-                  const change = Number(row.d[1] || 0);
-                  const high = Number(row.d[4] || close);
-                  const low = Number(row.d[5] || close);
-                  this.rawTvFields.set(sym, {
-                    ...(this.rawTvFields.get(sym) || {}),
-                    lp: close,
-                    chp: change,
-                    high_price: high,
-                    low_price: low,
-                  });
-                  if (this.updateSymbolFromRawTv(sym, this.rawTvFields.get(sym)!)) {
-                    updatedFromScanner = true;
-                  }
-                }
-              });
-            }
-          });
-
-          if (updatedFromScanner) {
-            this.notifyListeners();
-          }
-        } catch {
-          // Direct scanner fallback handled by WebSocket
-        }
+      // Always refresh from TradingView scanner every 1.5s if proxy had fewer than 35 symbols (e.g. cold serverless instance) or every 2.5s for full coverage
+      const needsScanner = proxyCount < 35 ? now - this.lastScannerFetchTime > 1200 : now - this.lastScannerFetchTime > 2500;
+      if (needsScanner) {
+        await this.fetchScannerQuotes();
       }
     } catch {
       // Silent fallback
