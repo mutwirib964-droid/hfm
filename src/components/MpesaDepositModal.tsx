@@ -603,7 +603,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       {/* ========================================================================= */}
       {!hashbackPopupStep && (
         <div
-          className={`w-full max-w-lg rounded-2xl border shadow-2xl p-5 sm:p-7 relative transition-colors max-h-[92vh] overflow-y-auto no-scrollbar ${
+          className={`w-full max-w-lg rounded-2xl border shadow-2xl p-4 sm:p-6 relative transition-colors max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar ${
             isDarkMode ? 'bg-[#13161F] border-neutral-700/80 text-white' : 'bg-white border-slate-200 text-slate-900'
           }`}
         >
@@ -712,40 +712,40 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           {/* TAB 1: M-PESA INSTANT DEPOSIT */}
           {activeTab === 'mpesa' && (
             <div
-              className={`border rounded-2xl p-5 sm:p-6 transition-colors ${
+              className={`border rounded-2xl p-3.5 sm:p-5 transition-colors ${
                 isDarkMode ? 'border-neutral-800 bg-[#161922]' : 'border-slate-200 bg-white'
               }`}
             >
-              <div className="w-12 h-12 rounded-full bg-[#EBF3FF] dark:bg-blue-950/50 text-[#0066FF] flex items-center justify-center mx-auto mb-3">
-                <Phone className="w-5 h-5 stroke-[2.2]" />
+              <div className="w-10 h-10 rounded-full bg-[#EBF3FF] dark:bg-blue-950/50 text-[#0066FF] flex items-center justify-center mx-auto mb-2">
+                <Phone className="w-4 h-4 stroke-[2.2]" />
               </div>
 
-              <h3 className="text-base sm:text-lg font-bold text-center mb-1 text-slate-900 dark:text-white">
-                Safaricom M-PESA Express (VTMMARKETS)
+              <h3 className="text-sm sm:text-base font-bold text-center mb-0.5 text-slate-900 dark:text-white">
+                Safaricom M-PESA Express
               </h3>
-              <p className="text-center text-xs text-slate-500 dark:text-neutral-400 mb-3">
-                Instant prompt sent to your Safaricom mobile • KES {numKes.toLocaleString()} (${numUsd || 16} USD)
+              <p className="text-center text-[11px] text-slate-500 dark:text-neutral-400 mb-2.5">
+                Instant prompt • KES {numKes.toLocaleString()} (${numUsd || 16} USD)
               </p>
 
               {/* Dynamic HashBack Account & Settlement Details Summary (no sensitive credentials exposed) */}
               <div
-                className={`mb-4 p-3 rounded-xl border text-xs space-y-1.5 ${
+                className={`mb-3 p-2.5 rounded-xl border text-xs space-y-1 ${
                   isDarkMode
                     ? 'bg-neutral-900/70 border-neutral-800 text-neutral-300'
                     : 'bg-slate-50 border-slate-200 text-slate-700'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 dark:text-neutral-400">Account Name:</span>
+                  <span className="text-slate-500 dark:text-neutral-400">Account:</span>
                   <span className="font-bold text-slate-900 dark:text-white">{userAccountName}</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500 dark:text-neutral-400">Where Deposit Settles:</span>
-                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{settlementDestinationLabel}</span>
+                  <span className="text-slate-500 dark:text-neutral-400">Settlement:</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400 truncate max-w-[200px]">{settlementDestinationLabel}</span>
                 </div>
               </div>
 
-              <div className="space-y-4">
+              <div className="space-y-3">
                 {/* Amount (USD) */}
                 <div>
                   <div className="flex justify-between items-center mb-1.5">

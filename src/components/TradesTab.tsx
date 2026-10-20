@@ -35,6 +35,8 @@ interface TradesTabProps {
   closedTrades: ClosedTrade[];
   onClosePosition: (id: string) => void;
   onCloseAllPositions: () => void;
+  onCloseProfitablePositions?: () => void;
+  profitablePositionsCount?: number;
   onCancelPendingOrder: (id: string) => void;
   onUpdatePositionTpSl?: (id: string, sl: number | null, tp: number | null) => void;
   isDarkMode?: boolean;
@@ -63,6 +65,8 @@ export const TradesTab: React.FC<TradesTabProps> = ({
   closedTrades,
   onClosePosition,
   onCloseAllPositions,
+  onCloseProfitablePositions,
+  profitablePositionsCount = 0,
   onCancelPendingOrder,
   onUpdatePositionTpSl,
   isDarkMode = true,
@@ -325,13 +329,24 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           </div>
 
           {positions.length > 0 && activeSubTab === 'open' && (
-            <button
-              onClick={onCloseAllPositions}
-              className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-1.5 self-start sm:self-auto"
-            >
-              <X className="w-3.5 h-3.5" />
-              <span>Close All Positions ({positions.length})</span>
-            </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+              {profitablePositionsCount > 0 && (
+                <button
+                  onClick={onCloseProfitablePositions}
+                  className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Close Profitable ({profitablePositionsCount})</span>
+                </button>
+              )}
+              <button
+                onClick={onCloseAllPositions}
+                className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-1.5"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Close All Positions ({positions.length})</span>
+              </button>
+            </div>
           )}
         </div>
 

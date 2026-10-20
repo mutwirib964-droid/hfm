@@ -63,6 +63,8 @@ interface TradeTabProps {
   }) => void;
   onClosePosition: (id: string) => void;
   onCloseAllPositions: () => void;
+  onCloseProfitablePositions?: () => void;
+  profitablePositionsCount?: number;
   onCancelPendingOrder: (id: string) => void;
   onUpdatePositionTpSl?: (id: string, sl: number | null, tp: number | null) => void;
   isDarkMode?: boolean;
@@ -89,6 +91,8 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   onPlacePendingOrder,
   onClosePosition,
   onCloseAllPositions,
+  onCloseProfitablePositions,
+  profitablePositionsCount = 0,
   onCancelPendingOrder,
   onUpdatePositionTpSl,
   isDarkMode = true,
@@ -1069,8 +1073,8 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           </div>
 
           {activeBottomSection === 'positions' && positions.length > 0 && (
-            <div className="flex items-center gap-3">
-              <div className="text-right">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="text-right hidden sm:block">
                 <span className="text-[10px] text-neutral-400 block">Total P&L:</span>
                 <span
                   className={`text-xs font-mono font-bold ${
@@ -1080,6 +1084,14 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                   {totalFloatingPnl >= 0 ? '+' : ''}${totalFloatingPnl.toFixed(2)}
                 </span>
               </div>
+              {profitablePositionsCount > 0 && (
+                <button
+                  onClick={onCloseProfitablePositions}
+                  className="px-2.5 py-1 text-[11px] font-bold rounded bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-sm cursor-pointer"
+                >
+                  Close Profitable ({profitablePositionsCount})
+                </button>
+              )}
               <button
                 onClick={onCloseAllPositions}
                 className={`px-2.5 py-1 text-[11px] font-semibold rounded transition-colors ${

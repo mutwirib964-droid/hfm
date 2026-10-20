@@ -3558,6 +3558,41 @@ export default function App() {
     }
   };
 
+  const profitablePositionsCount = useMemo(() => {
+    const activeAcc = selectedAccountRef.current || selectedAccount;
+    const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
+    const accPositions = positions.filter((p) => belongsToAccount(p, activeAcc));
+    return accPositions.filter((p) => {
+      const inst = instMap.get(p.symbol);
+      const livePrice = inst ? (p.side === 'BUY' ? inst.bid : inst.ask) : (p.currentPrice || p.openPrice);
+      const gross = calculateUnifiedPnL(p.symbol, p.side, p.openPrice, livePrice, p.lots);
+      const net = gross + (p.swap || 0) + (p.commission || 0);
+      return net > 0;
+    }).length;
+  }, [positions, instruments, selectedAccount]);
+
+  const handleCloseProfitablePositions = () => {
+    const activeAcc = selectedAccountRef.current || selectedAccount;
+    const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
+    const accPositions = positions.filter((p) => belongsToAccount(p, activeAcc));
+    const profitablePositions = accPositions.filter((p) => {
+      const inst = instMap.get(p.symbol);
+      const livePrice = inst ? (p.side === 'BUY' ? inst.bid : inst.ask) : (p.currentPrice || p.openPrice);
+      const gross = calculateUnifiedPnL(p.symbol, p.side, p.openPrice, livePrice, p.lots);
+      const net = gross + (p.swap || 0) + (p.commission || 0);
+      return net > 0;
+    });
+    const count = profitablePositions.length;
+    profitablePositions.forEach((p) => closePositionById(p.id, 'MANUAL'));
+    if (count > 0) {
+      triggerActionPopup({
+        type: 'TRADE_CLOSED',
+        title: `Closed ${count} Profitable Position${count > 1 ? 's' : ''}`,
+        subtitle: 'All profitable open positions have been successfully liquidated and settled.',
+      });
+    }
+  };
+
   const handleCloseAllPositions = () => {
     const activeAcc = selectedAccountRef.current || selectedAccount;
     const accPositions = positions.filter((p) => belongsToAccount(p, activeAcc));
@@ -6602,6 +6637,8 @@ export default function App() {
             closedTrades={closedTrades.filter((c) => belongsToAccount(c, selectedAccount))}
             onClosePosition={(id) => closePositionById(id, 'MANUAL')}
             onCloseAllPositions={handleCloseAllPositions}
+            onCloseProfitablePositions={handleCloseProfitablePositions}
+            profitablePositionsCount={profitablePositionsCount}
             onCancelPendingOrder={handleCancelPendingOrder}
             onUpdatePositionTpSl={handleUpdatePositionTpSl}
             isDarkMode={isDarkMode}
@@ -6696,6 +6733,8 @@ export default function App() {
             onPlacePendingOrder={handlePlacePendingOrder}
             onClosePosition={(id) => closePositionById(id, 'MANUAL')}
             onCloseAllPositions={handleCloseAllPositions}
+            onCloseProfitablePositions={handleCloseProfitablePositions}
+            profitablePositionsCount={profitablePositionsCount}
             onCancelPendingOrder={handleCancelPendingOrder}
             onUpdatePositionTpSl={handleUpdatePositionTpSl}
             isDarkMode={isDarkMode}

@@ -799,7 +799,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
       {activeModal === 'withdraw' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
           <div
-            className={`w-full max-w-md border rounded-2xl p-5 shadow-2xl space-y-4 relative transition-colors max-h-[92vh] overflow-y-auto no-scrollbar ${
+            className={`w-full max-w-md border rounded-2xl p-4 sm:p-5 shadow-2xl space-y-3 relative transition-colors max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar ${
               isDarkMode ? 'bg-[#161922] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
             }`}
           >
