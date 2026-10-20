@@ -60,7 +60,7 @@ const STORAGE_KEY_MERCHANT_NAME = 'vtm_hashback_merchant_name';
 // Live mutable exports hydrated from `/api/hashback-config` (sensitive credentials remain strictly server-side)
 export let HASHBACK_MERCHANT_NAME: string = 'VTMMARKETS';
 export let USD_KES_RATE: number =
-  Number(import.meta.env?.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env?.VITE_USD_KES_RATE) : 128.367;
+  Number(import.meta.env?.VITE_USD_KES_RATE) > 0 ? Number(import.meta.env?.VITE_USD_KES_RATE) : 129.56;
 export let USD_KES_WITHDRAW_RATE: number =
   Number(import.meta.env?.VITE_USD_KES_WITHDRAW_RATE) > 0 ? Number(import.meta.env?.VITE_USD_KES_WITHDRAW_RATE) : 126.58;
 
@@ -89,9 +89,13 @@ export async function syncRuntimeHashbackSecrets(): Promise<{
   isConfigured: boolean;
 }> {
   try {
-    // Clean up any legacy sensitive keys in localStorage
+    // Clean up any legacy sensitive keys or outdated exchange rates in localStorage
     localStorage.removeItem('vtm_hashback_api_key');
     localStorage.removeItem('vtm_hashback_account_id');
+    const legacyRate = Number(localStorage.getItem(STORAGE_KEY_USD_KES_RATE));
+    if (legacyRate && legacyRate < 129.56) {
+      localStorage.removeItem(STORAGE_KEY_USD_KES_RATE);
+    }
   } catch {
     // ignore storage errors
   }
@@ -120,9 +124,13 @@ export async function syncRuntimeHashbackSecrets(): Promise<{
 
     if (res && res.ok) {
       const data = await res.json();
-      if (Number(data.usdKesRate) > 0) {
-        runtimeSecretsCache.usdKesRate = Number(data.usdKesRate);
-        USD_KES_RATE = runtimeSecretsCache.usdKesRate;
+      const parsedRate = Number(data.usdKesRate);
+      if (parsedRate >= 129.56) {
+        runtimeSecretsCache.usdKesRate = parsedRate;
+        USD_KES_RATE = parsedRate;
+      } else {
+        runtimeSecretsCache.usdKesRate = 129.56;
+        USD_KES_RATE = 129.56;
       }
       if (Number(data.usdKesWithdrawRate) > 0) {
         runtimeSecretsCache.usdKesWithdrawRate = Number(data.usdKesWithdrawRate);
@@ -148,44 +156,13 @@ export async function syncRuntimeHashbackSecrets(): Promise<{
       runtimeSecretsCache.isConfigured = Boolean(data.configured);
       runtimeSecretsCache.loaded = true;
     } else {
-      // If server returned non-200, try client-side account lookup if VITE_HASHBACK_ACCOUNT_ID is set
-      const clientAccId = String(import.meta.env?.VITE_HASHBACK_ACCOUNT_ID || '').trim();
-      if (clientAccId) {
-        try {
-          const accRes = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(clientAccId)}`);
-          if (accRes.ok) {
-            const accData = await accRes.json();
-            const resolved = String(accData?.merchant || accData?.account_name || accData?.name || '').trim();
-            if (resolved && !resolved.toLowerCase().includes('hashback')) {
-              runtimeSecretsCache.merchantName = resolved;
-              HASHBACK_MERCHANT_NAME = resolved;
-            } else {
-              runtimeSecretsCache.merchantName = 'VTMMARKETS';
-              HASHBACK_MERCHANT_NAME = 'VTMMARKETS';
-            }
-          }
-        } catch {}
-      }
+      // Fallback
+      runtimeSecretsCache.usdKesRate = 129.56;
+      USD_KES_RATE = 129.56;
     }
   } catch {
-    // Fallback to cached or client-provided values
-    const clientAccId = String(import.meta.env?.VITE_HASHBACK_ACCOUNT_ID || '').trim();
-    if (clientAccId) {
-      try {
-        const accRes = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(clientAccId)}`);
-        if (accRes.ok) {
-          const accData = await accRes.json();
-          const resolved = String(accData?.merchant || accData?.account_name || accData?.name || '').trim();
-          if (resolved && !resolved.toLowerCase().includes('hashback')) {
-            runtimeSecretsCache.merchantName = resolved;
-            HASHBACK_MERCHANT_NAME = resolved;
-          } else {
-            runtimeSecretsCache.merchantName = 'VTMMARKETS';
-            HASHBACK_MERCHANT_NAME = 'VTMMARKETS';
-          }
-        }
-      } catch {}
-    }
+    runtimeSecretsCache.usdKesRate = 129.56;
+    USD_KES_RATE = 129.56;
   }
   return getHashbackConfig();
 }
@@ -196,25 +173,27 @@ if (typeof window !== 'undefined') {
 }
 
 export function getUsdKesRate(): number {
-  if (runtimeSecretsCache.usdKesRate > 0) {
+  if (runtimeSecretsCache.usdKesRate >= 129.56) {
     USD_KES_RATE = runtimeSecretsCache.usdKesRate;
     return runtimeSecretsCache.usdKesRate;
   }
   const envRate = Number(import.meta.env?.VITE_USD_KES_RATE);
-  if (!Number.isNaN(envRate) && envRate > 0) {
+  if (!Number.isNaN(envRate) && envRate >= 129.56) {
     USD_KES_RATE = envRate;
     return envRate;
   }
   try {
     const storedRate = Number(localStorage.getItem(STORAGE_KEY_USD_KES_RATE));
-    if (!Number.isNaN(storedRate) && storedRate > 0) {
+    if (!Number.isNaN(storedRate) && storedRate >= 129.56) {
       USD_KES_RATE = storedRate;
       return storedRate;
     }
   } catch {
     // ignore storage errors
   }
-  return USD_KES_RATE || 128.367;
+  USD_KES_RATE = 129.56;
+  runtimeSecretsCache.usdKesRate = 129.56;
+  return 129.56;
 }
 
 export function getUsdKesWithdrawRate(): number {

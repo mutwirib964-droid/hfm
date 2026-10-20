@@ -360,9 +360,9 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
   ).trim();
 
   const rawRate = Number(
-    process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 125.56
+    process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 129.56
   );
-  const usdKesRate = Number.isFinite(rawRate) && rawRate > 1 ? rawRate : 125.56;
+  const usdKesRate = Number.isFinite(rawRate) && rawRate > 1 ? rawRate : 129.56;
   const resolvedRole = String(vtmUser?.role || body.role || 'marketer').toLowerCase();
   const isMarketerOrAdmin = resolvedRole === 'marketer' || resolvedRole === 'admin';
 
@@ -938,7 +938,7 @@ export async function handler(event) {
   if (isConfig) {
     const accountId = (process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
     const apiKey = (process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
-    const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 128.367);
+    const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 129.56);
     const usdKesWithdrawRate = Number(process.env.USD_KES_WITHDRAW_RATE || process.env.VITE_USD_KES_WITHDRAW_RATE || 126.58);
 
     let merchantName = 'VTMMARKETS';
@@ -961,7 +961,7 @@ export async function handler(event) {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({
-        usdKesRate: Number.isFinite(usdKesRate) && usdKesRate > 0 ? usdKesRate : 128.367,
+        usdKesRate: Number.isFinite(usdKesRate) && usdKesRate > 0 ? usdKesRate : 129.56,
         usdKesWithdrawRate: Number.isFinite(usdKesWithdrawRate) && usdKesWithdrawRate > 0 ? usdKesWithdrawRate : 126.58,
         merchantName,
         configured: Boolean(accountId && apiKey),

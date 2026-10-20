@@ -131,7 +131,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const [countdownSeconds, setCountdownSeconds] = useState<number>(87);
   const [confirmedReceipt, setConfirmedReceipt] = useState<string>('');
   const [confirmedReference, setConfirmedReference] = useState<string>('');
-  const [liveUsdKesRate, setLiveUsdKesRate] = useState<number>(() => hashbackService.getUsdKesRate());
+  const [liveUsdKesRate, setLiveUsdKesRate] = useState<number>(() => {
+    const r = hashbackService.getUsdKesRate();
+    return r >= 129.56 ? r : 129.56;
+  });
   const [hashbackMerchantName, setHashbackMerchantName] = useState<string>(
     () => hashbackService.getConfig().merchantName
   );
@@ -145,7 +148,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     hashbackService.syncSecrets().then((cfg) => {
-      if (cfg.usdKesRate > 0) setLiveUsdKesRate(cfg.usdKesRate);
+      if (cfg.usdKesRate >= 129.56) setLiveUsdKesRate(cfg.usdKesRate);
+      else setLiveUsdKesRate(129.56);
       if (cfg.merchantName) setHashbackMerchantName(cfg.merchantName);
     });
   }, [isOpen]);
@@ -178,7 +182,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   }, [defaultTarget]);
 
   const numUsd = parseFloat(amountInput) || 0;
-  const numKes = Math.max(1, Math.round(numUsd * (liveUsdKesRate || USD_KES_RATE)));
+  const effectiveRate = liveUsdKesRate >= 129.56 ? liveUsdKesRate : (USD_KES_RATE >= 129.56 ? USD_KES_RATE : 129.56);
+  const numKes = Math.max(1, Math.round(numUsd * effectiveRate));
   const userAccountName =
     hashbackMerchantName && !hashbackMerchantName.toLowerCase().includes('hashback')
       ? hashbackMerchantName

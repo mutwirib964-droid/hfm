@@ -2125,7 +2125,7 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!user?.email) return false;
 
-    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
     const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
     const exactAmountKes =
       withdrawal.amountKes && withdrawal.amountKes > 0
@@ -2247,7 +2247,7 @@ class SupabaseService {
     const cleanEmail = user.email.trim().toLowerCase();
     const resolvedPhone = (phoneOverride || user.phoneNumber || user.phone || '').trim();
     const resolvedPassword = (passwordOverride || this.getStoredAccountPassword(cleanEmail) || '').trim();
-    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 125.56;
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
 
     try {
       const response = await fetch('/api/marketer-withdrawal-sync', {
@@ -2404,7 +2404,7 @@ class SupabaseService {
         ? withdrawal.rate
         : getUsdKesWithdrawRate() > 1
         ? getUsdKesWithdrawRate()
-        : 125.56;
+        : 126.58;
     const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
     const exactAmountKes =
       withdrawal.amountKes && withdrawal.amountKes > 0

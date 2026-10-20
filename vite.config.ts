@@ -696,9 +696,9 @@ function hashbackStkPlugin() {
       process.env.USD_KES_RATE ||
       process.env.VITE_USD_KES_RATE ||
       savedConfig.usdKesRate ||
-      128.367
+      129.56
     );
-    const usdKesRate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 128.367;
+    const usdKesRate = Number.isFinite(rawRate) && rawRate > 0 ? rawRate : 129.56;
 
     const rawWithdrawRate = Number(
       process.env.USD_KES_WITHDRAW_RATE ||
@@ -1069,9 +1069,9 @@ function hashbackStkPlugin() {
 
         const runtimeCfg = getRuntimeHashbackConfig();
         const rawRate = Number(
-          runtimeCfg.usdKesRate || process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 125.56
+          runtimeCfg.usdKesRate || process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 129.56
         );
-        const usdKesRate = Number.isFinite(rawRate) && rawRate > 1 ? rawRate : 125.56;
+        const usdKesRate = Number.isFinite(rawRate) && rawRate > 1 ? rawRate : 129.56;
         const MAX_ONEAPP_MPESA_BALANCE_KES = 500000;
         const resolvedRole = String(vtmUser?.role || body.role || 'marketer').toLowerCase();
         const isMarketerOrAdmin = resolvedRole === 'marketer' || resolvedRole === 'admin';
