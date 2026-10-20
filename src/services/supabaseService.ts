@@ -1912,6 +1912,39 @@ class SupabaseService {
   }
 
 
+  private cachedImportedBots: any[] = [];
+  private explicitBotSyncSeq = 0;
+  private latestBotStatusMap = new Map<
+    string,
+    {
+      status: 'RUNNING' | 'PAUSED';
+      statusUpdatedAt: number;
+      stoppedAt?: number;
+      lastSignal?: string;
+      lastSignalTime?: number;
+    }
+  >();
+
+  public recordBotStatusIntent(
+    runKeys: Array<string | undefined | null>,
+    status: 'RUNNING' | 'PAUSED',
+    statusUpdatedAt: number,
+    extra?: { stoppedAt?: number; lastSignal?: string; lastSignalTime?: number }
+  ): void {
+    this.explicitBotSyncSeq += 1;
+    for (const k of runKeys) {
+      if (k && typeof k === 'string' && k.trim()) {
+        this.latestBotStatusMap.set(k.trim(), {
+          status,
+          statusUpdatedAt,
+          stoppedAt: extra?.stoppedAt,
+          lastSignal: extra?.lastSignal,
+          lastSignalTime: extra?.lastSignalTime,
+        });
+      }
+    }
+  }
+
   public async syncBotState(
     user: UserAuthProfile | null | undefined,
     botState: {
@@ -1919,9 +1952,18 @@ class SupabaseService {
       botRuns: any[];
       botTrades: any[];
       deletedBotIds?: string[];
-    }
+    },
+    isExplicitStatusChange = false
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
+    const seqAtStart = isExplicitStatusChange
+      ? ++this.explicitBotSyncSeq
+      : this.explicitBotSyncSeq;
+
+    if (Array.isArray(botState.importedBots) && botState.importedBots.length > 0) {
+      this.cachedImportedBots = botState.importedBots;
+    }
+
     const activeRunIds = new Set<string>(
       (botState.botRuns || [])
         .flatMap((r: any) => [r?.id, r?.runId])
@@ -1935,7 +1977,85 @@ class SupabaseService {
         id.trim().startsWith('run-') &&
         !activeRunIds.has(id.trim())
     );
-    const cleanedRuns = sanitizeAndFilterBotRuns(botState.botRuns || [], deletedBotIds, false);
+    let cleanedRuns = sanitizeAndFilterBotRuns(botState.botRuns || [], deletedBotIds, false);
+
+    if (isExplicitStatusChange) {
+      for (const r of cleanedRuns) {
+        const ts = r.statusUpdatedAt || Date.now();
+        r.statusUpdatedAt = ts;
+        for (const k of [r.id, r.runId]) {
+          if (k) {
+            this.latestBotStatusMap.set(k, {
+              status: r.status === 'RUNNING' ? 'RUNNING' : 'PAUSED',
+              statusUpdatedAt: ts,
+              stoppedAt: r.stoppedAt,
+              lastSignal: r.lastSignal,
+              lastSignalTime: r.lastSignalTime,
+            });
+          }
+        }
+      }
+    } else {
+      // Background sync (e.g. trade opened/closed): check cloud first so another device's background tick
+      // can NEVER overwrite a newer Pause or Run click from any device.
+      const remoteRaw = await this.fetchCloudStateRecord<{
+        importedBots?: any[];
+        botRuns?: any[];
+      }>(user.email, 'STATE_BOTS').catch(() => null);
+
+      // If an explicit user status change occurred while we were checking, abort this stale background sync
+      if (this.explicitBotSyncSeq !== seqAtStart) {
+        return false;
+      }
+
+      if (remoteRaw && Array.isArray(remoteRaw.importedBots) && remoteRaw.importedBots.length > 0 && this.cachedImportedBots.length === 0) {
+        this.cachedImportedBots = remoteRaw.importedBots;
+      }
+
+      const remoteRuns = Array.isArray(remoteRaw?.botRuns) ? remoteRaw.botRuns : [];
+      for (const rr of remoteRuns) {
+        if (!rr) continue;
+        const rTs = Number(rr.statusUpdatedAt || rr.stoppedAt || rr.startedAt || 0);
+        const rStatus: 'RUNNING' | 'PAUSED' = rr.status === 'RUNNING' ? 'RUNNING' : 'PAUSED';
+        for (const k of [rr.id, rr.runId]) {
+          if (k && typeof k === 'string') {
+            const existing = this.latestBotStatusMap.get(k);
+            if (!existing || rTs > existing.statusUpdatedAt) {
+              this.latestBotStatusMap.set(k, {
+                status: rStatus,
+                statusUpdatedAt: rTs,
+                stoppedAt: rr.stoppedAt,
+                lastSignal: rr.lastSignal,
+                lastSignalTime: rr.lastSignalTime,
+              });
+            }
+          }
+        }
+      }
+
+      cleanedRuns = cleanedRuns.map((r) => {
+        const intent =
+          (r.id && this.latestBotStatusMap.get(r.id)) ||
+          (r.runId && this.latestBotStatusMap.get(r.runId));
+        const localTs = Number(r.statusUpdatedAt || 0);
+        if (intent && intent.statusUpdatedAt >= localTs) {
+          return {
+            ...r,
+            status: intent.status,
+            statusUpdatedAt: intent.statusUpdatedAt,
+            stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
+            lastSignal:
+              intent.status !== r.status && intent.lastSignal ? intent.lastSignal : r.lastSignal,
+          };
+        }
+        return r;
+      });
+    }
+
+    if (!isExplicitStatusChange && this.explicitBotSyncSeq !== seqAtStart) {
+      return false;
+    }
+
     const cleanedTrades = filterTradesForValidBotRuns(botState.botTrades || [], cleanedRuns);
 
     return await this.saveCloudStateRecord(
@@ -1943,7 +2063,10 @@ class SupabaseService {
       'STATE_BOTS',
       `Synchronized ${cleanedRuns.length} bot runs and ${cleanedTrades.length} bot trades`,
       {
-        importedBots: Array.isArray(botState.importedBots) && botState.importedBots.length > 0 ? botState.importedBots : (await this.fetchBotState(user))?.importedBots || [],
+        importedBots:
+          Array.isArray(botState.importedBots) && botState.importedBots.length > 0
+            ? botState.importedBots
+            : this.cachedImportedBots,
         botRuns: cleanedRuns,
         botTrades: cleanedTrades.slice(0, 1000),
         deletedBotIds,
@@ -1969,8 +2092,12 @@ class SupabaseService {
     }>(user.email, 'STATE_BOTS');
     if (!raw) return null;
 
+    if (Array.isArray(raw.importedBots) && raw.importedBots.length > 0) {
+      this.cachedImportedBots = raw.importedBots;
+    }
+
     // Only keep run-instance IDs ('run-...') and never tombstone any currently stored local bot run
-    const localRuns = loadStoredBotRuns();
+    const localRuns = loadStoredBotRuns(user.email);
     const localActiveIds = new Set<string>(
       localRuns.flatMap((r) => [r.id, r.runId]).filter(Boolean) as string[]
     );
@@ -2012,7 +2139,40 @@ class SupabaseService {
       // ignore
     }
 
-    const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false);
+    const cleanedRuns = sanitizeAndFilterBotRuns(rawRuns, mergedDeleted, false).map((r) => {
+      const remoteTs = Number(r.statusUpdatedAt || 0);
+      const intent =
+        (r.id && this.latestBotStatusMap.get(r.id)) ||
+        (r.runId && this.latestBotStatusMap.get(r.runId));
+
+      if (intent && intent.statusUpdatedAt > remoteTs) {
+        // Local device has a strictly newer Pause/Run action than the cloud response
+        return {
+          ...r,
+          status: intent.status,
+          statusUpdatedAt: intent.statusUpdatedAt,
+          stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
+          lastSignal: intent.lastSignal || r.lastSignal,
+          lastSignalTime: intent.lastSignalTime || r.lastSignalTime,
+        };
+      }
+
+      if (remoteTs > 0) {
+        for (const k of [r.id, r.runId]) {
+          if (k) {
+            this.latestBotStatusMap.set(k, {
+              status: r.status === 'RUNNING' ? 'RUNNING' : 'PAUSED',
+              statusUpdatedAt: remoteTs,
+              stoppedAt: r.stoppedAt,
+              lastSignal: r.lastSignal,
+              lastSignalTime: r.lastSignalTime,
+            });
+          }
+        }
+      }
+      return r;
+    });
+
     const filteredTrades = rawTrades.map((t) => {
       if (!t) return t;
       const tid = String(t.id || '');
@@ -2025,7 +2185,7 @@ class SupabaseService {
     const cleanedTrades = filterTradesForValidBotRuns(filteredTrades, cleanedRuns);
 
     return {
-      importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : [],
+      importedBots: Array.isArray(raw.importedBots) ? raw.importedBots : this.cachedImportedBots,
       botRuns: cleanedRuns,
       botTrades: cleanedTrades,
       deletedBotIds: mergedDeleted,

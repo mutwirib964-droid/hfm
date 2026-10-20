@@ -605,8 +605,8 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         <span
                           className={`text-[11px] font-bold px-1.5 py-0.5 rounded ${
                             inst.change24h >= 0
-                              ? 'text-emerald-500 bg-emerald-500/10'
-                              : 'text-red-500 bg-red-500/10'
+                              ? 'text-[#10B981] bg-[#10B981]/15'
+                              : 'text-[#EF4444] bg-[#EF4444]/15'
                           }`}
                         >
                           {inst.change24h >= 0 ? '+' : ''}
@@ -623,13 +623,15 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
                           !mHours.isOpen
                             ? isDarkMode
-                              ? 'bg-[#24181A] border-red-900/60 text-red-300'
-                              : 'bg-red-50/70 border-red-300 text-red-900'
+                              ? 'bg-[#24181A] border-[#7F1D1D] text-[#FCA5A5]'
+                              : 'bg-[#FEF2F2] border-[#FCA5A5] text-[#7F1D1D]'
                             : tick === 'DOWN'
-                            ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-500 text-rose-600 dark:text-rose-300 ring-1 ring-rose-500/30 shadow-xs font-semibold'
+                            ? isDarkMode
+                              ? 'bg-[#4C0519]/60 border-[#F43F5E] text-[#FDA4AF] font-semibold'
+                              : 'bg-[#FFF1F2] border-[#F43F5E] text-[#E11D48] font-semibold'
                             : isDarkMode
-                            ? 'bg-[#1F222A] border-neutral-700/60 hover:border-rose-500/50 text-white'
-                            : 'bg-neutral-50/90 border-neutral-200 hover:border-rose-300 text-neutral-900'
+                            ? 'bg-[#1F222A] border-[#334155] hover:border-[#F43F5E] text-white'
+                            : 'bg-[#F8FAFC] border-[#CBD5E1] hover:border-[#F43F5E] text-[#0F172A]'
                         }`}
                       >
                         {/* Price Typography with Guaranteed Anti-Overlap */}
@@ -647,9 +649,9 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-500 dark:text-neutral-400">
+                        <div className={`flex items-center gap-1 text-[11px] font-semibold ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                           <span>{!mHours.isOpen ? '🔒 Closed' : 'Sell'}</span>
-                          {mHours.isOpen && tick === 'DOWN' && <span className="text-rose-500 font-bold text-[10px]">▼</span>}
+                          {mHours.isOpen && tick === 'DOWN' && <span className="text-[#F43F5E] font-bold text-[10px]">▼</span>}
                         </div>
                       </button>
 
@@ -659,13 +661,15 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                         className={`py-2 px-2.5 rounded-xl border flex flex-col items-center justify-center transition-colors duration-200 cursor-pointer active:scale-[0.98] min-w-0 ${
                           !mHours.isOpen
                             ? isDarkMode
-                              ? 'bg-[#18231C] border-emerald-900/60 text-emerald-300'
-                              : 'bg-emerald-50/70 border-emerald-300 text-emerald-900'
+                              ? 'bg-[#18231C] border-[#14532D] text-[#86EFAC]'
+                              : 'bg-[#ECFDF5] border-[#6EE7B7] text-[#064E3B]'
                             : tick === 'UP'
-                            ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 text-emerald-600 dark:text-emerald-300 ring-1 ring-emerald-500/30 shadow-xs font-semibold'
+                            ? isDarkMode
+                              ? 'bg-[#022C22]/60 border-[#10B981] text-[#6EE7B7] font-semibold'
+                              : 'bg-[#ECFDF5] border-[#10B981] text-[#059669] font-semibold'
                             : isDarkMode
-                            ? 'bg-[#1F222A] border-neutral-700/60 hover:border-emerald-500/50 text-white'
-                            : 'bg-neutral-50/90 border-neutral-200 hover:border-emerald-300 text-neutral-900'
+                            ? 'bg-[#1F222A] border-[#334155] hover:border-[#10B981] text-white'
+                            : 'bg-[#F8FAFC] border-[#CBD5E1] hover:border-[#10B981] text-[#0F172A]'
                         }`}
                       >
                         {/* Price Typography with Guaranteed Anti-Overlap */}
@@ -683,15 +687,15 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500 dark:text-neutral-500 dark:text-neutral-400">
+                        <div className={`flex items-center gap-1 text-[11px] font-semibold ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                           <span>{!mHours.isOpen ? '🔒 Closed' : 'Buy'}</span>
-                          {mHours.isOpen && tick === 'UP' && <span className="text-emerald-500 font-bold text-[10px]">▲</span>}
+                          {mHours.isOpen && tick === 'UP' && <span className="text-[#10B981] font-bold text-[10px]">▲</span>}
                         </div>
                       </button>
                     </div>
 
                     {/* Quick Link to Full Chart on hover */}
-                    <div className="mt-1.5 flex items-center justify-between text-[10px] text-neutral-500 dark:text-neutral-400 pt-1 border-t border-neutral-800/40">
+                    <div className={`mt-1.5 flex items-center justify-between text-[10px] pt-1 border-t ${isDarkMode ? 'text-[#94A3B8] border-[#262626]' : 'text-[#475569] border-[#E2E8F0]'}`}>
                       <span className="truncate">{inst.name}</span>
                       <button
                         onClick={(e) => {

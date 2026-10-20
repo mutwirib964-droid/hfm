@@ -33,6 +33,7 @@ export interface BotRunInstance {
   tpPips: number;
   slPips: number;
   status: 'RUNNING' | 'PAUSED' | 'STOPPED';
+  statusUpdatedAt?: number;
   userRoleAtStart?: UserRole;
   startedAt: number;
   stoppedAt?: number;

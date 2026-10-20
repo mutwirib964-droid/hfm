@@ -636,8 +636,11 @@ export default function App() {
       });
 
 
+      const botFetchStartedAt = Date.now();
       supabaseService.fetchBotState(remote.profile).then((remoteBots) => {
-        const isRecentLocalBotAction = Date.now() - lastLocalBotsUpdateRef.current < 2000;
+        const isRecentLocalBotAction =
+          lastLocalBotsUpdateRef.current >= botFetchStartedAt ||
+          Date.now() - lastLocalBotsUpdateRef.current < 3500;
         if (remoteBots && !isRecentLocalBotAction) {
           if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
             setImportedBots((prevBots) => {
@@ -658,18 +661,67 @@ export default function App() {
               localDeletedIds,
               false
             );
+            const localByKey = new Map<string, BotRunInstance>();
+            for (const lr of botRunsRef.current) {
+              if (lr && lr.explicitUserRun !== false) {
+                const k =
+                  lr.id ||
+                  lr.runId ||
+                  `${lr.botId}_${lr.symbol || ''}_${lr.startedAt || ''}_${lr.accountNumber || ''}`;
+                localByKey.set(k, lr);
+                if (lr.id) localByKey.set(lr.id, lr);
+                if (lr.runId) localByKey.set(lr.runId, lr);
+              }
+            }
+
             const mergedMap = new Map<string, BotRunInstance>();
-            // Remote runs from Supabase cloud take priority across all devices for the same user account
+            let localStatusIsNewer = false;
+
+            // Merge remote runs with local runs using statusUpdatedAt so the newest Pause/Run click across any device always wins
             for (const r of cleanedRemoteRuns) {
               if (r && r.explicitUserRun !== false) {
-                const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
+                const key =
+                  r.id ||
+                  r.runId ||
+                  `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
+                const localMatch =
+                  localByKey.get(key) ||
+                  (r.id ? localByKey.get(r.id) : undefined) ||
+                  (r.runId ? localByKey.get(r.runId) : undefined);
+
+                if (localMatch) {
+                  const remoteStatusTs = Number(r.statusUpdatedAt || r.stoppedAt || r.startedAt || 0);
+                  const localStatusTs = Number(
+                    localMatch.statusUpdatedAt || localMatch.stoppedAt || localMatch.startedAt || 0
+                  );
+                  if (localStatusTs > remoteStatusTs) {
+                    if (localMatch.status !== r.status) {
+                      localStatusIsNewer = true;
+                    }
+                    mergedMap.set(key, {
+                      ...r,
+                      status: localMatch.status,
+                      statusUpdatedAt: localStatusTs,
+                      stoppedAt:
+                        localMatch.status === 'PAUSED'
+                          ? localMatch.stoppedAt ?? r.stoppedAt
+                          : r.stoppedAt,
+                      lastSignal: localMatch.lastSignal || r.lastSignal,
+                      lastSignalTime: localMatch.lastSignalTime || r.lastSignalTime,
+                    });
+                    continue;
+                  }
+                }
                 mergedMap.set(key, r);
               }
             }
             // Add local-only runs if not yet present
             for (const r of botRunsRef.current) {
               if (r && r.explicitUserRun !== false) {
-                const key = r.id || r.runId || `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
+                const key =
+                  r.id ||
+                  r.runId ||
+                  `${r.botId}_${r.symbol || ''}_${r.startedAt || ''}_${r.accountNumber || ''}`;
                 if (!mergedMap.has(key)) {
                   mergedMap.set(key, r);
                 }
@@ -690,6 +742,7 @@ export default function App() {
                     pr &&
                     pr.id === r.id &&
                     pr.status === r.status &&
+                    pr.statusUpdatedAt === r.statusUpdatedAt &&
                     pr.totalProfitUsd === r.totalProfitUsd &&
                     pr.totalTrades === r.totalTrades
                   );
@@ -702,14 +755,18 @@ export default function App() {
               return finalRuns;
             });
 
-            if (finalRuns.length > cleanedRemoteRuns.length) {
+            if (finalRuns.length > cleanedRemoteRuns.length || localStatusIsNewer) {
               supabaseService
-                .syncBotState(remote.profile, {
-                  importedBots: importedBots,
-                  botRuns: finalRuns,
-                  botTrades: botTradesRef.current,
-                  deletedBotIds: localDeletedIds,
-                })
+                .syncBotState(
+                  remote.profile,
+                  {
+                    importedBots: importedBots,
+                    botRuns: finalRuns,
+                    botTrades: botTradesRef.current,
+                    deletedBotIds: localDeletedIds,
+                  },
+                  localStatusIsNewer
+                )
                 .catch(() => {});
             }
 
@@ -789,6 +846,11 @@ export default function App() {
           selectedAccountRef.current = nextSel;
           return nextSel;
         });
+      }
+      if (e.key && e.key.startsWith('vtm_bot_runs')) {
+        const storedRuns = loadStoredBotRuns(currentUser.email);
+        botRunsRef.current = storedRuns;
+        setBotRuns(storedRuns);
       }
     };
     window.addEventListener('storage', handleStorageEvent);
@@ -2294,21 +2356,47 @@ export default function App() {
     }
 
     // 1. Pause active algorithmic bots belonging to THIS account only
+    const stopOutTs = Date.now();
     setBotRuns((runs) => {
       if (!runs.some((r) => r.status === 'RUNNING' && belongsToAccount(r, curAcc))) return runs;
-      const stopped = runs.map((r) =>
-        r.status === 'RUNNING' && belongsToAccount(r, curAcc)
-          ? {
-              ...r,
-              status: 'PAUSED' as const,
-              stoppedAt: Date.now(),
-              lastSignal: 'Stopped automatically: Margin stop-out protection triggered',
-              lastSignalTime: Date.now(),
-            }
-          : r
-      );
+      const stoppedIds: string[] = [];
+      const stopped = runs.map((r) => {
+        if (r.status === 'RUNNING' && belongsToAccount(r, curAcc)) {
+          if (r.id) stoppedIds.push(r.id);
+          if (r.runId) stoppedIds.push(r.runId);
+          return {
+            ...r,
+            status: 'PAUSED' as const,
+            statusUpdatedAt: stopOutTs,
+            stoppedAt: stopOutTs,
+            lastSignal: 'Stopped automatically: Margin stop-out protection triggered',
+            lastSignalTime: stopOutTs,
+          };
+        }
+        return r;
+      });
+      lastLocalBotsUpdateRef.current = stopOutTs;
+      supabaseService.recordBotStatusIntent(stoppedIds, 'PAUSED', stopOutTs, {
+        stoppedAt: stopOutTs,
+        lastSignal: 'Stopped automatically: Margin stop-out protection triggered',
+        lastSignalTime: stopOutTs,
+      });
       botRunsRef.current = stopped;
       saveStoredBotRuns(stopped, currentUserRef.current?.email);
+      if (currentUserRef.current?.email) {
+        supabaseService
+          .syncBotState(
+            currentUserRef.current,
+            {
+              importedBots,
+              botRuns: stopped,
+              botTrades: botTradesRef.current,
+              deletedBotIds: getDeletedBotIds(),
+            },
+            true
+          )
+          .catch(() => {});
+      }
       return stopped;
     });
 
@@ -4395,8 +4483,11 @@ export default function App() {
   };
 
   // Automatically scale bot lot size to fit the user's available account balance so bots can open 10 to 20 trades concurrently
-  const resolveAffordableBotLotSize = (requestedLots: number): number => {
-    const activeAcc = selectedAccountRef.current || selectedAccount;
+  const resolveAffordableBotLotSize = (
+    requestedLots: number,
+    targetAcc?: TradingAccount | null
+  ): number => {
+    const activeAcc = targetAcc || selectedAccountRef.current || selectedAccount;
     if (!activeAcc || activeAcc.balance <= 0) return Math.max(0.01, requestedLots || 0.01);
 
     const balance = Number(activeAcc.balance || 0);
@@ -4505,6 +4596,7 @@ export default function App() {
     unmarkBotDeletedLocally([bot.id, bot.name, runIdStr]);
 
     // Deploy to Active Bots in standby (PAUSED) — bound strictly to the currently selected account
+    const deployTs = Date.now();
     const newRun: BotRunInstance = {
       id: runIdStr,
       runId: runIdStr,
@@ -4516,9 +4608,10 @@ export default function App() {
       tpPips: cleanTpPips,
       slPips: cleanSlPips,
       status: 'PAUSED',
+      statusUpdatedAt: deployTs,
       explicitUserRun: true,
       userStartedVersion: 2,
-      startedAt: Date.now(),
+      startedAt: deployTs,
       totalTrades: 0,
       totalTradesCount: 0,
       winningTrades: 0,
@@ -4526,26 +4619,31 @@ export default function App() {
       losingTrades: 0,
       totalProfitUsd: 0,
       lastSignal: `Deployed to Active Bots • Configure settings or click Run to execute market orders`,
-      lastSignalTime: Date.now(),
+      lastSignalTime: deployTs,
       accountId: deployAcc?.id,
       accountNumber: deployAcc?.accountNumber,
     };
 
     const updatedRuns = [newRun, ...botRunsRef.current];
-    lastLocalBotsUpdateRef.current = Date.now();
+    lastLocalBotsUpdateRef.current = deployTs;
     isCloudBotsLoadedRef.current = true;
+    supabaseService.recordBotStatusIntent([runIdStr], 'PAUSED', deployTs);
     botRunsRef.current = updatedRuns;
     setBotRuns(updatedRuns);
     saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
 
     if (currentUser && currentUser.email) {
       supabaseService
-        .syncBotState(currentUser, {
-          importedBots,
-          botRuns: updatedRuns,
-          botTrades: botTradesRef.current,
-          deletedBotIds: getDeletedBotIds(),
-        })
+        .syncBotState(
+          currentUser,
+          {
+            importedBots,
+            botRuns: updatedRuns,
+            botTrades: botTradesRef.current,
+            deletedBotIds: getDeletedBotIds(),
+          },
+          true
+        )
         .catch(() => {});
     }
 
@@ -4696,6 +4794,7 @@ export default function App() {
       }
 
       const activeAccForRun = selectedAccountRef.current || selectedAccount;
+      const nowTs = Date.now();
       const updatedRuns = botRunsRef.current.map((r) => {
         if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
           return {
@@ -4705,21 +4804,42 @@ export default function App() {
             tpPips: Number(r.tpPips) > 0 ? Number(r.tpPips) : 30,
             slPips: Number(r.slPips) > 0 ? Number(r.slPips) : 20,
             status: 'RUNNING' as const,
+            statusUpdatedAt: nowTs,
             explicitUserRun: true,
             userStartedVersion: 2,
             lastSignal: immediateSignal,
-            lastSignalTime: Date.now(),
+            lastSignalTime: nowTs,
             accountId: r.accountId || activeAccForRun?.id,
             accountNumber: r.accountNumber || activeAccForRun?.accountNumber,
           };
         }
         return r;
       });
-      lastLocalBotsUpdateRef.current = Date.now();
+      lastLocalBotsUpdateRef.current = nowTs;
       isCloudBotsLoadedRef.current = true;
+      supabaseService.recordBotStatusIntent(
+        [target.id, target.runId, runId],
+        'RUNNING',
+        nowTs,
+        { lastSignal: immediateSignal, lastSignalTime: nowTs }
+      );
       botRunsRef.current = updatedRuns;
       setBotRuns(updatedRuns);
       saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+      if (currentUserRef.current?.email) {
+        supabaseService
+          .syncBotState(
+            currentUserRef.current,
+            {
+              importedBots,
+              botRuns: updatedRuns,
+              botTrades: botTradesRef.current,
+              deletedBotIds: getDeletedBotIds(),
+            },
+            true
+          )
+          .catch(() => {});
+      }
 
       playOrderSound(true);
       triggerActionPopup({
@@ -4728,22 +4848,46 @@ export default function App() {
         subtitle: `${target.botName} is actively executing market trades on ${activeInst.symbol}.`,
       });
     } else {
+      const nowTs = Date.now();
+      const pauseMsg = 'Bot Paused by User • Remaining open trades will auto-close at TP/SL';
       const updatedRuns = botRunsRef.current.map((r) => {
         if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
           return {
             ...r,
             status: 'PAUSED' as const,
-            lastSignal: 'Bot Paused by User • Remaining open trades will auto-close at TP/SL',
-            lastSignalTime: Date.now(),
+            statusUpdatedAt: nowTs,
+            stoppedAt: nowTs,
+            lastSignal: pauseMsg,
+            lastSignalTime: nowTs,
           };
         }
         return r;
       });
-      lastLocalBotsUpdateRef.current = Date.now();
+      lastLocalBotsUpdateRef.current = nowTs;
       isCloudBotsLoadedRef.current = true;
+      supabaseService.recordBotStatusIntent(
+        [target.id, target.runId, runId],
+        'PAUSED',
+        nowTs,
+        { stoppedAt: nowTs, lastSignal: pauseMsg, lastSignalTime: nowTs }
+      );
       botRunsRef.current = updatedRuns;
       setBotRuns(updatedRuns);
       saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+      if (currentUserRef.current?.email) {
+        supabaseService
+          .syncBotState(
+            currentUserRef.current,
+            {
+              importedBots,
+              botRuns: updatedRuns,
+              botTrades: botTradesRef.current,
+              deletedBotIds: getDeletedBotIds(),
+            },
+            true
+          )
+          .catch(() => {});
+      }
 
       triggerActionPopup({
         type: 'BOT_STOPPED',
@@ -4753,23 +4897,48 @@ export default function App() {
   };
 
   const handleStopBotRun = (runId: string) => {
+    const nowTs = Date.now();
+    const stopMsg = 'Bot Stopped (Remains in Active Bots until deleted)';
+    const matchedIds: string[] = [runId];
     const updatedRuns = botRunsRef.current.map((r) => {
       if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
+        if (r.id) matchedIds.push(r.id);
+        if (r.runId) matchedIds.push(r.runId);
         return {
           ...r,
           status: 'PAUSED' as const,
-          stoppedAt: Date.now(),
-          lastSignal: 'Bot Stopped (Remains in Active Bots until deleted)',
-          lastSignalTime: Date.now(),
+          statusUpdatedAt: nowTs,
+          stoppedAt: nowTs,
+          lastSignal: stopMsg,
+          lastSignalTime: nowTs,
         };
       }
       return r;
     });
-    lastLocalBotsUpdateRef.current = Date.now();
+    lastLocalBotsUpdateRef.current = nowTs;
     isCloudBotsLoadedRef.current = true;
+    supabaseService.recordBotStatusIntent(matchedIds, 'PAUSED', nowTs, {
+      stoppedAt: nowTs,
+      lastSignal: stopMsg,
+      lastSignalTime: nowTs,
+    });
     botRunsRef.current = updatedRuns;
     setBotRuns(updatedRuns);
     saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+    if (currentUserRef.current?.email) {
+      supabaseService
+        .syncBotState(
+          currentUserRef.current,
+          {
+            importedBots,
+            botRuns: updatedRuns,
+            botTrades: botTradesRef.current,
+            deletedBotIds: getDeletedBotIds(),
+          },
+          true
+        )
+        .catch(() => {});
+    }
     addNotification('EA algorithm paused/stopped in Active Bots');
 
     triggerActionPopup({
@@ -4865,26 +5034,50 @@ export default function App() {
     );
     const wasRunning = target?.status === 'RUNNING';
     const nextStatus = updates.status ?? target?.status ?? 'PAUSED';
+    const resolvedStatus: 'RUNNING' | 'PAUSED' = nextStatus === 'STOPPED' ? 'PAUSED' : nextStatus;
+    const nowTs = Date.now();
+    const settingsSignal = `Settings Updated: ${updates.symbol ?? target?.symbol ?? ''} • ${updates.lotSize ?? target?.lotSize ?? 0.01} Lots, TP ${updates.tpPips ?? target?.tpPips ?? 30}p, SL ${updates.slPips ?? target?.slPips ?? 20}p`;
 
     const updated = botRunsRef.current.map((r) => {
       if (r.id === runId || r.runId === runId || r.botId === runId || r.botName === runId) {
         return {
           ...r,
           ...updates,
-          status: nextStatus === 'STOPPED' ? 'PAUSED' : nextStatus,
+          status: resolvedStatus,
+          statusUpdatedAt: nowTs,
           explicitUserRun: true,
           userStartedVersion: 2,
           lastSignal: `Settings Updated: ${updates.symbol ?? r.symbol} • ${updates.lotSize ?? r.lotSize} Lots, TP ${updates.tpPips ?? r.tpPips}p, SL ${updates.slPips ?? r.slPips}p`,
-          lastSignalTime: Date.now(),
+          lastSignalTime: nowTs,
         };
       }
       return r;
     });
-    lastLocalBotsUpdateRef.current = Date.now();
+    lastLocalBotsUpdateRef.current = nowTs;
     isCloudBotsLoadedRef.current = true;
+    supabaseService.recordBotStatusIntent(
+      [target?.id, target?.runId, runId],
+      resolvedStatus,
+      nowTs,
+      { lastSignal: settingsSignal, lastSignalTime: nowTs }
+    );
     botRunsRef.current = updated;
     setBotRuns(updated);
     saveStoredBotRuns(updated, currentUserRef.current?.email);
+    if (currentUserRef.current?.email && !(nextStatus === 'RUNNING' && !wasRunning && target)) {
+      supabaseService
+        .syncBotState(
+          currentUserRef.current,
+          {
+            importedBots,
+            botRuns: updated,
+            botTrades: botTradesRef.current,
+            deletedBotIds: getDeletedBotIds(),
+          },
+          true
+        )
+        .catch(() => {});
+    }
 
     // Also update TP/SL target prices on any currently OPEN bot trades belonging to this run
     if (target && (updates.tpPips !== undefined || updates.slPips !== undefined)) {
@@ -5303,13 +5496,16 @@ export default function App() {
           activeTrade.accountNumber ||
           parentRun?.accountNumber;
 
-        // Resolve the exact account that owns this bot trade.
-        // Legacy untagged bot trades ONLY resolve to Demo accounts — NEVER to a Live account!
-        const tradeOwningAcc = targetAccIdOrNum
-          ? accountsRef.current.find(
-              (a) => a.id === targetAccIdOrNum || a.accountNumber === targetAccIdOrNum
-            )
-          : accountsRef.current.find((a) => a.type === 'Demo');
+        // Resolve the exact account that owns this bot trade using belongsToAccount (matches both accountId and accountNumber across devices)
+        const tradeOwningAcc =
+          accountsRef.current.find(
+            (a) => belongsToAccount(activeTrade, a) || (parentRun && belongsToAccount(parentRun, a))
+          ) ||
+          (targetAccIdOrNum
+            ? accountsRef.current.find(
+                (a) => a.id === targetAccIdOrNum || a.accountNumber === targetAccIdOrNum
+              )
+            : accountsRef.current.find((a) => a.type === 'Demo'));
 
         if (!tradeOwningAcc) return;
 
@@ -5632,12 +5828,14 @@ export default function App() {
       // 2. Autonomous Multi-Trade Opening: ONLY open new trades for RUNNING bots on their OWNING account
       runningBots.forEach((run) => {
         const runTargetAccKey = run.accountId || run.accountNumber;
-        // Legacy untagged bot runs ONLY execute on Demo accounts — NEVER on a Live account!
-        const activeAcc = runTargetAccKey
-          ? accountsRef.current.find(
-              (a) => a.id === runTargetAccKey || a.accountNumber === runTargetAccKey
-            )
-          : accountsRef.current.find((a) => a.type === 'Demo');
+        // Match by belongsToAccount (both accountId and accountNumber across devices), falling back to Demo only for untagged legacy runs
+        const activeAcc =
+          accountsRef.current.find((a) => belongsToAccount(run, a)) ||
+          (runTargetAccKey
+            ? accountsRef.current.find(
+                (a) => a.id === runTargetAccKey || a.accountNumber === runTargetAccKey
+              )
+            : accountsRef.current.find((a) => a.type === 'Demo'));
 
         if (!activeAcc) return;
 
@@ -5662,27 +5860,48 @@ export default function App() {
             t.status === 'OPEN'
         );
 
-        if (activeAcc.balance <= 2.0 || (activeAcc.equity ?? activeAcc.balance) <= 2.0) {
+        const accOpenManualForEq = (positionsRef.current || []).filter((p) =>
+          belongsToAccount(p, activeAcc)
+        );
+        const accOpenBotForEq = nextTrades.filter(
+          (t) => t.status === 'OPEN' && belongsToAccount(t, activeAcc)
+        );
+        const liveFloatingPnl =
+          accOpenManualForEq.reduce((s, p) => s + (p.pnl || 0), 0) +
+          accOpenBotForEq.reduce((s, t) => s + (t.profitUsd || 0), 0);
+        const liveAccBalance = Number(activeAcc.balance ?? 0);
+        const liveAccEquity = Number((liveAccBalance + liveFloatingPnl).toFixed(2));
+
+        // Only stop automatically if the account genuinely has no capital left to execute trades
+        if (liveAccBalance <= 2.0 || liveAccEquity <= 2.0) {
+          const stopTs = Date.now();
+          const stopMsg = `Stopped automatically at $${liveAccBalance.toFixed(2)}: Minimum tradable capital reached`;
+          lastLocalBotsUpdateRef.current = stopTs;
+          supabaseService.recordBotStatusIntent([run.id, run.runId], 'PAUSED', stopTs, {
+            stoppedAt: stopTs,
+            lastSignal: stopMsg,
+            lastSignalTime: stopTs,
+          });
+          nextRuns = nextRuns.map((r) =>
+            r.id === run.id || r.runId === runKey
+              ? {
+                  ...r,
+                  status: 'PAUSED' as const,
+                  statusUpdatedAt: stopTs,
+                  stoppedAt: stopTs,
+                  lastSignal: stopMsg,
+                  lastSignalTime: stopTs,
+                }
+              : r
+          );
+          runsChanged = true;
           if (activeAcc.id === selectedAccountRef.current?.id) {
-            handleZeroBalanceStopOut(activeAcc.equity ?? activeAcc.balance ?? 0);
-          } else {
-            nextRuns = nextRuns.map((r) =>
-              r.id === run.id || r.runId === runKey
-                ? {
-                    ...r,
-                    status: 'PAUSED' as const,
-                    stoppedAt: Date.now(),
-                    lastSignal: `Stopped automatically at $${activeAcc.balance.toFixed(2)}: Minimum tradable capital reached`,
-                    lastSignalTime: Date.now(),
-                  }
-                : r
-            );
-            runsChanged = true;
+            handleZeroBalanceStopOut(liveAccEquity);
           }
           return;
         }
 
-        const effectiveAutoLots = resolveAffordableBotLotSize(run.lotSize);
+        const effectiveAutoLots = resolveAffordableBotLotSize(run.lotSize, activeAcc);
         const accLimits = getAccountMaxOpenTrades(
           activeAcc.tier,
           activeAcc.type,
@@ -5826,8 +6045,29 @@ export default function App() {
       }
 
       if (runsChanged) {
-        setBotRuns(() => [...nextRuns]);
-        saveStoredBotRuns(nextRuns, currentUserRef.current?.email);
+        // Ensure a concurrent user Pause/Run click during this tick is never overwritten by the tick snapshot
+        const latestRefMap = new Map<string, BotRunInstance>();
+        for (const lr of botRunsRef.current) {
+          if (lr.id) latestRefMap.set(lr.id, lr);
+          if (lr.runId) latestRefMap.set(lr.runId, lr);
+        }
+        const reconciledRuns = nextRuns.map((nr) => {
+          const latest = (nr.id && latestRefMap.get(nr.id)) || (nr.runId && latestRefMap.get(nr.runId));
+          if (latest && (latest.statusUpdatedAt || 0) > (nr.statusUpdatedAt || 0)) {
+            return {
+              ...nr,
+              status: latest.status,
+              statusUpdatedAt: latest.statusUpdatedAt,
+              stoppedAt: latest.stoppedAt,
+              lastSignal: latest.lastSignal || nr.lastSignal,
+              lastSignalTime: latest.lastSignalTime || nr.lastSignalTime,
+            };
+          }
+          return nr;
+        });
+        botRunsRef.current = reconciledRuns;
+        setBotRuns(() => [...reconciledRuns]);
+        saveStoredBotRuns(reconciledRuns, currentUserRef.current?.email);
       }
     }, 1000);
 
@@ -5948,18 +6188,37 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [currentUser?.email, positionsSyncKey, pendingOrders.length, closedTrades.length, selectedAccount?.accountNumber]);
 
+  // Only trigger background bot state cloud sync on structural changes (run status/settings/counts or trade open/close/TP/SL),
+  // NOT on every 1-second floating price jitter!
+  const botStateSyncKey = useMemo(() => {
+    const runsKey = botRuns
+      .map(
+        (r) =>
+          `${r.id}:${r.status}:${r.statusUpdatedAt || 0}:${r.symbol}:${r.lotSize}:${r.tpPips}:${r.slPips}:${r.totalTrades || 0}:${r.totalProfitUsd || 0}`
+      )
+      .join('|');
+    const tradesKey = botTrades
+      .map((t) => `${t.id}:${t.status}:${t.tp || 0}:${t.sl || 0}`)
+      .join('|');
+    return `${importedBots.length}::${runsKey}::${tradesKey}`;
+  }, [importedBots.length, botRuns, botTrades]);
+
   useEffect(() => {
     if (!currentUser || !currentUser.email || !isCloudBotsLoadedRef.current) return;
     const timer = setTimeout(() => {
-      supabaseService.syncBotState(currentUser, {
-        importedBots,
-        botRuns,
-        botTrades,
-        deletedBotIds: getDeletedBotIds(),
-      });
+      supabaseService.syncBotState(
+        currentUser,
+        {
+          importedBots,
+          botRuns: botRunsRef.current,
+          botTrades: botTradesRef.current,
+          deletedBotIds: getDeletedBotIds(),
+        },
+        false
+      );
     }, 800);
     return () => clearTimeout(timer);
-  }, [currentUser?.email, importedBots, botRuns, botTrades]);
+  }, [currentUser?.email, botStateSyncKey]);
 
   useEffect(() => {
     if (!currentUser || !currentUser.email || !isCloudExtrasLoadedRef.current) return;
@@ -6254,10 +6513,14 @@ export default function App() {
     <div
       id="vtm-app-root"
       className={`min-h-screen w-full transition-colors duration-200 ${
-        isDarkMode ? 'dark bg-[#0B0C0E] text-neutral-100' : 'bg-neutral-100 text-neutral-900'
+        isDarkMode ? 'dark bg-[#0B0C0E] text-[#F5F5F5]' : 'bg-[#F8FAFC] text-[#0F172A]'
       }`}
     >
-      <div className="min-h-screen w-full flex flex-col bg-white dark:bg-[#111317] relative">
+      <div
+        className={`min-h-screen w-full flex flex-col relative ${
+          isDarkMode ? 'bg-[#111317] text-[#F5F5F5]' : 'bg-white text-[#0F172A]'
+        }`}
+      >
         {/* Main Top Header */}
         <Header
           accounts={accounts}
@@ -6301,13 +6564,19 @@ export default function App() {
           onOpenPriceAlerts={() => handleOpenPriceAlertModal(selectedSymbol)}
         />
 
-        {/* Scrollable Main Content - Full-width desktop responsive container */}
-        <main className="flex-1 overflow-y-auto no-scrollbar relative w-full px-2 sm:px-4 lg:px-6">
+        {/* Scrollable Main Content - Full-width desktop responsive container with bottom padding for fixed mobile nav */}
+        <main className="flex-1 overflow-y-auto no-scrollbar relative w-full px-2 sm:px-4 lg:px-6 pb-20 lg:pb-6">
           {renderTabContent()}
         </main>
 
-        {/* Sticky Bottom Navigation - Visible on Mobile/Tablet devices, hidden on Desktop PC for full-screen terminal experience */}
-        <div className="lg:hidden pwa-safe-bottom sticky bottom-0 z-40 w-full border-t border-neutral-200 dark:border-neutral-800 bg-white/95 dark:bg-[#111317]/95 backdrop-blur-md">
+        {/* Fixed Bottom Navigation - Always pinned to bottom of viewport on Mobile/Tablet devices */}
+        <div
+          className={`lg:hidden pwa-safe-bottom fixed bottom-0 left-0 right-0 z-50 w-full border-t shadow-lg ${
+            isDarkMode
+              ? 'bg-[#111317] border-[#262626]'
+              : 'bg-white border-[#E2E8F0]'
+          }`}
+        >
           <div className="max-w-2xl mx-auto">
             <BottomNav
               activeTab={activeTab}

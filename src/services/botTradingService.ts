@@ -699,6 +699,14 @@ export const sanitizeAndFilterBotRuns = (
         tpPips: cleanTpPips,
         slPips: cleanSlPips,
         status: r.status === 'RUNNING' ? 'RUNNING' : 'PAUSED',
+        statusUpdatedAt:
+          typeof r.statusUpdatedAt === 'number' && !isNaN(r.statusUpdatedAt) && r.statusUpdatedAt > 0
+            ? r.statusUpdatedAt
+            : typeof r.stoppedAt === 'number' && r.stoppedAt > 0
+            ? r.stoppedAt
+            : typeof r.startedAt === 'number' && r.startedAt > 0
+            ? r.startedAt
+            : 0,
         explicitUserRun: true,
         userStartedVersion: 2,
         totalTrades: r.totalTrades ?? r.totalTradesCount ?? 0,

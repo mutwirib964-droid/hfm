@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
+@custom-variant dark (&:is(.dark, .dark *));
 
 @layer base {
   *, ::before, ::after {
@@ -23,6 +23,20 @@
     text-size-adjust: 100%;
     overscroll-behavior-x: none;
     touch-action: pan-y;
+    background-color: #FFFFFF;
+    color: #0F172A;
+  }
+
+  #vtm-app-root.dark {
+    background-color: #0B0C0E;
+    color: #F5F5F5;
+    color-scheme: dark;
+  }
+
+  #vtm-app-root:not(.dark) {
+    background-color: #F8FAFC;
+    color: #0F172A;
+    color-scheme: light;
   }
 
   /* Ensure iOS / Android Installed PWA (Standalone Mode) never clips top headers or bottom nav behind Notch / Dynamic Island / Home Bar */

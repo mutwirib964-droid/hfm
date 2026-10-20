@@ -2204,11 +2204,268 @@ export default defineConfig(() => {
     // ignore
   }
 
+  // Universal CSS Compatibility Plugin: Downlevels Tailwind v4 oklch(), oklab, color-mix(), and @layer
+  // into standard #hex and rgba() CSS3 so every Android, iOS, and desktop browser renders all colors & gradients identically.
+  const universalCssCompatPlugin = () => {
+    let lightningcss: any = null;
+    try {
+      lightningcss = require('lightningcss');
+    } catch {
+      // Fallback loaded dynamically if needed
+    }
+
+    const TW_PROPERTIES_INIT = `*, ::before, ::after, ::backdrop {
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-translate-z: 0;
+  --tw-scale-x: 1;
+  --tw-scale-y: 1;
+  --tw-scale-z: 1;
+  --tw-rotate-x: initial;
+  --tw-rotate-y: initial;
+  --tw-rotate-z: initial;
+  --tw-skew-x: initial;
+  --tw-skew-y: initial;
+  --tw-space-y-reverse: 0;
+  --tw-space-x-reverse: 0;
+  --tw-divide-y-reverse: 0;
+  --tw-border-style: solid;
+  --tw-gradient-position: initial;
+  --tw-gradient-from: rgba(0,0,0,0);
+  --tw-gradient-via: rgba(0,0,0,0);
+  --tw-gradient-to: rgba(0,0,0,0);
+  --tw-gradient-stops: initial;
+  --tw-gradient-via-stops: initial;
+  --tw-gradient-from-position: 0%;
+  --tw-gradient-via-position: 50%;
+  --tw-gradient-to-position: 100%;
+  --tw-leading: initial;
+  --tw-font-weight: initial;
+  --tw-tracking: initial;
+  --tw-ordinal: initial;
+  --tw-slashed-zero: initial;
+  --tw-numeric-figure: initial;
+  --tw-numeric-spacing: initial;
+  --tw-numeric-fraction: initial;
+  --tw-shadow: 0 0 rgba(0,0,0,0);
+  --tw-shadow-color: initial;
+  --tw-shadow-alpha: 100%;
+  --tw-inset-shadow: 0 0 rgba(0,0,0,0);
+  --tw-inset-shadow-color: initial;
+  --tw-inset-shadow-alpha: 100%;
+  --tw-ring-color: initial;
+  --tw-ring-shadow: 0 0 rgba(0,0,0,0);
+  --tw-inset-ring-color: initial;
+  --tw-inset-ring-shadow: 0 0 rgba(0,0,0,0);
+  --tw-ring-inset: initial;
+  --tw-ring-offset-width: 0px;
+  --tw-ring-offset-color: #fff;
+  --tw-ring-offset-shadow: 0 0 rgba(0,0,0,0);
+  --tw-blur: initial;
+  --tw-brightness: initial;
+  --tw-contrast: initial;
+  --tw-grayscale: initial;
+  --tw-hue-rotate: initial;
+  --tw-invert: initial;
+  --tw-opacity: initial;
+  --tw-saturate: initial;
+  --tw-sepia: initial;
+  --tw-drop-shadow: initial;
+  --tw-drop-shadow-color: initial;
+  --tw-drop-shadow-alpha: 100%;
+  --tw-drop-shadow-size: initial;
+  --tw-backdrop-blur: initial;
+  --tw-backdrop-brightness: initial;
+  --tw-backdrop-contrast: initial;
+  --tw-backdrop-grayscale: initial;
+  --tw-backdrop-hue-rotate: initial;
+  --tw-backdrop-invert: initial;
+  --tw-backdrop-opacity: initial;
+  --tw-backdrop-saturate: initial;
+  --tw-backdrop-sepia: initial;
+  --tw-duration: initial;
+  --tw-ease: initial;
+}`;
+
+    const downlevelCss = (rawCss: string): string => {
+      if (!rawCss || (!rawCss.includes('oklch') && !rawCss.includes('oklab') && !rawCss.includes('@layer'))) {
+        return rawCss;
+      }
+      try {
+        let css = rawCss;
+        // 1. Strip ' in oklab' and ' in oklch' from linear/radial/conic gradients
+        css = css.replace(/\s+in\s+okl(ab|ch)/g, '');
+        // 2. Replace :where(.dark, .dark *) with :is(.dark, .dark *)
+        css = css.replace(/:where\(\.dark,\s*\.dark\s*\*\)/g, ':is(.dark, .dark *)');
+
+        // 3. Unwrap @layer blocks in proper cascade order: properties -> theme -> base -> components -> utilities
+        const layerContents: Record<string, string[]> = {
+          properties: [TW_PROPERTIES_INIT],
+          theme: [],
+          base: [],
+          components: [],
+          utilities: [],
+          other: [],
+        };
+        css = css.replace(/@layer\s+[a-zA-Z0-9_,\s-]+;/g, '');
+
+        while (true) {
+          const match = css.match(/@layer\s+([a-zA-Z0-9_-]+)\s*\{/);
+          if (!match || match.index === undefined) break;
+          const layerName = match[1];
+          const startIdx = match.index;
+          const openBraceIdx = startIdx + match[0].length - 1;
+          let depth = 1;
+          let i = openBraceIdx + 1;
+          while (i < css.length && depth > 0) {
+            if (css[i] === '{') depth++;
+            else if (css[i] === '}') depth--;
+            i++;
+          }
+          if (depth === 0) {
+            const inner = css.slice(openBraceIdx + 1, i - 1);
+            if (layerName !== 'properties') {
+              if (layerContents[layerName]) layerContents[layerName].push(inner);
+              else layerContents.other.push(inner);
+            }
+            css = css.slice(0, startIdx) + css.slice(i);
+          } else {
+            break;
+          }
+        }
+
+        css = [
+          ...layerContents.properties,
+          ...layerContents.theme,
+          ...layerContents.base,
+          ...layerContents.components,
+          ...layerContents.utilities,
+          ...layerContents.other,
+          css,
+        ].join('\n');
+
+        if (!lightningcss) {
+          lightningcss = require('lightningcss');
+        }
+
+        const targets = {
+          chrome: 61 << 16,
+          android: 61 << 16,
+          safari: 11 << 16,
+          ios_saf: 11 << 16,
+          firefox: 60 << 16,
+          edge: 79 << 16,
+        };
+
+        // Pass 1: Convert oklch() to hex and flatten nested rules
+        let out = lightningcss
+          .transform({
+            filename: 'index.css',
+            code: Buffer.from(css),
+            targets,
+          })
+          .code.toString();
+
+        // Extract --color-* hex definitions
+        const colorVars: Record<string, string> = {};
+        const varRegex = /(--color-[a-z0-9-]+)\s*:\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))/g;
+        let m: RegExpExecArray | null;
+        while ((m = varRegex.exec(out)) !== null) {
+          colorVars[m[1]] = m[2];
+        }
+
+        const stripModernColorSupportsBlocks = (input: string): string => {
+          let result = input;
+          while (true) {
+            const supMatch = result.match(
+              /@supports\s*\(\s*color:\s*(?:color-mix\([^)]*\)|color\(display-p3[^)]*\)|lab\([^)]*\)|oklch\([^)]*\)|oklab\([^)]*\))\s*\)\s*\{/
+            );
+            if (!supMatch || supMatch.index === undefined) break;
+            const startIdx = supMatch.index;
+            const openBraceIdx = startIdx + supMatch[0].length - 1;
+            let depth = 1;
+            let i = openBraceIdx + 1;
+            while (i < result.length && depth > 0) {
+              if (result[i] === '{') depth++;
+              else if (result[i] === '}') depth--;
+              i++;
+            }
+            if (depth === 0) {
+              result = result.slice(0, startIdx) + result.slice(i);
+            } else {
+              break;
+            }
+          }
+          return result;
+        };
+
+        out = stripModernColorSupportsBlocks(out);
+
+        // Resolve any remaining color-mix(...) variables to hex in srgb
+        out = out.replace(/color-mix\(([^;{}]+)\)/g, (_full: string, inner: string) => {
+          const resolved = inner
+            .replace(/in\s+okl(ab|ch)/g, 'in srgb')
+            .replace(/var\((--color-[a-z0-9-]+)\)/g, (_vFull: string, vName: string) => colorVars[vName] || _vFull);
+          return 'color-mix(' + resolved + ')';
+        });
+
+        // Pass 2: Convert any remaining color-mix(in srgb, #hex X%, transparent) to rgba()
+        out = lightningcss
+          .transform({
+            filename: 'index.css',
+            code: Buffer.from(out),
+            targets,
+          })
+          .code.toString();
+
+        // Remove any @supports (color: color(display-p3 ...)) or @supports (color: color-mix(...)) emitted by Pass 2
+        out = stripModernColorSupportsBlocks(out);
+
+        // Strip any inline progressive lab() or display-p3 declarations that end with a semicolon
+        out = out.replace(/[a-z-]+\s*:\s*(?:color\(display-p3[^;{}()]*\)|lab\([^;{}()]*\))\s*;/g, '');
+
+        return out;
+      } catch (e) {
+        console.warn('[universalCssCompatPlugin] CSS downlevel warning:', e);
+        return rawCss;
+      }
+    };
+
+    return {
+      name: 'universal-css-compat',
+      async configResolved() {
+        if (!lightningcss) {
+          try {
+            lightningcss = await import('lightningcss');
+          } catch {}
+        }
+      },
+      transform(code: string, id: string) {
+        if (id.includes('.css')) {
+          return {
+            code: downlevelCss(code),
+            map: null,
+          };
+        }
+        return null;
+      },
+      generateBundle(_options: any, bundle: Record<string, any>) {
+        for (const fileName of Object.keys(bundle)) {
+          const chunk = bundle[fileName];
+          if (chunk && chunk.type === 'asset' && fileName.endsWith('.css') && typeof chunk.source === 'string') {
+            chunk.source = downlevelCss(chunk.source);
+          }
+        }
+      },
+    };
+  };
+
   return {
     plugins: [
       safeWsPlugin(),
       react(),
       tailwindcss(),
+      universalCssCompatPlugin(),
       marketPricesPlugin(),
       hashbackStkPlugin(),
       supabaseConfigPlugin(),

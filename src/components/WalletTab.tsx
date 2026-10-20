@@ -453,26 +453,26 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         <div className="lg:col-span-5 space-y-4">
           {/* VTM Wallet Core Balance Card */}
           <div
-            className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 shadow-xl border ${
+            className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 shadow-xl border text-white ${
               isDarkMode
-                ? 'bg-gradient-to-br from-[#1C2028] via-[#16181E] to-[#0E1014] border-neutral-800'
-                : 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border-slate-700 text-white'
+                ? 'bg-[#14171F] bg-gradient-to-br from-[#1C2028] via-[#16181E] to-[#0E1014] border-[#262626]'
+                : 'bg-[#0F172A] bg-gradient-to-br from-[#0F172A] via-[#1E293B] to-[#0F172A] border-[#334155]'
             }`}
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#E51937]/15 border border-[#E51937]/30 flex items-center justify-center text-[#E51937]">
+                <div className="w-8 h-8 rounded-lg bg-[#E51937]/20 border border-[#E51937]/40 flex items-center justify-center text-[#FF4D67]">
                   <Wallet className="w-4 h-4" />
                 </div>
                 <div>
-                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase tracking-wider font-semibold">
+                  <span className="text-[10px] text-[#94A3B8] uppercase tracking-wider font-semibold block">
                     VTM One Wallet
                   </span>
                   <h2 className="text-xs font-bold text-white">Central Client Balance</h2>
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              <div className="flex items-center gap-1 text-[10px] text-[#34D399] bg-[#10B981]/15 px-2 py-0.5 rounded-full border border-[#10B981]/30">
                 <ShieldCheck className="w-3 h-3" />
                 <span>Segregated Client Funds</span>
               </div>
@@ -480,20 +480,20 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
             {/* Big Balance Number (Combined Wallet + Live Accounts) */}
             <div className="mt-4">
-              <span className="text-xs text-neutral-500 dark:text-neutral-400 block font-medium">Available for Trading / Withdrawal</span>
+              <span className="text-xs text-[#CBD5E1] block font-medium">Available for Trading / Withdrawal</span>
               <div className="flex items-baseline gap-2 mt-1">
                 <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono tracking-tight">
                   ${totalCombinedAvailableUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
-                <span className="text-xs text-neutral-500 dark:text-neutral-400 font-bold">USD</span>
+                <span className="text-xs text-[#94A3B8] font-bold">USD</span>
               </div>
-              <div className="flex items-center gap-3 mt-1.5 text-[11px] font-mono text-neutral-500 dark:text-neutral-400">
+              <div className="flex items-center gap-3 mt-1.5 text-[11px] font-mono text-[#CBD5E1]">
                 <span>
-                  Wallet: <strong className="text-neutral-200">${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  Wallet: <strong className="text-white">${walletBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
                 </span>
                 <span>•</span>
                 <span>
-                  Live Accounts: <strong className="text-emerald-400">${totalLiveAccountsEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                  Live Accounts: <strong className="text-[#34D399]">${totalLiveAccountsEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
                 </span>
               </div>
             </div>
@@ -506,7 +506,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   setDepositTarget('VTM One Wallet');
                   setIsDepositModalOpen(true);
                 }}
-                className="flex items-center justify-center gap-1.5 py-2.5 bg-[#E51937] hover:bg-[#c9142f] active:scale-95 text-white font-bold text-xs rounded-xl shadow-md shadow-red-950/40 transition-all cursor-pointer"
+                className="flex items-center justify-center gap-1.5 py-2.5 bg-[#E51937] hover:bg-[#c9142f] active:scale-95 text-white font-bold text-xs rounded-xl border border-[#FF4D67]/30 shadow-md transition-all cursor-pointer"
               >
                 <ArrowDownToLine className="w-4 h-4" />
                 <span>Deposit</span>
@@ -515,9 +515,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               <button
                 id="wallet-withdraw-action"
                 onClick={() => handleOpenWithdraw()}
-                className="flex items-center justify-center gap-1.5 py-2.5 bg-neutral-800 hover:bg-neutral-700 active:scale-95 text-neutral-200 hover:text-white font-bold text-xs rounded-xl border border-neutral-700/60 transition-all cursor-pointer"
+                className="flex items-center justify-center gap-1.5 py-2.5 bg-[#1E293B] hover:bg-[#334155] active:scale-95 text-white font-bold text-xs rounded-xl border border-[#475569] shadow-sm transition-all cursor-pointer"
               >
-                <ArrowUpFromLine className="w-4 h-4" />
+                <ArrowUpFromLine className="w-4 h-4 text-[#34D399]" />
                 <span>Withdraw</span>
               </button>
 
@@ -528,9 +528,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   setTransferTo(liveAccounts[0]?.accountNumber || '');
                   setActiveModal('transfer');
                 }}
-                className="flex items-center justify-center gap-1.5 py-2.5 bg-neutral-800 hover:bg-neutral-700 active:scale-95 text-neutral-200 hover:text-white font-bold text-xs rounded-xl border border-neutral-700/60 transition-all cursor-pointer"
+                className="flex items-center justify-center gap-1.5 py-2.5 bg-[#1E293B] hover:bg-[#334155] active:scale-95 text-white font-bold text-xs rounded-xl border border-[#475569] shadow-sm transition-all cursor-pointer"
               >
-                <ArrowLeftRight className="w-4 h-4" />
+                <ArrowLeftRight className="w-4 h-4 text-[#60A5FA]" />
                 <span>Transfer</span>
               </button>
             </div>
@@ -542,8 +542,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
           {/* Linked Trading Accounts Summary */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs font-bold px-1">
-              <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-900'}>Linked Trading Accounts</span>
-              <span className={`text-[11px] font-medium ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
+              <span className={isDarkMode ? 'text-[#F1F5F9]' : 'text-[#0F172A]'}>Linked Trading Accounts</span>
+              <span className={`text-[11px] font-medium ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                 Live Accounts Require Deposit • Demo Non-Depositable
               </span>
             </div>
@@ -553,7 +553,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 <div
                   key={acc.id}
                   className={`border rounded-xl p-3 flex flex-col justify-between text-xs transition-colors ${
-                    isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
+                    isDarkMode ? 'bg-[#161920] border-[#262626] text-[#F1F5F9]' : 'bg-white border-[#CBD5E1] text-[#0F172A] shadow-xs'
                   }`}
                 >
                   <div className="flex items-start justify-between">
@@ -561,25 +561,25 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       <div className="flex items-center gap-1.5">
                         <span
                           className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
-                            acc.type === 'Live' ? 'bg-[#E51937] text-white' : 'bg-amber-500 text-black'
+                            acc.type === 'Live' ? 'bg-[#E51937] text-white' : 'bg-[#F59E0B] text-black'
                           }`}
                         >
                           {acc.type}
                         </span>
-                        <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                        <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-[#0F172A]'}`}>
                           #{acc.accountNumber}
                         </span>
                       </div>
-                      <span className={`text-[10px] font-mono mt-0.5 block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
+                      <span className={`text-[10px] font-mono mt-0.5 block ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                         {acc.server} | {acc.leverage}
                       </span>
                     </div>
 
                     <div className="text-right">
-                      <span className={`font-mono font-bold text-sm ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                      <span className={`font-mono font-bold text-sm ${isDarkMode ? 'text-white' : 'text-[#0F172A]'}`}>
                         ${(acc.equity ?? acc.balance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
-                      <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600 font-medium'}`}>
+                      <span className={`text-[10px] block ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569] font-medium'}`}>
                         Settled: ${acc.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </span>
                     </div>
@@ -587,7 +587,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                   <div
                     className={`mt-3 pt-2 border-t flex items-center justify-between text-[11px] ${
-                      isDarkMode ? 'border-neutral-800/60' : 'border-slate-200'
+                      isDarkMode ? 'border-[#262626]' : 'border-[#E2E8F0]'
                     }`}
                   >
                     {acc.type === 'Live' ? (
@@ -606,7 +606,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <button
                           type="button"
                           onClick={() => handleOpenWithdraw(`Account #${acc.accountNumber}`)}
-                          className="text-neutral-500 dark:text-neutral-400 hover:text-white flex items-center gap-1 cursor-pointer font-medium"
+                          className={`flex items-center gap-1 cursor-pointer font-semibold ${
+                            isDarkMode ? 'text-[#CBD5E1] hover:text-white' : 'text-[#334155] hover:text-[#0F172A]'
+                          }`}
                         >
                           <ArrowUpFromLine className="w-3 h-3" />
                           <span>Withdraw</span>
@@ -615,7 +617,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           <button
                             type="button"
                             onClick={() => onDeleteAccount(acc.id)}
-                            className="text-rose-500 hover:text-rose-400 flex items-center gap-1 cursor-pointer font-bold"
+                            className="text-[#F43F5E] hover:text-[#FB7185] flex items-center gap-1 cursor-pointer font-bold"
                             title={`Delete Live Account #${acc.accountNumber}${acc.balance > 0 ? ' (Balance transfers to Wallet)' : ''}`}
                           >
                             <Trash2 className="w-3 h-3" />
@@ -625,14 +627,14 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       </>
                     ) : (
                       <div className="w-full flex items-center justify-between">
-                        <span className="text-amber-500/80 font-medium text-[10px]">
+                        <span className="text-[#F59E0B] font-medium text-[10px]">
                           Virtual practice credit
                         </span>
                         {onDeleteAccount && (
                           <button
                             type="button"
                             onClick={() => onDeleteAccount(acc.id)}
-                            className="text-rose-500 hover:text-rose-400 flex items-center gap-1 cursor-pointer font-bold text-[10px]"
+                            className="text-[#F43F5E] hover:text-[#FB7185] flex items-center gap-1 cursor-pointer font-bold text-[10px]"
                             title={`Delete Demo Account #${acc.accountNumber}`}
                           >
                             <Trash2 className="w-3 h-3" />
@@ -650,26 +652,26 @@ export const WalletTab: React.FC<WalletTabProps> = ({
           {/* Transaction History */}
           <div
             className={`border rounded-2xl p-4 transition-colors ${
-              isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
+              isDarkMode ? 'bg-[#161920] border-[#262626] text-[#F1F5F9]' : 'bg-white border-[#CBD5E1] text-[#0F172A] shadow-xs'
             }`}
           >
             <div className="flex items-center justify-between mb-3">
               <div>
-                <span className={`font-bold text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-900'}`}>
+                <span className={`font-bold text-xs ${isDarkMode ? 'text-white' : 'text-[#0F172A]'}`}>
                   Recent Wallet &amp; Payout Activity
                 </span>
-                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block">
+                <span className={`text-[10px] block ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                   Last 20 Transactions (Deposits &amp; Withdrawals)
                 </span>
               </div>
-              <span className="text-[10px] font-mono font-bold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              <span className="text-[10px] font-mono font-bold text-[#10B981] bg-[#10B981]/15 px-2 py-0.5 rounded-full border border-[#10B981]/30">
                 Live Audit Log
               </span>
             </div>
 
             <div className="space-y-2 max-h-80 overflow-y-auto no-scrollbar">
               {transactions.filter((tx) => tx.type === 'DEPOSIT' || tx.type === 'WITHDRAWAL').length === 0 ? (
-                <div className="text-center py-6 text-neutral-500 dark:text-neutral-400 text-xs">
+                <div className={`text-center py-6 text-xs ${isDarkMode ? 'text-[#94A3B8]' : 'text-[#475569]'}`}>
                   No wallet transactions recorded yet. Deposits and withdrawals will appear here.
                 </div>
               ) : (

@@ -65,10 +65,10 @@ export const BottomNav: React.FC<BottomNavProps> = ({
     <nav
       id="vtm-bottom-navigation"
       aria-label="VTM Markets Mobile Navigation"
-      className={`sticky bottom-0 z-40 w-full border-t py-1.5 px-1 sm:px-2 flex items-center justify-around select-none transition-colors duration-200 overflow-hidden ${
+      className={`w-full py-1.5 px-1 sm:px-2 flex items-center justify-around select-none transition-colors duration-200 overflow-hidden ${
         isDarkMode
-          ? 'bg-[#111317] border-neutral-800'
-          : 'bg-white border-neutral-200'
+          ? 'bg-[#111317] text-[#CBD5E1]'
+          : 'bg-white text-[#334155]'
       }`}
     >
       {tabs.map((tab) => {
@@ -88,8 +88,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               isActive
                 ? 'text-[#E51937]'
                 : isDarkMode
-                ? 'text-neutral-400 hover:text-neutral-200'
-                : 'text-neutral-500 hover:text-neutral-800'
+                ? 'text-[#94A3B8] hover:text-white'
+                : 'text-[#475569] hover:text-[#0F172A]'
             }`}
           >
             {/* Top red indicator bar when active */}
@@ -106,7 +106,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               )}
             </div>
 
-            <span className={`text-[10px] tracking-tight mt-1 truncate max-w-full ${isActive ? 'font-semibold' : 'font-normal'}`}>
+            <span className={`text-[10px] tracking-tight mt-1 truncate max-w-full ${isActive ? 'font-bold text-[#E51937]' : 'font-medium'}`}>
               {tab.label}
             </span>
           </button>
