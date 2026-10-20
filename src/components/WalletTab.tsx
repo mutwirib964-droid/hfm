@@ -900,38 +900,23 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                 )}
                 {/* Method Specific Info Banner */}
                 {withdrawMethod === 'mpesa' ? (
-                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-bold text-emerald-600 dark:text-emerald-400">
-                      <span>Safaricom M-PESA Instant Payout:</span>
-                      <span className="font-mono text-sm">
-                        KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                      Funds are disbursed directly via Safaricom M-PESA into your registered phone number.
-                    </p>
+                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs flex items-center justify-between">
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">M-PESA Instant Payout</span>
+                    <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                      KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 ) : withdrawMethod === 'bank' ? (
-                  <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-bold text-blue-600 dark:text-blue-400">
-                      <span>Kenya &amp; Africa Bank Payout:</span>
-                      <span className="font-mono text-sm">
-                        KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toFixed(2)})
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                      Instant Pesalink &amp; EFT settlement to major Kenyan and Pan-African banks (Equity, KCB, Co-op, NCBA, Absa, Stanbic, Standard Chartered, I&amp;M, DTB, Ecobank, UBA).
-                    </p>
+                  <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs flex items-center justify-between">
+                    <span className="font-bold text-blue-600 dark:text-blue-400">Bank Payout</span>
+                    <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                      KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
                   </div>
                 ) : (
-                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-1">
-                    <div className="flex items-center justify-between font-bold text-amber-600 dark:text-amber-400">
-                      <span>Crypto Withdrawal Policy:</span>
-                      <span className="font-mono text-xs font-bold">Strict Minimum: $50.00</span>
-                    </div>
-                    <p className="text-[11px] text-slate-600 dark:text-neutral-300 leading-tight">
-                      Withdraw directly to your personal Bitcoin, USDT (TRC20), or Ethereum wallet address.
-                    </p>
+                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between">
+                    <span className="font-bold text-amber-600 dark:text-amber-400">Crypto Payout</span>
+                    <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Min $50.00</span>
                   </div>
                 )}
 
