@@ -97,7 +97,7 @@ import {
   mergeUserFinancialStates,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
-import { getUsdKesWithdrawRate } from './services/hashbackService';
+import { getUsdKesWithdrawRate } from './services/payheroService';
 import {
   INSTRUMENT_SPECS,
   getInstrumentSpec,

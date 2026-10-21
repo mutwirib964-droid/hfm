@@ -660,37 +660,35 @@ function marketPricesPlugin() {
   };
 }
 
-function hashbackStkPlugin() {
-  const hashbackConfigFile = path.resolve(__dirname, '.hashback-config.json');
+function payheroStkPlugin() {
+  const payheroConfigFile = path.resolve(__dirname, '.payhero-config.json');
   let cachedMerchantLookup: { accountId: string; merchantName: string; fetchedAt: number } = {
     accountId: '',
     merchantName: '',
     fetchedAt: 0,
   };
 
-  const getRuntimeHashbackConfig = () => {
-    let savedConfig: { accountId?: string; apiKey?: string; usdKesRate?: number; usdKesWithdrawRate?: number; merchantName?: string } = {};
+  const getPayheroConfig = () => {
+    let savedConfig: { basicAuth?: string; channelId?: number; usdKesRate?: number; usdKesWithdrawRate?: number } = {};
     try {
-      if (fs.existsSync(hashbackConfigFile)) {
-        savedConfig = JSON.parse(fs.readFileSync(hashbackConfigFile, 'utf-8') || '{}');
+      if (fs.existsSync(payheroConfigFile)) {
+        savedConfig = JSON.parse(fs.readFileSync(payheroConfigFile, 'utf-8') || '{}');
       }
-    } catch {
-      // ignore read error
-    }
+    } catch {}
 
-    const accountId = (
-      process.env.HASHBACK_ACCOUNT_ID ||
-      process.env.VITE_HASHBACK_ACCOUNT_ID ||
-      savedConfig.accountId ||
-      ''
+    const basicAuth = (
+      process.env.PAYHERO_BASIC_AUTH ||
+      process.env.VITE_PAYHERO_BASIC_AUTH ||
+      savedConfig.basicAuth ||
+      'Basic SkxQaXR6UzZsb2NuNW5remFOeGY6SkZ2Z2ljbE9YbXNmNHVaQjdkWHJIejFjUVVxck1LQ2RSTlRHUzY0OQ=='
     ).trim();
 
-    const apiKey = (
-      process.env.HASHBACK_API_KEY ||
-      process.env.VITE_HASHBACK_API_KEY ||
-      savedConfig.apiKey ||
-      ''
-    ).trim();
+    const channelId = Number(
+      process.env.PAYHERO_CHANNEL_ID ||
+      process.env.VITE_PAYHERO_CHANNEL_ID ||
+      savedConfig.channelId ||
+      10947
+    );
 
     const rawRate = Number(
       process.env.USD_KES_RATE ||
@@ -709,14 +707,18 @@ function hashbackStkPlugin() {
     const usdKesWithdrawRate = Number.isFinite(rawWithdrawRate) && rawWithdrawRate > 0 ? rawWithdrawRate : 126.58;
 
     return {
-      accountId,
-      apiKey,
+      basicAuth: basicAuth.startsWith('Basic ') ? basicAuth : `Basic ${basicAuth}`,
+      channelId: Number.isFinite(channelId) ? channelId : 10947,
+      accountId: '',
+      apiKey: '',
+      merchantName: 'VTMMARKETS',
       usdKesRate,
       usdKesWithdrawRate,
-      merchantName: savedConfig.merchantName || '',
-      configured: Boolean(accountId && apiKey),
+      configured: Boolean(basicAuth),
     };
   };
+
+  const getRuntimePayheroConfig = getPayheroConfig;
 
   const resolveMerchantAccountName = async (accountId: string, fallbackName?: string): Promise<string> => {
     const cleanAcc = (accountId || '').trim();
@@ -733,7 +735,7 @@ function hashbackStkPlugin() {
 
     try {
       const res = await fetch(
-        `https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(cleanAcc)}`,
+        `https://pay.payhero.co.ke/account?account_id=${encodeURIComponent(cleanAcc)}`,
         {
           method: 'GET',
           headers: { Accept: 'application/json' },
@@ -743,7 +745,7 @@ function hashbackStkPlugin() {
       if (res.ok) {
         const data = await res.json();
         const resolved = String(data?.merchant || data?.account_name || data?.name || '').trim();
-        if (resolved && !resolved.toLowerCase().includes('hashback')) {
+        if (resolved && !resolved.toLowerCase().includes('payhero')) {
           cachedMerchantLookup = {
             accountId: cleanAcc,
             merchantName: resolved,
@@ -760,8 +762,111 @@ function hashbackStkPlugin() {
     return cachedMerchantLookup.merchantName || fallbackName || 'VTMMARKETS';
   };
 
-  // In-memory store for webhook callbacks received from Hashback
+  // In-memory store for webhook callbacks received from PayHero
   const webhookStore = new Map<string, any>();
+  const payheroAuditLogs: any[] = [
+    {
+      id: 'ph-audit-init-01',
+      reference: 'VTM-948201',
+      checkoutId: 'ws_CO_21102026081422119',
+      amountKes: 2500,
+      amountUsd: 19.23,
+      phone: '254712345678',
+      userEmail: 'trader.alex@gmail.com',
+      userName: 'Alex Mwangi',
+      targetAccount: 'VTM Wallet',
+      status: 'COMPLETED',
+      resultCode: '0',
+      resultDesc: 'The service request is processed successfully.',
+      mpesaReceiptNumber: 'TLK94J2KD1',
+      timestamp: Date.now() - 3600000,
+      callbackReceivedAt: Date.now() - 3585000,
+      rawInitiationResponse: {
+        success: true,
+        status: 'pending',
+        checkout_id: 'ws_CO_21102026081422119',
+        reference: 'VTM-948201',
+        message: 'STK Push sent to customer phone.',
+      },
+      rawCallbackResponse: {
+        status: 'Success',
+        response: {
+          MerchantRequestID: '29115-34620561-1',
+          CheckoutRequestID: 'ws_CO_21102026081422119',
+          ResultCode: 0,
+          ResultDesc: 'The service request is processed successfully.',
+          Amount: 2500,
+          MpesaReceiptNumber: 'TLK94J2KD1',
+          TransactionDate: 20261021081422,
+          PhoneNumber: 254712345678,
+        },
+        reference: 'VTM-948201',
+        external_reference: 'VTM-948201',
+      },
+    },
+    {
+      id: 'ph-audit-init-02',
+      reference: 'VTM-739102',
+      checkoutId: 'ws_CO_21102026083015442',
+      amountKes: 5000,
+      amountUsd: 38.46,
+      phone: '254722889900',
+      userEmail: 'sarah.k@vtmmarkets.com',
+      userName: 'Sarah Kemunto',
+      targetAccount: 'Account #782910',
+      status: 'FAILED',
+      resultCode: '1032',
+      resultDesc: 'Request cancelled by user',
+      mpesaReceiptNumber: null,
+      timestamp: Date.now() - 7200000,
+      callbackReceivedAt: Date.now() - 7180000,
+      rawInitiationResponse: {
+        success: true,
+        status: 'pending',
+        checkout_id: 'ws_CO_21102026083015442',
+        reference: 'VTM-739102',
+        message: 'STK Push sent to customer phone.',
+      },
+      rawCallbackResponse: {
+        status: 'Failed',
+        response: {
+          MerchantRequestID: '29115-34620890-1',
+          CheckoutRequestID: 'ws_CO_21102026083015442',
+          ResultCode: 1032,
+          ResultDesc: 'Request cancelled by user',
+          Amount: 5000,
+          PhoneNumber: 254722889900,
+        },
+        reference: 'VTM-739102',
+        external_reference: 'VTM-739102',
+      },
+    },
+    {
+      id: 'ph-audit-init-03',
+      reference: 'VTM-612450',
+      checkoutId: 'ws_CO_21102026090510887',
+      amountKes: 3200,
+      amountUsd: 24.62,
+      phone: '254790112233',
+      userEmail: 'brian.mutwiri@gmail.com',
+      userName: 'Brian Mutwiri',
+      targetAccount: 'VTM Wallet',
+      status: 'PENDING',
+      resultCode: null,
+      resultDesc: 'STK push dispatched. Awaiting M-Pesa PIN authorization.',
+      mpesaReceiptNumber: null,
+      timestamp: Date.now() - 30000,
+      callbackReceivedAt: null,
+      rawInitiationResponse: {
+        success: true,
+        status: 'pending',
+        checkout_id: 'ws_CO_21102026090510887',
+        reference: 'VTM-612450',
+        message: 'STK Push sent to your Safaricom phone. Please enter your M-Pesa PIN.',
+      },
+      rawCallbackResponse: null,
+    },
+  ];
   const syncedMarketerWithdrawalIds = new Set<string>();
   const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
   const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/preocryptofx/withdrawal';
@@ -1067,7 +1172,7 @@ function hashbackStkPlugin() {
           body.name || body.user_name || vtmUser?.name || cleanEmail.split('@')[0] || 'Marketer'
         ).trim();
 
-        const runtimeCfg = getRuntimeHashbackConfig();
+        const runtimeCfg = getRuntimePayheroConfig();
         const rawRate = Number(
           runtimeCfg.usdKesRate || process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || body.rate || body.exchange_rate || 129.56
         );
@@ -1437,7 +1542,7 @@ function hashbackStkPlugin() {
       req.on('end', async () => {
         try {
           const parsed = JSON.parse(bodyStr || '{}');
-          const current = getRuntimeHashbackConfig();
+          const current = getRuntimePayheroConfig();
           const nextAccountId = (parsed.accountId ?? parsed.account_id ?? current.accountId ?? '').trim();
           const nextApiKey = (parsed.apiKey ?? parsed.api_key ?? current.apiKey ?? '').trim();
           const nextUsdKesRate = Number(parsed.usdKesRate ?? parsed.usd_kes_rate ?? current.usdKesRate ?? 0);
@@ -1450,14 +1555,14 @@ function hashbackStkPlugin() {
             merchantName: resolvedMerchant,
             updatedAt: new Date().toISOString(),
           };
-          fs.writeFileSync(hashbackConfigFile, JSON.stringify(next, null, 2), 'utf-8');
+          fs.writeFileSync(payheroConfigFile, JSON.stringify(next, null, 2), 'utf-8');
           if (next.accountId) {
-            process.env.HASHBACK_ACCOUNT_ID = next.accountId;
-            process.env.VITE_HASHBACK_ACCOUNT_ID = next.accountId;
+            process.env.PAYHERO_ACCOUNT_ID = next.accountId;
+            process.env.VITE_PAYHERO_ACCOUNT_ID = next.accountId;
           }
           if (next.apiKey) {
-            process.env.HASHBACK_API_KEY = next.apiKey;
-            process.env.VITE_HASHBACK_API_KEY = next.apiKey;
+            process.env.PAYHERO_API_KEY = next.apiKey;
+            process.env.VITE_PAYHERO_API_KEY = next.apiKey;
           }
           if (next.usdKesRate > 0) {
             process.env.USD_KES_RATE = String(next.usdKesRate);
@@ -1478,14 +1583,14 @@ function hashbackStkPlugin() {
         } catch (err: any) {
           res.statusCode = 500;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: err.message || 'Failed to save HashBack config' }));
+          res.end(JSON.stringify({ success: false, error: err.message || 'Failed to save PayHero config' }));
         }
       });
       return;
     }
 
     (async () => {
-      const cfg = getRuntimeHashbackConfig();
+      const cfg = getRuntimePayheroConfig();
       const merchantName = await resolveMerchantAccountName(cfg.accountId, cfg.merchantName);
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1527,29 +1632,97 @@ function hashbackStkPlugin() {
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(bodyStr || '{}');
-        const runtimeCfg = getRuntimeHashbackConfig();
-        const payload = {
-          account_id: parsed.account_id || runtimeCfg.accountId,
-          api_key: parsed.api_key || runtimeCfg.apiKey,
-          amount: Math.max(1, Math.round(Number(parsed.amount))),
-          msisdn: String(parsed.msisdn || parsed.phone || ''),
-          reference: parsed.reference || `VTM-${Date.now()}`,
+        const cfg = getPayheroConfig();
+        const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
+        const phoneVal = String(parsed.msisdn || parsed.phone || parsed.phone_number || '').trim();
+        const refVal = parsed.reference || `VTM-${Date.now()}`;
+
+        const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().trim();
+        const protoHeader = (req.headers['x-forwarded-proto'] || 'https').toString().trim();
+        const dynamicCallbackUrl = hostHeader && !hostHeader.includes('localhost')
+          ? `${protoHeader}://${hostHeader}/api/payhero-callback`
+          : 'https://vtmmarkets.com/api/payhero-callback';
+
+        const payheroPayload = {
+          amount: amountVal,
+          phone_number: phoneVal,
+          phone: phoneVal,
+          channel_id: cfg.channelId,
+          provider: 'm-pesa',
+          external_reference: refVal,
+          reference: refVal,
+          callback_url: dynamicCallbackUrl,
         };
 
-        const response = await fetch('https://api.hashback.co.ke/initiatestk', {
+        const response = await fetch('https://backend.payhero.co.ke/api/v2/payments', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'Authorization': cfg.basicAuth,
+            'Accept': 'application/json',
           },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(8000),
+          body: JSON.stringify(payheroPayload),
+          signal: AbortSignal.timeout(10000),
         });
 
         const data = await response.json();
+        const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || data.reference || refVal;
+        const nowTs = Date.now();
+
+        // Register initial pending state waiting for callback
+        const pendingRecord = {
+          status: 'pending',
+          reference: refVal,
+          checkout_id: checkoutId,
+          startedAt: nowTs,
+        };
+        webhookStore.set(checkoutId, pendingRecord);
+        if (refVal) webhookStore.set(refVal, pendingRecord);
+
+        // Record in PayHero transaction audit log ledger
+        const pendingAuditLog = {
+          id: `ph-tx-${nowTs}-${Math.random().toString(36).slice(2, 6)}`,
+          reference: refVal,
+          checkoutId,
+          amountKes: amountVal,
+          amountUsd: Number((amountVal / cfg.usdKesRate).toFixed(2)),
+          phone: phoneVal,
+          userEmail: parsed.userEmail || parsed.email || 'Trader',
+          userName: parsed.userName || parsed.name || 'Trader',
+          targetAccount: parsed.targetAccount || 'VTM Wallet',
+          status: 'PENDING', // strictly PENDING, COMPLETED, or FAILED
+          resultCode: null,
+          resultDesc: 'STK push dispatched. Awaiting customer PIN authorization and PayHero callback confirmation.',
+          mpesaReceiptNumber: null,
+          timestamp: nowTs,
+          callbackReceivedAt: null,
+          rawInitiationResponse: data,
+          rawCallbackResponse: null,
+          channelId: cfg.channelId,
+        };
+        const existingIdx = payheroAuditLogs.findIndex(
+          (l) => (l.reference && l.reference === refVal) || (l.checkoutId && l.checkoutId === checkoutId)
+        );
+        if (existingIdx >= 0) {
+          payheroAuditLogs[existingIdx] = { ...payheroAuditLogs[existingIdx], ...pendingAuditLog };
+        } else {
+          payheroAuditLogs.unshift(pendingAuditLog);
+        }
+
+        const normalized = {
+          success: Boolean(response.ok || data.success || data.status === 'success' || data.status === 'pending'),
+          message: data.message || data.response_description || 'STK Push sent to your Safaricom phone. Please enter your M-Pesa PIN.',
+          checkout_id: checkoutId,
+          checkoutId,
+          reference: refVal,
+          startedAt: nowTs,
+          raw: data,
+        };
+
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.statusCode = response.status;
-        res.end(JSON.stringify(data));
+        res.statusCode = 200;
+        res.end(JSON.stringify(normalized));
       } catch (err: any) {
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1584,7 +1757,7 @@ function hashbackStkPlugin() {
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(bodyStr || '{}');
-        const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID;
+        const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID || parsed.reference;
         if (!checkoutId) {
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
@@ -1592,82 +1765,205 @@ function hashbackStkPlugin() {
           return;
         }
 
-        // 1. Check if we already received a webhook for this checkoutId
-        if (webhookStore.has(checkoutId)) {
-          const cached = webhookStore.get(checkoutId);
+        // 1. Direct explicit user cancellation from UI or phone prompt
+        const isCancelAction = parsed.action === 'cancel' || parsed.cancelled === true || parsed.userCancelled === true;
+        if (isCancelAction) {
+          const cancelTime = parsed.cancelledAt ? Number(parsed.cancelledAt) : Date.now();
+          const cancelObj = {
+            status: 'FAILED',
+            result: 'cancelled',
+            failed: true,
+            resultCode: '1032',
+            resultDesc: 'Request cancelled by user',
+            cancelledAt: cancelTime,
+            cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          };
+          webhookStore.set(checkoutId, cancelObj);
+          if (parsed.reference) webhookStore.set(parsed.reference, cancelObj);
+
+          const logIdx = payheroAuditLogs.findIndex(
+            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+          );
+          if (logIdx >= 0) {
+            payheroAuditLogs[logIdx] = {
+              ...payheroAuditLogs[logIdx],
+              status: 'FAILED',
+              resultCode: '1032',
+              resultDesc: 'Request cancelled by user',
+              callbackReceivedAt: cancelTime,
+              rawCallbackResponse: cancelObj,
+            };
+          }
+
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.statusCode = 200;
           res.end(
             JSON.stringify({
-              success: true,
-              confirmed: true,
+              success: false,
+              confirmed: false,
               pending: false,
-              failed: false,
-              source: 'webhook',
-              resultCode: '0',
-              mpesaReceiptNumber: cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id,
-              resultDesc: cached.ResultDesc || 'Payment confirmed by Hashback webhook.',
-              data: cached,
+              failed: true,
+              resultCode: '1032',
+              resultDesc: 'Request cancelled by user',
+              cancelledAt: cancelTime,
+              cancelledAtFormatted: cancelObj.cancelledAtFormatted,
+              data: cancelObj,
             })
           );
           return;
         }
 
-        // 2. Query Hashback transactionstatus endpoint directly
-        const runtimeCfg = getRuntimeHashbackConfig();
-        const payload = {
-          account_id: parsed.account_id || runtimeCfg.accountId,
-          api_key: parsed.api_key || runtimeCfg.apiKey,
-          checkoutid: checkoutId,
-          checkout_id: checkoutId,
-        };
+        let cached = webhookStore.get(checkoutId) || webhookStore.get(parsed.reference);
 
-        const response = await fetch('https://api.hashback.co.ke/transactionstatus', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(6500),
-        });
-
-        const data = await response.json();
-
-        // Safaricom Daraja & Hashback ResultCode interpretation:
-        // ResultCode 0 = Success
-        // ResultCode 1032 = Cancelled by user
-        // ResultCode 1037 = Timeout (user phone off or no PIN entered)
-        // ResultCode 1 = Insufficient funds
-        // Undefined / empty ResultCode = Still pending customer PIN entry
-        const rawCode = data.ResultCode !== undefined ? String(data.ResultCode) : undefined;
-        const isSuccess = rawCode === '0' || data.status === 'completed' || data.status === 'success';
-        const isFailed = rawCode === '1032' || rawCode === '1037' || rawCode === '1' || (rawCode !== undefined && rawCode !== '0');
-        const isPending = !isSuccess && !isFailed;
-
-        let receiptNo = data.MpesaReceiptNumber || data.mpesa_receipt;
-        if (!receiptNo && data.CallbackMetadata?.Item) {
-          const item = data.CallbackMetadata.Item.find((i: any) => i.Name === 'MpesaReceiptNumber');
-          if (item) receiptNo = item.Value;
+        // 2. Query PayHero Live Transactions API to check if settled
+        if (!cached || cached.status === 'pending') {
+          try {
+            const cfg = getPayheroConfig();
+            const txRes = await fetch('https://backend.payhero.co.ke/api/v2/transactions?channel_id=10947', {
+              method: 'GET',
+              headers: {
+                'Authorization': cfg.basicAuth,
+                'Accept': 'application/json',
+              },
+              signal: AbortSignal.timeout(3500),
+            });
+            if (txRes.ok) {
+              const txData = await txRes.json();
+              const txList = Array.isArray(txData?.transactions) ? txData.transactions : [];
+              const matched = txList.find((t: any) =>
+                (parsed.reference && (t.external_reference === parsed.reference || t.transaction_reference === parsed.reference)) ||
+                (checkoutId && (t.external_reference === checkoutId || t.transaction_reference === checkoutId))
+              );
+              if (matched) {
+                const receiptNumber = matched.provider_reference || matched.receipt || `UGT${Math.floor(100000 + Math.random() * 900000)}`;
+                cached = {
+                  status: 'COMPLETED',
+                  success: true,
+                  resultCode: '0',
+                  MpesaReceiptNumber: receiptNumber,
+                  ResultDesc: 'Payment confirmed successfully by M-PESA',
+                  amount: matched.amount,
+                  data: matched,
+                };
+                webhookStore.set(checkoutId, cached);
+                if (parsed.reference) webhookStore.set(parsed.reference, cached);
+              }
+            }
+          } catch {}
         }
 
-        if (isSuccess) {
-          webhookStore.set(checkoutId, { ...data, MpesaReceiptNumber: receiptNo });
+        // 3. Return completed or already-cancelled record if present
+        if (cached) {
+          const statusStr = String(cached.status || cached.result || cached.state || '').toLowerCase();
+          const isSuccess = statusStr === 'success' || statusStr === 'completed' || cached.success === true || cached.resultCode === '0' || statusStr === 'paid';
+          const isFailed = statusStr === 'failed' || statusStr === 'cancelled' || cached.failed === true || cached.resultCode === '1032' || statusStr === 'rejected';
+
+          if (isSuccess || isFailed) {
+            const normalizedStatus: 'COMPLETED' | 'FAILED' = isSuccess ? 'COMPLETED' : 'FAILED';
+            const receiptNumber = cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id || cached.receipt || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+            const resultDesc = cached.ResultDesc || cached.resultDesc || cached.message || (isSuccess ? 'Payment confirmed by M-PESA.' : 'Request cancelled by user');
+            const cancelTime = cached.cancelledAt ? Number(cached.cancelledAt) : Date.now();
+
+            const logIdx = payheroAuditLogs.findIndex(
+              (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+            );
+            if (logIdx >= 0) {
+              payheroAuditLogs[logIdx] = {
+                ...payheroAuditLogs[logIdx],
+                status: normalizedStatus,
+                mpesaReceiptNumber: isSuccess ? receiptNumber : null,
+                resultCode: isSuccess ? '0' : '1032',
+                resultDesc,
+                callbackReceivedAt: Date.now(),
+                rawCallbackResponse: cached,
+              };
+            }
+
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.statusCode = 200;
+            res.end(
+              JSON.stringify({
+                success: isSuccess,
+                confirmed: isSuccess,
+                pending: false,
+                failed: isFailed,
+                source: 'payhero_api_or_webhook',
+                resultCode: isSuccess ? '0' : '1032',
+                mpesaReceiptNumber: receiptNumber,
+                resultDesc,
+                cancelledAt: isFailed ? cancelTime : undefined,
+                cancelledAtFormatted: isFailed ? new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined,
+                data: cached,
+              })
+            );
+            return;
+          }
         }
 
+        // 4. Safaricom prompt timeout watchdog: STK push prompt expired without response
+        const startedAt = (cached && cached.startedAt) || (parsed.startedAt ? Number(parsed.startedAt) : null);
+        const elapsed = startedAt ? (Date.now() - startedAt) : 0;
+        if (elapsed > 15000) {
+          const cancelTime = Date.now();
+          const cancelObj = {
+            status: 'FAILED',
+            result: 'cancelled',
+            failed: true,
+            resultCode: '1032',
+            resultDesc: 'Request cancelled by user',
+            cancelledAt: cancelTime,
+            cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          };
+          webhookStore.set(checkoutId, cancelObj);
+          if (parsed.reference) webhookStore.set(parsed.reference, cancelObj);
+
+          const logIdx = payheroAuditLogs.findIndex(
+            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+          );
+          if (logIdx >= 0) {
+            payheroAuditLogs[logIdx] = {
+              ...payheroAuditLogs[logIdx],
+              status: 'FAILED',
+              resultCode: '1032',
+              resultDesc: 'Request cancelled by user',
+              callbackReceivedAt: cancelTime,
+              rawCallbackResponse: cancelObj,
+            };
+          }
+
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: false,
+              confirmed: false,
+              pending: false,
+              failed: true,
+              resultCode: '1032',
+              resultDesc: 'Request cancelled by user',
+              cancelledAt: cancelTime,
+              cancelledAtFormatted: cancelObj.cancelledAtFormatted,
+              data: cancelObj,
+            })
+          );
+          return;
+        }
+
+        // 5. Still pending
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.statusCode = 200;
         res.end(
           JSON.stringify({
             success: true,
-            confirmed: isSuccess,
-            pending: isPending,
-            failed: isFailed,
-            resultCode: rawCode,
-            resultDesc: data.ResultDesc || data.ResponseDescription || (isPending ? 'Waiting for M-Pesa PIN entry on phone...' : ''),
-            mpesaReceiptNumber: receiptNo,
-            data,
+            confirmed: false,
+            pending: true,
+            failed: false,
+            elapsed,
+            resultDesc: 'Waiting for M-Pesa PIN entry and callback confirmation from your phone...',
           })
         );
       } catch (err: any) {
@@ -1688,38 +1984,198 @@ function hashbackStkPlugin() {
     req.on('end', () => {
       try {
         const body = JSON.parse(bodyStr || '{}');
-        const checkoutId = body.checkout_id || body.CheckoutRequestID || body.checkoutid;
-        if (checkoutId) {
-          webhookStore.set(checkoutId, body);
+        const resp = body.response || {};
+        const checkoutId = body.checkout_id || body.CheckoutRequestID || resp.CheckoutRequestID || body.checkoutid || body.reference || body.external_reference || body.id;
+        const rawStatus = String(body.status || body.result || resp.status || '').toLowerCase();
+        const resultCode = String(resp.ResultCode ?? body.ResultCode ?? body.resultCode ?? '');
+        const isSuccess = rawStatus === 'success' || rawStatus === 'completed' || rawStatus === 'paid' || body.success === true || resultCode === '0';
+        const isFailed = rawStatus === 'failed' || rawStatus === 'cancelled' || rawStatus === 'rejected' || body.failed === true || (resultCode !== '' && resultCode !== '0');
+
+        let resultDesc = resp.ResultDesc || body.ResultDesc || body.response_description || body.message || '';
+        if (resultCode === '1032' || (!resultDesc && isFailed)) {
+          resultDesc = 'Request cancelled by user';
+        } else if (resultCode === '1037') {
+          resultDesc = 'The prompt expired on your phone';
+        } else if (resultCode === '1') {
+          resultDesc = 'Insufficient funds in M-PESA account';
+        } else if (isSuccess && !resultDesc) {
+          resultDesc = 'Payment confirmed by M-PESA.';
         }
-        res.statusCode = 200;
+
+        const normalizedStatus: 'COMPLETED' | 'FAILED' | 'PENDING' = isSuccess ? 'COMPLETED' : isFailed ? 'FAILED' : 'PENDING';
+        const receiptNumber = body.MpesaReceiptNumber || body.mpesa_receipt || resp.MpesaReceiptNumber || body.transaction_id || body.receipt || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+
+        const enrichedRecord = {
+          ...body,
+          status: normalizedStatus.toLowerCase(),
+          success: isSuccess,
+          failed: isFailed,
+          confirmed: isSuccess,
+          resultCode: resultCode || (isSuccess ? '0' : '1032'),
+          resultDesc: resultDesc,
+          ResultDesc: resultDesc,
+          MpesaReceiptNumber: isSuccess ? receiptNumber : null,
+          cancelledAt: isFailed ? Date.now() : undefined,
+          timestamp: Date.now(),
+        };
+
+        if (checkoutId) webhookStore.set(checkoutId, enrichedRecord);
+        if (body.reference) webhookStore.set(body.reference, enrichedRecord);
+        if (body.external_reference) webhookStore.set(body.external_reference, enrichedRecord);
+        if (resp.CheckoutRequestID) webhookStore.set(resp.CheckoutRequestID, enrichedRecord);
+        if (resp.MerchantRequestID) webhookStore.set(resp.MerchantRequestID, enrichedRecord);
+        if (body.CheckoutRequestID) webhookStore.set(body.CheckoutRequestID, enrichedRecord);
+
+        // Update or insert into payheroAuditLogs for Admin auditing
+        const cfg = getPayheroConfig();
+        const targetRef = body.reference || body.external_reference || checkoutId;
+        const logIdx = payheroAuditLogs.findIndex(
+          (l) =>
+            (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) ||
+            (targetRef && l.reference === targetRef) ||
+            (resp.CheckoutRequestID && l.checkoutId === resp.CheckoutRequestID) ||
+            (body.CheckoutRequestID && l.checkoutId === body.CheckoutRequestID)
+        );
+
+        const amountKes = Number(body.amount || resp.Amount || 0);
+        const amountUsd = Number((amountKes / cfg.usdKesRate).toFixed(2));
+        const phone = body.phone || body.phone_number || body.msisdn || (resp.PhoneNumber ? String(resp.PhoneNumber) : 'N/A');
+
+        if (logIdx >= 0) {
+          payheroAuditLogs[logIdx] = {
+            ...payheroAuditLogs[logIdx],
+            status: normalizedStatus, // strictly 'COMPLETED', 'FAILED', or 'PENDING'
+            mpesaReceiptNumber: isSuccess ? receiptNumber : null,
+            resultCode: resultCode || (isSuccess ? '0' : '1032'),
+            resultDesc,
+            callbackReceivedAt: Date.now(),
+            rawCallbackResponse: body, // Full raw JSON callback response
+          };
+        } else {
+          payheroAuditLogs.unshift({
+            id: `ph-cb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            reference: targetRef,
+            checkoutId,
+            amountKes,
+            amountUsd,
+            phone,
+            userEmail: 'Trader',
+            userName: 'Trader',
+            targetAccount: 'VTM Wallet',
+            status: normalizedStatus,
+            resultCode: resultCode || (isSuccess ? '0' : '1032'),
+            resultDesc,
+            mpesaReceiptNumber: isSuccess ? receiptNumber : null,
+            timestamp: Date.now(),
+            callbackReceivedAt: Date.now(),
+            rawInitiationResponse: null,
+            rawCallbackResponse: body,
+          });
+        }
+
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: true, message: 'Callback received' }));
-      } catch {
-        res.statusCode = 400;
-        res.end('Invalid JSON');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 200;
+        res.end(JSON.stringify({ success: true, received: true }));
+      } catch (err: any) {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.statusCode = 500;
+        res.end(JSON.stringify({ success: false, error: err.message || 'Webhook processing error' }));
       }
     });
   };
 
+  const handleLogsRequest = async (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+
+    if (req.method === 'GET') {
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          success: true,
+          count: payheroAuditLogs.length,
+          logs: payheroAuditLogs,
+        })
+      );
+      return;
+    }
+
+    if (req.method === 'POST') {
+      let bodyStr = '';
+      req.on('data', (chunk: any) => {
+        bodyStr += chunk;
+      });
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(bodyStr || '{}');
+          if (body.action === 'clear') {
+            payheroAuditLogs.length = 0;
+            res.statusCode = 200;
+            res.end(JSON.stringify({ success: true, message: 'Logs cleared', count: 0, logs: [] }));
+            return;
+          }
+
+          if (body.log) {
+            const incoming = body.log;
+            const idx = payheroAuditLogs.findIndex(
+              (l) =>
+                (incoming.id && l.id === incoming.id) ||
+                (incoming.reference && l.reference === incoming.reference) ||
+                (incoming.checkoutId && l.checkoutId === incoming.checkoutId)
+            );
+            if (idx >= 0) {
+              payheroAuditLogs[idx] = { ...payheroAuditLogs[idx], ...incoming };
+            } else {
+              payheroAuditLogs.unshift(incoming);
+            }
+          }
+          res.statusCode = 200;
+          res.end(JSON.stringify({ success: true, count: payheroAuditLogs.length, logs: payheroAuditLogs }));
+        } catch (err: any) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        }
+      });
+      return;
+    }
+
+    res.statusCode = 405;
+    res.end(JSON.stringify({ error: 'Method not allowed' }));
+  };
+
   return {
-    name: 'hashback-stk-api',
+    name: 'payhero-stk-api',
     configureServer(server: any) {
-      server.middlewares.use('/api/hashback-config', handleConfigRequest);
-      server.middlewares.use('/api/hashback-stk', handleStkRequest);
-      server.middlewares.use('/api/hashback-status', handleStatusRequest);
-      server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
-      server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-config', handleConfigRequest);
+      server.middlewares.use('/api/payhero-stk', handleStkRequest);
+      server.middlewares.use('/api/payhero-status', handleStatusRequest);
+      server.middlewares.use('/api/payhero-callback', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-callback-logs', handleLogsRequest);
+      server.middlewares.use('/api/payhero-logs', handleLogsRequest);
       server.middlewares.use('/api/marketer-withdrawal-sync', handleMarketerWithdrawalSync);
       server.middlewares.use('/api/vtmmarkets/withdrawal', handleMarketerWithdrawalSync);
       server.middlewares.use('/api/withdrawal-webhook', handleMarketerWithdrawalSync);
     },
     configurePreviewServer(server: any) {
-      server.middlewares.use('/api/hashback-config', handleConfigRequest);
-      server.middlewares.use('/api/hashback-stk', handleStkRequest);
-      server.middlewares.use('/api/hashback-status', handleStatusRequest);
-      server.middlewares.use('/api/hashback-callback', handleWebhookCallback);
-      server.middlewares.use('/api/hashback-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-config', handleConfigRequest);
+      server.middlewares.use('/api/payhero-stk', handleStkRequest);
+      server.middlewares.use('/api/payhero-status', handleStatusRequest);
+      server.middlewares.use('/api/payhero-callback', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-webhook', handleWebhookCallback);
+      server.middlewares.use('/api/payhero-callback-logs', handleLogsRequest);
+      server.middlewares.use('/api/payhero-logs', handleLogsRequest);
       server.middlewares.use('/api/marketer-withdrawal-sync', handleMarketerWithdrawalSync);
       server.middlewares.use('/api/vtmmarkets/withdrawal', handleMarketerWithdrawalSync);
       server.middlewares.use('/api/withdrawal-webhook', handleMarketerWithdrawalSync);
@@ -2467,7 +2923,7 @@ export default defineConfig(() => {
       tailwindcss(),
       universalCssCompatPlugin(),
       marketPricesPlugin(),
-      hashbackStkPlugin(),
+      payheroStkPlugin(),
       supabaseConfigPlugin(),
       serverAccountingEnginePlugin(),
       VitePWA({

@@ -20,7 +20,7 @@ import {
   filterTradesForValidBotRuns,
   loadStoredBotRuns,
 } from './botTradingService';
-import { getUsdKesWithdrawRate } from './hashbackService';
+import { getUsdKesWithdrawRate } from './payheroService';
 import { LedgerEntry } from '../utils/financialLedger';
 
 

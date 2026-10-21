@@ -2,7 +2,7 @@ import { TradingAccount, Transaction } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
 import { INITIAL_ACCOUNTS, INITIAL_TRANSACTIONS } from '../data/initialData';
 import { supabaseService } from '../services/supabaseService';
-import { getUsdKesRate, getUsdKesWithdrawRate } from '../services/hashbackService';
+import { getUsdKesRate, getUsdKesWithdrawRate } from '../services/payheroService';
 
 export interface UserFinancialState {
   walletBalance: number;
@@ -803,8 +803,8 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
 
     const cleanedMethod = tx.method
       ? String(tx.method)
-          .replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '')
-          .replace(/\s*HashBack\s*\([^)]*\)/gi, '')
+          .replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '')
+          .replace(/\s*PayHero\s*\([^)]*\)/gi, '')
           .trim() || tx.type
       : tx.method;
 
@@ -819,8 +819,8 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
               .trim()
         : tx.details
         ? String(tx.details)
-            .replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '')
-            .replace(/\s*HashBack\s*\([^)]*\)/gi, '')
+            .replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '')
+            .replace(/\s*PayHero\s*\([^)]*\)/gi, '')
             .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
             .trim()
         : tx.details;

@@ -889,9 +889,9 @@ export async function handler(event) {
     }
   }
 
-  const isStk = rawPath.includes('hashback-stk') || Boolean(body?.msisdn) || body?.action === 'hashback-stk';
-  const isStatus = rawPath.includes('hashback-status') || Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID) || body?.action === 'hashback-status';
-  const isConfig = rawPath.includes('hashback-config') || body?.action === 'hashback-config';
+  const isStk = rawPath.includes('payhero-stk') || Boolean(body?.msisdn) || body?.action === 'payhero-stk';
+  const isStatus = rawPath.includes('payhero-status') || Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID) || body?.action === 'payhero-status';
+  const isConfig = rawPath.includes('payhero-config') || body?.action === 'payhero-config';
   const isSupabase = rawPath.includes('supabase-config') || body?.action === 'supabase-config';
   const isPrices = rawPath.includes('market-prices');
 
@@ -934,22 +934,22 @@ export async function handler(event) {
     };
   }
 
-  // 3. Hashback Config endpoint (/api/hashback-config)
+  // 3. PayHero Config endpoint (/api/payhero-config)
   if (isConfig) {
-    const accountId = (process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
-    const apiKey = (process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
+    const accountId = (process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
+    const apiKey = (process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
     const usdKesRate = Number(process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || 129.56);
     const usdKesWithdrawRate = Number(process.env.USD_KES_WITHDRAW_RATE || process.env.VITE_USD_KES_WITHDRAW_RATE || 126.58);
 
     let merchantName = 'VTMMARKETS';
     if (accountId) {
       try {
-        const res = await fetch(`https://pay.hashback.co.ke/account?account_id=${encodeURIComponent(accountId)}`);
+        const res = await fetch(`https://pay.payhero.co.ke/account?account_id=${encodeURIComponent(accountId)}`);
         if (res.ok) {
           const data = await res.json();
           const resolved = String(data?.merchant || data?.account_name || data?.name || '').trim();
-          // Never brand the broker deposit as generic "HashBack"; always preserve VTMMARKETS branding
-          if (resolved && !resolved.toLowerCase().includes('hashback')) {
+          // Never brand the broker deposit as generic "PayHero"; always preserve VTMMARKETS branding
+          if (resolved && !resolved.toLowerCase().includes('payhero')) {
             merchantName = resolved;
             cachedMerchantLookup = { accountId, merchantName: resolved, fetchedAt: Date.now() };
           }
@@ -969,12 +969,12 @@ export async function handler(event) {
     };
   }
 
-  // 4. Hashback STK Initiation (/api/hashback-stk)
+  // 4. PayHero STK Initiation (/api/payhero-stk)
   if (isStk) {
     try {
       const parsed = body;
-      const accountId = (parsed.account_id || process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
-      const apiKey = (parsed.api_key || process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
+      const accountId = (parsed.account_id || process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
+      const apiKey = (parsed.api_key || process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
       const payload = {
         account_id: accountId,
         api_key: apiKey,
@@ -982,7 +982,7 @@ export async function handler(event) {
         msisdn: String(parsed.msisdn || parsed.phone || ''),
         reference: parsed.reference || `VTM-${Date.now()}`,
       };
-      const response = await fetch('https://api.hashback.co.ke/initiatestk', {
+      const response = await fetch('https://api.payhero.co.ke/initiatestk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -994,7 +994,7 @@ export async function handler(event) {
     }
   }
 
-  // 5. Hashback Transaction Status (/api/hashback-status)
+  // 5. PayHero Transaction Status (/api/payhero-status)
   if (isStatus) {
     try {
       const parsed = body;
@@ -1015,9 +1015,9 @@ export async function handler(event) {
           }),
         };
       }
-      const accountId = (parsed.account_id || process.env.HASHBACK_ACCOUNT_ID || process.env.VITE_HASHBACK_ACCOUNT_ID || '').trim();
-      const apiKey = (parsed.api_key || process.env.HASHBACK_API_KEY || process.env.VITE_HASHBACK_API_KEY || '').trim();
-      const response = await fetch('https://api.hashback.co.ke/transactionstatus', {
+      const accountId = (parsed.account_id || process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
+      const apiKey = (parsed.api_key || process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
+      const response = await fetch('https://api.payhero.co.ke/transactionstatus', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account_id: accountId, api_key: apiKey, checkoutid: checkoutId, checkout_id: checkoutId }),
@@ -1051,8 +1051,8 @@ export async function handler(event) {
     }
   }
 
-  // 6. Webhook Callback (/api/hashback-callback & /api/hashback-webhook)
-  if (rawPath.includes('hashback-callback') || rawPath.includes('hashback-webhook')) {
+  // 6. Webhook Callback (/api/payhero-callback & /api/payhero-webhook)
+  if (rawPath.includes('payhero-callback') || rawPath.includes('payhero-webhook')) {
     try {
       const parsedBody = body;
       const checkoutId = parsedBody.checkout_id || parsedBody.CheckoutRequestID || parsedBody.checkoutid;

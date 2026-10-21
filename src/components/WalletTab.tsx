@@ -29,9 +29,9 @@ import {
   USD_KES_RATE,
   USD_KES_WITHDRAW_RATE,
   WELL_KNOWN_AFRICAN_BANKS,
-  hashbackService,
+  payheroService,
   getUsdKesWithdrawRate,
-} from '../services/hashbackService';
+} from '../services/payheroService';
 import { supabaseService } from '../services/supabaseService';
 import { maskPhoneNumber } from '../utils/countryPhoneConfig';
 
@@ -91,7 +91,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
   const [, setSecretsVersion] = useState(0);
 
   useEffect(() => {
-    hashbackService.syncSecrets().then(() => {
+    payheroService.syncSecrets().then(() => {
       setSecretsVersion((v) => v + 1);
     });
   }, []);
@@ -726,7 +726,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         <div>
                           <div className="flex items-center gap-2">
                             <span className={`font-bold block ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                              {(tx.method || tx.type).replace(/\s*•?\s*HashBack\s*\([^)]*\)/gi, '').trim()}
+                              {(tx.method || tx.type).replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '').trim()}
                             </span>
                             <span
                               className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-black tracking-tight inline-flex items-center gap-1 ${
@@ -891,30 +891,30 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
             {/* STEP 1: WITHDRAW FORM */}
             {withdrawStep === 'FORM' && (
-              <div className="space-y-4">
+              <div className="space-y-2.5">
                 {withdrawError && (
-                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-400 flex items-center gap-2 animate-fadeIn">
+                  <div className="p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-xs text-rose-400 flex items-center gap-2 animate-fadeIn">
                     <AlertCircle className="w-4 h-4 shrink-0" />
                     <span className="font-semibold">{withdrawError}</span>
                   </div>
                 )}
                 {/* Method Specific Info Banner */}
                 {withdrawMethod === 'mpesa' ? (
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs flex items-center justify-between">
-                    <span className="font-bold text-emerald-600 dark:text-emerald-400">M-PESA Instant Payout</span>
+                  <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs flex items-center justify-between">
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">M-PESA Payout</span>
                     <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
                       KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 ) : withdrawMethod === 'bank' ? (
-                  <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs flex items-center justify-between">
+                  <div className="p-2 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs flex items-center justify-between">
                     <span className="font-bold text-blue-600 dark:text-blue-400">Bank Payout</span>
                     <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
                       KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
                 ) : (
-                  <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between">
+                  <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between">
                     <span className="font-bold text-amber-600 dark:text-amber-400">Crypto Payout</span>
                     <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Min $50.00</span>
                   </div>
@@ -922,18 +922,18 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                 {/* Source Selection */}
                 <div>
-                  <div className="flex justify-between text-xs mb-1 font-semibold">
+                  <div className="flex justify-between text-[11px] mb-1 font-semibold">
                     <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-700'}>
-                      Withdrawal Source:
+                      Source:
                     </span>
                     <span className="text-emerald-500 font-mono">
-                      Available: ${currentWithdrawable.toFixed(2)}
+                      Avail: ${currentWithdrawable.toFixed(2)}
                     </span>
                   </div>
                   <select
                     value={withdrawSource}
                     onChange={(e) => setWithdrawSource(e.target.value)}
-                    className={`w-full border rounded-xl px-3 py-2 text-xs focus:outline-none font-semibold ${
+                    className={`w-full border rounded-xl px-3 py-1.5 text-xs focus:outline-none font-semibold ${
                       isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                     }`}
                   >
@@ -962,7 +962,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                           key={t.id}
                           type="button"
                           onClick={() => setWithdrawCryptoCoin(t.id as any)}
-                          className={`py-2 px-2 rounded-xl border text-center text-xs font-bold transition-all cursor-pointer ${
+                          className={`py-1.5 px-2 rounded-xl border text-center text-xs font-bold transition-all cursor-pointer ${
                             withdrawCryptoCoin === t.id
                               ? 'border-amber-500 bg-amber-500/15 text-amber-500 shadow-xs'
                               : isDarkMode
@@ -979,62 +979,56 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                 {/* Recipient Field: Masked Phone for M-PESA, Bank Selector for Bank, Address for Crypto */}
                 {withdrawMethod === 'mpesa' ? (
-                  <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                  <div className={`p-2.5 rounded-xl border flex items-center justify-between text-xs ${
                     isDarkMode ? 'bg-neutral-900 border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}>
-                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 flex items-center gap-1.5">
+                    <span className="text-slate-600 dark:text-neutral-400 flex items-center gap-1.5">
                       <Lock className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>Registered M-PESA Number:</span>
+                      <span>M-PESA Line:</span>
                     </span>
                     <span className="font-mono font-bold text-slate-900 dark:text-white">
                       {userPhone}
                     </span>
                   </div>
                 ) : withdrawMethod === 'bank' ? (
-                  <div className="space-y-2.5">
+                  <div className="space-y-2">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                        Select Bank (Kenya &amp; Africa)
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
+                        Select Bank
                       </label>
                       <select
                         value={withdrawBankId}
                         onChange={(e) => setWithdrawBankId(e.target.value)}
-                        className={`w-full border rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                        className={`w-full border rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
                           isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                         }`}
                       >
                         {WELL_KNOWN_AFRICAN_BANKS.map((bank) => (
                           <option key={bank.id} value={bank.id}>
-                            {bank.name} — Paybill {bank.paybill} ({bank.country})
+                            {bank.name} — Paybill {bank.paybill}
                           </option>
                         ))}
                       </select>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                       <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                          Bank Account Number <span className="text-[#0066FF] font-bold">*Required</span>
-                        </label>
                         <input
                           type="text"
-                          placeholder="e.g. 01109283746500"
+                          placeholder="Account Number"
                           value={withdrawBankAccount}
                           onChange={(e) => setWithdrawBankAccount(e.target.value)}
-                          className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                          className={`w-full border rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
                             isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                           }`}
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                          Account Holder Name
-                        </label>
                         <input
                           type="text"
-                          placeholder={currentUser?.fullName || 'Account Holder Name'}
+                          placeholder="Account Holder Name"
                           value={withdrawBankHolder}
                           onChange={(e) => setWithdrawBankHolder(e.target.value)}
-                          className={`w-full border rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                          className={`w-full border rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
                             isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                           }`}
                         />
@@ -1043,41 +1037,31 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 ) : (
                   <div>
-                    <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
-                      Recipient {withdrawCryptoCoin} Wallet Address <span className="text-amber-500 font-bold">*Required</span>
-                    </label>
                     <input
                       type="text"
-                      placeholder={`Paste your ${withdrawCryptoCoin} destination address...`}
+                      placeholder={`Paste ${withdrawCryptoCoin} address...`}
                       value={withdrawCryptoAddress}
                       onChange={(e) => setWithdrawCryptoAddress(e.target.value)}
-                      className={`w-full border rounded-xl px-3 py-2 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                      className={`w-full border rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-amber-500 ${
                         isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                       }`}
                     />
                   </div>
                 )}
 
-                {/* Amount Input with minimum $35 for M-PESA/Bank ($2,000 max per single tx on M-PESA, $10,000 on Bank/Crypto), $50 for Crypto */}
+                {/* Amount Input */}
                 <div>
-                  <div className="flex justify-between text-xs mb-1.5 font-semibold">
+                  <div className="flex justify-between text-xs mb-1 font-semibold">
                     <span className={isDarkMode ? 'text-neutral-300' : 'text-slate-700'}>
-                      Amount to Withdraw (USD){' '}
+                      Withdrawal Amount (USD){' '}
                       <span className="text-[#E51937] font-bold">
                         *{withdrawMethod === 'crypto' ? 'Min $50' : 'Min $35'}
                       </span>
                     </span>
-                    <span className="text-neutral-500 dark:text-neutral-400 text-[11px]">
-                      {withdrawMethod === 'mpesa'
-                        ? 'Max limit per transaction: $2,000'
-                        : withdrawMethod === 'bank'
-                        ? 'Max limit per transaction: $10,000'
-                        : 'Max limit per transaction: $10,000'}
-                    </span>
                   </div>
 
                   <div className="relative">
-                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 dark:text-neutral-500 font-mono">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm font-bold text-slate-400 font-mono">
                       $
                     </span>
                     <input
@@ -1085,57 +1069,37 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                       min={withdrawMethod === 'crypto' ? 50 : 35}
                       max={withdrawMethod === 'mpesa' ? 2000 : 10000}
                       step="any"
-                      placeholder={withdrawMethod === 'bank' ? '1000' : '100'}
+                      placeholder="100"
                       value={withdrawAmount === 0 ? '' : withdrawAmount}
                       onChange={(e) => {
                         const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
                         setWithdrawAmount(isNaN(val) ? 0 : val);
                       }}
-                      className={`w-full border rounded-xl pl-8 pr-16 py-2.5 text-base font-mono font-bold focus:outline-none focus:ring-2 ${
+                      className={`w-full border rounded-xl pl-7 pr-14 py-2 text-sm font-mono font-bold focus:outline-none focus:ring-2 ${
                         withdrawAmount > currentWithdrawable
                           ? 'border-red-500 bg-red-500/5 focus:ring-red-500 text-red-500'
-                          : withdrawMethod === 'crypto'
-                          ? 'focus:ring-amber-500'
                           : 'focus:ring-[#0066FF]'
                       } ${
                         isDarkMode ? 'bg-neutral-900 border-neutral-700 text-white' : 'bg-slate-50 border-slate-300 text-slate-900'
                       }`}
                     />
-                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400 dark:text-neutral-500 font-mono">
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400 font-mono">
                       USD
-                    </span>
-                  </div>
-
-                  {/* Prominent Active Withdrawal Display */}
-                  <div className="mt-2 p-2.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 flex items-center justify-between text-xs">
-                    <span className="text-blue-700 dark:text-blue-300 font-medium">
-                      You are withdrawing:
-                    </span>
-                    <span className="font-mono font-bold text-blue-900 dark:text-blue-100 text-sm">
-                      ${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                     </span>
                   </div>
 
                   {/* Inline Insufficient Funds Warning */}
                   {withdrawAmount > currentWithdrawable && (
-                    <div className="mt-2.5 p-3 rounded-xl bg-red-500/15 border-2 border-red-500 text-red-500 dark:text-red-400 text-xs flex items-start gap-2.5 font-medium">
-                      <AlertCircle className="w-5 h-5 shrink-0 text-red-500 mt-0.5" />
-                      <div className="space-y-0.5">
-                        <div className="font-bold text-sm text-red-600 dark:text-red-400">
-                          ⚠️ Insufficient Funds
-                        </div>
-                        <div>
-                          You entered <strong className="font-mono underline">${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong> to withdraw, but your available balance in {withdrawSource} is only <strong className="font-mono">${currentWithdrawable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD</strong>.
-                        </div>
-                        <div className="text-[11px] font-semibold text-red-700 dark:text-red-300">
-                          Shortfall: ${Math.max(0, withdrawAmount - currentWithdrawable).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD. Please reduce the withdrawal amount or fund your account first.
-                        </div>
+                    <div className="mt-2 p-2 rounded-xl bg-red-500/15 border border-red-500 text-red-400 text-xs flex items-center gap-2 font-medium">
+                      <AlertCircle className="w-4 h-4 shrink-0 text-red-500" />
+                      <div>
+                        Insufficient Funds: Available <strong className="font-mono">${currentWithdrawable.toFixed(2)}</strong>. Shortfall: <strong className="font-mono">${(withdrawAmount - currentWithdrawable).toFixed(2)}</strong>.
                       </div>
                     </div>
                   )}
 
                   {/* Preset Pills */}
-                  <div className="grid grid-cols-5 gap-1.5 mt-2.5">
+                  <div className="grid grid-cols-5 gap-1 mt-2">
                     {(withdrawMethod === 'crypto'
                       ? [50, 100, 250, 500]
                       : withdrawMethod === 'bank'
@@ -1146,35 +1110,24 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         key={val}
                         type="button"
                         onClick={() => setWithdrawAmount(val)}
-                        className={`py-1.5 px-1 text-xs font-semibold rounded-lg border transition-all cursor-pointer text-center ${
+                        className={`py-1 px-1 text-[11px] font-semibold rounded-lg border transition-all cursor-pointer text-center ${
                           withdrawAmount === val
-                            ? withdrawMethod === 'crypto'
-                              ? 'bg-amber-500/20 border-amber-500 text-amber-500 font-bold'
-                              : withdrawMethod === 'bank'
-                              ? 'bg-blue-50 dark:bg-blue-950/60 border-[#0066FF] text-[#0066FF] font-bold'
-                              : 'bg-red-50 dark:bg-red-950/60 border-[#E51937] text-[#E51937] font-bold'
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-500 font-bold'
                             : isDarkMode
                             ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
                             : 'border-slate-200 hover:bg-slate-100 text-slate-700'
                         }`}
                       >
-                        ${val.toLocaleString()}
+                        ${val}
                       </button>
                     ))}
                     <button
                       type="button"
                       onClick={() => {
-                        const singleTxLimit = withdrawMethod === 'mpesa' ? 2000 : 10000;
-                        const accountBalance = Number(currentWithdrawable.toFixed(2));
-                        if (accountBalance <= 0) {
-                          setWithdrawAmount(0);
-                        } else if (accountBalance <= singleTxLimit) {
-                          setWithdrawAmount(accountBalance);
-                        } else {
-                          setWithdrawAmount(singleTxLimit);
-                        }
+                        const limit = withdrawMethod === 'mpesa' ? 2000 : 10000;
+                        setWithdrawAmount(Math.min(currentWithdrawable, limit));
                       }}
-                      className={`py-1.5 px-1 text-xs font-bold rounded-lg border transition-all cursor-pointer text-center ${
+                      className={`py-1 px-1 text-[11px] font-bold rounded-lg border transition-all cursor-pointer text-center ${
                         isDarkMode ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300' : 'border-slate-200 hover:bg-slate-100 text-slate-700'
                       }`}
                     >
@@ -1183,58 +1136,28 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   </div>
                 </div>
 
-                {/* EXACT AMOUNT SUMMARY */}
-                <div className="p-3.5 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 space-y-2">
-                  <div className="flex justify-between items-center text-xs">
-                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Available Balance in {withdrawSource}:</span>
-                    <span className="font-mono font-bold text-slate-900 dark:text-white text-xs">
-                      ${currentWithdrawable.toFixed(2)} USD
+                {/* COMPACT SUMMARY */}
+                <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 text-xs space-y-1">
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-500 dark:text-neutral-400">Withdrawal:</span>
+                    <span className="font-mono font-bold text-rose-500">
+                      -${withdrawAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                     </span>
                   </div>
-
-                  <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
-                    <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Amount to Withdraw:</span>
-                    <span className="font-mono font-bold text-rose-500 text-sm">
-                      -${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
-                    </span>
-                  </div>
-
                   {withdrawMethod === 'mpesa' || withdrawMethod === 'bank' ? (
-                    <>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400">Withdrawal Rate:</span>
-                        <span className="font-mono text-slate-600 dark:text-neutral-300 text-xs">
-                          1 USD = {effectiveWithdrawRate.toFixed(2)} KES
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
-                        <span className="text-slate-700 dark:text-neutral-200 font-bold">
-                          {withdrawMethod === 'bank'
-                            ? `Exact Payout to ${selectedBankInfo.shortName}:`
-                            : 'Exact Payout to Safaricom Line:'}
-                        </span>
-                        <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-base">
-                          KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 leading-tight">
-                        * Exactly <strong className="text-slate-900 dark:text-white">KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD)</strong> will be disbursed to your {withdrawMethod === 'bank' ? `${selectedBankInfo.shortName} account (${withdrawBankAccount || 'Account'})` : `Safaricom M-PESA number (${userPhone})`}.
-                      </p>
-                    </>
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
+                      <span className="font-bold text-slate-700 dark:text-neutral-200">Exact Payout:</span>
+                      <span className="font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm">
+                        KES {exactKesToDisburse.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
                   ) : (
-                    <>
-                      <div className="flex justify-between items-center text-xs pt-1 border-t border-slate-200 dark:border-neutral-800">
-                        <span className="text-slate-700 dark:text-neutral-200 font-bold">
-                          Crypto Payout Asset:
-                        </span>
-                        <span className="font-mono font-black text-amber-500 text-sm">
-                          ${withdrawAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD in {withdrawCryptoCoin}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-600 dark:text-slate-400 dark:text-neutral-500 dark:text-neutral-400 leading-tight">
-                        * Payout will be dispatched directly to your {withdrawCryptoCoin} address on blockchain.
-                      </p>
-                    </>
+                    <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-neutral-800">
+                      <span className="font-bold text-slate-700 dark:text-neutral-200">Crypto Payout:</span>
+                      <span className="font-mono font-bold text-amber-500">
+                        ${withdrawAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {withdrawCryptoCoin}
+                      </span>
+                    </div>
                   )}
                 </div>
 

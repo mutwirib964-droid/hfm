@@ -13,9 +13,11 @@ import {
   ExternalLink,
   ShieldCheck,
   ArrowRight,
+  Clock,
+  XCircle,
 } from 'lucide-react';
 import {
-  hashbackService,
+  payheroService,
   formatKenyanPhone,
   usdToKes,
   kesToUsd,
@@ -23,7 +25,7 @@ import {
   USD_KES_WITHDRAW_RATE,
   WELL_KNOWN_AFRICAN_BANKS,
   MpesaPaymentResponse,
-} from '../services/hashbackService';
+} from '../services/payheroService';
 import { supabaseService } from '../services/supabaseService';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -120,23 +122,22 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const [cardExpiry, setCardExpiry] = useState<string>('08/28');
   const [cardCvv, setCardCvv] = useState<string>('•••');
 
-  // HashBack Popup State: null | 'WAITING' | 'SUCCESS' | 'CANCELLED'
-  const [hashbackPopupStep, setHashbackPopupStep] = useState<
+  // Transaction Modal Step: null (input form) | 'WAITING' (prompt sent) | 'SUCCESS' | 'CANCELLED'
+  const [payheroPopupStep, setPayheroPopupStep] = useState<
     null | 'WAITING' | 'SUCCESS' | 'CANCELLED'
   >(null);
 
   const [isProcessingStk, setIsProcessingStk] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [failureReason, setFailureReason] = useState<string>('');
   const [stkResult, setStkResult] = useState<MpesaPaymentResponse | null>(null);
-  const [countdownSeconds, setCountdownSeconds] = useState<number>(87);
   const [confirmedReceipt, setConfirmedReceipt] = useState<string>('');
   const [confirmedReference, setConfirmedReference] = useState<string>('');
-  const [liveUsdKesRate, setLiveUsdKesRate] = useState<number>(() => {
-    const r = hashbackService.getUsdKesRate();
-    return r >= 129.56 ? r : 129.56;
-  });
-  const [hashbackMerchantName, setHashbackMerchantName] = useState<string>(
-    () => hashbackService.getConfig().merchantName
+  const [cancelledAt, setCancelledAt] = useState<number | null>(null);
+  const waitingStartTimeRef = useRef<number>(0);
+  const [liveUsdKesRate, setLiveUsdKesRate] = useState<number>(129.56);
+  const [payheroMerchantName, setPayheroMerchantName] = useState<string>(
+    () => payheroService.getConfig().merchantName
   );
 
   const isPollingRef = useRef(false);
@@ -144,13 +145,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const activeDepositReferenceRef = useRef<string>('');
   const activeDepositResolvedRef = useRef<boolean>(false);
 
-  // Sync HashBack configuration (merchantName, USD_KES_RATE) whenever modal opens
+  // Sync PayHero configuration (merchantName) whenever modal opens; keep rate fixed at 129.56
   useEffect(() => {
     if (!isOpen) return;
-    hashbackService.syncSecrets().then((cfg) => {
-      if (cfg.usdKesRate >= 129.56) setLiveUsdKesRate(cfg.usdKesRate);
-      else setLiveUsdKesRate(129.56);
-      if (cfg.merchantName) setHashbackMerchantName(cfg.merchantName);
+    payheroService.syncSecrets().then((cfg) => {
+      setLiveUsdKesRate(129.56);
+      if (cfg.merchantName) setPayheroMerchantName(cfg.merchantName);
     });
   }, [isOpen]);
 
@@ -182,11 +182,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   }, [defaultTarget]);
 
   const numUsd = parseFloat(amountInput) || 0;
-  const effectiveRate = liveUsdKesRate >= 129.56 ? liveUsdKesRate : (USD_KES_RATE >= 129.56 ? USD_KES_RATE : 129.56);
+  const effectiveRate = 129.56;
   const numKes = Math.max(1, Math.round(numUsd * effectiveRate));
   const userAccountName =
-    hashbackMerchantName && !hashbackMerchantName.toLowerCase().includes('hashback')
-      ? hashbackMerchantName
+    payheroMerchantName && !payheroMerchantName.toLowerCase().includes('payhero')
+      ? payheroMerchantName
       : 'VTMMARKETS';
   const matchedLiveAccount = accounts.find(
     (a) => `Account #${a.accountNumber}` === targetAccount || a.accountNumber === targetAccount
@@ -218,7 +218,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     setTimeout(() => setCryptoCopied(null), 2500);
   };
 
-  // Keep latest deposit state in a ref so parent re-renders (every 350ms from live quotes) never reset the 1s countdown or 2.5s status polling
+  // Keep latest deposit state in a ref so parent re-renders (every 350ms from live quotes) never reset transaction state or status polling
   const latestDepositStateRef = useRef({
     numUsd,
     numKes,
@@ -244,58 +244,25 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     onDepositComplete,
   };
 
-  // Dedicated 1-second HashBack countdown timer (isolated from parent re-renders and checkoutId updates)
+  // Automated status polling listener: receives feedback directly from PayHero
   useEffect(() => {
-    if (hashbackPopupStep !== 'WAITING') return;
-
-    const countTimer = setInterval(() => {
-      setCountdownSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(countTimer);
-          isPollingRef.current = false;
-          if (!activeDepositResolvedRef.current && activeDepositTxIdRef.current) {
-            activeDepositResolvedRef.current = true;
-            const latest = latestDepositStateRef.current;
-            latest.onDepositComplete({
-              id: activeDepositTxIdRef.current,
-              amountUsd: latest.numUsd,
-              amountKes: latest.numKes,
-              method: 'M-PESA',
-              targetAccount: latest.targetAccount,
-              reference: activeDepositReferenceRef.current || `EXP-${Date.now().toString().slice(-6)}`,
-              phone: latest.phoneDisplay || latest.phoneInput,
-              status: 'FAILED',
-              details: 'Request cancelled by user',
-            });
-          }
-          setHashbackPopupStep('CANCELLED');
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => {
-      clearInterval(countTimer);
-    };
-  }, [hashbackPopupStep]);
-
-  // Automated HashBack status polling listener (isolated from parent re-renders)
-  useEffect(() => {
-    if (hashbackPopupStep !== 'WAITING' || !stkResult?.checkoutId) return;
+    if (payheroPopupStep !== 'WAITING' || !stkResult?.checkoutId) return;
 
     const checkoutId = stkResult.checkoutId;
     isPollingRef.current = true;
     let pollTimer: any;
 
-    const pollHashback = async () => {
+    const pollPayHero = async () => {
       if (!isPollingRef.current) return;
 
       try {
-        const res = await hashbackService.queryTransactionStatus(checkoutId);
+        const res = await payheroService.queryTransactionStatus(checkoutId, {
+          reference: stkResult?.reference || activeDepositReferenceRef.current,
+          startedAt: waitingStartTimeRef.current,
+        });
         if (!isPollingRef.current) return;
 
-        // 1. Success confirmation from Hashback
+        // 1. Success confirmation from PayHero
         if (res.confirmed) {
           isPollingRef.current = false;
           activeDepositResolvedRef.current = true;
@@ -305,12 +272,13 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           const receipt =
             res.mpesaReceiptNumber ||
             res.data?.MpesaReceiptNumber ||
-            `UIP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+            res.data?.receipt ||
+            `UK${Math.floor(100000 + Math.random() * 900000)}TGY`;
 
           const reference =
             res.data?.reference ||
             checkoutId ||
-            `HPB${Math.floor(10000000 + Math.random() * 90000000)}`;
+            `REF${Math.floor(10000000 + Math.random() * 90000000)}`;
 
           setConfirmedReceipt(receipt);
           setConfirmedReference(reference);
@@ -326,6 +294,26 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             phone: latest.phoneDisplay || latest.phoneInput,
             status: 'COMPLETED',
             details: `Funded to ${latest.settlementDestinationLabel}`,
+          });
+
+          // Save audit log with raw callback response
+          payheroService.postAuditLog({
+            id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
+            reference,
+            checkoutId,
+            amountKes: latest.numKes,
+            amountUsd: latest.numUsd,
+            phone: latest.phoneDisplay || latest.phoneInput,
+            userEmail: latest.currentUser?.email || 'Trader',
+            userName: latest.currentUser?.name || 'Trader',
+            targetAccount: latest.targetAccount,
+            status: 'COMPLETED',
+            resultCode: res.resultCode || '0',
+            resultDesc: res.resultDesc || 'Payment confirmed by M-PESA.',
+            mpesaReceiptNumber: receipt,
+            timestamp: Date.now(),
+            callbackReceivedAt: Date.now(),
+            rawCallbackResponse: res.raw || res.data || res,
           });
 
           // Save deposit to Supabase cloud database
@@ -346,14 +334,19 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             metadata: { receipt, checkoutId, amountUsd: latest.numUsd, amountKes: latest.numKes, targetAccount: latest.targetAccount },
           });
 
-          setHashbackPopupStep('SUCCESS');
+          setPayheroPopupStep('SUCCESS');
           return;
         }
 
-        // 2. Cancellation or failure
+        // 2. Cancellation or failure reported by PayHero or prompt timeout
         if (res.failed) {
           isPollingRef.current = false;
           clearInterval(pollTimer);
+          const cancelTs = res.cancelledAt ? Number(res.cancelledAt) : Date.now();
+          setCancelledAt(cancelTs);
+          const failureDesc = res.resultDesc || res.message || 'Request cancelled by user';
+          setFailureReason(failureDesc);
+
           if (!activeDepositResolvedRef.current) {
             activeDepositResolvedRef.current = true;
             const latest = latestDepositStateRef.current;
@@ -366,32 +359,52 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               reference: checkoutId,
               phone: latest.phoneDisplay || latest.phoneInput,
               status: 'FAILED',
-              details: 'Request cancelled by user',
+              details: failureDesc,
+            });
+
+            // Save audit log with raw failure response
+            payheroService.postAuditLog({
+              id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
+              reference: checkoutId,
+              checkoutId,
+              amountKes: latest.numKes,
+              amountUsd: latest.numUsd,
+              phone: latest.phoneDisplay || latest.phoneInput,
+              userEmail: latest.currentUser?.email || 'Trader',
+              userName: latest.currentUser?.name || 'Trader',
+              targetAccount: latest.targetAccount,
+              status: 'FAILED',
+              resultCode: res.resultCode || '1032',
+              resultDesc: failureDesc,
+              mpesaReceiptNumber: null,
+              timestamp: Date.now(),
+              callbackReceivedAt: cancelTs,
+              rawCallbackResponse: res.raw || res.data || res,
             });
           }
-          setHashbackPopupStep('CANCELLED');
+          setPayheroPopupStep('CANCELLED');
           return;
         }
       } catch {
-        // keep polling until timer ends
+        // keep polling for PayHero feedback
       }
     };
 
     const delay = setTimeout(() => {
-      pollHashback();
-      pollTimer = setInterval(pollHashback, 2500);
-    }, 1500);
+      pollPayHero();
+      pollTimer = setInterval(pollPayHero, 1000);
+    }, 400);
 
     return () => {
       isPollingRef.current = false;
       clearTimeout(delay);
       clearInterval(pollTimer);
     };
-  }, [hashbackPopupStep, stkResult?.checkoutId]);
+  }, [payheroPopupStep, stkResult?.checkoutId]);
 
   if (!isOpen) return null;
 
-  // Trigger STK Push and immediately open HashBack popup + live countdown
+  // Trigger STK Push and transition to live status listener
   const handleDepositNow = async () => {
     setErrorMessage(null);
 
@@ -414,6 +427,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     activeDepositReferenceRef.current = accountReference;
     activeDepositResolvedRef.current = false;
     setIsProcessingStk(true);
+    waitingStartTimeRef.current = Date.now();
+    setCancelledAt(null);
 
     // Record PENDING deposit immediately in transaction history
     onDepositComplete({
@@ -428,8 +443,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       details: 'Awaiting M-Pesa PIN',
     });
 
-    // Open HashBack waiting modal & start the 87s (1:27) countdown immediately while dispatching STK prompt
-    setCountdownSeconds(87);
+    // Transition to waiting state immediately while dispatching STK prompt
+    setFailureReason('');
     setStkResult({
       success: true,
       message: 'Dispatching M-Pesa STK prompt to your phone...',
@@ -438,10 +453,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       amountUsd: numUsd,
       formattedPhone: phoneCheck.display,
     });
-    setHashbackPopupStep('WAITING');
+    setPayheroPopupStep('WAITING');
 
     try {
-      const res = await hashbackService.initiateStkPush({
+      const res = await payheroService.initiateStkPush({
         phone: phoneCheck.formatted,
         amountUsd: numUsd,
         amountKes: numKes,
@@ -457,6 +472,27 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           ...res,
           checkoutId: finalCheckoutId,
         });
+
+        // Record initial PENDING audit log
+        payheroService.postAuditLog({
+          id: txId,
+          reference: accountReference,
+          checkoutId: finalCheckoutId,
+          amountKes: numKes,
+          amountUsd: numUsd,
+          phone: phoneCheck.display || phoneInput,
+          userEmail: currentUser?.email || 'Trader',
+          userName: currentUser?.name || 'Trader',
+          targetAccount,
+          status: 'PENDING',
+          resultCode: null,
+          resultDesc: 'STK push dispatched. Awaiting M-Pesa PIN authorization.',
+          mpesaReceiptNumber: null,
+          timestamp: Date.now(),
+          callbackReceivedAt: null,
+          rawInitiationResponse: res.raw || res,
+          rawCallbackResponse: null,
+        });
       } else {
         activeDepositResolvedRef.current = true;
         onDepositComplete({
@@ -470,7 +506,26 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           status: 'FAILED',
           details: 'Request cancelled by user',
         });
-        setHashbackPopupStep(null);
+        payheroService.postAuditLog({
+          id: txId,
+          reference: accountReference,
+          checkoutId: accountReference,
+          amountKes: numKes,
+          amountUsd: numUsd,
+          phone: phoneCheck.display || phoneInput,
+          userEmail: currentUser?.email || 'Trader',
+          userName: currentUser?.name || 'Trader',
+          targetAccount,
+          status: 'FAILED',
+          resultCode: '1032',
+          resultDesc: res.message || 'Failed to dispatch M-PESA STK prompt.',
+          mpesaReceiptNumber: null,
+          timestamp: Date.now(),
+          callbackReceivedAt: Date.now(),
+          rawInitiationResponse: res.raw || res,
+          rawCallbackResponse: res.raw || res,
+        });
+        setPayheroPopupStep(null);
         setErrorMessage(res.message || 'Failed to dispatch M-PESA STK prompt.');
       }
     } catch (err: any) {
@@ -486,11 +541,61 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         status: 'FAILED',
         details: 'Request cancelled by user',
       });
-      setHashbackPopupStep(null);
+      setPayheroPopupStep(null);
       setErrorMessage(err.message || 'Connection error. Please try again.');
     } finally {
       setIsProcessingStk(false);
     }
+  };
+
+  const handleUserCancelledOnPhone = async () => {
+    isPollingRef.current = false;
+    const cancelTs = Date.now();
+    setCancelledAt(cancelTs);
+    const failureDesc = 'Request cancelled by user (ResultCode 1032)';
+    setFailureReason(failureDesc);
+
+    const checkoutId = stkResult?.checkoutId || activeDepositReferenceRef.current;
+    if (checkoutId) {
+      payheroService.cancelDepositStatus(checkoutId, activeDepositReferenceRef.current).catch(() => {});
+    }
+
+    if (!activeDepositResolvedRef.current) {
+      activeDepositResolvedRef.current = true;
+      const latest = latestDepositStateRef.current;
+      latest.onDepositComplete({
+        id: activeDepositTxIdRef.current || undefined,
+        amountUsd: latest.numUsd,
+        amountKes: latest.numKes,
+        method: 'M-PESA',
+        targetAccount: latest.targetAccount,
+        reference: checkoutId || activeDepositReferenceRef.current,
+        phone: latest.phoneDisplay || latest.phoneInput,
+        status: 'FAILED',
+        details: failureDesc,
+      });
+
+      payheroService.postAuditLog({
+        id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
+        reference: checkoutId || activeDepositReferenceRef.current,
+        checkoutId: checkoutId || activeDepositReferenceRef.current,
+        amountKes: latest.numKes,
+        amountUsd: latest.numUsd,
+        phone: latest.phoneDisplay || latest.phoneInput,
+        userEmail: latest.currentUser?.email || 'Trader',
+        userName: latest.currentUser?.name || 'Trader',
+        targetAccount: latest.targetAccount,
+        status: 'FAILED',
+        resultCode: '1032',
+        resultDesc: failureDesc,
+        mpesaReceiptNumber: null,
+        timestamp: Date.now(),
+        callbackReceivedAt: cancelTs,
+        rawCallbackResponse: { action: 'user_cancelled_prompt' },
+      });
+    }
+
+    setPayheroPopupStep('CANCELLED');
   };
 
   // Submit Crypto Deposit - Verification Only
@@ -566,14 +671,14 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   const handleCloseAll = () => {
     isPollingRef.current = false;
-    setHashbackPopupStep(null);
+    setPayheroPopupStep(null);
     setErrorMessage(null);
     onClose();
   };
 
   const handleClosePopup = () => {
     isPollingRef.current = false;
-    if (hashbackPopupStep === 'WAITING' && !activeDepositResolvedRef.current && activeDepositTxIdRef.current) {
+    if (payheroPopupStep === 'WAITING' && !activeDepositResolvedRef.current && activeDepositTxIdRef.current) {
       activeDepositResolvedRef.current = true;
       onDepositComplete({
         id: activeDepositTxIdRef.current,
@@ -587,43 +692,40 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         details: 'Request cancelled by user',
       });
     }
-    setHashbackPopupStep(null);
-  };
-
-  const formatTimeRemaining = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    setPayheroPopupStep(null);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
-      {/* ========================================================================= */}
-      {/* 1. MAIN "FUND YOUR ACCOUNT" INTERFACE WITH PREFERRED METHOD SELECTION     */}
-      {/* ========================================================================= */}
-      {!hashbackPopupStep && (
-        <div
-          className={`w-full max-w-lg rounded-2xl border shadow-2xl p-4 sm:p-6 relative transition-colors max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar ${
-            isDarkMode ? 'bg-[#13161F] border-neutral-700/80 text-white' : 'bg-white border-slate-200 text-slate-900'
-          }`}
+      <div
+        className={`w-full max-w-lg rounded-2xl border shadow-2xl p-4 sm:p-6 relative transition-colors max-h-[85vh] sm:max-h-[90vh] overflow-y-auto no-scrollbar ${
+          isDarkMode ? 'bg-[#13161F] border-neutral-700/80 text-white' : 'bg-white border-slate-200 text-slate-900'
+        }`}
+      >
+        {/* Close button */}
+        <button
+          onClick={payheroPopupStep === 'WAITING' ? handleClosePopup : onClose}
+          className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer p-1 transition-colors"
         >
-          {/* Close button */}
-          <button
-            onClick={onClose}
-            className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer p-1 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <X className="w-5 h-5" />
+        </button>
 
-          {/* Heading */}
-          <div className="text-center mb-5">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight">Fund Your Account</h2>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-neutral-400 mt-1">
-              Select your payment method below to fund your wallet
-            </p>
-          </div>
+        {/* Heading */}
+        <div className="text-center mb-5">
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight">Fund Your Account</h2>
+          <p className="text-xs sm:text-sm text-slate-500 dark:text-neutral-400 mt-1">
+            {payheroPopupStep === 'WAITING'
+              ? 'Check your phone to complete your M-PESA deposit'
+              : payheroPopupStep === 'SUCCESS'
+              ? 'Deposit confirmed and credited to your account'
+              : payheroPopupStep === 'CANCELLED'
+              ? 'M-PESA transaction cancelled'
+              : 'Select your payment method below to fund your wallet'}
+          </p>
+        </div>
 
-          {/* Method Tabs: M-PESA | Crypto | Card (Bank is strictly for Withdrawal only) */}
+        {/* Method Tabs: M-PESA | Crypto | Card (Only shown when not processing transaction) */}
+        {!payheroPopupStep && (
           <div className="grid grid-cols-3 gap-1.5 p-1.5 bg-slate-100 dark:bg-neutral-800/80 rounded-2xl mb-5">
             <button
               type="button"
@@ -676,8 +778,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               <span>Card</span>
             </button>
           </div>
+        )}
 
-          {/* Deposit Destination Account Selector */}
+        {/* Deposit Destination Account Selector (Only shown when not processing transaction) */}
+        {!payheroPopupStep && (
           <div className="mb-4">
             <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300 mb-1">
               Deposit Destination
@@ -701,6 +805,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 ))}
             </select>
           </div>
+        )}
 
           {errorMessage && (
             <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-500 text-xs flex items-center gap-2">
@@ -727,7 +832,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                 Instant prompt • KES {numKes.toLocaleString()} (${numUsd || 16} USD)
               </p>
 
-              {/* Dynamic HashBack Account & Settlement Details Summary (no sensitive credentials exposed) */}
+              {/* Dynamic Account & Settlement Details Summary */}
               <div
                 className={`mb-3 p-2.5 rounded-xl border text-xs space-y-1 ${
                   isDarkMode
@@ -740,134 +845,282 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                   <span className="font-bold text-slate-900 dark:text-white">{userAccountName}</span>
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-slate-500 dark:text-neutral-400">Rate:</span>
+                  <span className="font-bold text-[#0066FF] font-mono">1 USD = 129.56 KES</span>
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-slate-500 dark:text-neutral-400">Settlement:</span>
                   <span className="font-bold text-emerald-600 dark:text-emerald-400 truncate max-w-[200px]">{settlementDestinationLabel}</span>
                 </div>
               </div>
 
-              <div className="space-y-3">
-                {/* Amount (USD) */}
-                <div>
-                  <div className="flex justify-between items-center mb-1.5">
-                    <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
-                      Amount (USD) <span className="text-[#0066FF] font-bold">*Min $16</span>
-                    </label>
-                    <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
-                      KES {numKes.toLocaleString()} (${numUsd || 16} USD)
-                    </span>
+              {/* INLINE STATUS IF payheroPopupStep IS ACTIVE */}
+              {payheroPopupStep === 'WAITING' ? (
+                <div className="p-4 text-center space-y-4">
+                  <div className="relative w-14 h-14 mx-auto my-2">
+                    <svg className="w-14 h-14 animate-spin" viewBox="0 0 50 50">
+                      <circle
+                        className={isDarkMode ? 'stroke-neutral-800' : 'stroke-slate-200'}
+                        cx="25" cy="25" r="20" fill="none" strokeWidth="4"
+                      />
+                      <circle
+                        className="stroke-[#0066FF]"
+                        cx="25" cy="25" r="20" fill="none" strokeWidth="4"
+                        strokeDasharray="80" strokeDashoffset="60" strokeLinecap="round"
+                      />
+                    </svg>
                   </div>
-                  <input
-                    type="number"
-                    min="16"
-                    step="1"
-                    placeholder="Min $16"
-                    value={amountInput}
-                    onChange={(e) => {
-                      setAmountInput(e.target.value);
-                      setErrorMessage(null);
-                    }}
-                    className={`w-full border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-mono font-semibold ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
-                        : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
-                    }`}
-                  />
+                  <div>
+                    <h4 className="text-base font-bold text-slate-900 dark:text-white">Check your phone</h4>
+                    <p className="text-xs text-slate-600 dark:text-neutral-400 mt-1 leading-relaxed">
+                      An M-PESA prompt was sent to <strong className="text-slate-900 dark:text-white">{maskPhoneNumber(phoneCheck.display || phoneInput)}</strong>. Enter your M-PESA PIN to approve payment of <strong className="text-[#0066FF]">KES {numKes.toLocaleString()} (${numUsd || 16} USD)</strong>.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#0066FF] text-xs font-semibold">
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#0066FF]"></span>
+                    </span>
+                    <span>Awaiting confirmation from your phone...</span>
+                  </div>
 
-                  {/* Preset Pills starting from minimum $16 */}
-                  <div className="grid grid-cols-5 gap-1.5 mt-2">
-                    {[16, 50, 100, 500, 1000].map((val) => (
-                      <button
-                        key={val}
-                        type="button"
-                        onClick={() => {
-                          setAmountInput(String(val));
-                          setErrorMessage(null);
-                        }}
-                        className={`py-1.5 px-1 text-xs font-semibold rounded-xl border transition-all cursor-pointer text-center ${
-                          amountInput === String(val)
-                            ? 'bg-blue-50 dark:bg-blue-950/60 border-[#0066FF] text-[#0066FF] font-bold shadow-xs'
-                            : isDarkMode
-                            ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
-                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                        }`}
-                      >
-                        ${val}
-                      </button>
-                    ))}
+                  <button
+                    type="button"
+                    onClick={handleUserCancelledOnPhone}
+                    className="w-full py-2.5 rounded-xl bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-300 font-bold text-xs cursor-pointer transition-all"
+                  >
+                    Cancel Request
+                  </button>
+                </div>
+              ) : payheroPopupStep === 'CANCELLED' ? (
+                <div className="p-4 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-500 flex items-center justify-center mx-auto">
+                    <XCircle className="w-7 h-7 stroke-[2.5]" />
+                  </div>
+                  <div>
+                    <h4 className="text-base font-bold text-slate-900 dark:text-white">Payment Cancelled</h4>
+                    <p className="text-xs text-rose-500 font-medium mt-0.5">
+                      {failureReason || 'Request cancelled by user'}
+                    </p>
+                  </div>
+
+                  <div className="bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl p-3 text-xs space-y-2 text-left font-mono">
+                    <div className="flex justify-between items-center pb-1.5 border-b border-slate-200 dark:border-neutral-800">
+                      <span className="text-slate-500 dark:text-neutral-400 flex items-center gap-1.5 font-sans font-medium">
+                        <Clock className="w-3.5 h-3.5 text-rose-500 shrink-0" /> Exact Time:
+                      </span>
+                      <span className="font-bold text-rose-600 dark:text-rose-400 text-xs">
+                        {new Date(cancelledAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Date:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        {new Date(cancelledAt || Date.now()).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Prompt Feedback:</span>
+                      <span className="font-semibold text-rose-600 dark:text-rose-400">
+                        {failureReason || 'Request cancelled by user'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Amount:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">KES {numKes.toLocaleString()} (${numUsd || 16} USD)</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Account:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">{settlementDestinationLabel}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Phone:</span>
+                      <span className="font-semibold text-slate-900 dark:text-white">{maskPhoneNumber(phoneCheck.display || phoneInput)}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPayheroPopupStep(null);
+                        setErrorMessage(null);
+                      }}
+                      className="w-full py-2.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-xs cursor-pointer shadow-xs transition-all"
+                    >
+                      Try Again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCloseAll}
+                      className="w-full py-2.5 rounded-xl bg-neutral-200 dark:bg-neutral-800 hover:bg-neutral-300 dark:hover:bg-neutral-700 text-slate-700 dark:text-neutral-300 font-bold text-xs cursor-pointer transition-all"
+                    >
+                      Close
+                    </button>
                   </div>
                 </div>
-
-                {/* Mobile Number with Country Selector */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300">
-                      Mobile Money Number ({activeCountryCfg.flag} {activeCountryCfg.name})
-                    </label>
-                    <span className="text-[10px] font-mono text-slate-400">
-                      {activeCountryCfg.minDigits === activeCountryCfg.maxDigits
-                        ? `${activeCountryCfg.minDigits} digits`
-                        : `${activeCountryCfg.minDigits}–${activeCountryCfg.maxDigits} digits`}
-                    </span>
+              ) : payheroPopupStep === 'SUCCESS' ? (
+                <div className="p-4 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-500 flex items-center justify-center mx-auto">
+                    <Check className="w-6 h-6 stroke-[3]" />
                   </div>
-                  <div className="flex gap-2">
-                    <select
-                      value={selectedCountryCode}
-                      onChange={(e) => {
-                        const newCode = e.target.value;
-                        setSelectedCountryCode(newCode);
-                        const newCfg = getCountryByCode(newCode);
-                        setPhoneInput((prev) => formatLocalPhoneInput(prev, newCfg));
-                        setErrorMessage(null);
-                      }}
-                      className={`w-[125px] shrink-0 border rounded-xl px-2.5 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
-                        isDarkMode
-                          ? 'bg-neutral-900 border-neutral-700 text-white'
-                          : 'bg-white border-slate-200 text-slate-900'
-                      }`}
-                    >
-                      {COUNTRY_OPTIONS.map((c) => (
-                        <option key={`${c.iso}-${c.code}`} value={c.code}>
-                          {c.flag} {c.code} ({c.iso})
-                        </option>
-                      ))}
-                    </select>
+                  <h4 className="text-base font-bold text-slate-900 dark:text-white">Payment Confirmed</h4>
+                  <p className="text-xs text-slate-500 dark:text-neutral-400">
+                    Your M-PESA deposit has been confirmed and credited.
+                  </p>
+                  <div className="bg-slate-100 dark:bg-neutral-900 border border-slate-200 dark:border-neutral-800 rounded-xl p-3 text-xs space-y-1.5 text-left font-mono">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400">M-PESA Receipt:</span>
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">{confirmedReceipt}</span>
+                    </div>
+                    {confirmedReference && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 dark:text-neutral-400">Reference:</span>
+                        <span className="font-bold text-slate-900 dark:text-white">{confirmedReference}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400">Amount:</span>
+                      <span className="font-bold text-slate-900 dark:text-white">KES {numKes.toLocaleString()} (${numUsd || 16} USD)</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 dark:text-neutral-400">Settled Into:</span>
+                      <span className="font-bold text-slate-900 dark:text-white">{settlementDestinationLabel}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCloseAll}
+                    className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer shadow-xs transition-all"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Amount (USD) */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1.5">
+                      <label className="text-xs font-semibold text-slate-700 dark:text-neutral-300">
+                        Amount (USD) <span className="text-[#0066FF] font-bold">*Min $16</span>
+                      </label>
+                      <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                        KES {numKes.toLocaleString()} (${numUsd || 16} USD)
+                      </span>
+                    </div>
                     <input
-                      type="tel"
-                      placeholder={activeCountryCfg.placeholder}
-                      value={phoneInput}
+                      type="number"
+                      min="16"
+                      step="1"
+                      placeholder="Min $16"
+                      value={amountInput}
                       onChange={(e) => {
-                        setPhoneInput(formatLocalPhoneInput(e.target.value, activeCountryCfg));
+                        setAmountInput(e.target.value);
                         setErrorMessage(null);
                       }}
-                      className={`flex-1 border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-medium ${
+                      className={`w-full border rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-mono font-semibold ${
                         isDarkMode
                           ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
                           : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
                       }`}
                     />
-                  </div>
-                  <p className="text-[11px] text-slate-400 dark:text-neutral-500 mt-1">
-                    Format for {activeCountryCfg.name}: <span className="font-mono">{activeCountryCfg.exampleFormat}</span>
-                  </p>
-                </div>
 
-                {/* Deposit Now Button */}
-                <button
-                  type="button"
-                  disabled={isProcessingStk}
-                  onClick={handleDepositNow}
-                  className="w-full py-3.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 mt-2 flex items-center justify-center gap-2"
-                >
-                  {isProcessingStk ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Sending STK Prompt...</span>
-                    </>
-                  ) : (
-                    <span>Deposit KES {numKes.toLocaleString()} (${numUsd || 16})</span>
-                  )}
-                </button>
-              </div>
+                    {/* Preset Pills starting from minimum $16 */}
+                    <div className="grid grid-cols-5 gap-1.5 mt-2">
+                      {[16, 50, 100, 500, 1000].map((val) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() => {
+                            setAmountInput(String(val));
+                            setErrorMessage(null);
+                          }}
+                          className={`py-1.5 px-1 text-xs font-semibold rounded-xl border transition-all cursor-pointer text-center ${
+                            amountInput === String(val)
+                              ? 'bg-blue-50 dark:bg-blue-950/60 border-[#0066FF] text-[#0066FF] font-bold shadow-xs'
+                              : isDarkMode
+                              ? 'border-neutral-700 hover:bg-neutral-800 text-neutral-300'
+                              : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          ${val}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Mobile Number with Country Selector */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-700 dark:text-neutral-300">
+                        Mobile Money Number ({activeCountryCfg.flag} {activeCountryCfg.name})
+                      </label>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {activeCountryCfg.minDigits === activeCountryCfg.maxDigits
+                          ? `${activeCountryCfg.minDigits} digits`
+                          : `${activeCountryCfg.minDigits}–${activeCountryCfg.maxDigits} digits`}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <select
+                        value={selectedCountryCode}
+                        onChange={(e) => {
+                          const newCode = e.target.value;
+                          setSelectedCountryCode(newCode);
+                          const newCfg = getCountryByCode(newCode);
+                          setPhoneInput((prev) => formatLocalPhoneInput(prev, newCfg));
+                          setErrorMessage(null);
+                        }}
+                        className={`w-[125px] shrink-0 border rounded-xl px-2.5 py-2.5 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#0066FF] ${
+                          isDarkMode
+                            ? 'bg-neutral-900 border-neutral-700 text-white'
+                            : 'bg-white border-slate-200 text-slate-900'
+                        }`}
+                      >
+                        {COUNTRY_OPTIONS.map((c) => (
+                          <option key={`${c.iso}-${c.code}`} value={c.code}>
+                            {c.flag} {c.code} ({c.iso})
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="tel"
+                        placeholder={activeCountryCfg.placeholder}
+                        value={phoneInput}
+                        onChange={(e) => {
+                          setPhoneInput(formatLocalPhoneInput(e.target.value, activeCountryCfg));
+                          setErrorMessage(null);
+                        }}
+                        className={`flex-1 border rounded-xl px-3.5 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#0066FF] transition-all font-medium ${
+                          isDarkMode
+                            ? 'bg-neutral-900 border-neutral-700 text-white placeholder-neutral-500'
+                            : 'bg-white border-slate-200 text-slate-900 placeholder-slate-400'
+                        }`}
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-400 dark:text-neutral-500 mt-1">
+                      Format for {activeCountryCfg.name}: <span className="font-mono">{activeCountryCfg.exampleFormat}</span>
+                    </p>
+                  </div>
+
+                  {/* Deposit Now Button */}
+                  <button
+                    type="button"
+                    disabled={isProcessingStk}
+                    onClick={handleDepositNow}
+                    className="w-full py-3.5 rounded-xl bg-[#0066FF] hover:bg-[#0055D6] text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 mt-2 flex items-center justify-center gap-2"
+                  >
+                    {isProcessingStk ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Sending STK Prompt...</span>
+                      </>
+                    ) : (
+                      <span>Deposit KES {numKes.toLocaleString()} (${numUsd || 16})</span>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1079,174 +1332,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* 2. OFFICIAL HASHBACK POPUP MODAL (WAITING | CANCELLED | SUCCESS)          */}
-      {/* ========================================================================= */}
-      {hashbackPopupStep && (
-        <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl bg-white text-slate-900 border border-slate-200 animate-in zoom-in-95 duration-150 relative">
-          {/* Top Green Banner */}
-          <div className="bg-[#34A836] p-4 text-white relative">
-            <button
-              onClick={handleClosePopup}
-              className="absolute top-3.5 right-3.5 w-6 h-6 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center text-white transition-colors cursor-pointer"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-
-            <span className="text-[11px] font-bold uppercase tracking-wider block text-white/90">
-              PAYMENT TO
-            </span>
-            <h4 className="text-base sm:text-lg font-black tracking-tight leading-snug mt-0.5">
-              {userAccountName}
-            </h4>
-            <span className="text-[11px] font-semibold block text-white/95 mt-0.5">
-              Settles To: {settlementDestinationLabel}
-            </span>
-            <span className="text-xs font-bold block mt-1 text-white">
-              Amount: KES {numKes.toLocaleString()} (${numUsd})
-            </span>
-          </div>
-
-          {/* POPUP BODY: 1. WAITING */}
-          {hashbackPopupStep === 'WAITING' && (
-            <div className="p-6 text-center space-y-3">
-              <div className="relative w-14 h-14 mx-auto my-2">
-                <svg className="w-14 h-14 animate-spin" viewBox="0 0 50 50">
-                  <circle
-                    className="stroke-slate-200"
-                    cx="25"
-                    cy="25"
-                    r="20"
-                    fill="none"
-                    strokeWidth="4"
-                  />
-                  <circle
-                    className="stroke-[#34A836]"
-                    cx="25"
-                    cy="25"
-                    r="20"
-                    fill="none"
-                    strokeWidth="4"
-                    strokeDasharray="80"
-                    strokeDashoffset="60"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </div>
-
-              <h3 className="text-base font-bold text-slate-900">Check your phone</h3>
-
-              <p className="text-xs text-slate-600 leading-relaxed max-w-xs mx-auto">
-                An M-PESA prompt was sent to{' '}
-                <span className="font-bold text-slate-900">{maskPhoneNumber(phoneCheck.display || phoneInput)}</span>. Enter your PIN to
-                complete the payment.
-              </p>
-
-              <div className="pt-2">
-                <span className="text-3xl font-black text-[#34A836] font-mono tracking-tight block">
-                  {formatTimeRemaining(countdownSeconds)}
-                </span>
-                <span className="text-[11px] text-slate-400 font-medium">time remaining</span>
-              </div>
-
-              <div className="pt-4 mt-4 border-t border-slate-100 flex items-center justify-center gap-1.5 text-xs text-slate-400">
-                <span>Secured by</span>
-                <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
-              </div>
-            </div>
-          )}
-
-          {/* POPUP BODY: 2. PAYMENT CANCELLED */}
-          {hashbackPopupStep === 'CANCELLED' && (
-            <div className="p-6 text-center space-y-3">
-              <div className="w-16 h-16 rounded-full border-2 border-amber-400 text-amber-500 flex items-center justify-center mx-auto my-2 font-black text-3xl">
-                !
-              </div>
-
-              <h3 className="text-base font-bold text-slate-900">Payment cancelled</h3>
-              <p className="text-xs text-slate-600">Payment was cancelled on your phone.</p>
-
-              <button
-                type="button"
-                onClick={handleClosePopup}
-                className="w-full py-2.5 rounded-xl bg-[#34A836] hover:bg-[#2DA02E] text-white font-bold text-sm cursor-pointer mt-4 shadow-xs"
-              >
-                Close
-              </button>
-
-              <div className="pt-4 border-t border-slate-100 text-center space-y-1">
-                <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400">
-                  <span>Secured by</span>
-                  <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleClosePopup}
-                  className="text-[11px] text-slate-400 hover:text-slate-600 underline cursor-pointer"
-                >
-                  Report scam
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* POPUP BODY: 3. PAYMENT SUCCESSFUL */}
-          {hashbackPopupStep === 'SUCCESS' && (
-            <div className="p-6 text-center space-y-3">
-              <div className="w-16 h-16 rounded-full border-2 border-[#34A836] text-[#34A836] flex items-center justify-center mx-auto my-2 font-black">
-                <Check className="w-8 h-8 stroke-[3]" />
-              </div>
-
-              <h3 className="text-base font-bold text-slate-900">Payment successful</h3>
-              <p className="text-xs text-slate-600">Your payment has been received and credited.</p>
-
-              <div className="bg-[#F8FAFC] border border-slate-200/80 rounded-xl p-3.5 my-3 space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-medium">Account Name</span>
-                  <span className="font-bold text-slate-900">{userAccountName}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-medium">Settled Into</span>
-                  <span className="font-bold text-emerald-700">{settlementDestinationLabel}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-medium">Receipt</span>
-                  <span className="font-bold font-mono text-slate-900">{confirmedReceipt}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-medium">Amount</span>
-                  <span className="font-bold font-mono text-slate-900">
-                    KES {numKes.toLocaleString()} (${numUsd})
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500 font-medium">Reference</span>
-                  <span className="font-bold font-mono text-slate-900">{confirmedReference}</span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleCloseAll}
-                className="w-full py-2.5 rounded-xl bg-[#34A836] hover:bg-[#2DA02E] text-white font-bold text-sm cursor-pointer shadow-xs"
-              >
-                Done
-              </button>
-
-              <div className="pt-4 border-t border-slate-100 text-center space-y-1">
-                <div className="flex items-center justify-center gap-1.5 text-xs text-slate-400">
-                  <span>Secured by</span>
-                  <span className="font-extrabold text-slate-700 tracking-wider">VTMMARKETS • M-PESA GATEWAY</span>
-                </div>
-                <span className="text-[11px] text-slate-400 block">Report scam</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      </div>
     </div>
   );
 };
