@@ -990,6 +990,17 @@ export async function handler(event) {
 
       const channelId = Number(process.env.PAYHERO_CHANNEL_ID || process.env.VITE_PAYHERO_CHANNEL_ID || 10947);
 
+      if (!authHeader || authHeader === 'Basic ' || authHeader === 'Basic Og==') {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: false,
+            error: 'PayHero API credentials are not configured in Netlify environment variables. Please set PAYHERO_BASIC_AUTH or PAYHERO_API_KEY in your Netlify site settings.',
+          }),
+        };
+      }
+
       const payheroPayload = {
         amount: amountVal,
         phone_number: phoneVal,

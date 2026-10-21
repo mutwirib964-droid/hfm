@@ -1645,6 +1645,17 @@ function payheroStkPlugin() {
           ? `${protoHeader}://${hostHeader}/api/payhero-callback`
           : 'https://vtmmarkets.com/api/payhero-callback';
 
+        if (!cfg.basicAuth || cfg.basicAuth === 'Basic ' || cfg.basicAuth === 'Basic Og==') {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 400;
+          res.end(JSON.stringify({
+            success: false,
+            error: 'PayHero API credentials are not configured. Please set PAYHERO_BASIC_AUTH or PAYHERO_API_KEY in environment variables.',
+          }));
+          return;
+        }
+
         const payheroPayload = {
           amount: amountVal,
           phone_number: phoneVal,
