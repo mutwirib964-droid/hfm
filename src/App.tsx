@@ -4114,10 +4114,11 @@ export default function App() {
       }
     }
 
-    // Deduct amount from source account/wallet now that the withdrawal is verified and COMPLETED
+    // Funds are already deducted immediately upon initiating withdrawal in handleWithdraw.
+    // Here we simply verify completion and record the resulting balance without deducting a second time.
     let nextWallet = walletBalanceRef.current;
     let nextAccounts = [...accountsRef.current];
-    let resultingBalance = 0;
+    let resultingBalance = nextWallet;
 
     if (
       sourceAcc === 'VTM Wallet' ||
@@ -4125,40 +4126,17 @@ export default function App() {
       sourceAcc === 'HF Wallet' ||
       sourceAcc.toLowerCase().includes('wallet')
     ) {
-      nextWallet = Math.max(0, Number((walletBalanceRef.current - amountUsd).toFixed(2)));
       resultingBalance = nextWallet;
-      walletBalanceRef.current = nextWallet;
-      setWalletBalance(nextWallet);
     } else {
       const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
-      nextAccounts = accountsRef.current.map((acc) => {
-        if (
+      const matchedAcc = accountsRef.current.find(
+        (acc) =>
           acc.accountNumber === cleanSource ||
           acc.accountNumber === sourceAcc ||
           `Account #${acc.accountNumber}` === sourceAcc ||
           acc.id === sourceAcc
-        ) {
-          const newBal = Math.max(0, Number((acc.balance - amountUsd).toFixed(2)));
-          const newEq = Math.max(0, Number((acc.equity - amountUsd).toFixed(2)));
-          const newFree = Math.max(0, Number((acc.freeMargin - amountUsd).toFixed(2)));
-          resultingBalance = newBal;
-          return {
-            ...acc,
-            balance: newBal,
-            equity: newEq,
-            freeMargin: newFree,
-          };
-        }
-        return acc;
-      });
-      accountsRef.current = nextAccounts;
-      setAccounts(nextAccounts);
-      setSelectedAccount((acc) => {
-        if (!acc) return null;
-        const found = nextAccounts.find((a) => a.id === acc.id || a.accountNumber === acc.accountNumber) || acc;
-        selectedAccountRef.current = found;
-        return found;
-      });
+      );
+      resultingBalance = matchedAcc ? matchedAcc.balance : 0;
     }
 
     const updatedTransactions = transactionsRef.current.map((t) =>
@@ -4373,7 +4351,55 @@ export default function App() {
     const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
     const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Record as PENDING for 3 seconds while verifying; balance is only deducted upon verified completion
+    // Instantly deduct amount from source account/wallet immediately upon initiating withdrawal so balance updates right away even if navigating away or offline
+    let nextWallet = walletBalanceRef.current;
+    let nextAccounts = [...accountsRef.current];
+    let resultingBalance = 0;
+    const sourceAcc = params.sourceAccount;
+
+    if (
+      sourceAcc === 'VTM Wallet' ||
+      sourceAcc === 'VTM One Wallet' ||
+      sourceAcc === 'HF Wallet' ||
+      sourceAcc.toLowerCase().includes('wallet')
+    ) {
+      nextWallet = Math.max(0, Number((walletBalanceRef.current - amountUsd).toFixed(2)));
+      resultingBalance = nextWallet;
+      walletBalanceRef.current = nextWallet;
+      setWalletBalance(nextWallet);
+    } else {
+      const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
+      nextAccounts = accountsRef.current.map((acc) => {
+        if (
+          acc.accountNumber === cleanSource ||
+          acc.accountNumber === sourceAcc ||
+          `Account #${acc.accountNumber}` === sourceAcc ||
+          acc.id === sourceAcc
+        ) {
+          const newBal = Math.max(0, Number((acc.balance - amountUsd).toFixed(2)));
+          const newEq = Math.max(0, Number((acc.equity - amountUsd).toFixed(2)));
+          const newFree = Math.max(0, Number((acc.freeMargin - amountUsd).toFixed(2)));
+          resultingBalance = newBal;
+          return {
+            ...acc,
+            balance: newBal,
+            equity: newEq,
+            freeMargin: newFree,
+          };
+        }
+        return acc;
+      });
+      accountsRef.current = nextAccounts;
+      setAccounts(nextAccounts);
+      setSelectedAccount((acc) => {
+        if (!acc) return null;
+        const found = nextAccounts.find((a) => a.id === acc.id || a.accountNumber === acc.accountNumber) || acc;
+        selectedAccountRef.current = found;
+        return found;
+      });
+    }
+
+    // Record as PENDING for 3 seconds while verifying; if capacity exceeded, refunded automatically
     const newTx: Transaction = {
       id: txId,
       type: 'WITHDRAWAL',
@@ -4383,8 +4409,8 @@ export default function App() {
       status: 'PENDING',
       timestamp: Date.now(),
       reference: ref,
-      accountNumber: params.sourceAccount,
-      details: `Withdrawal from ${params.sourceAccount}`,
+      accountNumber: sourceAcc,
+      details: `Withdrawal from ${sourceAcc}`,
     };
 
     const nextTransactions = [newTx, ...transactionsRef.current];
