@@ -889,9 +889,20 @@ export async function handler(event) {
     }
   }
 
-  const isStk = rawPath.includes('payhero-stk') || Boolean(body?.msisdn) || body?.action === 'payhero-stk';
-  const isStatus = rawPath.includes('payhero-status') || Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID) || body?.action === 'payhero-status';
-  const isConfig = rawPath.includes('payhero-config') || body?.action === 'payhero-config';
+  const isStk =
+    rawPath.includes('payhero-stk') ||
+    rawPath.includes('stk') ||
+    Boolean(body?.phone || body?.phone_number || body?.msisdn) ||
+    body?.action === 'payhero-stk';
+  const isStatus =
+    rawPath.includes('payhero-status') ||
+    rawPath.includes('status') ||
+    Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID) ||
+    body?.action === 'payhero-status';
+  const isConfig =
+    rawPath.includes('payhero-config') ||
+    rawPath.includes('config') ||
+    body?.action === 'payhero-config';
   const isSupabase = rawPath.includes('supabase-config') || body?.action === 'supabase-config';
   const isPrices = rawPath.includes('market-prices');
 
@@ -974,8 +985,16 @@ export async function handler(event) {
     try {
       const parsed = body;
       const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
-      const phoneVal = String(parsed.msisdn || parsed.phone || parsed.phone_number || '').trim();
+      const rawPhone = String(parsed.phone_number || parsed.phone || parsed.msisdn || '').trim();
       const refVal = parsed.reference || `VTM-${Date.now()}`;
+
+      // PayHero v2 expects Kenyan phone number in 07XXXXXXXX or 01XXXXXXXX format
+      let phoneVal = rawPhone.replace(/\D/g, '');
+      if (phoneVal.startsWith('254') && phoneVal.length === 12) {
+        phoneVal = '0' + phoneVal.slice(3);
+      } else if (!phoneVal.startsWith('0') && (phoneVal.startsWith('7') || phoneVal.startsWith('1')) && phoneVal.length === 9) {
+        phoneVal = '0' + phoneVal;
+      }
 
       const basicAuth = (process.env.PAYHERO_BASIC_AUTH || process.env.VITE_PAYHERO_BASIC_AUTH || '').trim();
       const apiKey = (process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
@@ -1001,6 +1020,12 @@ export async function handler(event) {
         };
       }
 
+      const host = event.headers?.['x-forwarded-host'] || event.headers?.host || 'vtmmarkets.com';
+      const proto = event.headers?.['x-forwarded-proto'] || 'https';
+      const dynamicCallbackUrl = host.includes('localhost')
+        ? 'https://vtmmarkets.com/api/payhero-callback'
+        : `${proto}://${host}/api/payhero-callback`;
+
       const payheroPayload = {
         amount: amountVal,
         phone_number: phoneVal,
@@ -1009,7 +1034,7 @@ export async function handler(event) {
         provider: 'm-pesa',
         external_reference: refVal,
         reference: refVal,
-        callback_url: 'https://vtmmarkets.com/api/payhero-callback',
+        callback_url: dynamicCallbackUrl,
       };
 
       console.log(`[PayHero Diagnostic] Sending STK push request to PayHero v2 API:`, {

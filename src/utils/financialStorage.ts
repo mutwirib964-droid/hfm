@@ -735,6 +735,7 @@ export interface PlatformDepositTransaction {
   timestamp: number;
   dateStr: string;
   referenceId?: string;
+  details?: string;
 }
 
 const LEGACY_MOCK_TX_IDS = new Set([
@@ -810,7 +811,7 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
 
     const cleanedDetails =
       tx.type === 'DEPOSIT' && normalizedStatus === 'FAILED'
-        ? 'Request cancelled by user'
+        ? (tx.details || 'You cancelled the M-PESA payment request.')
         : tx.type === 'WITHDRAWAL' && normalizedStatus === 'FAILED'
         ? /capacity exceeded|bounced back/i.test(String(tx.details || ''))
           ? 'Customer wallet capacity exceeded'
@@ -901,6 +902,7 @@ export function getAllPlatformDeposits(): {
             minute: '2-digit',
           }),
           referenceId: (tx as any).referenceId || (tx as any).checkoutRequestId || tx.reference || `VTM-DEP-${String(tx.id || '').slice(-6).toUpperCase()}`,
+          details: tx.details,
         });
       }
     });

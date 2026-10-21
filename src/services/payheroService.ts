@@ -161,10 +161,15 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
   }
 
   const payload = {
+    action: 'payhero-stk',
     amount: Math.max(1, Math.round(req.amountKes)),
     phone_number: msisdn,
     phone: msisdn,
+    msisdn,
     reference,
+    accountReference: req.accountReference,
+    targetAccount: req.targetAccount,
+    userEmail: req.userEmail,
   };
 
   let data: any = null;
@@ -315,6 +320,7 @@ export async function checkStkPaymentStatus(
   extra?: { reference?: string; startedAt?: number }
 ): Promise<PayHeroStatusResponse> {
   const payload = {
+    action: 'payhero-status',
     checkout_id: checkoutId,
     checkoutid: checkoutId,
     reference: extra?.reference,

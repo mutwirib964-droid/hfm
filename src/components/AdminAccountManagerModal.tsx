@@ -1802,16 +1802,21 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                           </td>
                           <td className="py-3 px-4 text-right">
                             <span
-                              className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                              className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-medium ${
                                 isCompleted
                                   ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                                   : isPending
                                   ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                                  : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                                  : 'border border-rose-500 text-rose-500 bg-rose-500/10'
                               }`}
                             >
-                              {tx.status}
+                              {isCompleted ? 'Completed' : isPending ? 'Pending' : 'Failed'}
                             </span>
+                            {tx.status === 'FAILED' && (
+                              <div className="text-[11px] text-slate-300 dark:text-slate-300 mt-1 max-w-[220px] ml-auto text-right font-normal">
+                                {tx.details || (tx as any).resultDesc || 'You cancelled the M-PESA payment request.'}
+                              </div>
+                            )}
                           </td>
                         </tr>
                       );

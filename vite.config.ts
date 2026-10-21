@@ -1636,7 +1636,13 @@ function payheroStkPlugin() {
         const parsed = JSON.parse(bodyStr || '{}');
         const cfg = getPayheroConfig();
         const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
-        const phoneVal = String(parsed.msisdn || parsed.phone || parsed.phone_number || '').trim();
+        const rawPhone = String(parsed.phone_number || parsed.phone || parsed.msisdn || '').trim();
+        let phoneVal = rawPhone.replace(/\D/g, '');
+        if (phoneVal.startsWith('254') && phoneVal.length === 12) {
+          phoneVal = '0' + phoneVal.slice(3);
+        } else if (!phoneVal.startsWith('0') && (phoneVal.startsWith('7') || phoneVal.startsWith('1')) && phoneVal.length === 9) {
+          phoneVal = '0' + phoneVal;
+        }
         const refVal = parsed.reference || `VTM-${Date.now()}`;
 
         const hostHeader = (req.headers['x-forwarded-host'] || req.headers.host || '').toString().trim();

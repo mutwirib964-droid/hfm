@@ -770,9 +770,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         </span>
                         <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                           {isFailed
-                            ? isDeposit
-                              ? 'Request cancelled by user'
-                              : 'Customer wallet capacity exceeded'
+                            ? 'Failed'
                             : isDeposit && isSuccess
                             ? `Funded to ${tx.accountNumber || 'VTM One Wallet'}`
                             : isDeposit && isPending
