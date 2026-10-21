@@ -896,7 +896,7 @@ export const AdminTransactionLogs: React.FC<AdminTransactionLogsProps> = ({
                         )}
                       </td>
 
-                      {/* M-Pesa Receipt / Code */}
+                      {/* M-Pesa Receipt / Outcome */}
                       <td className="py-3 px-3.5">
                         {log.mpesaReceiptNumber ? (
                           <div className="flex items-center gap-1 font-mono text-xs text-emerald-300 font-bold">
@@ -915,16 +915,24 @@ export const AdminTransactionLogs: React.FC<AdminTransactionLogsProps> = ({
                             </button>
                           </div>
                         ) : isCompleted ? (
-                          <span className="font-mono text-xs text-emerald-400">Verified (Code 0)</span>
+                          <span className="font-mono text-xs text-emerald-400">Confirmed</span>
                         ) : isFailed ? (
                           <span className="text-[11px] text-rose-400 font-medium">
-                            {log.resultCode ? `Code ${log.resultCode}` : 'Cancelled'}
+                            {log.resultDesc && /insufficient/i.test(log.resultDesc)
+                              ? 'Insufficient funds to complete transaction'
+                              : log.resultDesc && /user\s*cancel/i.test(log.resultDesc)
+                              ? 'User cancelled'
+                              : log.resultDesc && /cancel/i.test(log.resultDesc)
+                              ? 'Cancelled'
+                              : 'Failed'}
                           </span>
                         ) : (
                           <span className="text-[11px] text-amber-400">Awaiting PIN</span>
                         )}
-                        <div className="text-[10px] text-slate-500 truncate max-w-[160px] mt-0.5" title={log.resultDesc || ''}>
-                          {log.resultDesc || (isCompleted ? 'Payment success' : isFailed ? 'Cancelled by user' : 'Awaiting confirmation')}
+                        <div className="text-[10px] text-slate-500 truncate max-w-[160px] mt-0.5" title={(log.resultDesc || '').replace(/\(?\s*(?:Result\s*Code|Code)\s*[:#-]?\s*\d+\s*\)?/gi, '').trim()}>
+                          {(log.resultDesc || (isCompleted ? 'Payment confirmed' : isFailed ? 'User cancelled' : 'Awaiting confirmation'))
+                            .replace(/\(?\s*(?:Result\s*Code|Code)\s*[:#-]?\s*\d+\s*\)?/gi, '')
+                            .trim()}
                         </div>
                       </td>
 

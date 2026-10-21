@@ -23,67 +23,73 @@
 
 [[redirects]]
   from = "/api/hashback-stk"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=hashback-stk"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/hashback-status"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=hashback-status"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/hashback-config"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=hashback-config"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/supabase-config"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=supabase-config"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/market-prices"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=market-prices"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/payhero-stk"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=payhero-stk"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/payhero-status"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=payhero-status"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/payhero-config"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=payhero-config"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/payhero-callback"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=payhero-callback"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/payhero-webhook"
+  to = "/.netlify/functions/api?route=payhero-webhook"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/payhero-callback-logs"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=payhero-callback-logs"
   status = 200
   force = true
 
 [[redirects]]
   from = "/api/*"
-  to = "/.netlify/functions/api"
+  to = "/.netlify/functions/api?route=:splat"
   status = 200
   force = true
 

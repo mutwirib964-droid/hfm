@@ -8,6 +8,7 @@ export interface MpesaPaymentResponse {
   message: string;
   checkoutId?: string;
   reference?: string;
+  payheroReference?: string;
   amountKes?: number;
   amountUsd?: number;
   formattedPhone?: string;
@@ -202,6 +203,7 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
   }
 
   const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || reference;
+  const payheroReference = data.payhero_reference || data.raw?.reference || data.reference || checkoutId;
   const isAccepted =
     httpOk &&
     (data.success === true ||
@@ -215,6 +217,7 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
       message: data.message || 'STK Push sent to your Safaricom phone. Please enter your M-Pesa PIN.',
       checkoutId,
       reference,
+      payheroReference,
       amountKes: req.amountKes,
       amountUsd: req.amountUsd,
       formattedPhone: msisdn,
@@ -250,6 +253,40 @@ export interface PayHeroTransactionAuditLog {
 }
 
 const STORAGE_KEY_AUDIT_LOGS = 'vtm_payhero_audit_logs';
+
+export function sanitizeUserPayHeroMessage(
+  rawDesc?: string | null,
+  resultCode?: string | number | null,
+  isFailed?: boolean
+): string {
+  const codeStr = resultCode !== undefined && resultCode !== null ? String(resultCode).trim() : '';
+  const cleaned = String(rawDesc || '')
+    .replace(/\(?\s*Result\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+    .replace(/\(?\s*Error\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+    .replace(/\(?\s*Status\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+    .replace(/\(?\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+    .replace(/\[\s*\d+\s*\]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (isFailed) {
+    if (codeStr === '1' || /insufficient|funds|balance/i.test(cleaned)) {
+      return 'Insufficient funds to complete transaction';
+    }
+    if (codeStr === '1032' || /cancel/i.test(cleaned)) {
+      if (/user\s*cancel/i.test(cleaned)) return 'User cancelled';
+      if (/cancelled\s*by\s*user/i.test(cleaned)) return 'Request cancelled by user';
+      if (/^cancelled$/i.test(cleaned)) return 'Cancelled';
+      return cleaned || 'User cancelled';
+    }
+    if (codeStr === '1037' || /timeout|timed?\s*out|expired|no\s*response/i.test(cleaned)) {
+      return cleaned || 'Cancelled';
+    }
+    return cleaned || 'Failed';
+  }
+
+  return cleaned;
+}
 
 export function getLocalPayHeroAuditLogs(): PayHeroTransactionAuditLog[] {
   try {
@@ -320,13 +357,14 @@ export async function postAuditLogToBackend(log: PayHeroTransactionAuditLog): Pr
 
 export async function checkStkPaymentStatus(
   checkoutId: string,
-  extra?: { reference?: string; startedAt?: number }
+  extra?: { reference?: string; payheroReference?: string; startedAt?: number }
 ): Promise<PayHeroStatusResponse> {
   const payload = {
     action: 'payhero-status',
     checkout_id: checkoutId,
     checkoutid: checkoutId,
     reference: extra?.reference,
+    payhero_reference: extra?.payheroReference,
     startedAt: extra?.startedAt,
   };
 
@@ -338,8 +376,9 @@ export async function checkStkPaymentStatus(
     });
     if (res.ok) {
       const data = await res.json();
-      const resultCode = data.resultCode !== undefined ? String(data.resultCode) : undefined;
-      const resultDesc = data.resultDesc || data.message || '';
+      const resultCode = data.resultCode !== undefined && data.resultCode !== null ? String(data.resultCode) : undefined;
+      const rawDesc = data.resultDesc || data.message || '';
+      const resultDesc = sanitizeUserPayHeroMessage(rawDesc, resultCode, Boolean(data.failed));
       let outcome = data.outcome;
       let friendlyTitle = data.friendlyTitle;
 
@@ -347,18 +386,18 @@ export async function checkStkPaymentStatus(
         outcome = 'COMPLETED';
         friendlyTitle = 'Payment successful';
       } else if (data.failed) {
-        if (resultCode === '1032' || /cancel/i.test(resultDesc)) {
-          outcome = 'CANCELLED';
-          friendlyTitle = 'Payment cancelled';
-        } else if (resultCode === '1' || /insufficient|balance|funds/i.test(resultDesc)) {
+        if (resultCode === '1' || /insufficient|balance|funds/i.test(resultDesc)) {
           outcome = 'INSUFFICIENT_FUNDS';
-          friendlyTitle = 'Insufficient funds';
+          friendlyTitle = 'Insufficient funds to complete transaction';
+        } else if (resultCode === '1032' || /cancel/i.test(resultDesc)) {
+          outcome = 'CANCELLED';
+          friendlyTitle = 'Cancelled';
         } else if (resultCode === '1037' || /timeout|time out|no response/i.test(resultDesc)) {
           outcome = 'TIMED_OUT';
-          friendlyTitle = 'Payment timed out';
+          friendlyTitle = 'Cancelled';
         } else {
           outcome = 'FAILED';
-          friendlyTitle = 'Payment failed';
+          friendlyTitle = 'Failed';
         }
       }
 
@@ -412,13 +451,18 @@ export async function cancelStkPaymentStatus(
     });
     if (res.ok) {
       const data = await res.json();
+      const cleanDesc = sanitizeUserPayHeroMessage(
+        data.resultDesc || 'User cancelled',
+        data.resultCode || '1032',
+        true
+      );
       return {
         success: false,
         confirmed: false,
         pending: false,
         failed: true,
         resultCode: data.resultCode || '1032',
-        resultDesc: data.resultDesc || 'Request cancelled by user',
+        resultDesc: cleanDesc,
         cancelledAt: data.cancelledAt || cancelTimestamp,
         cancelledAtFormatted: data.cancelledAtFormatted || new Date(cancelTimestamp).toLocaleTimeString(),
         data: data.data || data,
@@ -433,7 +477,7 @@ export async function cancelStkPaymentStatus(
     pending: false,
     failed: true,
     resultCode: '1032',
-    resultDesc: 'Request cancelled by user',
+    resultDesc: 'User cancelled',
     cancelledAt: cancelTimestamp,
     cancelledAtFormatted: new Date(cancelTimestamp).toLocaleTimeString(),
   };

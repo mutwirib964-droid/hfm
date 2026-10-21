@@ -258,6 +258,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       try {
         const res = await payheroService.queryTransactionStatus(checkoutId, {
           reference: stkResult?.reference || activeDepositReferenceRef.current,
+          payheroReference: stkResult?.payheroReference,
           startedAt: waitingStartTimeRef.current,
         });
         if (!isPollingRef.current) return;
@@ -344,7 +345,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           clearInterval(pollTimer);
           const cancelTs = res.cancelledAt ? Number(res.cancelledAt) : Date.now();
           setCancelledAt(cancelTs);
-          const failureDesc = res.resultDesc || res.message || 'Request cancelled by user';
+          const failureDesc = (res.resultDesc || res.message || 'User cancelled')
+            .replace(/\(?\s*(?:Result\s*Code|Error\s*Code|Status\s*Code|Code)\s*[:#-]?\s*\d+\s*\)?/gi, '')
+            .trim() || 'User cancelled';
           setFailureReason(failureDesc);
 
           if (!activeDepositResolvedRef.current) {
@@ -400,7 +403,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       clearTimeout(delay);
       clearInterval(pollTimer);
     };
-  }, [payheroPopupStep, stkResult?.checkoutId]);
+  }, [payheroPopupStep, stkResult?.checkoutId, stkResult?.payheroReference]);
 
   if (!isOpen) return null;
 
@@ -449,6 +452,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       success: true,
       message: 'Dispatching M-Pesa STK prompt to your phone...',
       checkoutId: accountReference,
+      reference: accountReference,
       amountKes: numKes,
       amountUsd: numUsd,
       formattedPhone: phoneCheck.display,
@@ -467,10 +471,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
       if (res.success) {
         const finalCheckoutId = res.checkoutId || accountReference;
-        activeDepositReferenceRef.current = finalCheckoutId;
         setStkResult({
           ...res,
           checkoutId: finalCheckoutId,
+          reference: accountReference,
+          payheroReference: res.payheroReference || finalCheckoutId,
         });
 
         // Transition to waiting state now that prompt has been dispatched to phone
@@ -572,7 +577,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     isPollingRef.current = false;
     const cancelTs = Date.now();
     setCancelledAt(cancelTs);
-    const failureDesc = 'Request cancelled by user (ResultCode 1032)';
+    const failureDesc = 'User cancelled';
     setFailureReason(failureDesc);
 
     const checkoutId = stkResult?.checkoutId || activeDepositReferenceRef.current;
@@ -918,9 +923,15 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     <XCircle className="w-7 h-7 stroke-[2.5]" />
                   </div>
                   <div>
-                    <h4 className="text-base font-bold text-slate-900 dark:text-white">Payment Cancelled</h4>
+                    <h4 className="text-base font-bold text-slate-900 dark:text-white">
+                      {/insufficient/i.test(failureReason)
+                        ? 'Insufficient Funds'
+                        : /cancel/i.test(failureReason || 'User cancelled')
+                        ? 'Cancelled'
+                        : 'Failed'}
+                    </h4>
                     <p className="text-xs text-rose-500 font-medium mt-0.5">
-                      {failureReason || 'Request cancelled by user'}
+                      {failureReason || 'User cancelled'}
                     </p>
                   </div>
 
@@ -940,9 +951,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
-                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Prompt Feedback:</span>
+                      <span className="text-slate-500 dark:text-neutral-400 font-sans">Status:</span>
                       <span className="font-semibold text-rose-600 dark:text-rose-400">
-                        {failureReason || 'Request cancelled by user'}
+                        {failureReason || 'User cancelled'}
                       </span>
                     </div>
                     <div className="flex justify-between items-center">

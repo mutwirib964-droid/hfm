@@ -1702,18 +1702,21 @@ function payheroStkPlugin() {
           message: data.message || data.response_description,
         });
 
-        const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || data.reference || refVal;
+        const checkoutId = data.CheckoutRequestID || data.checkout_id || data.reference || data.id || refVal;
+        const payheroRef = data.reference || data.id || checkoutId;
         const nowTs = Date.now();
 
         // Register initial pending state waiting for callback
         const pendingRecord = {
           status: 'pending',
           reference: refVal,
+          payhero_reference: payheroRef,
           checkout_id: checkoutId,
           startedAt: nowTs,
         };
         webhookStore.set(checkoutId, pendingRecord);
         if (refVal) webhookStore.set(refVal, pendingRecord);
+        if (payheroRef) webhookStore.set(payheroRef, pendingRecord);
 
         // Record in PayHero transaction audit log ledger
         const pendingAuditLog = {
@@ -1751,6 +1754,7 @@ function payheroStkPlugin() {
           checkout_id: checkoutId,
           checkoutId,
           reference: refVal,
+          payhero_reference: payheroRef,
           startedAt: nowTs,
           raw: data,
         };
@@ -1766,6 +1770,170 @@ function payheroStkPlugin() {
         res.end(JSON.stringify({ success: false, error: err.message || 'Internal proxy error' }));
       }
     });
+  };
+
+  // Helper: sanitize user-facing PayHero messages so numeric status codes are NEVER shown to users
+  const sanitizePayHeroMessage = (rawDesc: any, resultCode: any, isSuccess: boolean, isFailed: boolean): string => {
+    const codeStr = resultCode !== undefined && resultCode !== null ? String(resultCode).trim() : '';
+    const cleaned = String(rawDesc || '')
+      .replace(/\(?\s*Result\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+      .replace(/\(?\s*Error\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+      .replace(/\(?\s*Status\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+      .replace(/\(?\s*Code\s*[:#-]?\s*\d+\s*\)?/gi, '')
+      .replace(/\[\s*\d+\s*\]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    if (isSuccess) {
+      return cleaned || 'Payment confirmed by M-PESA.';
+    }
+
+    if (isFailed) {
+      if (codeStr === '1' || /insufficient|funds|balance/i.test(cleaned)) {
+        return 'Insufficient funds to complete transaction';
+      }
+      if (codeStr === '1032' || /cancel/i.test(cleaned)) {
+        if (/user\s*cancel/i.test(cleaned)) return 'User cancelled';
+        if (/cancelled\s*by\s*user/i.test(cleaned)) return 'Request cancelled by user';
+        if (/^cancelled$/i.test(cleaned)) return 'Cancelled';
+        return cleaned || 'User cancelled';
+      }
+      if (codeStr === '1037' || /timeout|timed?\s*out|expired|no\s*response/i.test(cleaned)) {
+        return cleaned || 'Cancelled';
+      }
+      if (cleaned && !/awaiting|waiting|pending|queued/i.test(cleaned)) {
+        return cleaned;
+      }
+      return 'Failed';
+    }
+
+    return cleaned || 'Waiting for confirmation from your phone...';
+  };
+
+  // Helper: evaluate any PayHero callback or transaction-status payload accurately
+  const evaluatePayHeroPayload = (payload: any) => {
+    const p = payload || {};
+    const resp = p.response || p.data?.response || p.data || {};
+
+    const statusCandidates = [
+      resp.Status,
+      resp.status,
+      resp.state,
+      typeof p.status === 'string' ? p.status : '',
+      typeof p.result === 'string' ? p.result : '',
+      typeof p.state === 'string' ? p.state : '',
+    ];
+    const rawStatus = (statusCandidates.find((s) => typeof s === 'string' && s.trim() !== '') || '').trim().toLowerCase();
+
+    const rawCode =
+      resp.ResultCode ??
+      resp.result_code ??
+      resp.resultCode ??
+      p.ResultCode ??
+      p.result_code ??
+      p.resultCode ??
+      p.error_code ??
+      null;
+    const resultCode =
+      rawCode !== undefined && rawCode !== null && String(rawCode).trim() !== '' && String(rawCode).trim() !== 'null'
+        ? String(rawCode).trim()
+        : '';
+    const hasNumericCode = resultCode !== '' && !Number.isNaN(Number(resultCode));
+    const numCode = hasNumericCode ? Number(resultCode) : NaN;
+
+    const rawDesc = String(
+      resp.ResultDesc ||
+      resp.result_desc ||
+      resp.resultDesc ||
+      resp.error_message ||
+      p.ResultDesc ||
+      p.result_desc ||
+      p.resultDesc ||
+      p.error_message ||
+      p.response_description ||
+      p.reason ||
+      p.message ||
+      ''
+    ).trim();
+
+    const isFailed =
+      rawStatus === 'failed' ||
+      rawStatus === 'cancelled' ||
+      rawStatus === 'canceled' ||
+      rawStatus === 'rejected' ||
+      rawStatus === 'user_cancelled' ||
+      rawStatus === 'aborted' ||
+      rawStatus === 'expired' ||
+      rawStatus === 'timeout' ||
+      p.failed === true ||
+      p.status === false ||
+      (hasNumericCode && numCode !== 0) ||
+      /cancel|insufficient|failed|expired|timeout|wrong\s*pin|invalid|unable\s*to\s*lock/i.test(rawDesc);
+
+    const isSuccess =
+      !isFailed &&
+      (rawStatus === 'success' ||
+        rawStatus === 'completed' ||
+        rawStatus === 'paid' ||
+        rawStatus === 'settled' ||
+        (hasNumericCode && numCode === 0) ||
+        p.confirmed === true);
+
+    const isPending = !isSuccess && !isFailed;
+
+    const checkoutId =
+      resp.CheckoutRequestID ||
+      resp.checkout_request_id ||
+      p.CheckoutRequestID ||
+      p.checkout_id ||
+      p.checkoutid ||
+      resp.MerchantRequestID ||
+      p.reference ||
+      resp.ExternalReference ||
+      p.external_reference ||
+      p.id ||
+      '';
+
+    const externalReference =
+      resp.ExternalReference ||
+      resp.external_reference ||
+      p.external_reference ||
+      p.ExternalReference ||
+      p.account_reference ||
+      '';
+
+    const payheroReference =
+      p.reference ||
+      resp.reference ||
+      p.transaction_reference ||
+      p.third_party_reference ||
+      '';
+
+    const receiptNumber =
+      resp.MpesaReceiptNumber ||
+      resp.mpesa_receipt_number ||
+      p.MpesaReceiptNumber ||
+      p.mpesa_receipt ||
+      p.provider_reference ||
+      p.payment_reference ||
+      p.receipt ||
+      (isSuccess && p.third_party_reference ? p.third_party_reference : '') ||
+      '';
+
+    const resultDesc = sanitizePayHeroMessage(rawDesc, resultCode, isSuccess, isFailed);
+
+    return {
+      isSuccess,
+      isFailed,
+      isPending,
+      rawStatus,
+      resultCode: resultCode || (isSuccess ? '0' : isFailed ? '1032' : ''),
+      resultDesc,
+      checkoutId,
+      externalReference,
+      payheroReference,
+      receiptNumber,
+    };
   };
 
   const handleStatusRequest = async (req: any, res: any) => {
@@ -1794,6 +1962,9 @@ function payheroStkPlugin() {
       try {
         const parsed = JSON.parse(bodyStr || '{}');
         const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID || parsed.reference;
+        const extRef = parsed.reference || parsed.external_reference || checkoutId;
+        const phRef = parsed.payhero_reference || parsed.payheroReference || '';
+
         if (!checkoutId) {
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
@@ -1809,23 +1980,25 @@ function payheroStkPlugin() {
             status: 'FAILED',
             result: 'cancelled',
             failed: true,
+            confirmed: false,
             resultCode: '1032',
-            resultDesc: 'Request cancelled by user',
+            resultDesc: 'User cancelled',
             cancelledAt: cancelTime,
             cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           };
           webhookStore.set(checkoutId, cancelObj);
-          if (parsed.reference) webhookStore.set(parsed.reference, cancelObj);
+          if (extRef) webhookStore.set(extRef, cancelObj);
+          if (phRef) webhookStore.set(phRef, cancelObj);
 
           const logIdx = payheroAuditLogs.findIndex(
-            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
           );
           if (logIdx >= 0) {
             payheroAuditLogs[logIdx] = {
               ...payheroAuditLogs[logIdx],
               status: 'FAILED',
               resultCode: '1032',
-              resultDesc: 'Request cancelled by user',
+              resultDesc: 'User cancelled',
               callbackReceivedAt: cancelTime,
               rawCallbackResponse: cancelObj,
             };
@@ -1841,7 +2014,7 @@ function payheroStkPlugin() {
               pending: false,
               failed: true,
               resultCode: '1032',
-              resultDesc: 'Request cancelled by user',
+              resultDesc: 'User cancelled',
               cancelledAt: cancelTime,
               cancelledAtFormatted: cancelObj.cancelledAtFormatted,
               data: cancelObj,
@@ -1850,66 +2023,139 @@ function payheroStkPlugin() {
           return;
         }
 
-        let cached = webhookStore.get(checkoutId) || webhookStore.get(parsed.reference);
+        const searchKeys = Array.from(new Set([checkoutId, extRef, phRef].filter(Boolean).map((k) => String(k).trim())));
+        let cached: any = null;
+        for (const k of searchKeys) {
+          const hit = webhookStore.get(k);
+          if (hit && hit.status !== 'pending') {
+            cached = hit;
+            break;
+          }
+          if (hit && !cached) cached = hit;
+        }
 
-        // 2. Query PayHero Live Transactions API to check if settled
+        // 2. Query PayHero Official v2 Transaction Status API (/api/v2/transaction-status?reference=...)
         if (!cached || cached.status === 'pending') {
           try {
             const cfg = getPayheroConfig();
-            const txRes = await fetch('https://backend.payhero.co.ke/api/v2/transactions?channel_id=10947', {
-              method: 'GET',
-              headers: {
-                'Authorization': cfg.basicAuth,
-                'Accept': 'application/json',
-              },
-              signal: AbortSignal.timeout(3500),
-            });
-            if (txRes.ok) {
-              const txData = await txRes.json();
-              const txList = Array.isArray(txData?.transactions) ? txData.transactions : [];
-              const matched = txList.find((t: any) =>
-                (parsed.reference && (t.external_reference === parsed.reference || t.transaction_reference === parsed.reference)) ||
-                (checkoutId && (t.external_reference === checkoutId || t.transaction_reference === checkoutId))
-              );
-              if (matched) {
-                const receiptNumber = matched.provider_reference || matched.receipt || `UGT${Math.floor(100000 + Math.random() * 900000)}`;
-                cached = {
-                  status: 'COMPLETED',
-                  success: true,
-                  resultCode: '0',
-                  MpesaReceiptNumber: receiptNumber,
-                  ResultDesc: 'Payment confirmed successfully by M-PESA',
-                  amount: matched.amount,
-                  data: matched,
-                };
-                webhookStore.set(checkoutId, cached);
-                if (parsed.reference) webhookStore.set(parsed.reference, cached);
+            const statusQueryCandidates = Array.from(new Set([phRef, checkoutId, extRef].filter(Boolean)));
+            for (const refCandidate of statusQueryCandidates) {
+              try {
+                const statusRes = await fetch(
+                  `https://backend.payhero.co.ke/api/v2/transaction-status?reference=${encodeURIComponent(refCandidate)}`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      Authorization: cfg.basicAuth,
+                      Accept: 'application/json',
+                    },
+                    signal: AbortSignal.timeout(3000),
+                  }
+                );
+                if (statusRes.ok) {
+                  const statusData = await statusRes.json();
+                  const evalStatus = evaluatePayHeroPayload(statusData);
+                  if (evalStatus.isSuccess || evalStatus.isFailed) {
+                    cached = {
+                      status: evalStatus.isSuccess ? 'COMPLETED' : 'FAILED',
+                      success: evalStatus.isSuccess,
+                      failed: evalStatus.isFailed,
+                      confirmed: evalStatus.isSuccess,
+                      resultCode: evalStatus.resultCode,
+                      resultDesc: evalStatus.resultDesc,
+                      ResultDesc: evalStatus.resultDesc,
+                      MpesaReceiptNumber: evalStatus.isSuccess
+                        ? evalStatus.receiptNumber || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`
+                        : null,
+                      cancelledAt: evalStatus.isFailed ? Date.now() : undefined,
+                      data: statusData,
+                    };
+                    for (const k of searchKeys) webhookStore.set(k, cached);
+                    break;
+                  }
+                }
+              } catch {}
+            }
+
+            if (!cached || cached.status === 'pending') {
+              const txRes = await fetch(`https://backend.payhero.co.ke/api/v2/transactions?channel_id=${cfg.channelId}&per=25`, {
+                method: 'GET',
+                headers: {
+                  Authorization: cfg.basicAuth,
+                  Accept: 'application/json',
+                },
+                signal: AbortSignal.timeout(3000),
+              });
+              if (txRes.ok) {
+                const txData = await txRes.json();
+                const txList = Array.isArray(txData?.transactions)
+                  ? txData.transactions
+                  : Array.isArray(txData?.data)
+                  ? txData.data
+                  : [];
+                const matched = txList.find((t: any) =>
+                  searchKeys.some(
+                    (k) =>
+                      t.external_reference === k ||
+                      t.transaction_reference === k ||
+                      t.reference === k ||
+                      t.checkout_request_id === k ||
+                      t.CheckoutRequestID === k ||
+                      t.provider_reference === k
+                  )
+                );
+                if (matched) {
+                  const evalMatched = evaluatePayHeroPayload(matched);
+                  if (evalMatched.isSuccess || evalMatched.isFailed) {
+                    cached = {
+                      status: evalMatched.isSuccess ? 'COMPLETED' : 'FAILED',
+                      success: evalMatched.isSuccess,
+                      failed: evalMatched.isFailed,
+                      confirmed: evalMatched.isSuccess,
+                      resultCode: evalMatched.resultCode,
+                      resultDesc: evalMatched.resultDesc,
+                      ResultDesc: evalMatched.resultDesc,
+                      MpesaReceiptNumber: evalMatched.isSuccess
+                        ? evalMatched.receiptNumber || `UGT${Math.floor(100000 + Math.random() * 900000)}`
+                        : null,
+                      amount: matched.amount,
+                      cancelledAt: evalMatched.isFailed ? Date.now() : undefined,
+                      data: matched,
+                    };
+                    for (const k of searchKeys) webhookStore.set(k, cached);
+                  }
+                }
               }
             }
           } catch {}
         }
 
         // 3. Return completed or already-cancelled record if present
-        if (cached) {
-          const statusStr = String(cached.status || cached.result || cached.state || '').toLowerCase();
-          const isSuccess = statusStr === 'success' || statusStr === 'completed' || cached.success === true || cached.resultCode === '0' || statusStr === 'paid';
-          const isFailed = statusStr === 'failed' || statusStr === 'cancelled' || cached.failed === true || cached.resultCode === '1032' || statusStr === 'rejected';
-
-          if (isSuccess || isFailed) {
-            const normalizedStatus: 'COMPLETED' | 'FAILED' = isSuccess ? 'COMPLETED' : 'FAILED';
-            const receiptNumber = cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id || cached.receipt || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
-            const resultDesc = cached.ResultDesc || cached.resultDesc || cached.message || (isSuccess ? 'Payment confirmed by M-PESA.' : 'Request cancelled by user');
+        if (cached && cached.status !== 'pending') {
+          const evalCached = evaluatePayHeroPayload(cached);
+          if (evalCached.isSuccess || evalCached.isFailed) {
+            const normalizedStatus: 'COMPLETED' | 'FAILED' = evalCached.isSuccess ? 'COMPLETED' : 'FAILED';
+            const receiptNumber =
+              evalCached.receiptNumber ||
+              cached.MpesaReceiptNumber ||
+              `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+            const resultDesc = sanitizePayHeroMessage(
+              cached.resultDesc || cached.ResultDesc || evalCached.resultDesc,
+              evalCached.resultCode,
+              evalCached.isSuccess,
+              evalCached.isFailed
+            );
             const cancelTime = cached.cancelledAt ? Number(cached.cancelledAt) : Date.now();
 
             const logIdx = payheroAuditLogs.findIndex(
-              (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+              (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
             );
             if (logIdx >= 0) {
               payheroAuditLogs[logIdx] = {
                 ...payheroAuditLogs[logIdx],
                 status: normalizedStatus,
-                mpesaReceiptNumber: isSuccess ? receiptNumber : null,
-                resultCode: isSuccess ? '0' : '1032',
+                mpesaReceiptNumber: evalCached.isSuccess ? receiptNumber : null,
+                resultCode: evalCached.resultCode,
                 resultDesc,
                 callbackReceivedAt: Date.now(),
                 rawCallbackResponse: cached,
@@ -1921,16 +2167,18 @@ function payheroStkPlugin() {
             res.statusCode = 200;
             res.end(
               JSON.stringify({
-                success: isSuccess,
-                confirmed: isSuccess,
+                success: evalCached.isSuccess,
+                confirmed: evalCached.isSuccess,
                 pending: false,
-                failed: isFailed,
+                failed: evalCached.isFailed,
                 source: 'payhero_api_or_webhook',
-                resultCode: isSuccess ? '0' : '1032',
-                mpesaReceiptNumber: receiptNumber,
+                resultCode: evalCached.resultCode,
+                mpesaReceiptNumber: evalCached.isSuccess ? receiptNumber : null,
                 resultDesc,
-                cancelledAt: isFailed ? cancelTime : undefined,
-                cancelledAtFormatted: isFailed ? new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined,
+                cancelledAt: evalCached.isFailed ? cancelTime : undefined,
+                cancelledAtFormatted: evalCached.isFailed
+                  ? new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : undefined,
                 data: cached,
               })
             );
@@ -1940,30 +2188,30 @@ function payheroStkPlugin() {
 
         // 4. Safaricom prompt timeout watchdog: STK push prompt expired without response
         const startedAt = (cached && cached.startedAt) || (parsed.startedAt ? Number(parsed.startedAt) : null);
-        const elapsed = startedAt ? (Date.now() - startedAt) : 0;
-        if (elapsed > 15000) {
+        const elapsed = startedAt ? Date.now() - startedAt : 0;
+        if (elapsed > 60000) {
           const cancelTime = Date.now();
           const cancelObj = {
             status: 'FAILED',
             result: 'cancelled',
             failed: true,
+            confirmed: false,
             resultCode: '1032',
-            resultDesc: 'Request cancelled by user',
+            resultDesc: 'Cancelled',
             cancelledAt: cancelTime,
             cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           };
-          webhookStore.set(checkoutId, cancelObj);
-          if (parsed.reference) webhookStore.set(parsed.reference, cancelObj);
+          for (const k of searchKeys) webhookStore.set(k, cancelObj);
 
           const logIdx = payheroAuditLogs.findIndex(
-            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (parsed.reference && l.reference === parsed.reference)
+            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
           );
           if (logIdx >= 0) {
             payheroAuditLogs[logIdx] = {
               ...payheroAuditLogs[logIdx],
               status: 'FAILED',
               resultCode: '1032',
-              resultDesc: 'Request cancelled by user',
+              resultDesc: 'Cancelled',
               callbackReceivedAt: cancelTime,
               rawCallbackResponse: cancelObj,
             };
@@ -1979,7 +2227,7 @@ function payheroStkPlugin() {
               pending: false,
               failed: true,
               resultCode: '1032',
-              resultDesc: 'Request cancelled by user',
+              resultDesc: 'Cancelled',
               cancelledAt: cancelTime,
               cancelledAtFormatted: cancelObj.cancelledAtFormatted,
               data: cancelObj,
@@ -1999,7 +2247,7 @@ function payheroStkPlugin() {
             pending: true,
             failed: false,
             elapsed,
-            resultDesc: 'Waiting for M-Pesa PIN entry and callback confirmation from your phone...',
+            resultDesc: 'Waiting for confirmation from your phone...',
           })
         );
       } catch (err: any) {
@@ -2021,77 +2269,87 @@ function payheroStkPlugin() {
       try {
         const body = JSON.parse(bodyStr || '{}');
         const resp = body.response || {};
-        const checkoutId = body.checkout_id || body.CheckoutRequestID || resp.CheckoutRequestID || body.checkoutid || body.reference || body.external_reference || body.id;
-        const rawStatus = String(body.status || body.result || resp.status || '').toLowerCase();
-        const resultCode = String(resp.ResultCode ?? body.ResultCode ?? body.resultCode ?? '');
-        const isSuccess = rawStatus === 'success' || rawStatus === 'completed' || rawStatus === 'paid' || body.success === true || resultCode === '0';
-        const isFailed = rawStatus === 'failed' || rawStatus === 'cancelled' || rawStatus === 'rejected' || body.failed === true || (resultCode !== '' && resultCode !== '0');
+        const evalResult = evaluatePayHeroPayload(body);
 
-        let resultDesc = resp.ResultDesc || body.ResultDesc || body.response_description || body.message || '';
-        if (resultCode === '1032' || (!resultDesc && isFailed)) {
-          resultDesc = 'Request cancelled by user';
-        } else if (resultCode === '1037') {
-          resultDesc = 'The prompt expired on your phone';
-        } else if (resultCode === '1') {
-          resultDesc = 'Insufficient funds in M-PESA account';
-        } else if (isSuccess && !resultDesc) {
-          resultDesc = 'Payment confirmed by M-PESA.';
-        }
+        // Log incoming request headers, full raw body, and specific result code as requested
+        console.log('[PayHero Callback Diagnostic] Incoming request headers:', req.headers);
+        console.log('[PayHero Callback Diagnostic] Full raw body:', bodyStr);
+        console.log('[PayHero Callback Diagnostic] Specific result code:', evalResult.resultCode, {
+          rawStatus: evalResult.rawStatus,
+          checkoutId: evalResult.checkoutId,
+          externalReference: evalResult.externalReference,
+          isSuccess: evalResult.isSuccess,
+          isFailed: evalResult.isFailed,
+          resultDesc: evalResult.resultDesc,
+        });
 
-        const normalizedStatus: 'COMPLETED' | 'FAILED' | 'PENDING' = isSuccess ? 'COMPLETED' : isFailed ? 'FAILED' : 'PENDING';
-        const receiptNumber = body.MpesaReceiptNumber || body.mpesa_receipt || resp.MpesaReceiptNumber || body.transaction_id || body.receipt || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+        const normalizedStatus: 'COMPLETED' | 'FAILED' | 'PENDING' = evalResult.isSuccess
+          ? 'COMPLETED'
+          : evalResult.isFailed
+          ? 'FAILED'
+          : 'PENDING';
+        const receiptNumber =
+          evalResult.receiptNumber ||
+          (evalResult.isSuccess ? `PHP${Math.floor(100000 + Math.random() * 900000)}TGY` : null);
 
         const enrichedRecord = {
           ...body,
           status: normalizedStatus.toLowerCase(),
-          success: isSuccess,
-          failed: isFailed,
-          confirmed: isSuccess,
-          resultCode: resultCode || (isSuccess ? '0' : '1032'),
-          resultDesc: resultDesc,
-          ResultDesc: resultDesc,
-          MpesaReceiptNumber: isSuccess ? receiptNumber : null,
-          cancelledAt: isFailed ? Date.now() : undefined,
+          success: evalResult.isSuccess,
+          failed: evalResult.isFailed,
+          confirmed: evalResult.isSuccess,
+          pending: evalResult.isPending,
+          resultCode: evalResult.resultCode,
+          resultDesc: evalResult.resultDesc,
+          ResultDesc: evalResult.resultDesc,
+          MpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
+          cancelledAt: evalResult.isFailed ? Date.now() : undefined,
           timestamp: Date.now(),
         };
 
-        if (checkoutId) webhookStore.set(checkoutId, enrichedRecord);
-        if (body.reference) webhookStore.set(body.reference, enrichedRecord);
-        if (body.external_reference) webhookStore.set(body.external_reference, enrichedRecord);
-        if (resp.CheckoutRequestID) webhookStore.set(resp.CheckoutRequestID, enrichedRecord);
-        if (resp.MerchantRequestID) webhookStore.set(resp.MerchantRequestID, enrichedRecord);
-        if (body.CheckoutRequestID) webhookStore.set(body.CheckoutRequestID, enrichedRecord);
+        const keysToStore = [
+          evalResult.checkoutId,
+          evalResult.externalReference,
+          evalResult.payheroReference,
+          body.reference,
+          body.external_reference,
+          body.CheckoutRequestID,
+          resp.CheckoutRequestID,
+          resp.ExternalReference,
+          resp.MerchantRequestID,
+        ].filter(Boolean);
+
+        for (const k of keysToStore) {
+          webhookStore.set(String(k).trim(), enrichedRecord);
+        }
 
         // Update or insert into payheroAuditLogs for Admin auditing
         const cfg = getPayheroConfig();
-        const targetRef = body.reference || body.external_reference || checkoutId;
+        const targetRef = evalResult.externalReference || evalResult.checkoutId || body.reference;
         const logIdx = payheroAuditLogs.findIndex(
           (l) =>
-            (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) ||
-            (targetRef && l.reference === targetRef) ||
-            (resp.CheckoutRequestID && l.checkoutId === resp.CheckoutRequestID) ||
-            (body.CheckoutRequestID && l.checkoutId === body.CheckoutRequestID)
+            keysToStore.some((k) => l.checkoutId === k || l.reference === k)
         );
 
         const amountKes = Number(body.amount || resp.Amount || 0);
         const amountUsd = Number((amountKes / cfg.usdKesRate).toFixed(2));
-        const phone = body.phone || body.phone_number || body.msisdn || (resp.PhoneNumber ? String(resp.PhoneNumber) : 'N/A');
+        const phone = body.phone || body.phone_number || body.msisdn || (resp.Phone || resp.PhoneNumber ? String(resp.Phone || resp.PhoneNumber) : 'N/A');
 
         if (logIdx >= 0) {
           payheroAuditLogs[logIdx] = {
             ...payheroAuditLogs[logIdx],
-            status: normalizedStatus, // strictly 'COMPLETED', 'FAILED', or 'PENDING'
-            mpesaReceiptNumber: isSuccess ? receiptNumber : null,
-            resultCode: resultCode || (isSuccess ? '0' : '1032'),
-            resultDesc,
+            status: normalizedStatus,
+            mpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
+            resultCode: evalResult.resultCode,
+            resultDesc: evalResult.resultDesc,
             callbackReceivedAt: Date.now(),
-            rawCallbackResponse: body, // Full raw JSON callback response
+            rawCallbackResponse: body,
           };
         } else {
           payheroAuditLogs.unshift({
             id: `ph-cb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             reference: targetRef,
-            checkoutId,
+            checkoutId: evalResult.checkoutId || targetRef,
             amountKes,
             amountUsd,
             phone,
@@ -2099,9 +2357,9 @@ function payheroStkPlugin() {
             userName: 'Trader',
             targetAccount: 'VTM Wallet',
             status: normalizedStatus,
-            resultCode: resultCode || (isSuccess ? '0' : '1032'),
-            resultDesc,
-            mpesaReceiptNumber: isSuccess ? receiptNumber : null,
+            resultCode: evalResult.resultCode,
+            resultDesc: evalResult.resultDesc,
+            mpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
             timestamp: Date.now(),
             callbackReceivedAt: Date.now(),
             rawInitiationResponse: null,
