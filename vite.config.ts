@@ -679,8 +679,10 @@ function payheroStkPlugin() {
     const basicAuth = (
       process.env.PAYHERO_BASIC_AUTH ||
       process.env.VITE_PAYHERO_BASIC_AUTH ||
+      process.env.PAYHERO_API_KEY ||
+      process.env.VITE_PAYHERO_API_KEY ||
       savedConfig.basicAuth ||
-      'Basic SkxQaXR6UzZsb2NuNW5remFOeGY6SkZ2Z2ljbE9YbXNmNHVaQjdkWHJIejFjUVVxck1LQ2RSTlRHUzY0OQ=='
+      ''
     ).trim();
 
     const channelId = Number(
@@ -1654,6 +1656,15 @@ function payheroStkPlugin() {
           callback_url: dynamicCallbackUrl,
         };
 
+        console.log(`[PayHero Diagnostic] Sending STK push request to PayHero v2 API:`, {
+          amount: amountVal,
+          phone: phoneVal.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2'),
+          channel_id: cfg.channelId,
+          reference: refVal,
+          callback_url: dynamicCallbackUrl,
+          hasAuth: Boolean(cfg.basicAuth),
+        });
+
         const response = await fetch('https://backend.payhero.co.ke/api/v2/payments', {
           method: 'POST',
           headers: {
@@ -1666,6 +1677,14 @@ function payheroStkPlugin() {
         });
 
         const data = await response.json();
+        console.log(`[PayHero Diagnostic] PayHero API response status: ${response.status}`, {
+          ok: response.ok,
+          success: data.success,
+          status: data.status,
+          checkout_id: data.checkout_id || data.CheckoutRequestID || data.id,
+          message: data.message || data.response_description,
+        });
+
         const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || data.reference || refVal;
         const nowTs = Date.now();
 

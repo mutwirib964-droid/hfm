@@ -973,22 +973,81 @@ export async function handler(event) {
   if (isStk) {
     try {
       const parsed = body;
-      const accountId = (parsed.account_id || process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
-      const apiKey = (parsed.api_key || process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
-      const payload = {
-        account_id: accountId,
-        api_key: apiKey,
-        amount: Math.max(1, Math.round(Number(parsed.amount))),
-        msisdn: String(parsed.msisdn || parsed.phone || ''),
-        reference: parsed.reference || `VTM-${Date.now()}`,
+      const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
+      const phoneVal = String(parsed.msisdn || parsed.phone || parsed.phone_number || '').trim();
+      const refVal = parsed.reference || `VTM-${Date.now()}`;
+
+      const basicAuth = (process.env.PAYHERO_BASIC_AUTH || process.env.VITE_PAYHERO_BASIC_AUTH || '').trim();
+      const apiKey = (process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
+      const accountId = (process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
+      let authHeader = basicAuth;
+      if (!authHeader && apiKey) {
+        authHeader = `Basic ${Buffer.from(accountId ? `${accountId}:${apiKey}` : `:${apiKey}`).toString('base64')}`;
+      }
+      if (authHeader && !authHeader.startsWith('Basic ')) {
+        authHeader = `Basic ${authHeader}`;
+      }
+
+      const channelId = Number(process.env.PAYHERO_CHANNEL_ID || process.env.VITE_PAYHERO_CHANNEL_ID || 10947);
+
+      const payheroPayload = {
+        amount: amountVal,
+        phone_number: phoneVal,
+        phone: phoneVal,
+        channel_id: channelId,
+        provider: 'm-pesa',
+        external_reference: refVal,
+        reference: refVal,
+        callback_url: 'https://vtmmarkets.com/api/payhero-callback',
       };
-      const response = await fetch('https://api.payhero.co.ke/initiatestk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+
+      console.log(`[PayHero Diagnostic] Sending STK push request to PayHero v2 API:`, {
+        amount: amountVal,
+        phone: phoneVal.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2'),
+        channel_id: channelId,
+        reference: refVal,
+        hasAuth: Boolean(authHeader),
       });
+
+      const response = await fetch('https://backend.payhero.co.ke/api/v2/payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader,
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify(payheroPayload),
+      });
+
       const data = await response.json();
-      return { statusCode: response.status, headers: corsHeaders, body: JSON.stringify(data) };
+      console.log(`[PayHero Diagnostic] PayHero API response status: ${response.status}`, {
+        ok: response.ok,
+        success: data.success,
+        status: data.status,
+        checkout_id: data.checkout_id || data.CheckoutRequestID || data.id,
+        message: data.message || data.response_description,
+      });
+
+      const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || data.reference || refVal;
+      const nowTs = Date.now();
+      const pendingRecord = {
+        status: 'pending',
+        reference: refVal,
+        checkout_id: checkoutId,
+        startedAt: nowTs,
+      };
+      webhookStore.set(checkoutId, pendingRecord);
+      if (refVal) webhookStore.set(refVal, pendingRecord);
+
+      return {
+        statusCode: response.status,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          ...data,
+          checkout_id: checkoutId,
+          success: response.ok && (data.success !== false),
+        }),
+      };
     } catch (err) {
       return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ success: false, error: err.message }) };
     }

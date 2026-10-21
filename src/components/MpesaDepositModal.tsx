@@ -473,6 +473,24 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           checkoutId: finalCheckoutId,
         });
 
+        // Transition to waiting state now that prompt has been dispatched to phone
+        setPayheroPopupStep('WAITING');
+        waitingStartTimeRef.current = Date.now();
+        setCancelledAt(null);
+
+        // Record PENDING deposit immediately in transaction history
+        onDepositComplete({
+          id: txId,
+          amountUsd: numUsd,
+          amountKes: numKes,
+          method: 'M-PESA',
+          targetAccount,
+          reference: finalCheckoutId,
+          phone: phoneCheck.display || phoneInput,
+          status: 'PENDING',
+          details: 'Awaiting M-Pesa PIN',
+        });
+
         // Record initial PENDING audit log
         payheroService.postAuditLog({
           id: txId,
@@ -495,6 +513,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         });
       } else {
         activeDepositResolvedRef.current = true;
+        const dispatchErrorMsg = res.message || 'Failed to dispatch M-Pesa STK prompt to your phone.';
         onDepositComplete({
           id: txId,
           amountUsd: numUsd,
@@ -504,7 +523,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           reference: accountReference,
           phone: phoneCheck.display || phoneInput,
           status: 'FAILED',
-          details: 'Request cancelled by user',
+          details: dispatchErrorMsg,
         });
         payheroService.postAuditLog({
           id: txId,
@@ -517,8 +536,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           userName: currentUser?.name || 'Trader',
           targetAccount,
           status: 'FAILED',
-          resultCode: '1032',
-          resultDesc: res.message || 'Failed to dispatch M-PESA STK prompt.',
+          resultCode: 'INIT_ERROR',
+          resultDesc: dispatchErrorMsg,
           mpesaReceiptNumber: null,
           timestamp: Date.now(),
           callbackReceivedAt: Date.now(),
@@ -526,10 +545,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           rawCallbackResponse: res.raw || res,
         });
         setPayheroPopupStep(null);
-        setErrorMessage(res.message || 'Failed to dispatch M-PESA STK prompt.');
+        setErrorMessage(dispatchErrorMsg);
       }
     } catch (err: any) {
       activeDepositResolvedRef.current = true;
+      const connErrorMsg = err.message || 'Connection error while dispatching STK prompt.';
       onDepositComplete({
         id: txId,
         amountUsd: numUsd,
@@ -539,10 +559,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         reference: accountReference,
         phone: phoneCheck.display || phoneInput,
         status: 'FAILED',
-        details: 'Request cancelled by user',
+        details: connErrorMsg,
       });
       setPayheroPopupStep(null);
-      setErrorMessage(err.message || 'Connection error. Please try again.');
+      setErrorMessage(connErrorMsg);
     } finally {
       setIsProcessingStk(false);
     }
