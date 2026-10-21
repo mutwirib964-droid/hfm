@@ -36,6 +36,9 @@ export interface PayHeroStatusResponse {
   mpesaReceiptNumber?: string;
   cancelledAt?: number | string;
   cancelledAtFormatted?: string;
+  outcome?: 'COMPLETED' | 'CANCELLED' | 'INSUFFICIENT_FUNDS' | 'TIMED_OUT' | 'FAILED';
+  friendlyTitle?: string;
+  isDelayed?: boolean;
   data?: any;
   raw?: any;
 }
@@ -335,16 +338,43 @@ export async function checkStkPaymentStatus(
     });
     if (res.ok) {
       const data = await res.json();
+      const resultCode = data.resultCode !== undefined ? String(data.resultCode) : undefined;
+      const resultDesc = data.resultDesc || data.message || '';
+      let outcome = data.outcome;
+      let friendlyTitle = data.friendlyTitle;
+
+      if (data.confirmed) {
+        outcome = 'COMPLETED';
+        friendlyTitle = 'Payment successful';
+      } else if (data.failed) {
+        if (resultCode === '1032' || /cancel/i.test(resultDesc)) {
+          outcome = 'CANCELLED';
+          friendlyTitle = 'Payment cancelled';
+        } else if (resultCode === '1' || /insufficient|balance|funds/i.test(resultDesc)) {
+          outcome = 'INSUFFICIENT_FUNDS';
+          friendlyTitle = 'Insufficient funds';
+        } else if (resultCode === '1037' || /timeout|time out|no response/i.test(resultDesc)) {
+          outcome = 'TIMED_OUT';
+          friendlyTitle = 'Payment timed out';
+        } else {
+          outcome = 'FAILED';
+          friendlyTitle = 'Payment failed';
+        }
+      }
+
       return {
         success: Boolean(data.success),
         confirmed: Boolean(data.confirmed),
         pending: Boolean(data.pending),
         failed: Boolean(data.failed),
-        resultCode: data.resultCode !== undefined ? String(data.resultCode) : undefined,
-        resultDesc: data.resultDesc || data.message,
+        resultCode,
+        resultDesc,
         mpesaReceiptNumber: data.mpesaReceiptNumber,
         cancelledAt: data.cancelledAt,
         cancelledAtFormatted: data.cancelledAtFormatted,
+        outcome,
+        friendlyTitle,
+        isDelayed: Boolean(data.isDelayed),
         data: data.data || data,
         raw: data,
       };
@@ -356,7 +386,7 @@ export async function checkStkPaymentStatus(
     confirmed: false,
     pending: true,
     failed: false,
-    resultDesc: 'Waiting for M-Pesa confirmation callback...',
+    resultDesc: 'Waiting for confirmation from your phone...',
   };
 }
 
