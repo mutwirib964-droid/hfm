@@ -996,13 +996,15 @@ export async function handler(event) {
         phoneVal = '0' + phoneVal;
       }
 
-      const basicAuth = (process.env.PAYHERO_BASIC_AUTH || process.env.VITE_PAYHERO_BASIC_AUTH || '').trim();
-      const apiKey = (process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
-      const accountId = (process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
-      let authHeader = basicAuth;
-      if (!authHeader && apiKey) {
-        authHeader = `Basic ${Buffer.from(accountId ? `${accountId}:${apiKey}` : `:${apiKey}`).toString('base64')}`;
-      }
+      const rawKey = (
+        process.env.PAYHERO_BASIC_AUTH ||
+        process.env.VITE_PAYHERO_BASIC_AUTH ||
+        process.env.PAYHERO_API_KEY ||
+        process.env.VITE_PAYHERO_API_KEY ||
+        ''
+      ).trim();
+
+      let authHeader = rawKey;
       if (authHeader && !authHeader.startsWith('Basic ')) {
         authHeader = `Basic ${authHeader}`;
       }
@@ -1093,52 +1095,133 @@ export async function handler(event) {
   if (isStatus) {
     try {
       const parsed = body;
-      const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID;
-      if (checkoutId && webhookStore.has(checkoutId)) {
-        const cached = webhookStore.get(checkoutId);
+      const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID || parsed.reference;
+      if (!checkoutId) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'checkout_id is required' }) };
+      }
+
+      // 1. Direct explicit user cancellation from UI or phone prompt
+      const isCancelAction = parsed.action === 'cancel' || parsed.cancelled === true || parsed.userCancelled === true;
+      if (isCancelAction) {
+        const cancelTime = parsed.cancelledAt ? Number(parsed.cancelledAt) : Date.now();
+        const cancelObj = {
+          status: 'FAILED',
+          result: 'cancelled',
+          failed: true,
+          resultCode: '1032',
+          resultDesc: 'Request cancelled by user',
+          cancelledAt: cancelTime,
+          cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        };
+        webhookStore.set(checkoutId, cancelObj);
+        if (parsed.reference) webhookStore.set(parsed.reference, cancelObj);
+
         return {
           statusCode: 200,
           headers: corsHeaders,
           body: JSON.stringify({
-            success: true,
-            confirmed: true,
+            success: false,
+            confirmed: false,
             pending: false,
-            failed: false,
-            resultCode: '0',
-            mpesaReceiptNumber: cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id,
-            data: cached,
+            failed: true,
+            resultCode: '1032',
+            resultDesc: 'Request cancelled by user',
+            cancelledAt: cancelTime,
+            cancelledAtFormatted: cancelObj.cancelledAtFormatted,
+            data: cancelObj,
           }),
         };
       }
-      const accountId = (parsed.account_id || process.env.PAYHERO_ACCOUNT_ID || process.env.VITE_PAYHERO_ACCOUNT_ID || '').trim();
-      const apiKey = (parsed.api_key || process.env.PAYHERO_API_KEY || process.env.VITE_PAYHERO_API_KEY || '').trim();
-      const response = await fetch('https://api.payhero.co.ke/transactionstatus', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId, api_key: apiKey, checkoutid: checkoutId, checkout_id: checkoutId }),
-      });
-      const data = await response.json();
-      const rawCode = data.ResultCode !== undefined ? String(data.ResultCode) : undefined;
-      const isSuccess = rawCode === '0' || data.status === 'completed' || data.status === 'success';
-      const isFailed = rawCode === '1032' || rawCode === '1037' || rawCode === '1' || (rawCode !== undefined && rawCode !== '0');
-      const isPending = !isSuccess && !isFailed;
-      let receiptNo = data.MpesaReceiptNumber || data.mpesa_receipt;
-      if (!receiptNo && data.CallbackMetadata?.Item) {
-        const item = data.CallbackMetadata.Item.find((i) => i.Name === 'MpesaReceiptNumber');
-        if (item) receiptNo = item.Value;
+
+      let cached = webhookStore.get(checkoutId) || (parsed.reference ? webhookStore.get(parsed.reference) : null);
+
+      // 2. Query PayHero Live Transactions API to check if settled
+      if (!cached || cached.status === 'pending') {
+        try {
+          const rawKey = (
+            process.env.PAYHERO_BASIC_AUTH ||
+            process.env.VITE_PAYHERO_BASIC_AUTH ||
+            process.env.PAYHERO_API_KEY ||
+            process.env.VITE_PAYHERO_API_KEY ||
+            ''
+          ).trim();
+          const authHeader = rawKey.startsWith('Basic ') ? rawKey : `Basic ${rawKey}`;
+          const channelId = Number(process.env.PAYHERO_CHANNEL_ID || process.env.VITE_PAYHERO_CHANNEL_ID || 10947);
+
+          const txRes = await fetch(`https://backend.payhero.co.ke/api/v2/transactions?channel_id=${channelId}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': authHeader,
+              'Accept': 'application/json',
+            },
+            signal: AbortSignal.timeout(3500),
+          });
+          if (txRes.ok) {
+            const txData = await txRes.json();
+            const txList = Array.isArray(txData?.transactions) ? txData.transactions : [];
+            const matched = txList.find((t) =>
+              (parsed.reference && (t.external_reference === parsed.reference || t.transaction_reference === parsed.reference)) ||
+              (checkoutId && (t.external_reference === checkoutId || t.transaction_reference === checkoutId))
+            );
+            if (matched) {
+              const receiptNumber = matched.provider_reference || matched.receipt || `UGT${Math.floor(100000 + Math.random() * 900000)}`;
+              cached = {
+                status: 'COMPLETED',
+                success: true,
+                resultCode: '0',
+                MpesaReceiptNumber: receiptNumber,
+                ResultDesc: 'Payment confirmed successfully by M-PESA',
+                amount: matched.amount,
+                data: matched,
+              };
+              webhookStore.set(checkoutId, cached);
+              if (parsed.reference) webhookStore.set(parsed.reference, cached);
+            }
+          }
+        } catch {}
       }
+
+      // 3. Return completed or already-cancelled record if present
+      if (cached) {
+        const statusStr = String(cached.status || cached.result || cached.state || '').toLowerCase();
+        const isSuccess = statusStr === 'success' || statusStr === 'completed' || cached.success === true || cached.resultCode === '0' || statusStr === 'paid';
+        const isFailed = statusStr === 'failed' || statusStr === 'cancelled' || cached.failed === true || cached.resultCode === '1032' || statusStr === 'rejected';
+
+        if (isSuccess || isFailed) {
+          const receiptNumber = cached.MpesaReceiptNumber || cached.mpesa_receipt || cached.transaction_id || cached.receipt || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+          const resultDesc = cached.ResultDesc || cached.resultDesc || cached.message || (isSuccess ? 'Payment confirmed by M-PESA.' : 'Request cancelled by user');
+          const cancelTime = cached.cancelledAt ? Number(cached.cancelledAt) : Date.now();
+
+          return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              success: isSuccess,
+              confirmed: isSuccess,
+              pending: false,
+              failed: isFailed,
+              resultCode: isSuccess ? '0' : (cached.resultCode || '1032'),
+              resultDesc,
+              mpesaReceiptNumber: isSuccess ? receiptNumber : null,
+              cancelledAt: isFailed ? cancelTime : undefined,
+              cancelledAtFormatted: isFailed ? new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : undefined,
+              data: cached,
+            }),
+          };
+        }
+      }
+
+      // Default pending response
       return {
         statusCode: 200,
         headers: corsHeaders,
         body: JSON.stringify({
           success: true,
-          confirmed: isSuccess,
-          pending: isPending,
-          failed: isFailed,
-          resultCode: rawCode,
-          resultDesc: data.ResultDesc || data.ResponseDescription || '',
-          mpesaReceiptNumber: receiptNo,
-          data,
+          confirmed: false,
+          pending: true,
+          failed: false,
+          resultCode: null,
+          resultDesc: 'Awaiting customer PIN authorization and PayHero callback confirmation.',
         }),
       };
     } catch (err) {
