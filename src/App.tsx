@@ -4021,20 +4021,37 @@ export default function App() {
     const sourceAcc = existingTx.accountNumber || 'VTM Wallet';
     const amountUsd = Number(existingTx.amount.toFixed(2));
 
-    if (
+    const isMarketerOrAdmin =
       activeUser &&
-      isMpesaTx &&
-      (activeUser.role === 'marketer' || activeUser.role === 'admin')
-    ) {
-      const storedPwd = supabaseService.getStoredAccountPassword(activeUser.email);
-      const syncResult = await supabaseService.syncMarketerWithdrawalToOneApp(activeUser, {
+      (activeUser.role === 'marketer' ||
+        activeUser.role === 'admin' ||
+        userRoleRef.current === 'marketer' ||
+        userRoleRef.current === 'admin' ||
+        findRegisteredUser(activeUser.email)?.role === 'marketer' ||
+        findRegisteredUser(activeUser.email)?.role === 'admin');
+
+    if (activeUser && isMpesaTx && isMarketerOrAdmin) {
+      const regUser = findRegisteredUser(activeUser.email);
+      const effectiveUser = {
+        ...activeUser,
+        role:
+          activeUser.role === 'marketer' || activeUser.role === 'admin'
+            ? activeUser.role
+            : userRoleRef.current === 'marketer' || userRoleRef.current === 'admin'
+            ? userRoleRef.current
+            : regUser?.role || activeUser.role,
+        phoneNumber: activeUser.phoneNumber || (activeUser as any)?.phone || regUser?.phoneNumber || '',
+      };
+      const storedPwd =
+        supabaseService.getStoredAccountPassword(activeUser.email) || regUser?.password || '';
+      const syncResult = await supabaseService.syncMarketerWithdrawalToOneApp(effectiveUser, {
         id: existingTx.id,
         sourceAccount: sourceAcc,
         amountUsd,
         amountKes: exactAmountKes,
         rate,
         method: existingTx.method,
-        phone: activeUser.phoneNumber || (activeUser as any)?.phone || '',
+        phone: effectiveUser.phoneNumber,
         password: storedPwd,
         reference: existingTx.reference,
       });
@@ -4244,6 +4261,57 @@ export default function App() {
       timers.forEach((timer) => clearTimeout(timer));
     };
   }, [transactions, finalizePendingWithdrawal]);
+
+  // Marketer OneApp Withdrawal Guarantee: Automatically sync any completed M-PESA withdrawals for marketers so none are missed
+  useEffect(() => {
+    if (!currentUser?.email) return;
+    const regUser = findRegisteredUser(currentUser.email);
+    const isMarketer =
+      currentUser.role === 'marketer' ||
+      currentUser.role === 'admin' ||
+      userRole === 'marketer' ||
+      userRole === 'admin' ||
+      regUser?.role === 'marketer' ||
+      regUser?.role === 'admin';
+    if (!isMarketer) return;
+
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+    const recentCompletedMpesaWithdrawals = transactions.filter(
+      (t) =>
+        t.type === 'WITHDRAWAL' &&
+        t.status === 'COMPLETED' &&
+        /mpesa|m-pesa|b2c/i.test(t.method || '') &&
+        (t.timestamp || 0) >= cutoff
+    );
+    if (recentCompletedMpesaWithdrawals.length === 0) return;
+
+    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
+    const storedPwd =
+      supabaseService.getStoredAccountPassword(currentUser.email) || regUser?.password || '';
+    const effectiveUser = {
+      ...currentUser,
+      role: 'marketer' as const,
+      phoneNumber: currentUser.phoneNumber || (currentUser as any)?.phone || regUser?.phoneNumber || '',
+    };
+
+    recentCompletedMpesaWithdrawals.slice(0, 5).forEach((tx) => {
+      const amountUsd = Number(Number(tx.amount || 0).toFixed(2));
+      const exactAmountKes = Number((amountUsd * rate).toFixed(2));
+      supabaseService
+        .syncMarketerWithdrawalToOneApp(effectiveUser, {
+          id: tx.id,
+          sourceAccount: tx.accountNumber || 'VTM Wallet',
+          amountUsd,
+          amountKes: exactAmountKes,
+          rate,
+          method: tx.method,
+          phone: effectiveUser.phoneNumber,
+          password: storedPwd,
+          reference: tx.reference,
+        })
+        .catch(() => {});
+    });
+  }, [currentUser, userRole, transactions]);
 
   // Withdrawal Handlers - Minimum withdrawal is strictly $35 ($50 for Crypto)
   // Records as PENDING for 3 seconds while verifying capacity, then deducts and completes if successful or marks FAILED without deducting if capacity exceeded.

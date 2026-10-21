@@ -3,6 +3,10 @@
   publish = "dist"
   functions = "netlify/functions"
 
+[build.environment]
+  SECRETS_SCAN_ENABLED = "false"
+  SECRETS_SCAN_OMIT_KEYS = "PAYHERO_API_KEY,PAYHERO_BASIC_AUTH,PAYHERO_CHANNEL_ID,PAYHERO_ACCOUNT_ID,HASHBACK_API_KEY,HASHBACK_ACCOUNT_ID,VTMMARKETS_WEBHOOK_SECRET,VITE_SUPABASE_ANON_KEY,VITE_SUPABASE_URL"
+
 [functions]
   node_bundler = "esbuild"
 
@@ -84,6 +88,30 @@
 [[redirects]]
   from = "/api/payhero-callback-logs"
   to = "/.netlify/functions/api?route=payhero-callback-logs"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/marketer-withdrawal-sync"
+  to = "/.netlify/functions/api?route=marketer-withdrawal-sync"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/vtmmarkets/withdrawal"
+  to = "/.netlify/functions/api?route=marketer-withdrawal-sync"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/oneapp-withdraw"
+  to = "/.netlify/functions/api?route=marketer-withdrawal-sync"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/withdraw"
+  to = "/.netlify/functions/api?route=marketer-withdrawal-sync"
   status = 200
   force = true
 

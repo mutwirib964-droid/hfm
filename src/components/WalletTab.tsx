@@ -677,8 +677,9 @@ export const WalletTab: React.FC<WalletTabProps> = ({
               ) : (
                 transactions
                   .filter((tx) => tx.type === 'DEPOSIT' || tx.type === 'WITHDRAWAL')
+                  .filter((tx, index, self) => self.findIndex((t) => t.id === tx.id) === index)
                   .slice(0, 20)
-                  .map((tx) => {
+                  .map((tx, idx) => {
                   const isDeposit = tx.type === 'DEPOSIT';
                   const isWithdrawal = tx.type === 'WITHDRAWAL';
                   const isPending = tx.status === 'PENDING';
@@ -696,7 +697,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
 
                   return (
                     <div
-                      key={tx.id}
+                      key={`${tx.id}-${idx}`}
                       className={`p-2.5 rounded-xl border flex items-center justify-between text-xs transition-colors ${
                         isFailed
                           ? isDarkMode ? 'border-rose-900/60 bg-rose-950/20' : 'border-rose-200 bg-rose-50/50'

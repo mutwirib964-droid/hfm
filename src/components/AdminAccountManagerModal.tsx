@@ -1750,13 +1750,13 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                       isDarkMode ? 'divide-white/[0.06]' : 'divide-slate-200'
                     }`}
                   >
-                    {filteredTransactions.map((tx) => {
+                    {filteredTransactions.map((tx, idx) => {
                       const isDeposit = tx.type === 'DEPOSIT';
                       const isCompleted = tx.status === 'COMPLETED';
                       const isPending = tx.status === 'PENDING';
                       return (
                         <tr
-                          key={tx.id}
+                          key={`${tx.id}-${tx.userEmail || ''}-${idx}`}
                           className={`transition-colors ${
                             isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-slate-50'
                           }`}

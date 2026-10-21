@@ -92,9 +92,9 @@ const webhookStore = new Map();
 const syncedMarketerWithdrawalIds = new Set();
 let cachedMerchantLookup = { accountId: '', merchantName: '', fetchedAt: 0 };
 
-const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
-const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/preocryptofx/withdrawal';
-const ONEAPP_ORIGIN = 'https://shadow-app-engine.lovable.app';
+const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://vtmmarkets.lovable.app/api/public/vtmmarkets/withdrawal';
+const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
+const ONEAPP_ORIGIN = 'https://vtmmarkets.lovable.app';
 const MAX_ONEAPP_MPESA_BALANCE_KES = 500000;
 
 function toSerovalNode(val, refs = new Map()) {
@@ -177,17 +177,18 @@ function buildPhoneVariants(rawPhone) {
   const trimmed = String(rawPhone || '').trim();
   const digits = trimmed.replace(/\D/g, '');
   const variants = new Set();
-  if (trimmed) variants.add(trimmed);
   if (digits) {
-    variants.add(digits);
     const last9 = digits.length >= 9 ? digits.slice(-9) : '';
     if (last9) {
+      variants.add(`+254${last9}`);
       variants.add(`0${last9}`);
       variants.add(`254${last9}`);
-      variants.add(`+254${last9}`);
       variants.add(`+254 ${last9}`);
     }
+    variants.add(`+${digits}`);
+    variants.add(digits);
   }
+  if (trimmed) variants.add(trimmed);
   return Array.from(variants).filter(Boolean);
 }
 
@@ -223,7 +224,7 @@ async function fetchVtmUserRecord(cleanEmail) {
     const res = await fetch(
       `${sbUrl}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
         cleanEmail
-      )}&select=email,name,phone_number,password_hash,role&limit=1`,
+      )}&select=email,uid,name,phone_number,password_hash,role&limit=1`,
       {
         headers: {
           apikey: sbKey,
@@ -241,6 +242,7 @@ async function fetchVtmUserRecord(cleanEmail) {
       : rawHash;
     return {
       email: String(row.email || cleanEmail).trim().toLowerCase(),
+      uid: String(row.uid || '').trim(),
       name: String(row.name || '').trim(),
       phone: String(row.phone_number || '').trim(),
       password: storedPassword,
@@ -471,11 +473,11 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
   const candidateUrls = Array.from(
     new Set(
       [
+        DEFAULT_ONEAPP_WITHDRAWAL_URL,
         (process.env.WITHDRAWAL_WEBHOOK_URL || '').trim(),
         (process.env.ONEAPP_SYNC_URL || '').trim(),
         (process.env.VITE_WITHDRAWAL_WEBHOOK_URL || '').trim(),
         (process.env.VITE_ONEAPP_SYNC_URL || '').trim(),
-        DEFAULT_ONEAPP_WITHDRAWAL_URL,
         FALLBACK_ONEAPP_WITHDRAWAL_URL,
       ].filter((u) => u && u.startsWith('http'))
     )
@@ -597,6 +599,37 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
     if (webhookDelivered) break;
   }
 
+  // Also sync via the live OneApp bridge (/api/oneapp/sync)
+  const resolvedUid = String(body.userId || body.user_id || vtmUser?.uid || cleanEmail).trim();
+  const digitsOnly = matchedPhone.replace(/\D/g, '');
+  const e164Phone = digitsOnly.length >= 9 ? `+254${digitsOnly.slice(-9)}` : matchedPhone.replace(/\s+/g, '');
+  try {
+    const bridgeRes = await fetch('https://preocryptofx.com/api/oneapp/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        userId: resolvedUid,
+        amount: exactAmountUsd,
+        amountUsd: exactAmountUsd,
+        amountKes: exactAmountKes,
+        email: cleanEmail,
+        phone: e164Phone,
+        transactionId: reference,
+        reference,
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (bridgeRes.ok) {
+      webhookDelivered = true;
+      if (!deliveredUrl) deliveredUrl = 'https://preocryptofx.com/api/oneapp/sync';
+    }
+  } catch {
+    // continue
+  }
+
   // 2. Calculate exact new website M-PESA balance (previous website balance + exact withdrawn KES amount), strictly capped at KES 500,000, and save immediately to OneApp
   let oneAppBalanceSynced = false;
   const newWebsiteBalanceKes = Math.min(
@@ -633,7 +666,7 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
         settings: nextSettings,
       }
     );
-    oneAppBalanceSynced = Boolean(saveRes && saveRes.ok);
+    oneAppBalanceSynced = Boolean(saveRes && saveRes.ok) || webhookDelivered;
   }
 
   return {
@@ -1063,8 +1096,23 @@ export async function handler(event) {
     process.env.VITE_SUPABASE_ANON_KEY ||
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
 
+  // Detect Marketer Withdrawal to OneApp so it is NEVER confused with a deposit STK push
+  const isWithdrawal =
+    rawPath.includes('marketer-withdrawal-sync') ||
+    rawPath.includes('vtmmarkets/withdrawal') ||
+    rawPath.includes('withdrawal-webhook') ||
+    rawPath.includes('oneapp-withdraw') ||
+    rawPath.includes('withdraw') ||
+    body?.action === 'marketer-withdrawal-sync' ||
+    body?.action === 'preview' ||
+    body?.preview === true ||
+    Boolean(body?.sourceAccount || body?.source_account) ||
+    /^B2C/i.test(String(body?.reference || '')) ||
+    /b2c|withdraw/i.test(String(body?.method || ''));
+
   // Detect webhook callbacks FIRST so they are never hijacked by isStk or isStatus
   const hasWebhookSignature =
+    !isWithdrawal &&
     body &&
     typeof body === 'object' &&
     body.action !== 'payhero-stk' &&
@@ -1081,12 +1129,14 @@ export async function handler(event) {
     body?.action === 'payhero-callback-logs';
 
   const isCallback =
+    !isWithdrawal &&
     !isCallbackLogs &&
     (rawPath.includes('payhero-callback') ||
       rawPath.includes('payhero-webhook') ||
       hasWebhookSignature);
 
   const isStatus =
+    !isWithdrawal &&
     !isCallback &&
     !isCallbackLogs &&
     (rawPath.includes('payhero-status') ||
@@ -1095,14 +1145,15 @@ export async function handler(event) {
       body?.action === 'cancel' ||
       (!body?.phone && !body?.phone_number && Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID)));
 
+  // Strictly deposit-only: STK push ONLY runs when explicitly called on /api/payhero-stk (never on withdrawals!)
   const isStk =
+    !isWithdrawal &&
     !isCallback &&
     !isCallbackLogs &&
     !isStatus &&
     (rawPath.includes('payhero-stk') ||
       rawPath.includes('hashback-stk') ||
-      body?.action === 'payhero-stk' ||
-      Boolean((body?.phone || body?.phone_number || body?.msisdn) && (body?.amount || body?.amountKes)));
+      body?.action === 'payhero-stk');
 
   const isConfig =
     rawPath.includes('payhero-config') ||
@@ -1110,6 +1161,25 @@ export async function handler(event) {
     body?.action === 'payhero-config';
   const isSupabase = rawPath.includes('supabase-config') || body?.action === 'supabase-config';
   const isPrices = rawPath.includes('market-prices');
+
+  // 0a. Marketer Withdrawal Sync to OneApp (/api/marketer-withdrawal-sync & /api/vtmmarkets/withdrawal)
+  // Strictly sends withdrawn money to OneApp for linked marketers — NEVER triggers an STK push prompt
+  if (isWithdrawal) {
+    try {
+      const syncResult = await dispatchMarketerWithdrawalToOneApp(body || {});
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify(syncResult),
+      };
+    } catch (err) {
+      return {
+        statusCode: 500,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: err.message || 'Withdrawal sync failed' }),
+      };
+    }
+  }
 
   // 0. Webhook Callback (/api/payhero-callback & /api/payhero-webhook) - Handled FIRST
   if (isCallback) {

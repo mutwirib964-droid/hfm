@@ -864,8 +864,9 @@ export function getAllPlatformDeposits(): {
   totalDepositedKes: number;
   deposits: PlatformDepositTransaction[];
 } {
-  const users = getAllRegisteredUsers();
+  const users = getAllRegisteredUsers().filter((u) => !isMasterAdminEmail(u.email));
   const deposits: PlatformDepositTransaction[] = [];
+  const seenIds = new Set<string>();
   const USD_KES = getUsdKesRate();
 
   users.forEach((u) => {
@@ -874,6 +875,12 @@ export function getAllPlatformDeposits(): {
 
     txs.forEach((tx) => {
       if (tx.type === 'DEPOSIT') {
+        const txIdKey = String(tx.id || `${u.id}-${tx.timestamp}`);
+        const refKey = String((tx as any).referenceId || (tx as any).checkoutRequestId || tx.reference || '');
+        if (seenIds.has(txIdKey) || (refKey && seenIds.has(`ref:${refKey}`))) return;
+        seenIds.add(txIdKey);
+        if (refKey) seenIds.add(`ref:${refKey}`);
+
         const amt = Math.abs(Number(tx.amount || 0));
         const rawStatus = String(tx.status || '').toUpperCase();
         const status: 'COMPLETED' | 'PENDING' | 'FAILED' =
@@ -936,8 +943,9 @@ export function getAllPlatformTransactions(): {
   successRate: number;
   transactions: PlatformTransactionRecord[];
 } {
-  const users = getAllRegisteredUsers();
+  const users = getAllRegisteredUsers().filter((u) => !isMasterAdminEmail(u.email));
   const transactions: PlatformTransactionRecord[] = [];
+  const seenTxKeys = new Set<string>();
   const USD_KES = getUsdKesRate();
   const WITHDRAW_RATE = getUsdKesWithdrawRate();
 
@@ -946,6 +954,12 @@ export function getAllPlatformTransactions(): {
     const txs = sanitizeRealTransactions(finances?.transactions);
 
     txs.forEach((tx) => {
+      const txIdKey = String(tx.id || `tx-${u.id}-${tx.timestamp}`);
+      const refKey = String(tx.reference || (tx as any).referenceId || '');
+      if (seenTxKeys.has(txIdKey) || (refKey && seenTxKeys.has(`ref:${refKey}`))) return;
+      seenTxKeys.add(txIdKey);
+      if (refKey) seenTxKeys.add(`ref:${refKey}`);
+
       const amt = Math.abs(Number(tx.amount || 0));
       const rawStatus = String(tx.status || '').toUpperCase();
       let status: PlatformTransactionRecord['status'] = 'COMPLETED';
@@ -966,7 +980,7 @@ export function getAllPlatformTransactions(): {
       const dateObj = new Date(tx.timestamp || Date.now());
 
       transactions.push({
-        id: tx.id || `tx-${u.id}-${tx.timestamp}`,
+        id: txIdKey,
         type,
         userEmail: u.email || 'Trader',
         userName: u.name || 'Trader',

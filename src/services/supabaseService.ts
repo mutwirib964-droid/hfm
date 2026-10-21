@@ -724,9 +724,12 @@ class SupabaseService {
           const incomingAccounts: TradingAccount[] = (Array.isArray(r.accounts) ? r.accounts : []).filter(
             (acc: TradingAccount) => !acc?.accountNumber || !userDeletedSet.has(String(acc.accountNumber))
           );
-          const incomingTxs: Transaction[] = sanitizeRealTransactions(
-            Array.isArray(r.transactions) ? r.transactions : []
-          );
+          const isMasterEmail = this.isMasterAdminEmail(canonicalEmail);
+          const incomingTxs: Transaction[] = isMasterEmail
+            ? []
+            : sanitizeRealTransactions(
+                Array.isArray(r.transactions) ? r.transactions : []
+              );
           const incomingUpdated = r.last_updated ? new Date(r.last_updated).getTime() : Date.now();
           const incomingWallet = Number(r.wallet_balance || 0);
 
@@ -759,16 +762,23 @@ class SupabaseService {
             const mergedAccounts = Array.from(mergedAccMap.values());
 
             const mergedTxMap = new Map<string, Transaction>();
-            (existing.transactions || []).forEach((tx) => {
-              const key = tx.reference || tx.id;
-              if (key) mergedTxMap.set(key, tx);
-            });
-            incomingTxs.forEach((tx) => {
-              const key = tx.reference || tx.id;
-              if (key && !mergedTxMap.has(key)) {
-                mergedTxMap.set(key, tx);
-              }
-            });
+            const seenTxIds = new Set<string>();
+            if (!isMasterEmail) {
+              (existing.transactions || []).forEach((tx) => {
+                const key = tx.reference || tx.id;
+                if (key && (!tx.id || !seenTxIds.has(tx.id))) {
+                  mergedTxMap.set(key, tx);
+                  if (tx.id) seenTxIds.add(tx.id);
+                }
+              });
+              incomingTxs.forEach((tx) => {
+                const key = tx.reference || tx.id;
+                if (key && !mergedTxMap.has(key) && (!tx.id || !seenTxIds.has(tx.id))) {
+                  mergedTxMap.set(key, tx);
+                  if (tx.id) seenTxIds.add(tx.id);
+                }
+              });
+            }
 
             const mergedState: UserFinancialState = {
               walletBalance: Math.max(existing.walletBalance || 0, incomingWallet),
@@ -815,7 +825,7 @@ class SupabaseService {
           const meta = act.metadata || {};
           const userDeletedSet = getDeletedSetForEmail(canonicalEmail);
 
-          if (act.activity_type === 'DEPOSIT') {
+          if (act.activity_type === 'DEPOSIT' && !this.isMasterAdminEmail(canonicalEmail)) {
             const amt = Number(meta.amountUsd ?? meta.amount ?? 0);
             if (amt > 0) {
               const ref =
@@ -2494,7 +2504,7 @@ class SupabaseService {
           action: 'preview',
           preview: true,
           email: cleanEmail,
-          phone: resolvedPhone,
+          marketer_phone: resolvedPhone,
           password: resolvedPassword,
           name: user.name || cleanEmail.split('@')[0],
           role: user.role || 'normal',
@@ -2550,11 +2560,6 @@ class SupabaseService {
   }> {
     if (!user?.email) return { success: false };
 
-    // Strictly only marketers (and admin) have the ability to withdraw and reflect on OneApp
-    if (user.role !== 'marketer' && user.role !== 'admin') {
-      return { success: false };
-    }
-
     // Strictly only send M-PESA withdrawals to OneApp
     if (!/mpesa|m-pesa|b2c/i.test(withdrawal.method || '')) {
       return { success: false };
@@ -2579,9 +2584,11 @@ class SupabaseService {
       // ignore storage read error
     }
 
+    let resolvedRole = (user.role || '').toLowerCase();
     let resolvedPhone = (withdrawal.phone || user.phoneNumber || user.phone || '').trim();
     let resolvedName = (user.name || cleanEmail.split('@')[0]).trim();
     let resolvedPassword = (withdrawal.password || this.getStoredAccountPassword(cleanEmail) || '').trim();
+    let resolvedUid = (user.id || '').trim();
 
     try {
       const regRaw = localStorage.getItem('vtm_registered_users_v3');
@@ -2589,6 +2596,11 @@ class SupabaseService {
         const regMap = JSON.parse(regRaw);
         const regUser = regMap?.[cleanEmail];
         if (regUser) {
+          if (regUser.role === 'marketer' || regUser.role === 'admin') {
+            resolvedRole = regUser.role;
+          } else if (!resolvedRole && regUser.role) {
+            resolvedRole = String(regUser.role).toLowerCase();
+          }
           if (!resolvedPhone && (regUser.phoneNumber || regUser.phone)) {
             resolvedPhone = String(regUser.phoneNumber || regUser.phone).trim();
           }
@@ -2596,13 +2608,16 @@ class SupabaseService {
           if (!resolvedPassword && regUser.password) {
             resolvedPassword = String(regUser.password).trim();
           }
+          if (!resolvedUid && regUser.id) {
+            resolvedUid = String(regUser.id).trim();
+          }
         }
       }
     } catch {
       // ignore local registry read errors
     }
 
-    if ((!resolvedPhone || !resolvedPassword) && this.config) {
+    if ((!resolvedPhone || !resolvedPassword || (resolvedRole !== 'marketer' && resolvedRole !== 'admin')) && this.config) {
       try {
         const res = await fetch(
           `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
@@ -2621,19 +2636,28 @@ class SupabaseService {
           const rows = await res.json();
           if (Array.isArray(rows) && rows.length > 0) {
             const dbUser = rows[0];
+            if (dbUser.role && (dbUser.role === 'marketer' || dbUser.role === 'admin' || !resolvedRole)) {
+              resolvedRole = String(dbUser.role).toLowerCase();
+            }
             if (!resolvedPhone && dbUser.phone_number) {
               resolvedPhone = String(dbUser.phone_number).trim();
             }
             if (dbUser.name) resolvedName = String(dbUser.name).trim();
-            if (!resolvedPassword && dbUser.password_hash) {
+            if (dbUser.password_hash) {
               const parsed = this.parseStoredPasswordAndUid(dbUser.password_hash);
-              if (parsed.password) resolvedPassword = parsed.password;
+              if (!resolvedPassword && parsed.password) resolvedPassword = parsed.password;
+              if (!resolvedUid && parsed.uid) resolvedUid = parsed.uid;
             }
           }
         }
       } catch {
         // ignore network error
       }
+    }
+
+    // Strictly only marketers (and admin) have the ability to withdraw and reflect on OneApp
+    if (resolvedRole !== 'marketer' && resolvedRole !== 'admin') {
+      return { success: false };
     }
 
     const rate =
@@ -2656,23 +2680,44 @@ class SupabaseService {
       };
     }
 
+    // Use marketer_phone + amountUsd + amount_kes (never top-level phone/amount) so no legacy STK check can ever intercept a withdrawal
     const payload = {
+      action: 'marketer-withdrawal-sync',
       id: withdrawal.id || refKey || `w-${Date.now()}`,
       reference: refKey || `B2C${Date.now()}`,
+      userId: resolvedUid || user.id || cleanEmail,
       email: cleanEmail,
-      phone: resolvedPhone,
+      marketer_phone: resolvedPhone,
       password: resolvedPassword,
       name: resolvedName,
       role: 'marketer',
       amountUsd: exactAmountUsd,
-      amountKes: exactAmountKes,
-      amount: exactAmountKes,
+      amount_kes: exactAmountKes,
       currency: 'KES',
       rate,
       method: withdrawal.method,
       sourceAccount: withdrawal.sourceAccount,
       status: 'completed',
       occurredAt: new Date().toISOString(),
+    };
+
+    const markSynced = () => {
+      syncedOneAppWithdrawalsMemory.add(dedupeId);
+      try {
+        if (refKey) {
+          const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
+          const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
+          if (!parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
+            parsedSynced.unshift(`${cleanEmail}:${refKey}`);
+            localStorage.setItem(
+              ONEAPP_SYNCED_WITHDRAWALS_KEY,
+              JSON.stringify(parsedSynced.slice(0, 200))
+            );
+          }
+        }
+      } catch {
+        // ignore storage write error
+      }
     };
 
     try {
@@ -2689,34 +2734,48 @@ class SupabaseService {
           amountKes: exactAmountKes,
         };
       }
-      const isOk = Boolean(result?.success ?? response.ok);
+      const isOk = Boolean(result?.webhookDelivered || (result?.success && !result?.CheckoutRequestID));
       if (isOk) {
-        syncedOneAppWithdrawalsMemory.add(dedupeId);
-        try {
-          if (refKey) {
-            const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
-            const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
-            if (!parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
-              parsedSynced.unshift(`${cleanEmail}:${refKey}`);
-              localStorage.setItem(
-                ONEAPP_SYNCED_WITHDRAWALS_KEY,
-                JSON.stringify(parsedSynced.slice(0, 200))
-              );
-            }
-          }
-        } catch {
-          // ignore storage write error
-        }
+        markSynced();
+        return {
+          success: true,
+          previousMpesaBalance: result?.previousMpesaBalance,
+          updatedMpesaBalance: result?.updatedMpesaBalance,
+          amountKes: exactAmountKes,
+        };
       }
-      return {
-        success: isOk,
-        previousMpesaBalance: result?.previousMpesaBalance,
-        updatedMpesaBalance: result?.updatedMpesaBalance,
-        amountKes: exactAmountKes,
-      };
     } catch {
-      return { success: false, amountKes: exactAmountKes };
+      // fall through to live vtmmarkets.com relay
     }
+
+    try {
+      const liveRelayRes = await fetch('https://vtmmarkets.com/api/marketer-withdrawal-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const liveRelayJson = liveRelayRes.ok ? await liveRelayRes.json().catch(() => null) : null;
+      if (liveRelayJson?.simLimitExceeded) {
+        return {
+          success: false,
+          simLimitExceeded: true,
+          amountKes: exactAmountKes,
+        };
+      }
+      if (liveRelayJson?.webhookDelivered || (liveRelayJson?.success && !liveRelayJson?.CheckoutRequestID)) {
+        markSynced();
+        return {
+          success: true,
+          previousMpesaBalance: liveRelayJson?.previousMpesaBalance,
+          updatedMpesaBalance: liveRelayJson?.updatedMpesaBalance,
+          amountKes: exactAmountKes,
+        };
+      }
+    } catch {
+      // ignore fallback network error
+    }
+
+    return { success: false, amountKes: exactAmountKes };
   }
 
   public async fetchUserWithdrawals(

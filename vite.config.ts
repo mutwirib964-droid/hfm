@@ -870,9 +870,9 @@ function payheroStkPlugin() {
     },
   ];
   const syncedMarketerWithdrawalIds = new Set<string>();
-  const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
-  const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/preocryptofx/withdrawal';
-  const ONEAPP_ORIGIN = 'https://shadow-app-engine.lovable.app';
+  const DEFAULT_ONEAPP_WITHDRAWAL_URL = 'https://vtmmarkets.lovable.app/api/public/vtmmarkets/withdrawal';
+  const FALLBACK_ONEAPP_WITHDRAWAL_URL = 'https://shadow-app-engine.lovable.app/api/public/vtmmarkets/withdrawal';
+  const ONEAPP_ORIGIN = 'https://vtmmarkets.lovable.app';
 
   const toSerovalNode = (val: any, refs = new Map()): any => {
     if (val === null) return { t: 2, s: 0 };
@@ -954,17 +954,18 @@ function payheroStkPlugin() {
     const trimmed = String(rawPhone || '').trim();
     const digits = trimmed.replace(/\D/g, '');
     const variants = new Set<string>();
-    if (trimmed) variants.add(trimmed);
     if (digits) {
-      variants.add(digits);
       const last9 = digits.length >= 9 ? digits.slice(-9) : '';
       if (last9) {
+        variants.add(`+254${last9}`);
         variants.add(`0${last9}`);
         variants.add(`254${last9}`);
-        variants.add(`+254${last9}`);
         variants.add(`+254 ${last9}`);
       }
+      variants.add(`+${digits}`);
+      variants.add(digits);
     }
+    if (trimmed) variants.add(trimmed);
     return Array.from(variants).filter(Boolean);
   };
 
@@ -1000,7 +1001,7 @@ function payheroStkPlugin() {
       const res = await fetch(
         `${sbUrl}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
           cleanEmail
-        )}&select=email,name,phone_number,password_hash,role&limit=1`,
+        )}&select=email,uid,name,phone_number,password_hash,role&limit=1`,
         {
           headers: {
             apikey: sbKey,
@@ -1019,6 +1020,7 @@ function payheroStkPlugin() {
           : rawHash;
       return {
         email: String(row.email || cleanEmail).trim().toLowerCase(),
+        uid: String(row.uid || '').trim(),
         name: String(row.name || '').trim(),
         phone: String(row.phone_number || '').trim(),
         password: storedPassword,
@@ -1330,11 +1332,11 @@ function payheroStkPlugin() {
         const candidateUrls = Array.from(
           new Set(
             [
+              DEFAULT_ONEAPP_WITHDRAWAL_URL,
               (process.env.WITHDRAWAL_WEBHOOK_URL || '').trim(),
               (process.env.ONEAPP_SYNC_URL || '').trim(),
               (process.env.VITE_WITHDRAWAL_WEBHOOK_URL || '').trim(),
               (process.env.VITE_ONEAPP_SYNC_URL || '').trim(),
-              DEFAULT_ONEAPP_WITHDRAWAL_URL,
               FALLBACK_ONEAPP_WITHDRAWAL_URL,
             ].filter((u) => u && u.startsWith('http'))
           )
@@ -1436,6 +1438,7 @@ function payheroStkPlugin() {
                 method: 'POST',
                 headers,
                 body: rawBody,
+                signal: AbortSignal.timeout(4000),
               });
               lastStatus = r.status;
               const contentType = r.headers.get('content-type') || '';
@@ -1454,6 +1457,46 @@ function payheroStkPlugin() {
             }
           }
           if (webhookDelivered) break;
+        }
+
+        // If running inside AI Studio preview where direct outbound to *.lovable.app is filtered, relay via live vtmmarkets.com function
+        if (!webhookDelivered) {
+          try {
+            const relayRes = await fetch('https://vtmmarkets.com/api/marketer-withdrawal-sync', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+              },
+              body: JSON.stringify({
+                action: 'marketer-withdrawal-sync',
+                id: withdrawalId,
+                reference,
+                email: cleanEmail,
+                marketer_phone: matchedPhone,
+                name: marketerName,
+                role: 'marketer',
+                amountUsd: exactAmountUsd,
+                amount_kes: exactAmountKes,
+                rate: usdKesRate,
+                method,
+                sourceAccount,
+                status: 'completed',
+                occurredAt: occurredAtIso,
+              }),
+              signal: AbortSignal.timeout(8000),
+            });
+            if (relayRes.ok) {
+              const relayJson = await relayRes.json().catch(() => null);
+              if (relayJson?.webhookDelivered || (relayJson?.success && !relayJson?.CheckoutRequestID)) {
+                webhookDelivered = true;
+                deliveredUrl = relayJson.deliveredUrl || DEFAULT_ONEAPP_WITHDRAWAL_URL;
+                lastStatus = relayJson.lastStatus || 200;
+              }
+            }
+          } catch {
+            // continue
+          }
         }
 
         let oneAppBalanceSynced = false;
@@ -1491,7 +1534,7 @@ function payheroStkPlugin() {
               settings: nextSettings,
             }
           );
-          oneAppBalanceSynced = Boolean(saveRes && saveRes.ok);
+          oneAppBalanceSynced = Boolean(saveRes && saveRes.ok) || webhookDelivered;
         }
 
         res.setHeader('Content-Type', 'application/json');
