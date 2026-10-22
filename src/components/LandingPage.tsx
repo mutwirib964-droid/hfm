@@ -50,6 +50,7 @@ import {
   isMasterAdminEmail,
   isValidUserUid,
   generateSupabaseUuid,
+  calculateNetWalletFromLedger,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
@@ -386,7 +387,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             const merged = localFinances
               ? mergeUserFinancialStates(remoteFinances, localFinances, verifiedProfile.email)
               : remoteFinances;
-            saveUserFinancials(verifiedProfile, merged, false);
+            const ledgerWallet = calculateNetWalletFromLedger(merged.transactions);
+            const safeWallet = Math.max(
+              merged.walletBalance || 0,
+              localFinances?.walletBalance || 0,
+              remoteFinances.walletBalance || 0,
+              ledgerWallet
+            );
+            saveUserFinancials(verifiedProfile, { ...merged, walletBalance: safeWallet }, false);
           } else if (localFinances) {
             saveUserFinancials(verifiedProfile, localFinances, false);
           } else {

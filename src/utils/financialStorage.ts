@@ -140,9 +140,132 @@ export function pickAuthoritativeAccount(
 }
 
 /**
+ * Authoritative ledger calculation of net wallet balance from all confirmed transactions.
+ * Wallet balance can ONLY change via:
+ * 1. Completed deposits into wallet (+)
+ * 2. Internal transfers from trading accounts into wallet (+)
+ * 3. Deleted account balance sweep into wallet (+)
+ * 4. Internal transfers from wallet into trading accounts (-)
+ * 5. Completed or pending withdrawals from wallet (-)
+ * Any funds deposited or transferred into the wallet remain there permanently until withdrawn or transferred.
+ */
+export function reconcileWalletBalanceWithTransactions(
+  rawWalletBalance: number,
+  transactions?: Transaction[],
+  accounts?: TradingAccount[]
+): number {
+  const safeRaw = Math.max(0, Number((rawWalletBalance || 0).toFixed(2)));
+  if (!Array.isArray(transactions) || transactions.length === 0) {
+    return safeRaw;
+  }
+
+  // Filter for non-failed transactions that directly affect the central VTM Wallet
+  const walletTxs = transactions.filter((t) => {
+    if (!t) return false;
+    const status = String(t.status || 'COMPLETED').toUpperCase();
+    const details = String(t.details || '');
+    const acc = String(t.accountNumber || '');
+    if (
+      status === 'FAILED' ||
+      status === 'CANCELLED' ||
+      status === 'REJECTED' ||
+      /capacity exceeded|unsuccessful|failed|bounced back/i.test(details)
+    ) {
+      return false;
+    }
+    if (t.type === 'DEPOSIT') {
+      return /wallet/i.test(acc) || /wallet/i.test(details);
+    }
+    if (t.type === 'INTERNAL_TRANSFER') {
+      return /wallet/i.test(acc) || /wallet/i.test(details);
+    }
+    if (t.type === 'WITHDRAWAL') {
+      return /wallet/i.test(acc) || /wallet/i.test(details);
+    }
+    return false;
+  });
+
+  if (walletTxs.length === 0) {
+    return safeRaw;
+  }
+
+  // Sort newest first
+  walletTxs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const latestWalletTx = walletTxs[0];
+  const latestDetails = String(latestWalletTx.details || '');
+
+  // If the most recent wallet transaction explicitly recorded the resulting wallet balance (New Bal: $X.XX),
+  // that balance is 100% authoritative (e.g. after a full or partial withdrawal, transfer, or deposit).
+  const newBalMatch = latestDetails.match(/New Bal:\s*\$([0-9,]+(?:\.[0-9]+)?)/i);
+  if (newBalMatch && newBalMatch[1]) {
+    const parsedNewBal = Number(newBalMatch[1].replace(/,/g, ''));
+    if (Number.isFinite(parsedNewBal)) {
+      return Math.max(0, Number(parsedNewBal.toFixed(2)));
+    }
+  }
+
+  // If the latest wallet transaction is a withdrawal or a transfer OUT of the wallet without a New Bal tag,
+  // never re-credit a $0 wallet balance.
+  const isDebitFromWallet =
+    latestWalletTx.type === 'WITHDRAWAL' ||
+    (latestWalletTx.type === 'INTERNAL_TRANSFER' &&
+      (/wallet.*➔/i.test(latestDetails) || /from\s+.*wallet/i.test(latestDetails)));
+
+  if (isDebitFromWallet) {
+    return safeRaw;
+  }
+
+  // Strict rule: Users who already used their wallet balance (either withdrew, transferred to an account,
+  // or funded/traded with a Live account) must NEVER be credited again when their wallet balance is $0.
+  // Only recover a missing wallet deposit if the user deposited to their wallet and NEVER withdrew,
+  // NEVER transferred out, and NEVER traded/used a Live account.
+  const hasAnyWithdrawal = walletTxs.some((t) => t.type === 'WITHDRAWAL');
+  const hasAnyInternalTransfer = transactions.some(
+    (t) =>
+      t &&
+      t.type === 'INTERNAL_TRANSFER' &&
+      String(t.status || 'COMPLETED').toUpperCase() !== 'FAILED'
+  );
+  const hasUsedLiveAccount =
+    Array.isArray(accounts) &&
+    accounts.some(
+      (a) =>
+        a &&
+        a.type === 'Live' &&
+        (Number(a.balance || 0) > 0 ||
+          Number(a.equity || 0) > 0 ||
+          Boolean(a.lastTradeAt) ||
+          Boolean(a.lastDepositAt) ||
+          Boolean(a.lastActivityAt))
+    );
+
+  const amt = Math.abs(Number(latestWalletTx.amount || 0));
+  if (
+    latestWalletTx.type === 'DEPOSIT' &&
+    String(latestWalletTx.status || 'COMPLETED').toUpperCase() === 'COMPLETED' &&
+    safeRaw <= 0 &&
+    amt > 0 &&
+    !hasAnyWithdrawal &&
+    !hasAnyInternalTransfer &&
+    !hasUsedLiveAccount
+  ) {
+    return Number(amt.toFixed(2));
+  }
+
+  return safeRaw;
+}
+
+export function calculateNetWalletFromLedger(
+  transactions?: Transaction[],
+  accounts?: TradingAccount[]
+): number {
+  return reconcileWalletBalanceWithTransactions(0, transactions, accounts);
+}
+
+/**
  * Merges two UserFinancialState objects (e.g. remote cloud state and local device state)
  * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user,
- * and no stale/skeleton $0 record overwrites an account's real database balance.
+ * and wallet withdrawals/deposits/transfers reflect the exact balance after the latest action.
  */
 export function mergeUserFinancialStates(
   primary: UserFinancialState,
@@ -191,6 +314,12 @@ export function mergeUserFinancialStates(
           ...tx,
           status: 'FAILED',
         });
+      } else if (tx.status === 'COMPLETED' && existing.status === 'PENDING') {
+        txMap.set(key, {
+          ...existing,
+          ...tx,
+          status: 'COMPLETED',
+        });
       }
     }
   }
@@ -203,12 +332,32 @@ export function mergeUserFinancialStates(
       ? secondary.selectedAccountId
       : mergedAccounts[0]?.id || null;
 
+  const primTs = Number(primary.lastUpdated || 0);
+  const secTs = Number(secondary?.lastUpdated || 0);
+  const newerIsPrimary = primTs >= secTs;
+  const newerState = newerIsPrimary ? primary : secondary;
+  const olderState = newerIsPrimary ? secondary : primary;
+
+  // If the "newer" state is an uninitialized blank state (lastUpdated === 0 and no transactions), fallback to olderState
+  const baseWallet =
+    Number(newerState.lastUpdated || 0) === 0 &&
+    (!newerState.transactions || newerState.transactions.length === 0) &&
+    Number(olderState.walletBalance || 0) > 0
+      ? Number(olderState.walletBalance || 0)
+      : Number(newerState.walletBalance || 0);
+
+  const resolvedWallet = reconcileWalletBalanceWithTransactions(
+    baseWallet,
+    mergedTransactions,
+    mergedAccounts
+  );
+
   return {
-    walletBalance: Number((primary.walletBalance ?? secondary.walletBalance ?? 0).toFixed(2)),
+    walletBalance: Number(resolvedWallet.toFixed(2)),
     accounts: mergedAccounts,
     selectedAccountId: selectedId,
     transactions: mergedTransactions,
-    lastUpdated: Math.max(primary.lastUpdated || 0, secondary.lastUpdated || 0),
+    lastUpdated: Math.max(primTs, secTs),
   };
 }
 
@@ -604,7 +753,18 @@ export function replaceLocalRegistryWithSupabase(
 
       const fin = financesByEmail[cleanEmail] || financesByEmail[u.email.toLowerCase()];
       if (fin) {
-        localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(fin));
+        const existingLocal = loadUserFinancials(profile);
+        const mergedState = existingLocal
+          ? mergeUserFinancialStates(fin, existingLocal, cleanEmail)
+          : {
+              ...fin,
+              walletBalance: reconcileWalletBalanceWithTransactions(
+                Number(fin.walletBalance || 0),
+                fin.transactions,
+                fin.accounts
+              ),
+            };
+        localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(mergedState));
       }
     });
 
@@ -1114,10 +1274,17 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (raw) {
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
+        const cleanTxs = sanitizeRealTransactions(parsed.transactions);
+        const reconciledWallet = reconcileWalletBalanceWithTransactions(
+          parsed.walletBalance,
+          cleanTxs,
+          parsed.accounts
+        );
         return {
           ...parsed,
+          walletBalance: reconciledWallet,
           accounts: parsed.accounts,
-          transactions: sanitizeRealTransactions(parsed.transactions),
+          transactions: cleanTxs,
         };
       }
     }
@@ -1127,9 +1294,16 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
     if (activeRaw) {
       const parsed = JSON.parse(activeRaw);
       if (parsed && parsed._key === key && typeof parsed.walletBalance === 'number') {
+        const cleanTxs = sanitizeRealTransactions(parsed.transactions);
+        const reconciledWallet = reconcileWalletBalanceWithTransactions(
+          parsed.walletBalance,
+          cleanTxs,
+          parsed.accounts
+        );
         return {
           ...parsed,
-          transactions: sanitizeRealTransactions(parsed.transactions),
+          walletBalance: reconciledWallet,
+          transactions: cleanTxs,
         };
       }
     }
@@ -1211,11 +1385,18 @@ export function saveUserFinancials(
     }
 
     const safeAccounts = Array.from(accountMap.values());
+    const cleanTxs = sanitizeRealTransactions(state.transactions);
+    const safeWallet = reconcileWalletBalanceWithTransactions(
+      state.walletBalance,
+      cleanTxs,
+      safeAccounts
+    );
+
     const payload: UserFinancialState = {
-      walletBalance: Number(state.walletBalance.toFixed(2)),
+      walletBalance: safeWallet,
       accounts: safeAccounts,
       selectedAccountId: state.selectedAccountId ?? safeAccounts[0]?.id ?? null,
-      transactions: sanitizeRealTransactions(state.transactions),
+      transactions: cleanTxs,
       lastUpdated: syncToCloud ? Date.now() : (state.lastUpdated || existingLocal?.lastUpdated || 0),
     };
 
@@ -1388,8 +1569,10 @@ export function executeInternalTransfer(
     });
   }
 
-  // Record transaction
+  // Record transaction with explicit New Bal stamp when wallet is involved
   const ref = `VTM-TRF-${Math.floor(10000000 + Math.random() * 90000000)}`;
+  const walletSuffix =
+    isFromWallet || isToWallet ? ` (New Bal: $${updatedWallet.toFixed(2)})` : '';
   const newTx: Transaction = {
     id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     type: 'INTERNAL_TRANSFER',
@@ -1399,7 +1582,8 @@ export function executeInternalTransfer(
     status: 'COMPLETED',
     timestamp: Date.now(),
     reference: ref,
-    details: `${fromAccount} ➔ ${toAccount}`,
+    accountNumber: isToWallet ? 'VTM Wallet' : isFromWallet ? 'VTM Wallet' : toAccount,
+    details: `${fromAccount} ➔ ${toAccount}${walletSuffix}`,
   };
 
   const newTransactions = [newTx, ...currentState.transactions];

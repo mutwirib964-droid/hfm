@@ -6,6 +6,9 @@ import {
   getDeletedAccountNumbers,
   pickAuthoritativeAccount,
   isSkeletonZeroAccount,
+  calculateNetWalletFromLedger,
+  reconcileWalletBalanceWithTransactions,
+  loadUserFinancials,
 } from '../utils/financialStorage';
 import { TradingAccount, Transaction, Position, PendingOrder, ClosedTrade } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -780,17 +783,26 @@ class SupabaseService {
               });
             }
 
+            const sortedTxs = Array.from(mergedTxMap.values()).sort(
+              (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+            );
+            const newerWallet =
+              incomingUpdated >= (existing.lastUpdated || 0)
+                ? incomingWallet
+                : Number(existing.walletBalance || 0);
             const mergedState: UserFinancialState = {
-              walletBalance: Math.max(existing.walletBalance || 0, incomingWallet),
+              walletBalance: reconcileWalletBalanceWithTransactions(
+                newerWallet,
+                sortedTxs,
+                mergedAccounts
+              ),
               accounts: mergedAccounts,
               selectedAccountId:
                 existing.selectedAccountId ||
                 r.selected_account_id ||
                 mergedAccounts[0]?.id ||
                 null,
-              transactions: Array.from(mergedTxMap.values()).sort(
-                (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
-              ),
+              transactions: sortedTxs,
               lastUpdated: Math.max(existing.lastUpdated || 0, incomingUpdated),
             };
             financesByEmail[canonicalEmail] = mergedState;
@@ -840,6 +852,10 @@ class SupabaseService {
                   : rawStatus === 'PENDING'
                   ? 'PENDING'
                   : 'COMPLETED';
+              const targetAcc = String(meta.targetAccount || 'VTM Wallet').trim();
+              const isWalletTarget = /wallet/i.test(targetAcc);
+              void isWalletTarget;
+
               const alreadyExists = (fin.transactions || []).some(
                 (t) =>
                   t.type === 'DEPOSIT' &&
@@ -857,8 +873,8 @@ class SupabaseService {
                     status,
                     timestamp: act.created_at ? new Date(act.created_at).getTime() : Date.now(),
                     reference: ref,
-                    accountNumber: meta.targetAccount || 'VTM Wallet',
-                    details: act.description || `Deposit to ${meta.targetAccount || 'VTM Wallet'}`,
+                    accountNumber: targetAcc,
+                    details: act.description || `Deposit to ${targetAcc}`,
                   },
                 ];
               }
@@ -893,6 +909,17 @@ class SupabaseService {
           }
         });
       }
+
+      // Ensure each user's walletBalance is reconciled without resurrecting used or withdrawn funds
+      Object.values(financesByEmail).forEach((f) => {
+        if (f) {
+          f.walletBalance = reconcileWalletBalanceWithTransactions(
+            Number(f.walletBalance || 0),
+            f.transactions,
+            f.accounts
+          );
+        }
+      });
 
       const usersMap = new Map<string, UserAuthProfile>();
 
@@ -1278,6 +1305,7 @@ class SupabaseService {
     if (!this.config || !user || !account) return false;
     try {
       const currentFin = await this.fetchUserFinancials(user);
+      const localFin = loadUserFinancials(user);
       const existingAccounts = currentFin?.accounts || [];
       const exists = existingAccounts.some((a) => a.id === account.id || a.accountNumber === account.accountNumber);
       const nextAccounts = exists
@@ -1286,11 +1314,15 @@ class SupabaseService {
           )
         : [...existingAccounts, account];
 
+      const mergedTxs = currentFin?.transactions || localFin?.transactions || [];
+      const baseWal = localFin?.walletBalance ?? currentFin?.walletBalance ?? 0;
+      const safeWallet = reconcileWalletBalanceWithTransactions(baseWal, mergedTxs);
+
       return await this.syncUserFinancials(user, {
-        walletBalance: currentFin?.walletBalance ?? 0,
+        walletBalance: safeWallet,
         accounts: nextAccounts,
         selectedAccountId: currentFin?.selectedAccountId || account.id,
-        transactions: currentFin?.transactions || [],
+        transactions: mergedTxs,
         lastUpdated: Date.now(),
       });
     } catch (e) {
@@ -1307,6 +1339,7 @@ class SupabaseService {
     if (!this.config || !user || !accounts) return false;
     try {
       const currentFin = await this.fetchUserFinancials(user);
+      const localFin = loadUserFinancials(user);
       let localSelId: string | null = selectedAccountId || null;
       if (!localSelId && user.email) {
         try {
@@ -1315,11 +1348,17 @@ class SupabaseService {
           // ignore
         }
       }
+      const baseWal =
+        localFin && typeof localFin.walletBalance === 'number'
+          ? localFin.walletBalance
+          : currentFin?.walletBalance || 0;
+      const mergedTxs = currentFin?.transactions || localFin?.transactions || [];
+      const safeWallet = reconcileWalletBalanceWithTransactions(baseWal, mergedTxs, accounts);
       return await this.syncUserFinancials(user, {
-        walletBalance: currentFin?.walletBalance ?? 0,
+        walletBalance: safeWallet,
         accounts,
         selectedAccountId: localSelId || currentFin?.selectedAccountId || accounts[0]?.id || null,
-        transactions: currentFin?.transactions || [],
+        transactions: mergedTxs,
         lastUpdated: Date.now(),
       });
     } catch (e) {
@@ -2284,16 +2323,96 @@ class SupabaseService {
     extras: {
       priceAlerts?: any[];
       followedStrategies?: any[];
+      unfollowedStrategyMap?: Record<string, number>;
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
+    let localUnfollowedMap: Record<string, number> = { ...(extras.unfollowedStrategyMap || {}) };
+    try {
+      const rawUnfollowed = localStorage.getItem(`vtm_unfollowed_strategies_${cleanEmail}`);
+      if (rawUnfollowed) {
+        const parsed = JSON.parse(rawUnfollowed);
+        if (parsed && typeof parsed === 'object') {
+          localUnfollowedMap = { ...parsed, ...localUnfollowedMap };
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 1. Direct row-level persistence in public.vtm_followed_strategies
+    if (Array.isArray(extras.followedStrategies)) {
+      try {
+        const activeIds = extras.followedStrategies.map((f) => f.providerId).filter(Boolean);
+        if (activeIds.length === 0) {
+          await fetch(
+            `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}`,
+            {
+              method: 'DELETE',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+            }
+          ).catch(() => {});
+        } else {
+          // Remove unfollowed strategies
+          await fetch(
+            `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&provider_id=not.in.(${activeIds.map(encodeURIComponent).join(',')})`,
+            {
+              method: 'DELETE',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+            }
+          ).catch(() => {});
+        }
+
+        // Upsert active followed strategies
+        for (const s of extras.followedStrategies) {
+          const rowId = `${cleanEmail}:${s.providerId}`;
+          await fetch(`${this.config.url}/rest/v1/vtm_followed_strategies?on_conflict=id`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+              Prefer: 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify({
+              id: rowId,
+              user_email: cleanEmail,
+              provider_id: s.providerId,
+              provider_name: s.providerName,
+              allocated_amount: s.allocatedAmount,
+              current_profit: s.currentProfit || 0,
+              profit_percent: s.profitPercent || 0,
+              volume_allocation: s.volumeAllocation || 100,
+              rescue_level: s.rescueLevel || 30,
+              start_date: s.startDate,
+              status: 'ACTIVE',
+              updated_at: new Date().toISOString(),
+            }),
+          }).catch(() => {});
+        }
+      } catch {
+        // ignore fallback
+      }
+    }
+
     return await this.saveCloudStateRecord(
-      user.email,
+      cleanEmail,
       'STATE_EXTRAS',
       'Synchronized price alerts and copy trading strategies',
       {
         priceAlerts: extras.priceAlerts || [],
         followedStrategies: extras.followedStrategies || [],
+        unfollowedStrategyMap: localUnfollowedMap,
         updatedAt: Date.now(),
       }
     );
@@ -2304,10 +2423,111 @@ class SupabaseService {
   ): Promise<{
     priceAlerts?: any[];
     followedStrategies?: any[];
+    unfollowedStrategyMap?: Record<string, number>;
     updatedAt?: number;
   } | null> {
     if (!this.config || !user?.email) return null;
-    return await this.fetchCloudStateRecord(user.email, 'STATE_EXTRAS');
+    const cleanEmail = this.isMasterAdminEmail(user.email)
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+
+    let localUnfollowedMap: Record<string, number> = {};
+    try {
+      const rawUnfollowed = localStorage.getItem(`vtm_unfollowed_strategies_${cleanEmail}`);
+      if (rawUnfollowed) {
+        const parsed = JSON.parse(rawUnfollowed);
+        if (parsed && typeof parsed === 'object') {
+          localUnfollowedMap = parsed;
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    const cloudState = await this.fetchCloudStateRecord<{
+      priceAlerts?: any[];
+      followedStrategies?: any[];
+      unfollowedStrategyMap?: Record<string, number>;
+      updatedAt?: number;
+    }>(cleanEmail, 'STATE_EXTRAS');
+
+    const mergedUnfollowedMap: Record<string, number> = {
+      ...(cloudState?.unfollowedStrategyMap || {}),
+      ...localUnfollowedMap,
+    };
+
+    try {
+      if (Object.keys(mergedUnfollowedMap).length > 0) {
+        localStorage.setItem(
+          `vtm_unfollowed_strategies_${cleanEmail}`,
+          JSON.stringify(mergedUnfollowedMap)
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    // If STATE_EXTRAS exists, it holds the exact authoritative followedStrategies (including empty array after unfollow)
+    if (cloudState && Array.isArray(cloudState.followedStrategies)) {
+      const filteredStrategies = cloudState.followedStrategies.filter((s: any) => {
+        if (!s || !s.providerId) return false;
+        const unfollowedTs = mergedUnfollowedMap[s.providerId] || 0;
+        const followedTs = Number(s.followedAt || 0);
+        if (unfollowedTs > 0 && unfollowedTs >= followedTs) {
+          return false;
+        }
+        return true;
+      });
+      return {
+        priceAlerts: cloudState.priceAlerts || [],
+        followedStrategies: filteredStrategies,
+        unfollowedStrategyMap: mergedUnfollowedMap,
+        updatedAt: cloudState.updatedAt || 0,
+      };
+    }
+
+    // Fallback to public.vtm_followed_strategies table if STATE_EXTRAS was not yet written
+    try {
+      const res = await fetch(
+        `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=*&order=updated_at.desc`,
+        {
+          method: 'GET',
+          headers: {
+            apikey: this.config.anonKey,
+            Authorization: `Bearer ${this.config.anonKey}`,
+          },
+          signal: AbortSignal.timeout(4000),
+        }
+      );
+      if (res.ok) {
+        const rows = await res.json();
+        if (Array.isArray(rows)) {
+          const latestRowTs = rows[0]?.updated_at ? new Date(rows[0].updated_at).getTime() : 0;
+          const mapped = rows
+            .map((r: any) => ({
+              providerId: r.provider_id,
+              providerName: r.provider_name,
+              allocatedAmount: Number(r.allocated_amount),
+              currentProfit: Number(r.current_profit || 0),
+              profitPercent: Number(r.profit_percent || 0),
+              volumeAllocation: Number(r.volume_allocation || 100),
+              rescueLevel: Number(r.rescue_level || 30),
+              startDate: r.start_date,
+            }))
+            .filter((s: any) => !mergedUnfollowedMap[s.providerId]);
+          return {
+            priceAlerts: cloudState?.priceAlerts || [],
+            followedStrategies: mapped,
+            unfollowedStrategyMap: mergedUnfollowedMap,
+            updatedAt: latestRowTs,
+          };
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    return cloudState;
   }
 
   // =========================================================================
@@ -3002,10 +3222,12 @@ class SupabaseService {
       }
 
       const mergedAccounts = Array.from(accountMap.values());
-      const finalWalletBalance =
-        isCloudNewer && cloudWalletBalance !== undefined
-          ? cloudWalletBalance
-          : Number((state.walletBalance || 0).toFixed(2));
+      const incomingWallet = Number((state.walletBalance || 0).toFixed(2));
+      const finalWalletBalance = reconcileWalletBalanceWithTransactions(
+        incomingWallet,
+        state.transactions,
+        mergedAccounts
+      );
 
       // Winning high-resolution ISO timestamp
       const winningMs = Math.max(nowMs, cloudLastUpdatedMs);
@@ -3118,7 +3340,7 @@ class SupabaseService {
           ? fetch(
               `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
                 cleanEmail
-              )}&activity_type=in.(ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&select=activity_type,metadata,created_at&order=created_at.desc&limit=100`,
+              )}&activity_type=in.(ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED,DEPOSIT,WITHDRAWAL,WITHDRAWAL_COMPLETED,TRANSFER,INTERNAL_TRANSFER)&select=activity_type,description,metadata,created_at&order=created_at.asc&limit=250`,
               {
                 method: 'GET',
                 headers: {
@@ -3200,11 +3422,45 @@ class SupabaseService {
 
           const filteredAccounts = Array.from(accountMap.values());
 
+          // Collect all transactions across all rows for this user
+          const allTxsAcrossRows: Transaction[] = [];
+          for (const r of rows) {
+            if (Array.isArray(r.transactions)) {
+              allTxsAcrossRows.push(...r.transactions);
+            }
+          }
+          const cleanTxs = sanitizeRealTransactions(allTxsAcrossRows);
+          const newestRowWallet = Number(row.wallet_balance || 0);
+          const authoritativeWallet = reconcileWalletBalanceWithTransactions(
+            newestRowWallet,
+            cleanTxs,
+            filteredAccounts
+          );
+
+          if (authoritativeWallet !== newestRowWallet) {
+            // Heal database in background so all rows reflect the exact reconciled balance
+            fetch(
+              `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
+              {
+                method: 'PATCH',
+                headers: {
+                  'Content-Type': 'application/json',
+                  apikey: this.config.anonKey,
+                  Authorization: `Bearer ${this.config.anonKey}`,
+                },
+                body: JSON.stringify({
+                  wallet_balance: authoritativeWallet,
+                  last_updated: new Date().toISOString(),
+                }),
+              }
+            ).catch(() => {});
+          }
+
           const rawState: UserFinancialState = {
-            walletBalance: Number(row.wallet_balance || 0),
+            walletBalance: authoritativeWallet,
             accounts: filteredAccounts,
             selectedAccountId: row.selected_account_id || filteredAccounts[0]?.id || null,
-            transactions: sanitizeRealTransactions(Array.isArray(row.transactions) ? row.transactions : []),
+            transactions: cleanTxs,
             lastUpdated: row.last_updated ? new Date(row.last_updated).getTime() : Date.now(),
           };
           return rawState;
@@ -3772,11 +4028,68 @@ CREATE TABLE IF NOT EXISTS public.user_devices (
   last_active_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.vtm_cloud_states (
+  user_email TEXT NOT NULL,
+  state_key TEXT NOT NULL,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_email, state_key)
+);
+
+CREATE TABLE IF NOT EXISTS public.financial_ledger (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  account_number TEXT NOT NULL,
+  type TEXT NOT NULL,
+  amount NUMERIC(15, 2) NOT NULL,
+  previous_balance NUMERIC(15, 2) NOT NULL,
+  new_balance NUMERIC(15, 2) NOT NULL,
+  reference_id TEXT,
+  reason TEXT,
+  timestamp BIGINT,
+  metadata JSONB,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.closed_trades (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  account_number TEXT,
+  ticket BIGINT,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  lots NUMERIC(10, 2) NOT NULL,
+  open_price NUMERIC(15, 5) NOT NULL,
+  close_price NUMERIC(15, 5) NOT NULL,
+  pnl NUMERIC(15, 2) DEFAULT 0.00,
+  open_time BIGINT,
+  close_time BIGINT,
+  reason TEXT DEFAULT 'MANUAL',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.vtm_followed_strategies (
+  id TEXT PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  provider_id TEXT NOT NULL,
+  provider_name TEXT NOT NULL,
+  allocated_amount NUMERIC(15, 2) NOT NULL,
+  current_profit NUMERIC(15, 2) DEFAULT 0.00,
+  profit_percent NUMERIC(10, 2) DEFAULT 0.00,
+  volume_allocation NUMERIC(5, 2) DEFAULT 100.00,
+  rescue_level NUMERIC(5, 2) DEFAULT 30.00,
+  start_date TEXT,
+  status TEXT DEFAULT 'ACTIVE',
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 -- 8. Performance Indexes for Instant Admin & User Queries
 CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_email ON public.vtm_user_finances (LOWER(user_email));
 CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_updated ON public.vtm_user_finances (last_updated DESC);
 CREATE INDEX IF NOT EXISTS idx_user_activities_email_type ON public.user_activities (LOWER(user_email), activity_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_vtm_registered_users_email ON public.vtm_registered_users (LOWER(email));
+CREATE INDEX IF NOT EXISTS idx_financial_ledger_email ON public.financial_ledger (LOWER(user_email), timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_vtm_followed_strategies_email ON public.vtm_followed_strategies (LOWER(user_email));
 
 -- 9. Row Level Security (RLS) with Validated Expressions (Zero Security Advisor Warnings)
 ALTER TABLE public.vtm_registered_users ENABLE ROW LEVEL SECURITY;
@@ -3790,6 +4103,10 @@ ALTER TABLE public.vtm_user_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.vtm_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_activities ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vtm_cloud_states ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.financial_ledger ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.closed_trades ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vtm_followed_strategies ENABLE ROW LEVEL SECURITY;
 
 -- Drop all old/duplicate policies on public VTM tables first
 DO $$
@@ -3811,7 +4128,11 @@ BEGIN
         'vtm_user_settings',
         'vtm_transactions',
         'user_activities',
-        'user_devices'
+        'user_devices',
+        'vtm_cloud_states',
+        'financial_ledger',
+        'closed_trades',
+        'vtm_followed_strategies'
       )
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', pol.policyname, pol.schemaname, pol.tablename);
@@ -3873,6 +4194,26 @@ CREATE POLICY "user_devices_access" ON public.user_devices
   FOR ALL TO anon, authenticated, service_role
   USING (device_id IS NOT NULL AND user_email IS NOT NULL)
   WITH CHECK (device_id IS NOT NULL AND user_email IS NOT NULL);
+
+CREATE POLICY "vtm_cloud_states_access" ON public.vtm_cloud_states
+  FOR ALL TO anon, authenticated, service_role
+  USING (user_email IS NOT NULL AND length(trim(user_email)) > 0)
+  WITH CHECK (user_email IS NOT NULL AND length(trim(user_email)) > 0);
+
+CREATE POLICY "financial_ledger_access" ON public.financial_ledger
+  FOR ALL TO anon, authenticated, service_role
+  USING (id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
+
+CREATE POLICY "closed_trades_access" ON public.closed_trades
+  FOR ALL TO anon, authenticated, service_role
+  USING (id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
+
+CREATE POLICY "vtm_followed_strategies_access" ON public.vtm_followed_strategies
+  FOR ALL TO anon, authenticated, service_role
+  USING (id IS NOT NULL AND user_email IS NOT NULL)
+  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
 
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;

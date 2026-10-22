@@ -95,6 +95,8 @@ import {
   sweepIdleLiveAccountsSilently,
   markAccountDeletedLocally,
   mergeUserFinancialStates,
+  calculateNetWalletFromLedger,
+  reconcileWalletBalanceWithTransactions,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
 import { getUsdKesWithdrawRate } from './services/payheroService';
@@ -393,7 +395,7 @@ export default function App() {
       isCloudFinancialsLoadedRef.current = true;
       if (remoteFin) {
         const localFin = loadUserFinancials(remote.profile);
-        const isRecentLocalWrite = Date.now() - lastLocalFinancialUpdateRef.current < 8000;
+        const isRecentLocalWrite = Date.now() - lastLocalFinancialUpdateRef.current < 10000;
         const remoteIsNewer =
           !isRecentLocalWrite &&
           (isInitialMount || (remoteFin.lastUpdated || 0) > (localFin?.lastUpdated || 0) + 1000);
@@ -404,28 +406,39 @@ export default function App() {
           remote.profile.email
         );
 
-        if (remoteIsNewer || mergedFin.accounts.length > (localFin?.accounts?.length || 0)) {
-          // Preserve any local PENDING withdrawal that is still in its 3-second window
-          const localPendingWithdrawals = (transactionsRef.current || []).filter(
-            (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING' && Date.now() - t.timestamp < 5000
-          );
-          const mergedTransactions =
-            localPendingWithdrawals.length > 0
-              ? [
-                  ...localPendingWithdrawals,
-                  ...(mergedFin.transactions || []).filter(
-                    (rt) => !localPendingWithdrawals.some((lp) => lp.id === rt.id || lp.reference === rt.reference)
-                  ),
-                ]
-              : mergedFin.transactions || transactionsRef.current;
+        // Preserve any local PENDING withdrawal that is still in its 3-second window
+        const localPendingWithdrawals = (transactionsRef.current || []).filter(
+          (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING' && Date.now() - t.timestamp < 5000
+        );
+        const mergedTransactions =
+          localPendingWithdrawals.length > 0
+            ? [
+                ...localPendingWithdrawals,
+                ...(mergedFin.transactions || []).filter(
+                  (rt) => !localPendingWithdrawals.some((lp) => lp.id === rt.id || lp.reference === rt.reference)
+                ),
+              ]
+            : mergedFin.transactions || transactionsRef.current;
 
+        const safeWallet = isRecentLocalWrite
+          ? reconcileWalletBalanceWithTransactions(walletBalanceRef.current, transactionsRef.current)
+          : reconcileWalletBalanceWithTransactions(mergedFin.walletBalance || 0, mergedTransactions);
+
+        if (
+          remoteIsNewer ||
+          safeWallet !== walletBalanceRef.current ||
+          mergedFin.accounts.length > (localFin?.accounts?.length || 0)
+        ) {
           const stateToApply = {
             ...mergedFin,
+            walletBalance: safeWallet,
             transactions: mergedTransactions,
           };
 
           const shouldSyncMergedBackToCloud =
-            stateToApply.accounts.length > (remoteFin.accounts?.length || 0);
+            stateToApply.accounts.length > (remoteFin.accounts?.length || 0) ||
+            safeWallet !== (remoteFin.walletBalance || 0);
+
           saveUserFinancials(remote.profile, stateToApply, shouldSyncMergedBackToCloud);
           if (walletBalanceRef.current !== stateToApply.walletBalance) {
             walletBalanceRef.current = stateToApply.walletBalance;
@@ -498,12 +511,22 @@ export default function App() {
       // Cross-device synchronization (runs on initial mount AND every 4s poll across all logged-in devices)
       supabaseService.fetchExtrasState(remote.profile).then((remoteExtras) => {
         if (remoteExtras) {
-          const isRecentLocalExtras = Date.now() - lastLocalExtrasUpdateRef.current < 6000;
-          const localExtrasTs = getPriceAlertsUpdatedAt(remote.profile.email);
+          const isRecentLocalExtras = Date.now() - lastLocalExtrasUpdateRef.current < 15000;
+          const cleanEm = remote.profile.email.trim().toLowerCase();
+          let localFollowedTs = 0;
+          try {
+            const rawFollowedTs = localStorage.getItem(`vtm_followed_strategies_updated_${cleanEm}`);
+            if (rawFollowedTs) localFollowedTs = Number(rawFollowedTs) || 0;
+          } catch {}
+          const localExtrasTs = Math.max(
+            getPriceAlertsUpdatedAt(remote.profile.email),
+            localFollowedTs,
+            lastLocalExtrasUpdateRef.current
+          );
           const remoteExtrasTs = remoteExtras.updatedAt || 0;
           const shouldApplyAlerts =
             !isRecentLocalExtras &&
-            (isInitialMount || remoteExtrasTs > localExtrasTs || !isCloudExtrasLoadedRef.current);
+            (remoteExtrasTs > localExtrasTs || (!isCloudExtrasLoadedRef.current && localFollowedTs === 0));
 
           if (shouldApplyAlerts && Array.isArray(remoteExtras.priceAlerts)) {
             priceAlertsRef.current = remoteExtras.priceAlerts;
@@ -515,8 +538,25 @@ export default function App() {
             );
           }
           if (shouldApplyAlerts && Array.isArray(remoteExtras.followedStrategies)) {
-            followedStrategiesRef.current = remoteExtras.followedStrategies;
-            setFollowedStrategies(remoteExtras.followedStrategies);
+            let localUnfollowedMap: Record<string, number> = {};
+            try {
+              const rawUnf = localStorage.getItem(`vtm_unfollowed_strategies_${cleanEm}`);
+              if (rawUnf) localUnfollowedMap = JSON.parse(rawUnf) || {};
+            } catch {}
+            const safeFollowed = remoteExtras.followedStrategies.filter((s: any) => {
+              if (!s || !s.providerId) return false;
+              const unfTs = localUnfollowedMap[s.providerId] || 0;
+              const folTs = Number(s.followedAt || 0);
+              return !(unfTs > 0 && unfTs >= folTs);
+            });
+            followedStrategiesRef.current = safeFollowed;
+            setFollowedStrategies(safeFollowed);
+            try {
+              localStorage.setItem(
+                `vtm_followed_strategies_${cleanEm}`,
+                JSON.stringify(safeFollowed)
+              );
+            } catch {}
           }
         }
         isCloudExtrasLoadedRef.current = true;
@@ -1141,7 +1181,17 @@ export default function App() {
 
   // HFcopy Strategies State (Clean initial state)
   const [providers, setProviders] = useState<StrategyProvider[]>(STRATEGY_PROVIDERS);
-  const [followedStrategies, setFollowedStrategies] = useState<FollowedStrategy[]>([]);
+  const [followedStrategies, setFollowedStrategies] = useState<FollowedStrategy[]>(() => {
+    try {
+      const savedUser = localStorage.getItem('vtm_auth_user');
+      const email = savedUser ? JSON.parse(savedUser)?.email : null;
+      if (email) {
+        const raw = localStorage.getItem(`vtm_followed_strategies_${email.trim().toLowerCase()}`);
+        if (raw) return JSON.parse(raw);
+      }
+    } catch {}
+    return [];
+  });
   const followedStrategiesRef = useRef<FollowedStrategy[]>(followedStrategies);
   followedStrategiesRef.current = followedStrategies;
 
@@ -3691,7 +3741,38 @@ export default function App() {
     const provider = providers.find((p) => p.id === params.providerId);
     if (!provider) return;
 
-    const newFollowed: FollowedStrategy = {
+    // Strict deposit verification: ensure user has sufficient unallocated real balance in their active Live Trading Account
+    const liveAccounts = accountsRef.current.filter((a) => a.type === 'Live');
+    const activeLiveAcc =
+      selectedAccountRef.current?.type === 'Live'
+        ? selectedAccountRef.current
+        : liveAccounts.reduce<TradingAccount | null>(
+            (best, acc) => (!best || Number(acc.balance || 0) > Number(best.balance || 0) ? acc : best),
+            null
+          );
+    const baseLiveBalance = activeLiveAcc ? Math.max(0, Number(activeLiveAcc.balance || 0)) : 0;
+    const alreadyAllocated = followedStrategiesRef.current
+      .filter((f) => f.providerId !== provider.id)
+      .reduce((sum, f) => sum + Math.max(0, Number(f.allocatedAmount || 0)), 0);
+    const totalAvailableRealDeposit = Number(
+      Math.max(0, baseLiveBalance - alreadyAllocated).toFixed(2)
+    );
+
+    if (
+      totalAvailableRealDeposit < provider.minDeposit ||
+      params.allocatedAmount < provider.minDeposit ||
+      totalAvailableRealDeposit < params.allocatedAmount
+    ) {
+      triggerActionPopup({
+        type: 'TRANSFER_FAILED',
+        title: 'Deposit Required to Copy',
+        subtitle: `Minimum deposit required to copy ${provider.name} is $${provider.minDeposit.toFixed(2)}. Your available Live Account balance is $${totalAvailableRealDeposit.toFixed(2)}. Please fund your Live Account first.`,
+      });
+      return;
+    }
+
+    const nowTs = Date.now();
+    const newFollowed: FollowedStrategy & { followedAt?: number } = {
       providerId: provider.id,
       providerName: provider.name,
       allocatedAmount: params.allocatedAmount,
@@ -3700,11 +3781,41 @@ export default function App() {
       volumeAllocation: params.volumeAllocation,
       rescueLevel: params.rescueLevel,
       startDate: new Date().toISOString().split('T')[0],
+      followedAt: nowTs,
     };
 
-    setFollowedStrategies((prev) => [newFollowed, ...prev]);
-    addNotification(`Started copying strategy: ${provider.name}`);
+    const nextFollowed = [newFollowed, ...followedStrategiesRef.current.filter((f) => f.providerId !== provider.id)];
+    lastLocalExtrasUpdateRef.current = nowTs;
+    followedStrategiesRef.current = nextFollowed;
+    setFollowedStrategies(nextFollowed);
 
+    let updatedUnfollowedMap: Record<string, number> = {};
+    try {
+      if (currentUser?.email) {
+        const cleanEm = currentUser.email.trim().toLowerCase();
+        const rawUnf = localStorage.getItem(`vtm_unfollowed_strategies_${cleanEm}`);
+        if (rawUnf) updatedUnfollowedMap = JSON.parse(rawUnf) || {};
+        delete updatedUnfollowedMap[provider.id];
+        localStorage.setItem(`vtm_unfollowed_strategies_${cleanEm}`, JSON.stringify(updatedUnfollowedMap));
+        localStorage.setItem(`vtm_followed_strategies_${cleanEm}`, JSON.stringify(nextFollowed));
+        localStorage.setItem(`vtm_followed_strategies_updated_${cleanEm}`, String(nowTs));
+      }
+    } catch {}
+
+    if (currentUser && currentUser.email) {
+      supabaseService.syncExtrasState(currentUser, {
+        priceAlerts: priceAlertsRef.current,
+        followedStrategies: nextFollowed,
+        unfollowedStrategyMap: updatedUnfollowedMap,
+      }).catch(() => {});
+      supabaseService.syncActivity(currentUser, {
+        type: 'COPY_STARTED',
+        description: `Started copying strategy: ${provider.name} ($${params.allocatedAmount})`,
+        metadata: { providerId: provider.id, providerName: provider.name, amount: params.allocatedAmount },
+      }).catch(() => {});
+    }
+
+    addNotification(`Started copying strategy: ${provider.name}`);
     triggerActionPopup({
       type: 'COPY_STARTED',
       title: `Copy Trading Activated: ${provider.name}`,
@@ -3717,16 +3828,46 @@ export default function App() {
   };
 
   const handleUnfollowStrategy = (providerId: string) => {
-    const followed = followedStrategies.find((f) => f.providerId === providerId);
-    setFollowedStrategies((prev) => prev.filter((f) => f.providerId !== providerId));
-    addNotification('Strategy copy stopped and funds settled');
+    const followed = followedStrategiesRef.current.find((f) => f.providerId === providerId);
+    const nextFollowed = followedStrategiesRef.current.filter((f) => f.providerId !== providerId);
+    const nowTs = Date.now();
+    lastLocalExtrasUpdateRef.current = nowTs;
+    followedStrategiesRef.current = nextFollowed;
+    setFollowedStrategies(nextFollowed);
 
+    let updatedUnfollowedMap: Record<string, number> = {};
+    try {
+      if (currentUser?.email) {
+        const cleanEm = currentUser.email.trim().toLowerCase();
+        const rawUnf = localStorage.getItem(`vtm_unfollowed_strategies_${cleanEm}`);
+        if (rawUnf) updatedUnfollowedMap = JSON.parse(rawUnf) || {};
+        updatedUnfollowedMap[providerId] = nowTs;
+        localStorage.setItem(`vtm_unfollowed_strategies_${cleanEm}`, JSON.stringify(updatedUnfollowedMap));
+        localStorage.setItem(`vtm_followed_strategies_${cleanEm}`, JSON.stringify(nextFollowed));
+        localStorage.setItem(`vtm_followed_strategies_updated_${cleanEm}`, String(nowTs));
+      }
+    } catch {}
+
+    if (currentUser && currentUser.email) {
+      supabaseService.syncExtrasState(currentUser, {
+        priceAlerts: priceAlertsRef.current,
+        followedStrategies: nextFollowed,
+        unfollowedStrategyMap: updatedUnfollowedMap,
+      }).catch(() => {});
+      supabaseService.syncActivity(currentUser, {
+        type: 'COPY_STOPPED',
+        description: `Stopped copying strategy: ${followed?.providerName || providerId}`,
+        metadata: { providerId, providerName: followed?.providerName },
+      }).catch(() => {});
+    }
+
+    addNotification(`Unfollowed ${followed?.providerName || 'Strategy'}.`);
     triggerActionPopup({
       type: 'COPY_STOPPED',
-      title: 'Strategy Copy Halted',
+      title: 'Strategy Unfollowed',
       subtitle: followed
-        ? `Detached from ${followed.providerName}. Remaining allocated capital released to your balance.`
-        : 'Copy strategy detached successfully.',
+        ? `Stopped copying ${followed.providerName}.`
+        : 'Copy strategy unfollowed successfully.',
     });
   };
 
@@ -3872,6 +4013,15 @@ export default function App() {
       return;
     }
 
+    const isWalletDepositTarget =
+      params.targetAccount === 'HF Wallet' ||
+      params.targetAccount === 'VTM Wallet' ||
+      params.targetAccount === 'VTM One Wallet' ||
+      params.targetAccount.toLowerCase().includes('wallet');
+    const nextWalletForDeposit = isWalletDepositTarget
+      ? Number((walletBalanceRef.current + amountUsd).toFixed(2))
+      : walletBalanceRef.current;
+
     const newTx: Transaction = {
       id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
       type: 'DEPOSIT',
@@ -3882,7 +4032,11 @@ export default function App() {
       timestamp: Date.now(),
       reference: ref,
       accountNumber: params.targetAccount,
-      details: params.details || `Funded to ${params.targetAccount}`,
+      details:
+        params.details ||
+        (isWalletDepositTarget
+          ? `Funded to ${params.targetAccount} (New Bal: $${nextWalletForDeposit.toFixed(2)})`
+          : `Funded to ${params.targetAccount}`),
     };
 
     const nextTransactions =
@@ -3893,18 +4047,12 @@ export default function App() {
     setTransactions(nextTransactions);
     lastLocalFinancialUpdateRef.current = Date.now();
 
-    if (
-      params.targetAccount === 'HF Wallet' ||
-      params.targetAccount === 'VTM Wallet' ||
-      params.targetAccount === 'VTM One Wallet' ||
-      params.targetAccount.toLowerCase().includes('wallet')
-    ) {
-      const nextWallet = Number((walletBalanceRef.current + amountUsd).toFixed(2));
-      walletBalanceRef.current = nextWallet;
-      setWalletBalance(nextWallet);
+    if (isWalletDepositTarget) {
+      walletBalanceRef.current = nextWalletForDeposit;
+      setWalletBalance(nextWalletForDeposit);
       if (currentUser) {
         saveUserFinancials(currentUser, {
-          walletBalance: nextWallet,
+          walletBalance: nextWalletForDeposit,
           accounts: accountsRef.current,
           selectedAccountId: selectedAccountRef.current?.id,
           transactions: nextTransactions,
@@ -4043,7 +4191,7 @@ export default function App() {
         phoneNumber: activeUser.phoneNumber || (activeUser as any)?.phone || regUser?.phoneNumber || '',
       };
       const storedPwd =
-        supabaseService.getStoredAccountPassword(activeUser.email) || regUser?.password || '';
+        supabaseService.getStoredAccountPassword(activeUser.email) || (regUser as any)?.password || '';
       const syncResult = await supabaseService.syncMarketerWithdrawalToOneApp(effectiveUser, {
         id: existingTx.id,
         sourceAccount: sourceAcc,
@@ -4057,9 +4205,33 @@ export default function App() {
       });
 
       if (syncResult?.simLimitExceeded || (isMpesaTx && exactAmountKes > 500000)) {
-        // Refresh account/wallet state without deducting any funds
-        const intactWallet = walletBalanceRef.current;
-        const intactAccounts = [...accountsRef.current];
+        // Refund deducted amount since withdrawal was rejected by SIM capacity limit
+        const isWalletSource =
+          sourceAcc === 'VTM Wallet' ||
+          sourceAcc === 'VTM One Wallet' ||
+          sourceAcc === 'HF Wallet' ||
+          sourceAcc.toLowerCase().includes('wallet');
+        const intactWallet = isWalletSource
+          ? Number((walletBalanceRef.current + amountUsd).toFixed(2))
+          : walletBalanceRef.current;
+        const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
+        const intactAccounts = isWalletSource
+          ? [...accountsRef.current]
+          : accountsRef.current.map((acc) =>
+              acc.accountNumber === cleanSource ||
+              acc.accountNumber === sourceAcc ||
+              `Account #${acc.accountNumber}` === sourceAcc ||
+              acc.id === sourceAcc
+                ? {
+                    ...acc,
+                    balance: Number((acc.balance + amountUsd).toFixed(2)),
+                    equity: Number((acc.equity + amountUsd).toFixed(2)),
+                    freeMargin: Number((acc.freeMargin + amountUsd).toFixed(2)),
+                  }
+                : acc
+            );
+        walletBalanceRef.current = intactWallet;
+        accountsRef.current = intactAccounts;
         setWalletBalance(intactWallet);
         setAccounts(intactAccounts);
         setSelectedAccount((acc) => {
@@ -4265,7 +4437,7 @@ export default function App() {
 
     const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
     const storedPwd =
-      supabaseService.getStoredAccountPassword(currentUser.email) || regUser?.password || '';
+      supabaseService.getStoredAccountPassword(currentUser.email) || (regUser as any)?.password || '';
     const effectiveUser = {
       ...currentUser,
       role: 'marketer' as const,
@@ -4399,7 +4571,7 @@ export default function App() {
       });
     }
 
-    // Record as PENDING for 3 seconds while verifying; if capacity exceeded, refunded automatically
+    // Record as PENDING for 3 seconds while verifying; stamp New Bal immediately so balance never bounces back
     const newTx: Transaction = {
       id: txId,
       type: 'WITHDRAWAL',
@@ -4410,7 +4582,7 @@ export default function App() {
       timestamp: Date.now(),
       reference: ref,
       accountNumber: sourceAcc,
-      details: `Withdrawal from ${sourceAcc}`,
+      details: `Withdrawal from ${sourceAcc} (New Bal: $${resultingBalance.toFixed(2)})`,
     };
 
     const nextTransactions = [newTx, ...transactionsRef.current];
@@ -4682,7 +4854,7 @@ export default function App() {
           timestamp: Date.now(),
           reference: ref,
           accountNumber: 'VTM Wallet',
-          details: `Live #${targetAcc.accountNumber} ➔ VTM Wallet (Account Deleted)`,
+          details: `Live #${targetAcc.accountNumber} ➔ VTM Wallet (Account Deleted • New Bal: $${nextWallet.toFixed(2)})`,
         };
         nextTransactions = [transferTx, ...nextTransactions];
       }
@@ -6846,6 +7018,10 @@ export default function App() {
             currentAccount={selectedAccount}
             onFollowStrategy={handleFollowStrategy}
             onUnfollowStrategy={handleUnfollowStrategy}
+            accounts={accounts}
+            walletBalance={walletBalance}
+            onNavigateToDeposit={() => setActiveTab('wallet')}
+            isDarkMode={isDarkMode}
           />
         );
       case 'wallet':

@@ -21,12 +21,10 @@ import {
   Download,
   ArrowUpRight,
   FileText,
-  Terminal,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
 import { getUsdKesRate } from '../services/payheroService';
-import { AdminTransactionLogs } from './AdminTransactionLogs';
 import {
   getAllRegisteredUsers,
   loadUserFinancials,
@@ -58,7 +56,7 @@ interface AdminAccountManagerModalProps {
   isFullPage?: boolean;
 }
 
-type AdminTab = 'users' | 'balances' | 'deposits' | 'payhero_logs';
+type AdminTab = 'users' | 'balances' | 'deposits';
 
 function formatAccountCreatedDate(ts?: number): string {
   if (!ts || isNaN(ts)) {
@@ -802,21 +800,6 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             >
               <ArrowDownLeft className="w-3.5 h-3.5" />
               <span>Money Deposited (${depositsData.totalDepositedUsd.toFixed(2)})</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('payhero_logs')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
-                activeTab === 'payhero_logs'
-                  ? 'bg-[#E51937] text-white shadow-xs'
-                  : isDarkMode
-                  ? 'text-slate-400 hover:text-white'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Terminal className="w-3.5 h-3.5" />
-              <span>Admin Transaction Logs</span>
             </button>
           </div>
 
@@ -1826,14 +1809,6 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </div>
             )}
           </section>
-        )}
-
-        {/* TAB 4: PAYHERO TRANSACTION AUDIT LOGS & RAW CALLBACK INSPECTOR */}
-        {activeTab === 'payhero_logs' && (
-          <AdminTransactionLogs
-            isDarkMode={isDarkMode}
-            currentUser={currentUser}
-          />
         )}
       </main>
     </div>

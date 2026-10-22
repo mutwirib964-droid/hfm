@@ -28,6 +28,9 @@ interface CopyTradingTabProps {
     rescueLevel: number;
   }) => void;
   onUnfollowStrategy: (providerId: string) => void;
+  accounts?: TradingAccount[];
+  walletBalance?: number;
+  onNavigateToDeposit?: (targetAccount?: string) => void;
   isDarkMode?: boolean;
 }
 
@@ -37,11 +40,28 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
   currentAccount,
   onFollowStrategy,
   onUnfollowStrategy,
+  accounts = [],
+  walletBalance = 0,
+  onNavigateToDeposit,
   isDarkMode = false,
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'explore' | 'my-portfolio'>('explore');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'top-gain' | 'low-drawdown' | 'most-followed'>('all');
+
+  // Real Deposit Calculation: Strictly the active Live trading account balance minus any already-allocated copy amounts
+  const liveAccounts = accounts.filter((a) => a.type === 'Live');
+  const baseLiveBal =
+    currentAccount?.type === 'Live'
+      ? Math.max(0, Number(currentAccount.balance || 0))
+      : liveAccounts.length > 0
+      ? Math.max(0, ...liveAccounts.map((a) => Number(a.balance || 0)))
+      : 0;
+  const allocatedCopyCapital = followedStrategies.reduce(
+    (sum, f) => sum + Math.max(0, Number(f.allocatedAmount || 0)),
+    0
+  );
+  const availableRealDeposit = Number(Math.max(0, baseLiveBal - allocatedCopyCapital).toFixed(2));
 
   // Selected Provider for Modal
   const [modalProvider, setModalProvider] = useState<StrategyProvider | null>(null);
@@ -63,6 +83,16 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
 
   const handleStartFollowing = () => {
     if (!modalProvider) return;
+    if (
+      availableRealDeposit < modalProvider.minDeposit ||
+      allocateAmount < modalProvider.minDeposit ||
+      allocateAmount > availableRealDeposit
+    ) {
+      if (availableRealDeposit < modalProvider.minDeposit && onNavigateToDeposit) {
+        onNavigateToDeposit();
+      }
+      return;
+    }
     onFollowStrategy({
       providerId: modalProvider.id,
       allocatedAmount: allocateAmount,
@@ -285,10 +315,37 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
                     </span>
 
                     {isAlreadyFollowed ? (
-                      <span className="px-3 py-1.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-500 text-xs font-bold rounded-lg flex items-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Active Following</span>
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2.5 py-1 bg-emerald-500/15 border border-emerald-500/30 text-emerald-500 text-[11px] font-bold rounded-lg flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Active</span>
+                        </span>
+                        <button
+                          id={`unfollow-card-${p.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onUnfollowStrategy(p.id);
+                          }}
+                          className="px-2.5 py-1 bg-rose-500/15 hover:bg-rose-500/25 active:scale-95 text-rose-500 hover:text-rose-400 border border-rose-500/30 text-[11px] font-bold rounded-lg transition-all cursor-pointer flex items-center gap-1 shadow-xs"
+                          title="Stop copying this strategy"
+                        >
+                          <X className="w-3 h-3" />
+                          <span>Unfollow</span>
+                        </button>
+                      </div>
+                    ) : availableRealDeposit < p.minDeposit ? (
+                      <button
+                        onClick={() => {
+                          if (onNavigateToDeposit) {
+                            onNavigateToDeposit();
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 active:scale-95 text-amber-500 hover:text-amber-400 border border-amber-500/40 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        title={`Live account balance of at least $${p.minDeposit} required to copy. Your Live balance: $${availableRealDeposit.toFixed(2)}`}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>Deposit ${p.minDeposit} to Copy</span>
+                      </button>
                     ) : (
                       <button
                         onClick={() => {
@@ -374,12 +431,19 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center justify-end gap-2 pt-1">
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-[11px] text-emerald-500 flex items-center gap-1.5 font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    Actively Mirroring Positions
+                  </span>
                   <button
+                    id={`unfollow-portfolio-${f.providerId}`}
                     onClick={() => onUnfollowStrategy(f.providerId)}
-                    className="px-3 py-1.5 bg-neutral-800 hover:bg-rose-950/80 text-rose-400 text-xs font-semibold rounded-lg transition-colors border border-rose-900/40 cursor-pointer"
+                    className="px-3.5 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 active:scale-95 text-rose-500 hover:text-rose-400 text-xs font-bold rounded-lg transition-colors border border-rose-500/40 cursor-pointer flex items-center gap-1.5 shadow-xs"
+                    title="Stop copying this strategy"
                   >
-                    Stop Following & Settle Funds
+                    <X className="w-3.5 h-3.5" />
+                    <span>Unfollow</span>
                   </button>
                 </div>
               </div>
@@ -411,20 +475,54 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
               </button>
             </div>
 
-            {/* Account Target */}
-            <div className={`p-2.5 rounded-lg border text-xs flex justify-between items-center ${
+            {/* Real Deposit & Account Overview */}
+            <div className={`p-3 rounded-xl border text-xs space-y-1.5 ${
               isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'
             }`}>
-              <div>
-                <span className="text-[10px] text-neutral-400 block">Copying from Account:</span>
+              <div className="flex justify-between items-center">
+                <span className="text-[11px] text-neutral-400">Trading Account:</span>
                 <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                  {currentAccount ? `${currentAccount.type} #${currentAccount.accountNumber}` : 'No Active Account'}
+                  {currentAccount ? `${currentAccount.type} #${currentAccount.accountNumber}` : 'Standard Account'}
                 </span>
               </div>
-              <span className="font-mono text-neutral-400">
-                Available: ${currentAccount ? currentAccount.balance.toLocaleString() : '0.00'}
-              </span>
+              <div className="flex justify-between items-center">
+                <span className="text-[11px] text-neutral-400">Available Real Deposit:</span>
+                <span className="font-mono font-bold text-emerald-500">
+                  ${availableRealDeposit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
+              {currentAccount?.type === 'Demo' && (
+                <p className="text-[10px] text-amber-500/90 pt-0.5 border-t border-neutral-800/40">
+                  Note: Active account is Demo. Copy trading operates on real live capital.
+                </p>
+              )}
             </div>
+
+            {/* Insufficient Deposit Warning & Action */}
+            {availableRealDeposit < modalProvider.minDeposit && (
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-500 text-xs space-y-2">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-bold">Real Deposit Required to Copy</p>
+                    <p className="text-[11px] text-neutral-300 mt-0.5">
+                      {modalProvider.name} requires a minimum real deposit of <strong className="text-white">${modalProvider.minDeposit.toFixed(2)}</strong>. Your available real balance is <strong className="text-white">${availableRealDeposit.toFixed(2)}</strong>.
+                    </p>
+                  </div>
+                </div>
+                {onNavigateToDeposit && (
+                  <button
+                    onClick={() => {
+                      setModalProvider(null);
+                      onNavigateToDeposit();
+                    }}
+                    className="w-full py-2 bg-[#E51937] hover:bg-[#c9142f] text-white font-bold rounded-lg text-xs transition-colors cursor-pointer shadow-md shadow-red-950/40"
+                  >
+                    Deposit Funds Now
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Allocation Amount */}
             <div className="space-y-1.5">
@@ -439,6 +537,7 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
               <input
                 type="number"
                 min={modalProvider.minDeposit}
+                max={availableRealDeposit}
                 value={allocateAmount}
                 onChange={(e) => setAllocateAmount(parseFloat(e.target.value) || 0)}
                 className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#E51937] ${
@@ -449,7 +548,7 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
               {/* Quick preset chips starting with minDeposit */}
               <div className="flex items-center gap-1.5 pt-1 overflow-x-auto">
                 {[modalProvider.minDeposit, modalProvider.minDeposit * 2, modalProvider.minDeposit * 4, 500, 1000]
-                  .filter((amt, idx, arr) => arr.indexOf(amt) === idx && amt >= modalProvider.minDeposit)
+                  .filter((amt, idx, arr) => arr.indexOf(amt) === idx && amt >= modalProvider.minDeposit && amt <= availableRealDeposit)
                   .map((amt) => (
                     <button
                       key={amt}
@@ -520,15 +619,29 @@ export const CopyTradingTab: React.FC<CopyTradingTabProps> = ({
             {/* Execute Button */}
             <button
               id="confirm-start-follow-btn"
-              disabled={!termsAccepted || allocateAmount < modalProvider.minDeposit}
+              disabled={
+                !termsAccepted ||
+                allocateAmount < modalProvider.minDeposit ||
+                availableRealDeposit < modalProvider.minDeposit ||
+                allocateAmount > availableRealDeposit
+              }
               onClick={handleStartFollowing}
-              className={`w-full py-2.5 rounded-xl font-bold text-xs text-white transition-all shadow-lg cursor-pointer ${
-                termsAccepted && allocateAmount >= modalProvider.minDeposit
-                  ? 'bg-[#E51937] hover:bg-[#c9142f] shadow-red-950/40 active:scale-[0.98]'
+              className={`w-full py-2.5 rounded-xl font-bold text-xs text-white transition-all shadow-lg ${
+                termsAccepted &&
+                allocateAmount >= modalProvider.minDeposit &&
+                availableRealDeposit >= modalProvider.minDeposit &&
+                allocateAmount <= availableRealDeposit
+                  ? 'bg-[#E51937] hover:bg-[#c9142f] shadow-red-950/40 active:scale-[0.98] cursor-pointer'
                   : 'bg-neutral-800 text-neutral-500 cursor-not-allowed'
               }`}
             >
-              Start Following ({modalProvider.name})
+              {availableRealDeposit < modalProvider.minDeposit
+                ? `Deposit Required (Min $${modalProvider.minDeposit})`
+                : allocateAmount > availableRealDeposit
+                ? `Exceeds Available Real Balance ($${availableRealDeposit.toFixed(2)})`
+                : !termsAccepted
+                ? 'Accept Terms to Follow'
+                : `Start Following (${modalProvider.name})`}
             </button>
           </div>
         </div>
