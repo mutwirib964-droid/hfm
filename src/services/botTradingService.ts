@@ -975,11 +975,15 @@ export const sanitizeAndFilterBotRuns = (
           ? r.startedAt
           : Date.now();
 
+      const rawUpperSym = String(r.symbol || 'ALL').trim().toUpperCase();
+      const hasCustomSym = Boolean(r.customSymbolSelected) && rawUpperSym !== 'ALL';
+
       return {
         ...r,
         id: resolvedId,
         runId: resolvedRunId,
-        symbol: String(r.symbol).trim().toUpperCase(),
+        symbol: hasCustomSym ? rawUpperSym : 'ALL',
+        customSymbolSelected: hasCustomSym,
         lotSize: cleanLots,
         tpPips: cleanTpPips,
         slPips: cleanSlPips,

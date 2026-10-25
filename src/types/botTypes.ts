@@ -29,6 +29,7 @@ export interface BotRunInstance {
   botName: string;
   botType: BotType;
   symbol: string;
+  customSymbolSelected?: boolean;
   lotSize: number;
   tpPips: number;
   slPips: number;

@@ -128,9 +128,26 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   // Delete Confirmation Modal State
   const [runToDelete, setRunToDelete] = useState<BotRunInstance | null>(null);
 
+  // Memoize static instrument metadata strictly by symbol list so <select> options NEVER mutate or jump during 250ms price ticks
+  const symbolsSignature = instruments.map((i) => i.symbol).join('|');
+  const stableInstruments = useMemo(
+    () =>
+      instruments.map((i) => ({
+        symbol: i.symbol,
+        name: i.name,
+        category: i.category,
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [symbolsSignature]
+  );
+
   const handleOpenSettingsModal = (run: BotRunInstance) => {
     setEditingRun(run);
-    setEditSymbol(run.symbol);
+    const initialSym =
+      run.customSymbolSelected && run.symbol && run.symbol.toUpperCase() !== 'ALL'
+        ? run.symbol.toUpperCase()
+        : 'ALL';
+    setEditSymbol(initialSym);
     setEditLotSize(run.lotSize);
     setEditTpPips(run.tpPips);
     setEditSlPips(run.slPips);
@@ -390,11 +407,11 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     setConfigSlPips(bot.defaultSlPips);
   };
 
-  // Deploy bot to Active Bots tab in standby (PAUSED) so user can configure settings and click Run from Active Bots
+  // Deploy bot to Active Bots tab in standby (PAUSED) with 'ALL' recommended currencies by default
   const handleDeployToActiveBots = (bot: BotStrategyConfig) => {
     onStartBotRun({
       botId: bot.id,
-      symbol: bot.recommendedInstruments[0] || 'XAUUSD',
+      symbol: 'ALL',
       lotSize: bot.defaultLotSize || 0.01,
       tpPips: bot.defaultTpPips || 30,
       slPips: bot.defaultSlPips || 20,
@@ -640,103 +657,109 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-              {allBots.map((bot) => (
-                <div
-                  key={bot.id}
-                  className={`p-4 rounded-2xl border transition-all hover:border-[#E51937]/50 shadow-xs flex flex-col justify-between ${
-                    isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h3 className="text-base font-black tracking-tight">{bot.name}</h3>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-[#E51937]/15 text-[#E51937] border border-[#E51937]/30">
-                            {bot.tag}
+              {allBots.map((bot) => {
+                const deployedRun = botRuns.find(
+                  (r) => r.botId === bot.id || r.botName === bot.name
+                );
+
+                return (
+                  <div
+                    key={bot.id}
+                    className={`p-4 rounded-2xl border transition-colors hover:border-[#E51937]/50 shadow-xs flex flex-col justify-between ${
+                      isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="text-base font-black tracking-tight">{bot.name}</h3>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-[#E51937]/15 text-[#E51937] border border-[#E51937]/30">
+                              {bot.tag}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
+                            {bot.author} • {bot.version} ({bot.timeframe})
                           </span>
                         </div>
-                        <span className="text-[11px] text-neutral-500 dark:text-neutral-400">
-                          {bot.author} • {bot.version} ({bot.timeframe})
-                        </span>
-                      </div>
 
-                      <div className="text-right shrink-0">
-                        <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Winrate</div>
-                        <div className="font-mono text-sm font-black text-emerald-400">
-                          {(() => {
-                            const parsed = parseFloat(String(bot.claimedWinRate || '').replace('%', ''));
-                            if (!isNaN(parsed) && parsed >= 100) return '96.4%';
-                            return bot.claimedWinRate || '94.6%';
-                          })()}
+                        <div className="text-right shrink-0">
+                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Winrate</div>
+                          <div className="font-mono text-sm font-black text-emerald-400">
+                            {(() => {
+                              const parsed = parseFloat(String(bot.claimedWinRate || '').replace('%', ''));
+                              if (!isNaN(parsed) && parsed >= 100) return '96.4%';
+                              return bot.claimedWinRate || '94.6%';
+                            })()}
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <p className="text-xs text-neutral-300 mb-3 leading-relaxed">
-                      {bot.description}
-                    </p>
+                      <p className="text-xs text-neutral-300 mb-3 leading-relaxed">
+                        {bot.description}
+                      </p>
 
-                    {/* Trigger Indicators */}
-                    <div className="flex flex-wrap gap-1.5 mb-3">
-                      {bot.indicatorTriggers.map((trig, idx) => (
-                        <span
-                          key={idx}
-                          className={`text-[10px] font-mono px-2 py-0.5 rounded-md border ${
-                            isDarkMode
-                              ? 'bg-neutral-800/80 border-neutral-700/60 text-neutral-300'
-                              : 'bg-slate-100 border-slate-200 text-slate-700'
-                          }`}
-                        >
-                          {trig}
-                        </span>
-                      ))}
-                    </div>
-
-                    {/* Recommended Pairs */}
-                    <div className="flex items-center gap-2 text-xs mb-4">
-                      <span className="text-neutral-500 dark:text-neutral-400 font-medium text-[11px]">Recommended:</span>
-                      <div className="flex items-center gap-1 font-mono font-bold flex-wrap">
-                        {bot.recommendedInstruments.map((sym) => (
+                      {/* Trigger Indicators */}
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {bot.indicatorTriggers.map((trig, idx) => (
                           <span
-                            key={sym}
-                            className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[11px]"
+                            key={idx}
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded-md border ${
+                              isDarkMode
+                                ? 'bg-neutral-800/80 border-neutral-700/60 text-neutral-300'
+                                : 'bg-slate-100 border-slate-200 text-slate-700'
+                            }`}
                           >
-                            {sym}
+                            {trig}
                           </span>
                         ))}
                       </div>
+
+                      {/* Recommended Pairs (Static labels - all traded autonomously by default) */}
+                      <div className="flex items-center gap-1.5 text-xs mb-3 flex-wrap">
+                        <span className="text-neutral-500 dark:text-neutral-400 font-medium text-[11px]">Recommended:</span>
+                        <div className="flex items-center gap-1 font-mono font-bold flex-wrap">
+                          {bot.recommendedInstruments.map((sym) => (
+                            <span
+                              key={sym}
+                              className="bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded text-[11px] border border-emerald-500/20"
+                            >
+                              {sym}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-2">
+                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400 font-mono">
+                        Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
+                      </div>
+
+                      {deployedRun ? (
+                        <button
+                          id={`btn-deploy-${bot.id}`}
+                          onClick={() => setActiveSubTab('runs')}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors shadow-xs cursor-pointer"
+                          title="Bot is already deployed in Active Bots engine"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Deployed (Active)</span>
+                        </button>
+                      ) : (
+                        <button
+                          id={`btn-deploy-${bot.id}`}
+                          onClick={() => handleDeployToActiveBots(bot)}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-colors shadow-xs cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Deploy Bot</span>
+                        </button>
+                      )}
                     </div>
                   </div>
-
-                  <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-neutral-500 dark:text-neutral-400 font-mono">
-                      Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
-                    </div>
-
-                    {botRuns.some((r) => r.botId === bot.id || r.botName === bot.name) ? (
-                      <button
-                        id={`btn-deploy-${bot.id}`}
-                        onClick={() => setActiveSubTab('runs')}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
-                        title="Bot is already deployed in Active Bots engine"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Deployed (Active)</span>
-                      </button>
-                    ) : (
-                      <button
-                        id={`btn-deploy-${bot.id}`}
-                        onClick={() => handleDeployToActiveBots(bot)}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                        <span>Deploy Bot</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -827,14 +850,30 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                               </span>
                             </div>
 
-                            <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 font-mono mt-0.5">
-                              <span
-                                className={`font-bold ${
-                                  isDarkMode ? 'text-white' : 'text-slate-900'
-                                }`}
-                              >
-                                {run.symbol}
-                              </span>
+                            <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400 font-mono mt-1 flex-wrap">
+                              {(() => {
+                                const matchedBot = allBots.find(
+                                  (b) => b.id === run.botId || b.name === run.botName
+                                );
+                                const recPairs = matchedBot?.recommendedInstruments || ['XAUUSD'];
+                                const isSpecificPair =
+                                  Boolean(run.customSymbolSelected) &&
+                                  Boolean(run.symbol) &&
+                                  run.symbol.toUpperCase() !== 'ALL';
+                                return (
+                                  <span
+                                    className={`px-2 py-0.5 rounded-lg border text-xs font-mono font-bold ${
+                                      isDarkMode
+                                        ? 'bg-neutral-900 border-neutral-700 text-sky-400'
+                                        : 'bg-slate-100 border-slate-300 text-slate-900'
+                                    }`}
+                                  >
+                                    {isSpecificPair
+                                      ? run.symbol
+                                      : `All Pairs (${recPairs.join(', ')})`}
+                                  </span>
+                                );
+                              })()}
                               <span>•</span>
                               <span>{run.lotSize || 0.01} Lots</span>
                               <span>•</span>
@@ -1218,19 +1257,19 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <select
                   value={configSymbol}
                   onChange={(e) => setConfigSymbol(e.target.value)}
-                  className={`w-full p-2.5 rounded-lg border text-xs font-bold ${
+                  className={`w-full p-2.5 rounded-lg border text-xs font-mono font-bold cursor-pointer ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white'
                       : 'bg-slate-50 border-slate-300 text-slate-900'
                   }`}
                 >
-                  {instruments.map((inst) => (
+                  {stableInstruments.map((inst) => (
                     <option key={inst.symbol} value={inst.symbol}>
-                      {inst.symbol} - {inst.name} ({fmt(inst.bid, inst.decimals)})
+                      {inst.symbol} — {inst.name}
                     </option>
                   ))}
                 </select>
-                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1 block">
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-1 block font-mono tabular-nums">
                   Current Live Bid: {fmt(selectedInst?.bid, selectedInst?.decimals)} | Ask:{' '}
                   {fmt(selectedInst?.ask, selectedInst?.decimals)}
                 </span>
@@ -1410,15 +1449,15 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <select
                   value={importPair}
                   onChange={(e) => setImportPair(e.target.value)}
-                  className={`w-full p-2 rounded-lg border text-xs ${
+                  className={`w-full p-2 rounded-lg border text-xs font-mono font-bold cursor-pointer ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white'
                       : 'bg-slate-50 border-slate-300 text-slate-900'
                   }`}
                 >
-                  {instruments.map((inst) => (
+                  {stableInstruments.map((inst) => (
                     <option key={inst.symbol} value={inst.symbol}>
-                      {inst.symbol} - {inst.name}
+                      {inst.symbol} — {inst.name}
                     </option>
                   ))}
                 </select>
@@ -1478,7 +1517,15 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
                     <span className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{editingRun.botName}</span>
                     <span>•</span>
-                    <span className="font-mono text-sky-400">{editingRun.symbol}</span>
+                    <span className="font-mono text-sky-400">
+                      {editSymbol === 'ALL'
+                        ? `All Bot Pairs (${(
+                            allBots.find(
+                              (b) => b.id === editingRun.botId || b.name === editingRun.botName
+                            )?.recommendedInstruments || ['XAUUSD']
+                          ).join(', ')})`
+                        : editSymbol}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1499,18 +1546,70 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <select
                   value={editSymbol}
                   onChange={(e) => setEditSymbol(e.target.value)}
-                  className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold ${
+                  className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold cursor-pointer ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white'
                       : 'bg-slate-50 border-slate-300 text-slate-900'
                   }`}
                 >
-                  {instruments.map((inst) => (
+                  <option value="ALL">
+                    All Bot Currencies (
+                    {(
+                      allBots.find(
+                        (b) => b.id === editingRun.botId || b.name === editingRun.botName
+                      )?.recommendedInstruments || ['XAUUSD']
+                    ).join(', ')}
+                    ) — Autonomous
+                  </option>
+                  {stableInstruments.map((inst) => (
                     <option key={inst.symbol} value={inst.symbol}>
-                      {inst.symbol} — {inst.name} (Live: {fmt(inst.bid, inst.decimals)})
+                      {inst.symbol} — {inst.name}
                     </option>
                   ))}
                 </select>
+                {/* Quick Currency Presets */}
+                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setEditSymbol('ALL')}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
+                      editSymbol === 'ALL'
+                        ? 'bg-sky-500 text-white shadow-sm'
+                        : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                    }`}
+                  >
+                    All Bot Pairs (Auto)
+                  </button>
+                  {Array.from(
+                    new Set([
+                      ...(allBots.find(
+                        (b) => b.id === editingRun.botId || b.name === editingRun.botName
+                      )?.recommendedInstruments || []),
+                      'XAUUSD',
+                      'EURUSD',
+                      'GBPUSD',
+                      'USDJPY',
+                      'BTCUSD',
+                      'NAS100',
+                      'US30',
+                    ])
+                  )
+                    .slice(0, 8)
+                    .map((sym) => (
+                      <button
+                        key={sym}
+                        type="button"
+                        onClick={() => setEditSymbol(sym)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
+                          editSymbol === sym
+                            ? 'bg-sky-500 text-white shadow-sm'
+                            : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                        }`}
+                      >
+                        {sym}
+                      </button>
+                    ))}
+                </div>
               </div>
 
               {/* Lot Size & Quick Presets */}

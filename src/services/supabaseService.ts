@@ -1973,6 +1973,11 @@ class SupabaseService {
       stoppedAt?: number;
       lastSignal?: string;
       lastSignalTime?: number;
+      symbol?: string;
+      customSymbolSelected?: boolean;
+      lotSize?: number;
+      tpPips?: number;
+      slPips?: number;
     }
   >();
 
@@ -1980,17 +1985,32 @@ class SupabaseService {
     runKeys: Array<string | undefined | null>,
     status: 'RUNNING' | 'PAUSED',
     statusUpdatedAt: number,
-    extra?: { stoppedAt?: number; lastSignal?: string; lastSignalTime?: number }
+    extra?: {
+      stoppedAt?: number;
+      lastSignal?: string;
+      lastSignalTime?: number;
+      symbol?: string;
+      customSymbolSelected?: boolean;
+      lotSize?: number;
+      tpPips?: number;
+      slPips?: number;
+    }
   ): void {
     this.explicitBotSyncSeq += 1;
     for (const k of runKeys) {
       if (k && typeof k === 'string' && k.trim()) {
+        const prev = this.latestBotStatusMap.get(k.trim());
         this.latestBotStatusMap.set(k.trim(), {
           status,
           statusUpdatedAt,
-          stoppedAt: extra?.stoppedAt,
-          lastSignal: extra?.lastSignal,
-          lastSignalTime: extra?.lastSignalTime,
+          stoppedAt: extra?.stoppedAt ?? prev?.stoppedAt,
+          lastSignal: extra?.lastSignal ?? prev?.lastSignal,
+          lastSignalTime: extra?.lastSignalTime ?? prev?.lastSignalTime,
+          symbol: extra?.symbol ?? prev?.symbol,
+          customSymbolSelected: extra?.customSymbolSelected ?? prev?.customSymbolSelected,
+          lotSize: extra?.lotSize ?? prev?.lotSize,
+          tpPips: extra?.tpPips ?? prev?.tpPips,
+          slPips: extra?.slPips ?? prev?.slPips,
         });
       }
     }
@@ -2101,6 +2121,11 @@ class SupabaseService {
               stoppedAt: r.stoppedAt,
               lastSignal: r.lastSignal,
               lastSignalTime: r.lastSignalTime,
+              symbol: r.symbol,
+              customSymbolSelected: r.customSymbolSelected,
+              lotSize: r.lotSize,
+              tpPips: r.tpPips,
+              slPips: r.slPips,
             });
           }
         }
@@ -2120,6 +2145,11 @@ class SupabaseService {
                 stoppedAt: rr.stoppedAt,
                 lastSignal: rr.lastSignal,
                 lastSignalTime: rr.lastSignalTime,
+                symbol: rr.symbol,
+                customSymbolSelected: rr.customSymbolSelected,
+                lotSize: rr.lotSize,
+                tpPips: rr.tpPips,
+                slPips: rr.slPips,
               });
             }
           }
@@ -2134,6 +2164,11 @@ class SupabaseService {
         if (intent && intent.statusUpdatedAt >= localTs) {
           return {
             ...r,
+            symbol: intent.symbol || r.symbol,
+            customSymbolSelected: intent.customSymbolSelected ?? r.customSymbolSelected,
+            lotSize: intent.lotSize || r.lotSize,
+            tpPips: intent.tpPips || r.tpPips,
+            slPips: intent.slPips || r.slPips,
             status: intent.status,
             statusUpdatedAt: intent.statusUpdatedAt,
             stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
@@ -2271,9 +2306,14 @@ class SupabaseService {
         (r.runId && this.latestBotStatusMap.get(r.runId));
 
       if (intent && intent.statusUpdatedAt > remoteTs) {
-        // Local device has a strictly newer Pause/Run action than the cloud response
+        // Local device has a strictly newer Pause/Run/Settings action than the cloud response
         return {
           ...r,
+          symbol: intent.symbol || r.symbol,
+          customSymbolSelected: intent.customSymbolSelected ?? r.customSymbolSelected,
+          lotSize: intent.lotSize || r.lotSize,
+          tpPips: intent.tpPips || r.tpPips,
+          slPips: intent.slPips || r.slPips,
           status: intent.status,
           statusUpdatedAt: intent.statusUpdatedAt,
           stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
@@ -2291,6 +2331,11 @@ class SupabaseService {
               stoppedAt: r.stoppedAt,
               lastSignal: r.lastSignal,
               lastSignalTime: r.lastSignalTime,
+              symbol: r.symbol,
+              customSymbolSelected: r.customSymbolSelected,
+              lotSize: r.lotSize,
+              tpPips: r.tpPips,
+              slPips: r.slPips,
             });
           }
         }

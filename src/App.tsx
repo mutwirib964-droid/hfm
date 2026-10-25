@@ -816,6 +816,8 @@ export default function App() {
                   if (localStatusTs > remoteStatusTs) {
                     if (
                       localMatch.status !== r.status ||
+                      localMatch.symbol !== r.symbol ||
+                      localMatch.customSymbolSelected !== r.customSymbolSelected ||
                       localMatch.lotSize !== r.lotSize ||
                       localMatch.tpPips !== r.tpPips ||
                       localMatch.slPips !== r.slPips
@@ -828,6 +830,8 @@ export default function App() {
                       tpPips: localMatch.tpPips || r.tpPips,
                       slPips: localMatch.slPips || r.slPips,
                       symbol: localMatch.symbol || r.symbol,
+                      customSymbolSelected:
+                        localMatch.customSymbolSelected ?? r.customSymbolSelected,
                       status: localMatch.status,
                       statusUpdatedAt: localStatusTs,
                       stoppedAt:
@@ -892,8 +896,11 @@ export default function App() {
                   return (
                     pr &&
                     pr.id === r.id &&
+                    pr.symbol === r.symbol &&
                     pr.status === r.status &&
                     pr.lotSize === r.lotSize &&
+                    pr.tpPips === r.tpPips &&
+                    pr.slPips === r.slPips &&
                     pr.statusUpdatedAt === r.statusUpdatedAt &&
                     pr.totalProfitUsd === r.totalProfitUsd &&
                     pr.totalTrades === r.totalTrades
@@ -4941,42 +4948,43 @@ export default function App() {
     addNotification(`Account role assigned: ${role.toUpperCase()}`);
   };
 
-  // Automatically resolve an active OPEN market instrument for autonomous bot execution
-  const resolveActiveBotInstrument = (
-    preferredSymbol: string,
+  // Return all candidate instruments for a bot run:
+  // - If user explicitly selected a specific currency in Settings (customSymbolSelected && symbol !== 'ALL'), return ONLY that currency.
+  // - Otherwise (default before selecting any currency in Settings, or 'ALL' mode), return all labeled recommendedInstruments for the bot.
+  const getBotCandidateInstruments = (
+    run: { symbol?: string; customSymbolSelected?: boolean },
     botConfig?: BotStrategyConfig
-  ): Instrument => {
+  ): Instrument[] => {
     const allInst = instrumentsRef.current.length > 0 ? instrumentsRef.current : instruments;
-    const preferred =
-      allInst.find((i) => i.symbol === preferredSymbol) ||
-      allInst.find((i) => i.symbol.includes((preferredSymbol || '').slice(0, 3)));
-    if (preferred && checkInstrumentMarketHours(preferred.symbol, preferred.category).isOpen) {
-      return preferred;
+    const cleanSym = (run.symbol || 'ALL').trim().toUpperCase();
+    const isSpecificCurrency = Boolean(run.customSymbolSelected) && Boolean(cleanSym) && cleanSym !== 'ALL';
+
+    if (isSpecificCurrency) {
+      const exactMatch = allInst.find((i) => i.symbol.toUpperCase() === cleanSym);
+      return exactMatch ? [exactMatch] : [];
     }
 
-    // 1. Check bot's recommended instruments for any open market
-    if (botConfig?.recommendedInstruments?.length) {
-      for (const recSym of botConfig.recommendedInstruments) {
-        const recInst = allInst.find((i) => i.symbol === recSym);
-        if (recInst && checkInstrumentMarketHours(recInst.symbol, recInst.category).isOpen) {
-          return recInst;
-        }
+    const recSyms =
+      botConfig?.recommendedInstruments && botConfig.recommendedInstruments.length > 0
+        ? botConfig.recommendedInstruments
+        : ['XAUUSD'];
+    const matchedRecs: Instrument[] = [];
+    for (const recSym of recSyms) {
+      const recInst = allInst.find((i) => i.symbol.toUpperCase() === recSym.trim().toUpperCase());
+      if (recInst && !matchedRecs.some((m) => m.symbol === recInst.symbol)) {
+        matchedRecs.push(recInst);
       }
     }
+    return matchedRecs.length > 0 ? matchedRecs : [allInst[0]];
+  };
 
-    // 2. Check all currently open instruments on the platform (e.g. 24/7 Crypto pairs BTCUSD, ETHUSD, SOLUSD when FX/Metals are closed)
-    const openCandidates = allInst.filter(
-      (i) => checkInstrumentMarketHours(i.symbol, i.category).isOpen
-    );
-    if (openCandidates.length > 0) {
-      return (
-        openCandidates.find((i) => i.symbol === 'BTCUSD') ||
-        openCandidates.find((i) => i.symbol === 'ETHUSD') ||
-        openCandidates[0]
-      );
-    }
-
-    return preferred || allInst[0];
+  // Return ONLY candidate instruments whose market is currently OPEN (prices moving). Never fall back to unrelated crypto pairs on weekends.
+  const getOpenBotInstruments = (
+    run: { symbol?: string; customSymbolSelected?: boolean },
+    botConfig?: BotStrategyConfig
+  ): Instrument[] => {
+    const candidates = getBotCandidateInstruments(run, botConfig);
+    return candidates.filter((inst) => checkInstrumentMarketHours(inst.symbol, inst.category).isOpen);
   };
 
   // Always follow the exact lot size configured on the bot by the user (only clamping to tier max lot size)
@@ -5016,6 +5024,9 @@ export default function App() {
     const pastDeletedTs = getDeletedBotTimestamps()[bot.id] || getDeletedBotTimestamps()[bot.name] || 0;
     const deployTs = Math.max(nowMs, pastDeletedTs + 1500);
 
+    const rawConfigSym = (config.symbol || 'ALL').trim().toUpperCase();
+    const isCustomSym = Boolean(rawConfigSym && rawConfigSym !== 'ALL');
+
     // Check if this bot strategy is already deployed in Active Bots (deploy once, visible on all devices)
     const existingDeployed = botRunsRef.current.find(
       (r) => r.botId === bot.id || r.botName === bot.name
@@ -5033,9 +5044,12 @@ export default function App() {
               ...r,
               accountId: deployAcc?.id || r.accountId,
               accountNumber: deployAcc?.accountNumber || r.accountNumber,
-              symbol: (config.symbol || r.symbol || bot.recommendedInstruments[0] || 'XAUUSD')
-                .trim()
-                .toUpperCase(),
+              symbol: isCustomSym
+                ? rawConfigSym
+                : r.customSymbolSelected && r.symbol && r.symbol !== 'ALL'
+                ? r.symbol
+                : 'ALL',
+              customSymbolSelected: isCustomSym || Boolean(r.customSymbolSelected && r.symbol && r.symbol !== 'ALL'),
               lotSize:
                 Number(config.lotSize) > 0
                   ? Number(Number(config.lotSize).toFixed(2))
@@ -5083,9 +5097,7 @@ export default function App() {
     }
 
     const runIdStr = `run-${deployTs}-${Math.floor(Math.random() * 1000)}`;
-    const preferredSymbol = (config.symbol || bot.recommendedInstruments[0] || 'XAUUSD')
-      .trim()
-      .toUpperCase();
+    const preferredSymbol = isCustomSym ? rawConfigSym : 'ALL';
     const cleanLotSize =
       Number(config.lotSize) > 0
         ? Number(Number(config.lotSize).toFixed(2))
@@ -5110,6 +5122,7 @@ export default function App() {
       botName: bot.name,
       botType: bot.type,
       symbol: preferredSymbol,
+      customSymbolSelected: isCustomSym,
       lotSize: cleanLotSize,
       tpPips: cleanTpPips,
       slPips: cleanSlPips,
@@ -5124,7 +5137,7 @@ export default function App() {
       winCount: 0,
       losingTrades: 0,
       totalProfitUsd: 0,
-      lastSignal: `Deployed to Active Bots • Configure settings or click Run to execute market orders`,
+      lastSignal: `Deployed to Active Bots • Trades ${bot.recommendedInstruments.join(', ')} autonomously (or select 1 pair in Settings)`,
       lastSignalTime: deployTs,
       accountId: deployAcc?.id,
       accountNumber: deployAcc?.accountNumber,
@@ -5133,7 +5146,13 @@ export default function App() {
     const updatedRuns = [newRun, ...botRunsRef.current];
     lastLocalBotsUpdateRef.current = deployTs + 15000;
     isCloudBotsLoadedRef.current = true;
-    supabaseService.recordBotStatusIntent([runIdStr], 'PAUSED', deployTs);
+    supabaseService.recordBotStatusIntent([runIdStr], 'PAUSED', deployTs, {
+      symbol: preferredSymbol,
+      customSymbolSelected: isCustomSym,
+      lotSize: cleanLotSize,
+      tpPips: cleanTpPips,
+      slPips: cleanSlPips,
+    });
     botRunsRef.current = updatedRuns;
     setBotRuns(updatedRuns);
     saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
@@ -5168,11 +5187,37 @@ export default function App() {
 
     const nextStatus = target.status === 'RUNNING' ? 'PAUSED' : 'RUNNING';
     const allBots = [...DEFAULT_INBUILT_BOTS, ...importedBots];
-    const botCfg = allBots.find((b) => b.id === target.botId);
-    const activeInst = resolveActiveBotInstrument(target.symbol, botCfg);
+    const botCfg = allBots.find((b) => b.id === target.botId || b.name === target.botName);
+    const candidateInsts = getBotCandidateInstruments(target, botCfg);
+    const openInsts = getOpenBotInstruments(target, botCfg);
     const effectiveLots = resolveAffordableBotLotSize(target.lotSize);
 
     if (nextStatus === 'RUNNING') {
+      // Strictly block execution if the bot's currency (or all of its labeled recommended currencies) are closed on the weekend
+      if (openInsts.length === 0) {
+        const firstCand = candidateInsts[0];
+        const closedInfo = firstCand
+          ? checkInstrumentMarketHours(firstCand.symbol, firstCand.category)
+          : null;
+        const pairDisplay =
+          target.customSymbolSelected && target.symbol && target.symbol !== 'ALL'
+            ? target.symbol
+            : (botCfg?.recommendedInstruments || ['XAUUSD']).join(', ');
+        const closedMsg = `${pairDisplay}: ${
+          closedInfo?.reason || 'Market Closed for Weekend.'
+        } Bots only execute runs when the market is open and prices are moving.`;
+
+        playOrderSound(false);
+        addNotification(`Cannot run ${target.botName}: ${closedMsg}`);
+        triggerActionPopup({
+          type: 'ERROR',
+          title: 'Market Closed for Bot Currency',
+          subtitle: closedMsg,
+        });
+        return;
+      }
+
+      const activeInst = openInsts[0];
       const openPriceCheck = activeInst.ask || activeInst.bid || 1.0;
       const capCheck = validateTradeCapitalAndMargin(effectiveLots, activeInst.symbol, openPriceCheck);
       if (!capCheck.allowed) {
@@ -5186,7 +5231,7 @@ export default function App() {
         return;
       }
 
-      // Immediately open a market trade if this bot has 0 currently open trades so execution starts right away
+      // Immediately open market trades if this bot has 0 currently open trades so execution starts right away
       const runKey = target.id || target.runId;
       const openForThisBot = botTradesRef.current.filter(
         (t) =>
@@ -5197,7 +5242,12 @@ export default function App() {
           t.status === 'OPEN'
       );
 
-      let immediateSignal = `Autonomous Engine Active on ${activeInst.symbol}`;
+      const tradedPairsLabel =
+        target.customSymbolSelected && target.symbol && target.symbol !== 'ALL'
+          ? target.symbol
+          : openInsts.map((i) => i.symbol).join(', ');
+      let immediateSignal = `Autonomous Engine Active on ${tradedPairsLabel}`;
+
       if (openForThisBot.length === 0) {
         const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
         const cleanTp = Number(target.tpPips) > 0 ? Number(target.tpPips) : 30;
@@ -5224,13 +5274,9 @@ export default function App() {
         );
 
         const initialWaveTrades: BotTrade[] = [];
-        const recPool = botCfg?.recommendedInstruments?.length
-          ? [activeInst.symbol, ...botCfg.recommendedInstruments]
-          : [activeInst.symbol];
 
         for (let w = 0; w < maxInitialWave; w++) {
-          const candidateSym = recPool[w % recPool.length];
-          const waveInst = resolveActiveBotInstrument(candidateSym, botCfg) || activeInst;
+          const waveInst = openInsts[w % openInsts.length];
 
           const isTargetWin = evaluateTargetWinOrLoss(
             userRoleRef.current,
@@ -5300,16 +5346,25 @@ export default function App() {
         botTradesRef.current = updatedTrades;
         setBotTrades(() => [...updatedTrades]);
         saveStoredBotTrades(updatedTrades, currentUserRef.current?.email);
-        immediateSignal = `Auto Executed: ${initialWaveTrades.length} orders live (${effectiveLots} Lots, scaling up to ${targetTotalConcurrent} concurrent trades)`;
+        immediateSignal = `Auto Executed: ${initialWaveTrades.length} orders live on ${tradedPairsLabel} (${effectiveLots} Lots)`;
       }
 
       const activeAccForRun = selectedAccountRef.current || selectedAccount;
       const nowTs = Date.now();
+      const preservedSym =
+        target.customSymbolSelected && target.symbol && target.symbol !== 'ALL'
+          ? target.symbol
+          : 'ALL';
+      const preservedCustomFlag = Boolean(
+        target.customSymbolSelected && target.symbol && target.symbol !== 'ALL'
+      );
+
       const updatedRuns = botRunsRef.current.map((r) => {
         if (r.runId === runId || r.id === runId || r.botId === runId || r.botName === runId) {
           return {
             ...r,
-            symbol: activeInst.symbol,
+            symbol: preservedSym,
+            customSymbolSelected: preservedCustomFlag,
             lotSize: effectiveLots,
             tpPips: Number(r.tpPips) > 0 ? Number(r.tpPips) : 30,
             slPips: Number(r.slPips) > 0 ? Number(r.slPips) : 20,
@@ -5331,7 +5386,13 @@ export default function App() {
         [target.id, target.runId, runId],
         'RUNNING',
         nowTs,
-        { lastSignal: immediateSignal, lastSignalTime: nowTs }
+        {
+          lastSignal: immediateSignal,
+          lastSignalTime: nowTs,
+          symbol: preservedSym,
+          customSymbolSelected: preservedCustomFlag,
+          lotSize: effectiveLots,
+        }
       );
       botRunsRef.current = updatedRuns;
       setBotRuns(updatedRuns);
@@ -5356,7 +5417,7 @@ export default function App() {
       triggerActionPopup({
         type: 'BOT_STARTED',
         title: 'Bot Running Autonomously',
-        subtitle: `${target.botName} is actively executing ${effectiveLots} Lot market trades on ${activeInst.symbol}.`,
+        subtitle: `${target.botName} is actively executing ${effectiveLots} Lot market trades on ${tradedPairsLabel}.`,
       });
     } else {
       const nowTs = Date.now();
@@ -5563,35 +5624,64 @@ export default function App() {
     const nextStatus = updates.status ?? target?.status ?? 'PAUSED';
     const resolvedStatus: 'RUNNING' | 'PAUSED' = nextStatus === 'STOPPED' ? 'PAUSED' : nextStatus;
     const nowTs = Date.now();
+    const rawUpdateSym = updates.symbol !== undefined ? updates.symbol.trim().toUpperCase() : undefined;
+    const isSpecificSymSelected =
+      rawUpdateSym !== undefined
+        ? rawUpdateSym !== 'ALL' && rawUpdateSym.length > 0
+        : Boolean(target?.customSymbolSelected && target?.symbol && target?.symbol !== 'ALL');
+    const cleanSymbol = isSpecificSymSelected
+      ? rawUpdateSym || target?.symbol || 'XAUUSD'
+      : 'ALL';
     const cleanNewLots =
       updates.lotSize !== undefined && Number(updates.lotSize) > 0
         ? Number(Number(updates.lotSize).toFixed(2))
         : target?.lotSize ?? 0.01;
-    const settingsSignal = `Settings Updated: ${updates.symbol ?? target?.symbol ?? ''} • ${cleanNewLots} Lots, TP ${updates.tpPips ?? target?.tpPips ?? 30}p, SL ${updates.slPips ?? target?.slPips ?? 20}p`;
+    const cleanNewTp =
+      updates.tpPips !== undefined && Number(updates.tpPips) > 0
+        ? Number(updates.tpPips)
+        : target?.tpPips ?? 30;
+    const cleanNewSl =
+      updates.slPips !== undefined && Number(updates.slPips) > 0
+        ? Number(updates.slPips)
+        : target?.slPips ?? 20;
+    const symDisplayLabel = isSpecificSymSelected ? cleanSymbol : 'All Bot Currencies (Auto)';
+    const settingsSignal = `Settings Updated: ${symDisplayLabel} • ${cleanNewLots} Lots, TP ${cleanNewTp}p, SL ${cleanNewSl}p`;
 
     const updated = botRunsRef.current.map((r) => {
       if (r.id === runId || r.runId === runId || r.botId === runId || r.botName === runId) {
         return {
           ...r,
           ...updates,
+          symbol: cleanSymbol,
+          customSymbolSelected: isSpecificSymSelected,
           lotSize: cleanNewLots,
+          tpPips: cleanNewTp,
+          slPips: cleanNewSl,
           status: resolvedStatus,
           statusUpdatedAt: nowTs,
           explicitUserRun: true,
           userStartedVersion: 2,
-          lastSignal: `Settings Updated: ${updates.symbol ?? r.symbol} • ${cleanNewLots} Lots, TP ${updates.tpPips ?? r.tpPips}p, SL ${updates.slPips ?? r.slPips}p`,
+          lastSignal: settingsSignal,
           lastSignalTime: nowTs,
         };
       }
       return r;
     });
-    lastLocalBotsUpdateRef.current = nowTs;
+    lastLocalBotsUpdateRef.current = nowTs + 15000;
     isCloudBotsLoadedRef.current = true;
     supabaseService.recordBotStatusIntent(
       [target?.id, target?.runId, runId],
       resolvedStatus,
       nowTs,
-      { lastSignal: settingsSignal, lastSignalTime: nowTs }
+      {
+        lastSignal: settingsSignal,
+        lastSignalTime: nowTs,
+        symbol: cleanSymbol,
+        customSymbolSelected: isSpecificSymSelected,
+        lotSize: cleanNewLots,
+        tpPips: cleanNewTp,
+        slPips: cleanNewSl,
+      }
     );
     botRunsRef.current = updated;
     setBotRuns(updated);
@@ -5875,26 +5965,33 @@ export default function App() {
     const run = botRuns.find((r) => r.runId === runId || r.id === runId);
     if (!run) return;
 
+    const allBots = [...DEFAULT_INBUILT_BOTS, ...importedBots];
+    const botCfg = allBots.find((b) => b.id === run.botId || b.name === run.botName);
+    const openInsts = getOpenBotInstruments(run, botCfg);
+
     // Enforce market hours: if currency is closed, one cannot open any trade
-    const inst = instruments.find((i) => i.symbol === run.symbol) || instruments[0];
-    const marketStatus = checkInstrumentMarketHours(run.symbol, inst?.category);
-    if (!marketStatus.isOpen) {
+    if (openInsts.length === 0) {
+      const pairLabel =
+        run.customSymbolSelected && run.symbol && run.symbol !== 'ALL'
+          ? run.symbol
+          : (botCfg?.recommendedInstruments || ['XAUUSD']).join(', ');
       playOrderSound(false);
-      addNotification(`Signal Rejected: ${run.symbol} market is closed`);
+      addNotification(`Signal Rejected: ${pairLabel} market is closed`);
       triggerActionPopup({
         type: 'ERROR',
-        title: `${run.symbol} is closed`,
+        title: `${pairLabel} is closed`,
       });
       return;
     }
 
+    const inst = openInsts[Math.floor(Date.now() / 1000) % openInsts.length];
     const isDemoAcc = (selectedAccountRef.current?.type || selectedAccount?.type) === 'Demo';
-    const isTargetWin = evaluateTargetWinOrLoss(userRoleRef.current, run.botType, isDemoAcc, run.claimedWinRate, run.winningTrades, run.totalTrades, run.id);
+    const isTargetWin = evaluateTargetWinOrLoss(userRoleRef.current, run.botType, isDemoAcc, botCfg?.claimedWinRate, run.winningTrades, run.totalTrades, run.id);
     const side = determineBotTradeDirection(inst, isTargetWin, userRoleRef.current);
     const openPrice = side === 'BUY' ? inst.ask : inst.bid;
 
     // Strict check: Never open signal trade if free margin is 0 or lot size exceeds account capital
-    const capCheck = validateTradeCapitalAndMargin(run.lotSize, run.symbol, openPrice);
+    const capCheck = validateTradeCapitalAndMargin(run.lotSize, inst.symbol, openPrice);
     if (!capCheck.allowed) {
       playOrderSound(false);
       addNotification(capCheck.message || 'Signal Rejected: Insufficient Free Margin / Capital');
@@ -5907,20 +6004,20 @@ export default function App() {
     }
 
     const openPriceNum = Number(openPrice.toFixed(inst.decimals));
-    const sigPipSize = getInstrumentPipSize(run.symbol);
+    const sigPipSize = getInstrumentPipSize(inst.symbol);
     const currentExitNum = isTargetWin
       ? Number((openPriceNum + (side === 'BUY' ? 1 : -1) * sigPipSize * 3).toFixed(inst.decimals))
       : Number((side === 'BUY' ? inst.bid : inst.ask).toFixed(inst.decimals));
     const cleanTpPips = Number(run.tpPips) > 0 ? Number(run.tpPips) : 30;
     const cleanSlPips = Number(run.slPips) > 0 ? Number(run.slPips) : 20;
     const { tpPrice: tpPriceNum, slPrice: slPriceNum } = calculatePipTargetPrices(
-      run.symbol,
+      inst.symbol,
       side,
       openPriceNum,
       cleanTpPips,
       cleanSlPips
     );
-    const initialBotProfit = calculateBotPnL(run.symbol, side, openPriceNum, currentExitNum, run.lotSize);
+    const initialBotProfit = calculateBotPnL(inst.symbol, side, openPriceNum, currentExitNum, run.lotSize);
 
     const newTrade: BotTrade = {
       id: `btrade-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -5929,7 +6026,7 @@ export default function App() {
       runInstanceId: run.id || run.runId,
       botId: run.botId,
       botName: run.botName,
-      symbol: run.symbol,
+      symbol: inst.symbol,
       side,
       lotSize: run.lotSize,
       openPrice: openPriceNum,
@@ -6049,7 +6146,7 @@ export default function App() {
 
         const tradeInst =
           allInstruments.find((i) => i.symbol === activeTrade.symbol) ||
-          (parentRun ? resolveActiveBotInstrument(parentRun.symbol) : allInstruments[0]);
+          (parentRun ? getBotCandidateInstruments(parentRun)[0] : allInstruments[0]);
         if (!tradeInst) return;
 
         const mStatus = checkInstrumentMarketHours(tradeInst.symbol, tradeInst.category);
@@ -6415,15 +6512,46 @@ export default function App() {
         if (!activeAcc) return;
 
         const runKey = run.id || run.runId;
-        const botConfig = allBotConfigs.find((b) => b.id === run.botId);
+        const botConfig = allBotConfigs.find(
+          (b) => b.id === run.botId || b.name === run.botName
+        );
         const claimedWinRateStr = botConfig?.claimedWinRate || '94.2%';
 
-        const primaryInst = resolveActiveBotInstrument(run.symbol, botConfig);
-        if (!primaryInst) return;
-
-        // Ensure market is open for the resolved instrument
-        const botMarketStatus = checkInstrumentMarketHours(primaryInst.symbol, primaryInst.category);
-        if (!botMarketStatus.isOpen) return;
+        // Resolve only open (market-active) instruments for this bot:
+        // - If user selected a specific currency in Settings, only that currency (if open).
+        // - Otherwise, all open recommendedInstruments labeled on the bot.
+        const openInsts = getOpenBotInstruments(run, botConfig);
+        if (openInsts.length === 0) {
+          // Market is closed (e.g. weekend closure) — pause execution so bots never execute runs when market is closed
+          const closedTs = Date.now();
+          const pairLabel =
+            run.customSymbolSelected && run.symbol && run.symbol !== 'ALL'
+              ? run.symbol
+              : (botConfig?.recommendedInstruments || ['XAUUSD']).join(', ');
+          const closedMsg = `Paused: Market Closed for ${pairLabel} • Resumes when market opens`;
+          lastLocalBotsUpdateRef.current = closedTs;
+          supabaseService.recordBotStatusIntent([run.id, run.runId], 'PAUSED', closedTs, {
+            stoppedAt: closedTs,
+            lastSignal: closedMsg,
+            lastSignalTime: closedTs,
+            symbol: run.symbol,
+            customSymbolSelected: run.customSymbolSelected,
+          });
+          nextRuns = nextRuns.map((r) =>
+            r.id === run.id || r.runId === runKey
+              ? {
+                  ...r,
+                  status: 'PAUSED' as const,
+                  statusUpdatedAt: closedTs,
+                  stoppedAt: closedTs,
+                  lastSignal: closedMsg,
+                  lastSignalTime: closedTs,
+                }
+              : r
+          );
+          runsChanged = true;
+          return;
+        }
 
         const stillOpenForRun = nextTrades.filter(
           (t) =>
@@ -6490,7 +6618,7 @@ export default function App() {
           5,
           getTargetConcurrentBotTrades(
             latestRunState,
-            run.symbol,
+            openInsts[0].symbol,
             accLimits.effectiveMaxTrades,
             activeAcc.balance,
             effectiveAutoLots
@@ -6503,17 +6631,9 @@ export default function App() {
 
         for (let bIdx = 0; bIdx < tradesToOpenThisTick; bIdx++) {
           const openCountNow = stillOpenForRun.length + bIdx;
-          let candidateSymbol = primaryInst.symbol;
-          if (openCountNow > 0 && botConfig?.recommendedInstruments?.length) {
-            const pool = [primaryInst.symbol, ...botConfig.recommendedInstruments];
-            const candidate = pool[(openCountNow + Math.floor(Date.now() / 1500)) % pool.length];
-            const candInst = allInstruments.find((i) => i.symbol === candidate);
-            if (candInst && checkInstrumentMarketHours(candInst.symbol, candInst.category).isOpen) {
-              candidateSymbol = candInst.symbol;
-            }
-          }
-
-          const targetInst = resolveActiveBotInstrument(candidateSymbol, botConfig);
+          // Cycle across all open candidate instruments (all recommended pairs in default 'ALL' mode, or the 1 selected pair if set in Settings)
+          const targetInst =
+            openInsts[(openCountNow + Math.floor(Date.now() / 1500)) % openInsts.length];
           const mStatus = checkInstrumentMarketHours(targetInst.symbol, targetInst.category);
           if (!mStatus.isOpen) break;
 
@@ -6611,7 +6731,8 @@ export default function App() {
             r.id === run.id || r.runId === runKey
               ? {
                   ...r,
-                  symbol: targetInst.symbol,
+                  symbol: r.symbol,
+                  customSymbolSelected: r.customSymbolSelected,
                   lotSize: effectiveAutoLots,
                   lastSignal: `Auto Executed: ${side} ${effectiveAutoLots} ${targetInst.symbol} @ ${openPriceNum} (${openCountNow + 1}/${targetConcurrent} Active)`,
                   lastSignalTime: Date.now(),
@@ -6630,7 +6751,7 @@ export default function App() {
       }
 
       if (runsChanged) {
-        // Ensure a concurrent user Pause/Run click during this tick is never overwritten by the tick snapshot
+        // Ensure a concurrent user Pause/Run/Settings click during this tick is never overwritten by the tick snapshot
         const latestRefMap = new Map<string, BotRunInstance>();
         for (const lr of botRunsRef.current) {
           if (lr.id) latestRefMap.set(lr.id, lr);
@@ -6641,6 +6762,11 @@ export default function App() {
           if (latest && (latest.statusUpdatedAt || 0) > (nr.statusUpdatedAt || 0)) {
             return {
               ...nr,
+              symbol: latest.symbol || nr.symbol,
+              customSymbolSelected: latest.customSymbolSelected ?? nr.customSymbolSelected,
+              lotSize: latest.lotSize || nr.lotSize,
+              tpPips: latest.tpPips || nr.tpPips,
+              slPips: latest.slPips || nr.slPips,
               status: latest.status,
               statusUpdatedAt: latest.statusUpdatedAt,
               stoppedAt: latest.stoppedAt,
