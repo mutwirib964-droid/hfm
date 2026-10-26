@@ -7242,12 +7242,12 @@ export default function App() {
     <div
       id="vtm-app-root"
       className={`min-h-screen w-full transition-colors duration-200 ${
-        isDarkMode ? 'dark bg-[#0B0C0E] text-[#F5F5F5]' : 'bg-[#F8FAFC] text-[#0F172A]'
+        isDarkMode ? 'dark bg-[#0B0C0E] text-[#F5F5F5]' : 'bg-[#F4F6F9] text-[#0F172A]'
       }`}
     >
       <div
         className={`min-h-screen w-full flex flex-col relative ${
-          isDarkMode ? 'bg-[#111317] text-[#F5F5F5]' : 'bg-white text-[#0F172A]'
+          isDarkMode ? 'bg-[#111317] text-[#F5F5F5]' : 'bg-[#F4F6F9] text-[#0F172A]'
         }`}
       >
         {/* Main Top Header */}

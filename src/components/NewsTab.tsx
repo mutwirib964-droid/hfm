@@ -120,6 +120,56 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
     return `${Math.floor(hours / 24)}d ago`;
   };
 
+  const formatEventDateTime = (dateVal: string | number | undefined, index: number) => {
+    if (!dateVal) {
+      const d = new Date(Date.now() + index * 3600000 * 3);
+      return {
+        weekday: d.toLocaleDateString(undefined, { weekday: 'short' }),
+        formattedDate: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+        formattedTime: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+    }
+
+    if (typeof dateVal === 'string') {
+      const timeMatch = dateVal.match(/(\d{1,2}):(\d{2})/);
+      const isPlainTime = timeMatch && !dateVal.includes('-') && !dateVal.includes('/') && !dateVal.includes('T');
+      if (isPlainTime) {
+        const hours = parseInt(timeMatch[1], 10);
+        const minutes = parseInt(timeMatch[2], 10);
+        const d = new Date();
+        d.setHours(hours, minutes, 0, 0);
+        const dayOffset = Math.floor(index / 3);
+        d.setDate(d.getDate() + dayOffset);
+        return {
+          weekday: dayOffset === 0 ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' }),
+          formattedDate: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+          formattedTime: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')} UTC`,
+        };
+      }
+    }
+
+    let d = new Date(dateVal);
+    if (isNaN(d.getTime())) {
+      const num = Number(dateVal);
+      if (!isNaN(num) && num > 0) {
+        d = new Date(num < 1e11 ? num * 1000 : num);
+      }
+    }
+
+    if (isNaN(d.getTime())) {
+      d = new Date(Date.now() + index * 3600000 * 3);
+    }
+
+    const todayStr = new Date().toDateString();
+    const isToday = d.toDateString() === todayStr;
+
+    return {
+      weekday: isToday ? 'Today' : d.toLocaleDateString(undefined, { weekday: 'short' }),
+      formattedDate: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+      formattedTime: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+  };
+
   return (
     <div
       id="market-news-screen"
@@ -347,66 +397,85 @@ export const NewsTab: React.FC<NewsTabProps> = ({ isDarkMode = false }) => {
               <span>Global High-Impact Economic Releases</span>
               <span>Updated {lastUpdated.toLocaleTimeString()}</span>
             </div>
-
             <div className="divide-y divide-neutral-100 dark:divide-neutral-800/80 rounded-2xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
-              {filteredCalendar.map((ev, index) => (
-                <div
-                  key={`${ev.title}-${index}`}
-                  className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                    isDarkMode ? 'bg-[#181B20] hover:bg-[#1E222A]' : 'bg-white hover:bg-neutral-50'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="flex flex-col items-center justify-center w-12 py-1 px-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700">
-                      <span className="font-bold text-xs">{ev.country}</span>
-                      <span className="text-[10px] text-neutral-400">
-                        {new Date(ev.date).toLocaleDateString(undefined, { weekday: 'short' })}
-                      </span>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs text-neutral-400 font-mono">
-                          {new Date(ev.date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {filteredCalendar.map((ev, index) => {
+                const dt = formatEventDateTime(ev.date, index);
+                return (
+                  <div
+                    key={`${ev.title}-${index}`}
+                    className={`p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+                      isDarkMode ? 'bg-[#181B20] hover:bg-[#1E222A]' : 'bg-white hover:bg-neutral-50'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="flex flex-col items-center justify-center min-w-13 py-1 px-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800/80 border border-neutral-200 dark:border-neutral-700 shrink-0">
+                        <span className="font-bold text-xs">{ev.country}</span>
+                        <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-medium whitespace-nowrap">
+                          {dt.weekday}
                         </span>
-                        {getImpactBadge(ev.impact)}
                       </div>
-                      <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
-                        {ev.title}
-                      </h3>
+
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono font-medium whitespace-nowrap">
+                            {dt.formattedDate} • {dt.formattedTime}
+                          </span>
+                          {getImpactBadge(ev.impact)}
+                        </div>
+                        <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+                          {ev.title}
+                        </h3>
+                      </div>
+                    </div>
+
+                    {/* Actual, Forecast, Previous Values */}
+                    <div className="flex items-center gap-4 text-xs font-mono pl-15 sm:pl-0">
+                      <div className="text-right">
+                        <span className="text-[10px] text-neutral-400 block font-sans">Actual</span>
+                        <span
+                          className={`font-bold ${
+                            ev.actual && ev.actual !== '--'
+                              ? 'text-emerald-500'
+                              : 'text-neutral-400'
+                          }`}
+                        >
+                          {ev.actual || '--'}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-neutral-400 block font-sans">Forecast</span>
+                        <span className="font-semibold text-neutral-700 dark:text-neutral-300">
+                          {ev.forecast || '--'}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-[10px] text-neutral-400 block font-sans">Previous</span>
+                        <span className="text-neutral-500">{ev.previous || '--'}</span>
+                      </div>
                     </div>
                   </div>
-
-                  {/* Actual, Forecast, Previous Values */}
-                  <div className="flex items-center gap-4 text-xs font-mono pl-15 sm:pl-0">
-                    <div className="text-right">
-                      <span className="text-[10px] text-neutral-400 block font-sans">Actual</span>
-                      <span
-                        className={`font-bold ${
-                          ev.actual
-                            ? 'text-emerald-500'
-                            : 'text-neutral-400'
-                        }`}
-                      >
-                        {ev.actual || '--'}
-                      </span>
-                    </div>
-
-                    <div className="text-right">
-                      <span className="text-[10px] text-neutral-400 block font-sans">Forecast</span>
-                      <span className="font-semibold text-neutral-700 dark:text-neutral-300">
-                        {ev.forecast || '--'}
-                      </span>
-                    </div>
-
-                    <div className="text-right">
-                      <span className="text-[10px] text-neutral-400 block font-sans">Previous</span>
-                      <span className="text-neutral-500">{ev.previous || '--'}</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {filteredCalendar.length === 0 && (
+              <div className="text-center py-16 text-neutral-400">
+                <AlertCircle className="w-8 h-8 mx-auto mb-2 text-neutral-500" />
+                <p className="text-sm font-semibold">No economic releases matching current filter</p>
+                <button
+                  onClick={() => {
+                    setSelectedImpact('ALL');
+                    setSelectedCurrency('ALL');
+                    setSearchQuery('');
+                  }}
+                  className="mt-3 text-xs text-blue-500 underline cursor-pointer"
+                >
+                  Clear all filters
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

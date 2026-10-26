@@ -295,46 +295,121 @@ class MarketNewsService {
   }
 
   private getFallbackCalendar(): MarketCalendarEvent[] {
+    const makeDateIso = (dayOffset: number, hours: number, minutes: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + dayOffset);
+      d.setHours(hours, minutes, 0, 0);
+      return d.toISOString();
+    };
+
     return [
       {
         title: 'Core CPI m/m',
         country: 'USD',
-        date: '12:30 UTC',
+        date: makeDateIso(0, 12, 30),
         impact: 'High',
         forecast: '0.3%',
         previous: '0.3%',
+        actual: '--',
       },
       {
         title: 'ECB Monetary Policy Statement',
         country: 'EUR',
-        date: '13:15 UTC',
+        date: makeDateIso(0, 13, 15),
         impact: 'High',
-        forecast: '-',
-        previous: '-',
+        forecast: '3.40%',
+        previous: '3.65%',
+        actual: '--',
       },
       {
         title: 'Unemployment Claims',
         country: 'USD',
-        date: '12:30 UTC',
+        date: makeDateIso(0, 14, 30),
         impact: 'High',
         forecast: '215K',
         previous: '212K',
+        actual: '--',
       },
       {
         title: 'Retail Sales m/m',
         country: 'GBP',
-        date: '06:00 UTC',
+        date: makeDateIso(1, 7, 0),
         impact: 'Medium',
         forecast: '0.4%',
         previous: '0.2%',
+        actual: '--',
       },
       {
         title: 'BoJ Core CPI y/y',
         country: 'JPY',
-        date: '05:00 UTC',
+        date: makeDateIso(1, 4, 30),
         impact: 'Medium',
         forecast: '2.4%',
         previous: '2.3%',
+        actual: '--',
+      },
+      {
+        title: 'Non-Farm Payrolls (NFP) Employment',
+        country: 'USD',
+        date: makeDateIso(1, 13, 30),
+        impact: 'High',
+        forecast: '175K',
+        previous: '142K',
+        actual: '--',
+      },
+      {
+        title: 'Gold Institutional Sovereign Flows & Fix',
+        country: 'XAU',
+        date: makeDateIso(1, 15, 0),
+        impact: 'High',
+        forecast: 'Net Accumulation',
+        previous: 'Net Inflows',
+        actual: '--',
+      },
+      {
+        title: 'RBA Interest Rate Decision & Statement',
+        country: 'AUD',
+        date: makeDateIso(2, 4, 30),
+        impact: 'High',
+        forecast: '4.35%',
+        previous: '4.35%',
+        actual: '--',
+      },
+      {
+        title: 'Bank of Canada (BoC) Monetary Rate Decision',
+        country: 'CAD',
+        date: makeDateIso(2, 14, 0),
+        impact: 'High',
+        forecast: '3.75%',
+        previous: '4.00%',
+        actual: '--',
+      },
+      {
+        title: 'Bank of England (BoE) Official Bank Rate',
+        country: 'GBP',
+        date: makeDateIso(3, 12, 0),
+        impact: 'High',
+        forecast: '4.75%',
+        previous: '5.00%',
+        actual: '--',
+      },
+      {
+        title: 'Eurozone Flash CPI Inflation Estimate y/y',
+        country: 'EUR',
+        date: makeDateIso(3, 10, 0),
+        impact: 'High',
+        forecast: '2.1%',
+        previous: '2.2%',
+        actual: '--',
+      },
+      {
+        title: 'US ISM Manufacturing PMI',
+        country: 'USD',
+        date: makeDateIso(4, 15, 0),
+        impact: 'High',
+        forecast: '49.5',
+        previous: '47.2',
+        actual: '--',
       },
     ];
   }

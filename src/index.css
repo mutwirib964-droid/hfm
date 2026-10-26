@@ -9,9 +9,12 @@
   }
   
   html, body, button, input, select, textarea {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
     font-feature-settings: "zero" 0 !important;
     font-variant-numeric: normal tabular-nums !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   html, body, #root {
@@ -23,7 +26,7 @@
     text-size-adjust: 100%;
     overscroll-behavior-x: none;
     touch-action: pan-y;
-    background-color: #FFFFFF;
+    background-color: #F4F6F9;
     color: #0F172A;
   }
 
@@ -34,9 +37,68 @@
   }
 
   #vtm-app-root:not(.dark) {
-    background-color: #F8FAFC;
+    background-color: #F4F6F9;
     color: #0F172A;
     color-scheme: light;
+  }
+
+  /* HFM Light Mode High-Contrast & High-Visibility Rules */
+  #vtm-app-root:not(.dark) .text-emerald-400 {
+    color: #059669 !important;
+  }
+  #vtm-app-root:not(.dark) .text-green-400 {
+    color: #16A34A !important;
+  }
+  #vtm-app-root:not(.dark) .text-rose-400,
+  #vtm-app-root:not(.dark) .text-red-400 {
+    color: #DC2626 !important;
+  }
+  #vtm-app-root:not(.dark) .text-sky-300,
+  #vtm-app-root:not(.dark) .text-sky-400 {
+    color: #0284C7 !important;
+  }
+  #vtm-app-root:not(.dark) .text-amber-400,
+  #vtm-app-root:not(.dark) .text-yellow-400 {
+    color: #B45309 !important;
+  }
+  #vtm-app-root:not(.dark) .text-neutral-300 {
+    color: #334155 !important;
+  }
+  #vtm-app-root:not(.dark) .text-neutral-400 {
+    color: #475569 !important;
+  }
+  #vtm-app-root:not(.dark) .text-neutral-500 {
+    color: #475569 !important;
+  }
+  #vtm-app-root:not(.dark) .text-slate-400 {
+    color: #475569 !important;
+  }
+  #vtm-app-root:not(.dark) .text-slate-500 {
+    color: #334155 !important;
+  }
+  #vtm-app-root:not(.dark) .text-gray-400 {
+    color: #475569 !important;
+  }
+  #vtm-app-root:not(.dark) .text-gray-500 {
+    color: #334155 !important;
+  }
+
+  /* Prevent text turning white on hover in light mode */
+  #vtm-app-root:not(.dark) .hover\:text-white:hover {
+    color: #0F172A !important;
+  }
+
+  /* Ensure card borders in light mode remain crisp */
+  #vtm-app-root:not(.dark) .border-neutral-800 {
+    border-color: #E2E8F0 !important;
+  }
+  #vtm-app-root:not(.dark) .border-neutral-700 {
+    border-color: #CBD5E1 !important;
+  }
+
+  /* Ensure light mode card backgrounds are clean white against #F4F6F9 */
+  #vtm-app-root:not(.dark) .bg-white {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.04), 0 1px 2px -1px rgba(0, 0, 0, 0.03);
   }
 
   /* Ensure iOS / Android Installed PWA (Standalone Mode) never clips top headers or bottom nav behind Notch / Dynamic Island / Home Bar */
@@ -66,7 +128,7 @@
 
   /* Override any mono or code font so it uses clean, normal standard non-slashed digits */
   .font-mono, code, kbd, samp, pre {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+    font-family: 'Plus Jakarta Sans', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
     font-feature-settings: "zero" 0 !important;
     font-variant-numeric: normal tabular-nums !important;
   }

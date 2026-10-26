@@ -568,11 +568,31 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
 
       // Always recalculate exact mathematical PnL from openPrice -> effectivePrice and lotSize
       const calculatedPnl = calculateBotPnL(symbol, side, openPrice, effectivePrice, lotSize);
+      const ticket = t.ticket || Math.floor(10000000 + Math.random() * 90000000);
+      const rawCloseTime = t.closeTime || t.exitTime || (t as any).closedAt;
+      const rawOpen = t.openTime || t.time || (t as any).timestamp || (t as any).createdAt;
+
+      let openTime =
+        typeof rawOpen === 'number' && !isNaN(rawOpen) && rawOpen > 0
+          ? rawOpen
+          : Date.now() - 180000;
+
+      let closeTime: number | undefined = undefined;
+      if (t.status === 'CLOSED') {
+        if (typeof rawCloseTime === 'number' && !isNaN(rawCloseTime) && rawCloseTime > 0) {
+          closeTime = rawCloseTime;
+        } else if (openTime > 0) {
+          closeTime = openTime + 45000;
+        } else {
+          closeTime = Date.now() - ((ticket % 14400) + 60) * 1000;
+          openTime = closeTime - 60000;
+        }
+      }
 
       return {
         ...t,
         id: t.id || `trade-${Math.random().toString(36).slice(2, 9)}`,
-        ticket: t.ticket || Math.floor(10000000 + Math.random() * 90000000),
+        ticket,
         symbol,
         side,
         lotSize,
@@ -586,7 +606,8 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
         slPrice: sl,
         profitUsd: calculatedPnl,
         status: t.status === 'CLOSED' ? 'CLOSED' : 'OPEN',
-        openTime: t.openTime || Date.now(),
+        openTime,
+        closeTime,
         botName: t.botName || 'VTM Algo EA',
       };
     });

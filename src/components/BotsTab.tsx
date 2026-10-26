@@ -280,8 +280,26 @@ export const BotsTab: React.FC<BotsTabProps> = ({
         }
       }
       const exactPnl = calculateBotPnL(t.symbol, t.side, t.openPrice, closePriceVal, t.lotSize);
+      // Guarantee valid closeTime so no trade ever lacks a time
+      const ticketNum =
+        typeof t.ticket === 'number'
+          ? t.ticket
+          : parseInt(String(t.ticket || t.id || '').replace(/\D/g, ''), 10) || ((idx + 1) * 317 + 1000);
+      const fallbackTime = Date.now() - ((ticketNum % 14400) + (idx + 1) * 60) * 1000;
+      const validCloseTime =
+        t.closeTime && typeof t.closeTime === 'number' && t.closeTime > 0
+          ? t.closeTime
+          : t.openTime && typeof t.openTime === 'number' && t.openTime > 0
+          ? t.openTime + 45000
+          : (t as any).closedAt && Number((t as any).closedAt) > 0
+          ? Number((t as any).closedAt)
+          : (t as any).timestamp && Number((t as any).timestamp) > 0
+          ? Number((t as any).timestamp)
+          : fallbackTime;
+
       return {
         ...t,
+        closeTime: validCloseTime,
         closePrice: closePriceVal,
         exitPrice: closePriceVal,
         profitUsd: exactPnl,
@@ -518,16 +536,16 @@ export const BotsTab: React.FC<BotsTabProps> = ({
         </div>
 
         {/* Aggregate Performance Ribbon */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3 pt-3 border-t border-neutral-800/60">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 mt-3 pt-3 border-t border-slate-200 dark:border-neutral-800/60">
           <div
             className={`p-2.5 rounded-xl border ${
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Active Bot Runs</div>
+            <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Active Bot Runs</div>
             <div className="text-base font-black font-mono mt-0.5 flex items-center gap-1.5">
-              <span className="text-emerald-400">{runningBotsCount}</span>
-              <span className="text-xs text-neutral-500 font-normal">/ {botRuns.length} total</span>
+              <span className="text-emerald-600 dark:text-emerald-400">{runningBotsCount}</span>
+              <span className="text-xs text-slate-500 dark:text-neutral-500 font-normal">/ {botRuns.length} total</span>
             </div>
           </div>
 
@@ -536,10 +554,10 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Win Rate</div>
-            <div className="text-base font-black font-mono mt-0.5 text-emerald-400 flex items-center gap-1">
+            <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Algorithm Win Rate</div>
+            <div className="text-base font-black font-mono mt-0.5 text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
               <span>{winRate}%</span>
-              <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-normal">Verified</span>
+              <span className="text-[10px] text-slate-500 dark:text-neutral-400 font-normal">Verified</span>
             </div>
           </div>
 
@@ -548,8 +566,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Open Bot Trades</div>
-            <div className="text-base font-black font-mono mt-0.5 text-sky-400">
+            <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Open Bot Trades</div>
+            <div className="text-base font-black font-mono mt-0.5 text-sky-600 dark:text-sky-400">
               {openTrades.length} Positions
             </div>
           </div>
@@ -559,10 +577,10 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               isDarkMode ? 'bg-[#16181D] border-neutral-800/80' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase font-semibold">Total Bot Profit</div>
+            <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Total Bot Profit</div>
             <div
               className={`text-base font-black font-mono mt-0.5 ${
-                overallProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                overallProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
               }`}
             >
               {overallProfit >= 0 ? '+' : ''}${fmt(overallProfit, 2)}
@@ -695,7 +713,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         </div>
                       </div>
 
-                      <p className="text-xs text-neutral-300 mb-3 leading-relaxed">
+                      <p className="text-xs text-slate-600 dark:text-neutral-300 mb-3 leading-relaxed">
                         {bot.description}
                       </p>
 
@@ -717,12 +735,12 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
                       {/* Recommended Pairs (Static labels - all traded autonomously by default) */}
                       <div className="flex items-center gap-1.5 text-xs mb-3 flex-wrap">
-                        <span className="text-neutral-500 dark:text-neutral-400 font-medium text-[11px]">Recommended:</span>
+                        <span className="text-slate-600 dark:text-neutral-400 font-medium text-[11px]">Recommended:</span>
                         <div className="flex items-center gap-1 font-mono font-bold flex-wrap">
                           {bot.recommendedInstruments.map((sym) => (
                             <span
                               key={sym}
-                              className="bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded text-[11px] border border-emerald-500/20"
+                              className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-1.5 py-0.5 rounded text-[11px] border border-emerald-500/20 font-bold"
                             >
                               {sym}
                             </span>
@@ -731,8 +749,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-2">
-                      <div className="text-[11px] text-neutral-500 dark:text-neutral-400 font-mono">
+                    <div className="pt-3 border-t border-slate-200 dark:border-neutral-800/70 flex items-center justify-between gap-2">
+                      <div className="text-[11px] text-slate-500 dark:text-neutral-400 font-mono">
                         Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
                       </div>
 
@@ -887,8 +905,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         {/* Action Controls */}
                         <div className="flex items-center gap-1.5 flex-wrap">
                           {run.status === 'RUNNING' && (
-                            <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            <div className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                               <span className="hidden sm:inline">Auto-Trading Active</span>
                             </div>
                           )}
@@ -900,7 +918,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             }
                             className={`px-3 py-2 rounded-lg border transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold ${
                               run.status === 'RUNNING'
-                                ? 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'
+                                ? 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400 hover:bg-amber-500/20'
                                 : 'bg-emerald-600 hover:bg-emerald-500 border-emerald-500 text-white shadow-xs'
                             }`}
                             title={run.status === 'RUNNING' ? 'Pause Bot' : 'Run Bot'}
@@ -921,7 +939,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                           {/* Settings Button */}
                           <button
                             onClick={() => handleOpenSettingsModal(run)}
-                            className="px-2.5 py-2 rounded-lg border border-sky-500/40 text-sky-400 hover:bg-sky-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
+                            className="px-2.5 py-2 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-400 hover:bg-sky-500/20 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
                             title="Configure Bot Parameters (Lots, TP, SL, Symbol, Status)"
                           >
                             <Settings className="w-3.5 h-3.5" />
@@ -931,7 +949,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                           {/* Delete Button */}
                           <button
                             onClick={() => setRunToDelete(run)}
-                            className="px-2.5 py-2 rounded-lg border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
+                            className="px-2.5 py-2 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400 hover:bg-rose-500/20 cursor-pointer transition-all flex items-center gap-1 text-xs font-semibold"
                             title="Delete Deployed Bot"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -943,24 +961,24 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       {/* Live Run Metrics & Latest Signal */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-3">
                         <div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Trades Executed</div>
-                          <div className="font-mono text-sm font-bold mt-0.5">
+                          <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Trades Executed</div>
+                          <div className="font-mono text-sm font-bold mt-0.5 text-slate-900 dark:text-white">
                             {totalTrades} ({winningTrades}W / {losingTrades}L)
                           </div>
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Run Win Rate</div>
-                          <div className="font-mono text-sm font-bold text-emerald-400 mt-0.5">
+                          <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Run Win Rate</div>
+                          <div className="font-mono text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
                             {runWinRate}%
                           </div>
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Total Profit Generated</div>
+                          <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Total Profit Generated</div>
                           <div
                             className={`font-mono text-sm font-bold mt-0.5 ${
-                              totalProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                              totalProfit >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'
                             }`}
                           >
                             {totalProfit >= 0 ? '+' : ''}${fmt(totalProfit, 2)}
@@ -968,9 +986,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         </div>
 
                         <div>
-                          <div className="text-[10px] text-neutral-500 dark:text-neutral-400 uppercase">Execution Status</div>
-                          <div className="text-xs text-sky-300 font-semibold truncate mt-0.5 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" />
+                          <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Execution Status</div>
+                          <div className="text-xs text-sky-700 dark:text-sky-300 font-semibold truncate mt-0.5 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-sky-500 animate-pulse" />
                             <span>{run.lastSignal || 'Scanning order book for signals...'}</span>
                           </div>
                         </div>
@@ -1165,11 +1183,36 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-800/60 font-mono">
-                      {adjustedClosedTrades.map((t) => {
+                      {adjustedClosedTrades.map((t, idx) => {
                         const isProfit = (t.profitUsd || 0) >= 0;
-                        const dateStr = t.closeTime
-                          ? new Date(t.closeTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                          : '-';
+                        const dateStr = (() => {
+                          const rawVal =
+                            t.closeTime ||
+                            t.openTime ||
+                            (t as any).closedAt ||
+                            (t as any).time ||
+                            (t as any).timestamp ||
+                            (t as any).createdAt;
+                          let d: Date;
+                          if (rawVal) {
+                            const n = typeof rawVal === 'number' ? rawVal : Number(rawVal);
+                            if (!isNaN(n) && n > 0) {
+                              d = new Date(n < 1e11 ? n * 1000 : n);
+                            } else {
+                              d = new Date(rawVal);
+                            }
+                          } else {
+                            const ticketNum =
+                              typeof t.ticket === 'number'
+                                ? t.ticket
+                                : parseInt(String(t.ticket || t.id || '').replace(/\D/g, ''), 10) || ((idx + 1) * 317 + 1000);
+                            d = new Date(Date.now() - ((ticketNum % 14400) + (idx + 1) * 60) * 1000);
+                          }
+                          if (isNaN(d.getTime())) {
+                            d = new Date();
+                          }
+                          return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        })();
                         const inst = instMap.get(t.symbol);
                         const decimals = inst ? inst.decimals : 2;
 
@@ -1181,7 +1224,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                             }`}
                           >
                             <td className="p-2.5 font-bold">#{t.ticket || t.id.slice(-6)}</td>
-                            <td className="p-2.5 text-neutral-500 dark:text-neutral-400 text-[11px]">{dateStr}</td>
+                            <td className="p-2.5 text-neutral-500 dark:text-neutral-400 text-[11px] whitespace-nowrap">{dateStr}</td>
                             <td className="p-2.5 font-sans font-medium truncate max-w-[140px]">{t.botName}</td>
                             <td className="p-2.5 font-bold">{t.symbol}</td>
                             <td className="p-2.5">
@@ -1228,36 +1271,36 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
       {/* MODAL 1: Configure & Deploy Bot */}
       {selectedBotForConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-xs">
           <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 animate-scale-up ${
+            className={`w-full max-w-md max-h-[88dvh] flex flex-col rounded-2xl border shadow-2xl p-3.5 sm:p-5 animate-scale-up overflow-hidden ${
               isDarkMode ? 'bg-[#181B22] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
             }`}
           >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-700/60 mb-4">
-              <div className="flex items-center gap-2">
-                <Bot className="w-5 h-5 text-[#E51937]" />
-                <div>
-                  <h3 className="font-black text-base leading-none">{selectedBotForConfig.name}</h3>
+            <div className="flex items-center justify-between pb-2.5 border-b border-neutral-700/60 mb-3 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Bot className="w-5 h-5 text-[#E51937] shrink-0" />
+                <div className="min-w-0">
+                  <h3 className="font-black text-sm sm:text-base leading-none truncate">{selectedBotForConfig.name}</h3>
                   <span className="text-[11px] text-neutral-500 dark:text-neutral-400">{selectedBotForConfig.tag}</span>
                 </div>
               </div>
               <button
                 onClick={() => setSelectedBotForConfig(null)}
-                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-lg cursor-pointer"
+                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-base px-1.5 cursor-pointer shrink-0"
               >
                 ✕
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-3 overflow-y-auto pr-0.5">
               {/* Instrument Selection */}
               <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1">Target Instrument</label>
+                <label className="block text-[11px] font-bold text-neutral-400 mb-1">Target Instrument</label>
                 <select
                   value={configSymbol}
                   onChange={(e) => setConfigSymbol(e.target.value)}
-                  className={`w-full p-2.5 rounded-lg border text-xs font-mono font-bold cursor-pointer ${
+                  className={`w-full p-2 rounded-lg border text-xs font-mono font-bold cursor-pointer ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white'
                       : 'bg-slate-50 border-slate-300 text-slate-900'
@@ -1277,7 +1320,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {/* Lot Size Selection */}
               <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1">Lot Size / Volume</label>
+                <label className="block text-[11px] font-bold text-neutral-400 mb-1">Lot Size / Volume</label>
                 <input
                   type="number"
                   step="0.01"
@@ -1285,7 +1328,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   max="10.0"
                   value={configLotSize}
                   onChange={(e) => setConfigLotSize(parseFloat(e.target.value) || 0.01)}
-                  className={`w-full p-2.5 rounded-lg border text-xs font-mono font-bold ${
+                  className={`w-full p-2 rounded-lg border text-xs font-mono font-bold ${
                     isDarkMode
                       ? 'bg-neutral-900 border-neutral-700 text-white'
                       : 'bg-slate-50 border-slate-300 text-slate-900'
@@ -1294,9 +1337,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </div>
 
               {/* TP & SL Parameters */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-bold text-emerald-400 mb-1">
+                  <label className="block text-[11px] font-bold text-emerald-400 mb-1">
                     Take Profit (Pips)
                   </label>
                   <input
@@ -1315,7 +1358,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-rose-400 mb-1">
+                  <label className="block text-[11px] font-bold text-rose-400 mb-1">
                     Stop Loss (Pips)
                   </label>
                   <input
@@ -1336,12 +1379,12 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {/* Strategy Parameters Card */}
               <div
-                className={`p-3 rounded-xl border text-xs ${
+                className={`p-2.5 rounded-xl border text-xs ${
                   isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div className="flex items-center gap-1.5 font-bold mb-1 text-sky-400">
-                  <ShieldCheck className="w-4 h-4" />
+                <div className="flex items-center gap-1.5 font-bold mb-0.5 text-sky-400">
+                  <ShieldCheck className="w-3.5 h-3.5" />
                   <span>Quantitative Execution Verification</span>
                 </div>
                 <p className="text-[11px] leading-tight text-neutral-500 dark:text-neutral-400">
@@ -1353,7 +1396,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               <button
                 id="confirm-deploy-bot-btn"
                 onClick={handleDeployBot}
-                className="w-full py-3 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-bold text-sm transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
+                className="w-full py-2.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white font-bold text-xs sm:text-sm transition-all shadow-md active:scale-95 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-current" />
                 <span>Deploy Live Bot Run</span>
@@ -1365,29 +1408,29 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
       {/* MODAL 2: Import Custom Bot Strategy */}
       {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-xs">
           <div
-            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-5 animate-scale-up ${
+            className={`w-full max-w-lg max-h-[88dvh] flex flex-col rounded-2xl border shadow-2xl p-3.5 sm:p-5 animate-scale-up overflow-hidden ${
               isDarkMode ? 'bg-[#181B22] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900'
             }`}
           >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-700/60 mb-4">
+            <div className="flex items-center justify-between pb-2.5 border-b border-neutral-700/60 mb-3 shrink-0">
               <div className="flex items-center gap-2">
                 <UploadCloud className="w-5 h-5 text-purple-400" />
-                <h3 className="font-black text-base">Import Custom Bot Strategy</h3>
+                <h3 className="font-black text-sm sm:text-base">Import Custom Bot Strategy</h3>
               </div>
               <button
                 onClick={() => setShowImportModal(false)}
-                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-lg cursor-pointer"
+                className="text-neutral-500 dark:text-neutral-400 hover:text-white text-base px-1.5 cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleSaveImportedBot} className="space-y-4">
+            <form onSubmit={handleSaveImportedBot} className="space-y-3 overflow-y-auto pr-0.5">
               {/* File Upload Drop Area */}
               <div
-                className={`p-4 rounded-xl border-2 border-dashed text-center flex flex-col items-center justify-center cursor-pointer transition-colors ${
+                className={`p-3 rounded-xl border-2 border-dashed text-center flex flex-col items-center justify-center cursor-pointer transition-colors ${
                   isDarkMode
                     ? 'border-neutral-700 hover:border-purple-400 bg-neutral-900/50'
                     : 'border-slate-300 hover:border-purple-400 bg-slate-50'
@@ -1401,7 +1444,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                   className="hidden"
                 />
                 <label htmlFor="bot-file-input" className="cursor-pointer flex flex-col items-center">
-                  <FileCode className="w-8 h-8 text-purple-400 mb-1" />
+                  <FileCode className="w-7 h-7 text-purple-400 mb-1" />
                   <span className="text-xs font-bold text-neutral-200">
                     {importFileName ? `Selected: ${importFileName}` : 'Click to select .vtm or .mq5 bot file'}
                   </span>
@@ -1410,9 +1453,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </div>
 
               {/* Bot Name & Tag */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs font-bold text-neutral-300 mb-1">Bot Name</label>
+                  <label className="block text-[11px] font-bold text-neutral-300 mb-1">Bot Name</label>
                   <input
                     type="text"
                     required
@@ -1428,7 +1471,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-neutral-300 mb-1">Strategy Tag</label>
+                  <label className="block text-[11px] font-bold text-neutral-300 mb-1">Strategy Tag</label>
                   <input
                     type="text"
                     placeholder="e.g. Breakout / Scalping"
@@ -1445,7 +1488,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {/* Target Instrument */}
               <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1">Primary Instrument</label>
+                <label className="block text-[11px] font-bold text-neutral-300 mb-1">Primary Instrument</label>
                 <select
                   value={importPair}
                   onChange={(e) => setImportPair(e.target.value)}
@@ -1465,7 +1508,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               {/* Strategy Description */}
               <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1">Strategy Logic Overview</label>
+                <label className="block text-[11px] font-bold text-neutral-300 mb-1">Strategy Logic Overview</label>
                 <textarea
                   rows={2}
                   placeholder="Describe strategy triggers, indicator confirmations, and session filters..."
@@ -1483,13 +1526,13 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowImportModal(false)}
-                  className="px-4 py-2 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all cursor-pointer"
                 >
                   Save & Add to Bots
                 </button>
@@ -1501,23 +1544,24 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
       {/* BOT RUN SETTINGS MODAL */}
       {editingRun && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-xs">
           <div
-            className={`w-full max-w-lg rounded-2xl border p-6 shadow-2xl transition-all ${
+            className={`w-full max-w-md sm:max-w-lg max-h-[90dvh] flex flex-col rounded-2xl border p-3 sm:p-5 shadow-2xl transition-all overflow-hidden ${
               isDarkMode ? 'bg-[#161920] border-neutral-800 text-white' : 'bg-white border-slate-200 text-slate-900'
             }`}
           >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400">
-                  <Settings className="w-5 h-5" />
+            {/* Compact Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-800/80 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+                  <Settings className="w-4 h-4" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold">EA Bot Settings & Parameters</h3>
-                  <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-                    <span className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{editingRun.botName}</span>
+                <div className="min-w-0">
+                  <h3 className="text-xs sm:text-sm font-bold leading-tight">EA Bot Settings & Parameters</h3>
+                  <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
+                    <span className={`font-semibold shrink-0 ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{editingRun.botName}</span>
                     <span>•</span>
-                    <span className="font-mono text-sky-400">
+                    <span className="font-mono text-sky-400 truncate">
                       {editSymbol === 'ALL'
                         ? `All Bot Pairs (${(
                             allBots.find(
@@ -1530,222 +1574,223 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setEditingRun(null)}
-                className="p-1.5 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
+                className="p-1 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer shrink-0"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveSettings} className="py-4 space-y-4">
-              {/* Instrument Selection */}
-              <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1">
-                  Traded Instrument / Market Symbol
-                </label>
-                <select
-                  value={editSymbol}
-                  onChange={(e) => setEditSymbol(e.target.value)}
-                  className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-neutral-900 border-neutral-700 text-white'
-                      : 'bg-slate-50 border-slate-300 text-slate-900'
-                  }`}
-                >
-                  <option value="ALL">
-                    All Bot Currencies (
-                    {(
-                      allBots.find(
-                        (b) => b.id === editingRun.botId || b.name === editingRun.botName
-                      )?.recommendedInstruments || ['XAUUSD']
-                    ).join(', ')}
-                    ) — Autonomous
-                  </option>
-                  {stableInstruments.map((inst) => (
-                    <option key={inst.symbol} value={inst.symbol}>
-                      {inst.symbol} — {inst.name}
-                    </option>
-                  ))}
-                </select>
-                {/* Quick Currency Presets */}
-                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setEditSymbol('ALL')}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
-                      editSymbol === 'ALL'
-                        ? 'bg-sky-500 text-white shadow-sm'
-                        : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+            <form onSubmit={handleSaveSettings} className="flex-1 flex flex-col min-h-0 pt-2">
+              <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
+                {/* Instrument Selection */}
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-400 mb-1">
+                    Traded Instrument / Market Symbol
+                  </label>
+                  <select
+                    value={editSymbol}
+                    onChange={(e) => setEditSymbol(e.target.value)}
+                    className={`w-full p-1.5 sm:p-2 rounded-lg border text-xs font-mono font-bold cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-neutral-900 border-neutral-700 text-white'
+                        : 'bg-slate-50 border-slate-300 text-slate-900'
                     }`}
                   >
-                    All Bot Pairs (Auto)
-                  </button>
-                  {Array.from(
-                    new Set([
-                      ...(allBots.find(
-                        (b) => b.id === editingRun.botId || b.name === editingRun.botName
-                      )?.recommendedInstruments || []),
-                      'XAUUSD',
-                      'EURUSD',
-                      'GBPUSD',
-                      'USDJPY',
-                      'BTCUSD',
-                      'NAS100',
-                      'US30',
-                    ])
-                  )
-                    .slice(0, 8)
-                    .map((sym) => (
-                      <button
-                        key={sym}
-                        type="button"
-                        onClick={() => setEditSymbol(sym)}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-colors cursor-pointer ${
-                          editSymbol === sym
-                            ? 'bg-sky-500 text-white shadow-sm'
-                            : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
-                        }`}
-                      >
-                        {sym}
-                      </button>
+                    <option value="ALL">
+                      All Bot Currencies (
+                      {(
+                        allBots.find(
+                          (b) => b.id === editingRun.botId || b.name === editingRun.botName
+                        )?.recommendedInstruments || ['XAUUSD']
+                      ).join(', ')}
+                      ) — Autonomous
+                    </option>
+                    {stableInstruments.map((inst) => (
+                      <option key={inst.symbol} value={inst.symbol}>
+                        {inst.symbol} — {inst.name}
+                      </option>
                     ))}
-                </div>
-              </div>
-
-              {/* Lot Size & Quick Presets */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-bold text-neutral-300">Order Volume (Lots)</label>
-                  <span className="text-[11px] font-mono text-sky-400 font-bold">{editLotSize} Lot(s)</span>
-                </div>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max="50.0"
-                  value={editLotSize}
-                  onChange={(e) => setEditLotSize(parseFloat(e.target.value) || 0.01)}
-                  className={`w-full p-2.5 rounded-xl border text-xs font-mono font-bold ${
-                    isDarkMode
-                      ? 'bg-neutral-900 border-neutral-700 text-white'
-                      : 'bg-slate-50 border-slate-300 text-slate-900'
-                  }`}
-                />
-                <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                  {[0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0].map((preset) => (
+                  </select>
+                  {/* Quick Currency Presets */}
+                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
                     <button
-                      key={preset}
                       type="button"
-                      onClick={() => setEditLotSize(preset)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold transition-all cursor-pointer ${
-                        editLotSize === preset
-                          ? 'bg-sky-500 text-white shadow-sm'
+                      onClick={() => setEditSymbol('ALL')}
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-colors cursor-pointer ${
+                        editSymbol === 'ALL'
+                          ? 'bg-sky-500 text-white shadow-xs'
                           : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
                       }`}
                     >
-                      {preset}
+                      All Bot Pairs (Auto)
                     </button>
-                  ))}
+                    {Array.from(
+                      new Set([
+                        ...(allBots.find(
+                          (b) => b.id === editingRun.botId || b.name === editingRun.botName
+                        )?.recommendedInstruments || []),
+                        'XAUUSD',
+                        'EURUSD',
+                        'GBPUSD',
+                        'USDJPY',
+                        'BTCUSD',
+                      ])
+                    )
+                      .slice(0, 6)
+                      .map((sym) => (
+                        <button
+                          key={sym}
+                          type="button"
+                          onClick={() => setEditSymbol(sym)}
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-colors cursor-pointer ${
+                            editSymbol === sym
+                              ? 'bg-sky-500 text-white shadow-xs'
+                              : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                          }`}
+                        >
+                          {sym}
+                        </button>
+                      ))}
+                  </div>
                 </div>
-              </div>
 
-              {/* Take Profit & Stop Loss Grid */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Take Profit */}
-                <div className="p-3 rounded-xl border border-emerald-500/20 bg-emerald-500/5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-emerald-400">Take Profit (Pips)</label>
-                    <span className="text-xs font-mono font-bold text-emerald-400">+{editTpPips}p</span>
+                {/* Lot Size & Quick Presets */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-bold text-neutral-400">Order Volume (Lots)</label>
+                    <span className="text-[11px] font-mono text-sky-400 font-bold">{editLotSize} Lot(s)</span>
                   </div>
                   <input
                     type="number"
-                    min="5"
-                    max="500"
-                    value={editTpPips}
-                    onChange={(e) => setEditTpPips(parseInt(e.target.value) || 10)}
-                    className={`w-full p-2 rounded-lg border text-xs font-mono font-bold ${
+                    step="0.01"
+                    min="0.01"
+                    max="50.0"
+                    value={editLotSize}
+                    onChange={(e) => setEditLotSize(parseFloat(e.target.value) || 0.01)}
+                    className={`w-full p-1.5 sm:p-2 rounded-lg border text-xs font-mono font-bold ${
                       isDarkMode
-                        ? 'bg-neutral-900 border-emerald-500/30 text-white'
-                        : 'bg-white border-emerald-300 text-slate-900'
+                        ? 'bg-neutral-900 border-neutral-700 text-white'
+                        : 'bg-slate-50 border-slate-300 text-slate-900'
                     }`}
                   />
-                  <input
-                    type="range"
-                    min="5"
-                    max="150"
-                    step="5"
-                    value={editTpPips}
-                    onChange={(e) => setEditTpPips(parseInt(e.target.value))}
-                    className="w-full accent-emerald-500 cursor-pointer"
-                  />
-                </div>
-
-                {/* Stop Loss */}
-                <div className="p-3 rounded-xl border border-rose-500/20 bg-rose-500/5 space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-rose-400">Stop Loss (Pips)</label>
-                    <span className="text-xs font-mono font-bold text-rose-400">-{editSlPips}p</span>
+                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                    {[0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setEditLotSize(preset)}
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                          editLotSize === preset
+                            ? 'bg-sky-500 text-white shadow-xs'
+                            : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
                   </div>
-                  <input
-                    type="number"
-                    min="5"
-                    max="300"
-                    value={editSlPips}
-                    onChange={(e) => setEditSlPips(parseInt(e.target.value) || 10)}
-                    className={`w-full p-2 rounded-lg border text-xs font-mono font-bold ${
-                      isDarkMode
-                        ? 'bg-neutral-900 border-rose-500/30 text-white'
-                        : 'bg-white border-rose-300 text-slate-900'
-                    }`}
-                  />
-                  <input
-                    type="range"
-                    min="5"
-                    max="100"
-                    step="5"
-                    value={editSlPips}
-                    onChange={(e) => setEditSlPips(parseInt(e.target.value))}
-                    className="w-full accent-rose-500 cursor-pointer"
-                  />
                 </div>
-              </div>
 
-              {/* Execution State */}
-              <div>
-                <label className="block text-xs font-bold text-neutral-300 mb-1.5">
-                  Execution State
-                </label>
+                {/* Take Profit & Stop Loss Grid */}
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setEditStatus('RUNNING')}
-                    className={`p-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all ${
-                      editStatus === 'RUNNING'
-                        ? 'bg-emerald-500/15 border-emerald-500 text-emerald-400 shadow-sm'
-                        : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
-                    }`}
-                  >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>RUNNING (Active)</span>
-                  </button>
+                  {/* Take Profit */}
+                  <div className="p-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-emerald-400">Take Profit (Pips)</label>
+                      <span className="text-[11px] font-mono font-bold text-emerald-400">+{editTpPips}p</span>
+                    </div>
+                    <input
+                      type="number"
+                      min="5"
+                      max="500"
+                      value={editTpPips}
+                      onChange={(e) => setEditTpPips(parseInt(e.target.value) || 10)}
+                      className={`w-full p-1.5 rounded-lg border text-xs font-mono font-bold ${
+                        isDarkMode
+                          ? 'bg-neutral-900 border-emerald-500/30 text-white'
+                          : 'bg-white border-emerald-300 text-slate-900'
+                      }`}
+                    />
+                    <input
+                      type="range"
+                      min="5"
+                      max="150"
+                      step="5"
+                      value={editTpPips}
+                      onChange={(e) => setEditTpPips(parseInt(e.target.value))}
+                      className="w-full h-1.5 accent-emerald-500 cursor-pointer"
+                    />
+                  </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setEditStatus('PAUSED')}
-                    className={`p-2.5 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all ${
-                      editStatus === 'PAUSED'
-                        ? 'bg-amber-500/15 border-amber-500 text-amber-400 shadow-sm'
-                        : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
-                    }`}
-                  >
-                    <Pause className="w-3.5 h-3.5 fill-current" />
-                    <span>PAUSED (Standby)</span>
-                  </button>
+                  {/* Stop Loss */}
+                  <div className="p-2 rounded-xl border border-rose-500/20 bg-rose-500/5 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-rose-400">Stop Loss (Pips)</label>
+                      <span className="text-[11px] font-mono font-bold text-rose-400">-{editSlPips}p</span>
+                    </div>
+                    <input
+                      type="number"
+                      min="5"
+                      max="300"
+                      value={editSlPips}
+                      onChange={(e) => setEditSlPips(parseInt(e.target.value) || 10)}
+                      className={`w-full p-1.5 rounded-lg border text-xs font-mono font-bold ${
+                        isDarkMode
+                          ? 'bg-neutral-900 border-rose-500/30 text-white'
+                          : 'bg-white border-rose-300 text-slate-900'
+                      }`}
+                    />
+                    <input
+                      type="range"
+                      min="5"
+                      max="100"
+                      step="5"
+                      value={editSlPips}
+                      onChange={(e) => setEditSlPips(parseInt(e.target.value))}
+                      className="w-full h-1.5 accent-rose-500 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Execution State */}
+                <div>
+                  <label className="block text-[11px] font-bold text-neutral-400 mb-1">
+                    Execution State
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditStatus('RUNNING')}
+                      className={`p-1.5 sm:p-2 rounded-xl border font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                        editStatus === 'RUNNING'
+                          ? 'bg-emerald-500/15 border-emerald-500 text-emerald-400 shadow-xs'
+                          : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
+                      }`}
+                    >
+                      <Play className="w-3 h-3 fill-current shrink-0" />
+                      <span>RUNNING (Active)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditStatus('PAUSED')}
+                      className={`p-1.5 sm:p-2 rounded-xl border font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                        editStatus === 'PAUSED'
+                          ? 'bg-amber-500/15 border-amber-500 text-amber-400 shadow-xs'
+                          : 'border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-800/50'
+                      }`}
+                    >
+                      <Pause className="w-3 h-3 fill-current shrink-0" />
+                      <span>PAUSED (Standby)</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* Modal Action Buttons */}
-              <div className="flex items-center justify-between pt-4 border-t border-neutral-800">
+              {/* Modal Action Buttons - Pinned Footer */}
+              <div className="flex flex-wrap items-center justify-between gap-1.5 pt-2.5 mt-2 border-t border-neutral-800/80 shrink-0">
                 <button
                   type="button"
                   onClick={() => {
@@ -1753,25 +1798,25 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                     setEditingRun(null);
                     setRunToDelete(toDel);
                   }}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-500/40 hover:bg-rose-500/10 text-rose-400 text-xs font-bold transition-all cursor-pointer"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-500/40 hover:bg-rose-500/10 text-rose-400 text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Trash2 className="w-3 h-3 shrink-0" />
                   <span>Delete Bot</span>
                 </button>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setEditingRun(null)}
-                    className="px-3.5 py-2 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold transition-all cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-lg border border-neutral-700 hover:bg-neutral-800 text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-sky-500/40 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-xs font-bold transition-all cursor-pointer"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-sky-500/40 bg-sky-500/15 hover:bg-sky-500/25 text-sky-400 text-[11px] font-bold transition-all cursor-pointer whitespace-nowrap"
                   >
-                    <Save className="w-3.5 h-3.5" />
+                    <Save className="w-3 h-3 shrink-0" />
                     <span>Save Settings</span>
                   </button>
                   <button
@@ -1787,9 +1832,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       });
                       setEditingRun(null);
                     }}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow-md"
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold transition-all cursor-pointer shadow-sm whitespace-nowrap"
                   >
-                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <Play className="w-3 h-3 fill-current shrink-0" />
                     <span>Save &amp; Run Bot</span>
                   </button>
                 </div>
@@ -1801,38 +1846,38 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
       {/* DELETE CONFIRMATION MODAL */}
       {runToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-xs">
           <div
-            className={`w-full max-w-md rounded-2xl border p-6 shadow-2xl transition-all ${
+            className={`w-full max-w-md max-h-[88dvh] flex flex-col rounded-2xl border p-4 sm:p-6 shadow-2xl transition-all overflow-hidden ${
               isDarkMode ? 'bg-[#161920] border-neutral-800 text-white' : 'bg-white border-slate-200 text-slate-900'
             }`}
           >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+            <div className="flex items-center justify-between pb-2.5 border-b border-neutral-800 shrink-0">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400">
-                  <Trash2 className="w-5 h-5" />
+                <div className="w-8 h-8 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shrink-0">
+                  <Trash2 className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold">Delete Deployed Bot</h3>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">Remove from active execution</p>
+                  <h3 className="text-sm sm:text-base font-bold">Delete Deployed Bot</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-neutral-400">Remove from active execution</p>
                 </div>
               </div>
               <button
                 onClick={() => setRunToDelete(null)}
                 className="p-1.5 rounded-lg text-neutral-500 dark:text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all cursor-pointer"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
 
-            <div className="py-4 space-y-3">
-              <p className="text-sm">
+            <div className="py-3 space-y-2.5 overflow-y-auto">
+              <p className="text-xs sm:text-sm">
                 Are you sure you want to delete <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>{runToDelete.botName}</span> on{' '}
                 <span className="font-mono font-bold text-sky-400">{runToDelete.symbol}</span>?
               </p>
 
               <div
-                className={`p-3 rounded-xl border text-xs font-mono space-y-1.5 ${
+                className={`p-2.5 rounded-xl border text-xs font-mono space-y-1 ${
                   isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
@@ -1856,7 +1901,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 </div>
               </div>
 
-              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
+              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
                   Deleting this deployed bot terminates autonomous algorithmic execution and settles any remaining open orders for this instance.
@@ -1864,20 +1909,20 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-neutral-800">
+            <div className="flex items-center justify-end gap-2 pt-2.5 border-t border-neutral-800 shrink-0">
               <button
                 type="button"
                 onClick={() => setRunToDelete(null)}
-                className="px-4 py-2 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold transition-all cursor-pointer"
+                className="px-3.5 py-1.5 rounded-xl border border-neutral-700 hover:bg-neutral-800 text-xs font-bold transition-all cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={handleConfirmDelete}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition-all cursor-pointer"
               >
-                <Trash2 className="w-4 h-4" />
+                <Trash2 className="w-3.5 h-3.5" />
                 <span>Confirm & Delete Bot</span>
               </button>
             </div>

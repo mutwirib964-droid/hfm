@@ -352,46 +352,46 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
         {/* METRICS STRIP: Balance | Equity | Margin | Free Margin | Level */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono">
-          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-100 border-slate-200'}`}>
-            <span className={`text-[10px] block font-sans ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-neutral-600'}`}>Balance</span>
-            <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>${fmt(account?.balance, 2)}</span>
+          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
+            <span className="text-[10px] block font-sans text-slate-500 dark:text-neutral-400 font-semibold uppercase">Balance</span>
+            <span className={`font-bold font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>${fmt(account?.balance, 2)}</span>
           </div>
 
-          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-100 border-slate-200'}`}>
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Equity</span>
-            <span className="font-bold text-emerald-500">${fmt(account?.equity ?? account?.balance, 2)}</span>
+          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
+            <span className="text-[10px] block font-sans text-slate-500 dark:text-neutral-400 font-semibold uppercase">Equity</span>
+            <span className="font-bold font-mono text-emerald-600 dark:text-emerald-400">${fmt(account?.equity ?? account?.balance, 2)}</span>
           </div>
 
-          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-100 border-slate-200'}`}>
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Used Margin</span>
-            <span className="font-bold">${fmt(account?.margin ?? totalMarginUsed, 2)}</span>
+          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
+            <span className="text-[10px] block font-sans text-slate-500 dark:text-neutral-400 font-semibold uppercase">Used Margin</span>
+            <span className={`font-bold font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>${fmt(account?.margin ?? totalMarginUsed, 2)}</span>
           </div>
 
-          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-100 border-slate-200'}`}>
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Free Margin</span>
-            <span className="font-bold text-sky-400">${fmt(account?.freeMargin ?? Math.max(0, (account?.balance || 0) - totalMarginUsed), 2)}</span>
+          <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
+            <span className="text-[10px] block font-sans text-slate-500 dark:text-neutral-400 font-semibold uppercase">Free Margin</span>
+            <span className="font-bold font-mono text-sky-600 dark:text-sky-400">${fmt(account?.freeMargin ?? Math.max(0, (account?.balance || 0) - totalMarginUsed), 2)}</span>
           </div>
 
-          <div className={`p-2 rounded-xl border col-span-2 sm:col-span-1 ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-100 border-slate-200'}`}>
-            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Floating P/L</span>
-            <span className={`font-bold ${totalFloatingPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+          <div className={`p-2 rounded-xl border col-span-2 sm:col-span-1 ${isDarkMode ? 'bg-neutral-900/60 border-neutral-800' : 'bg-slate-50 border-slate-200'}`}>
+            <span className="text-[10px] block font-sans text-slate-500 dark:text-neutral-400 font-semibold uppercase">Floating P/L</span>
+            <span className={`font-bold font-mono ${totalFloatingPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
               {totalFloatingPnl >= 0 ? '+' : ''}${fmt(totalFloatingPnl, 2)}
             </span>
           </div>
         </div>
 
         {/* SUBTABS: Open (N) | Pending (N) | History (N) | Audit & Reconciliation */}
-        <div className="flex items-center gap-1.5 mt-3 border-t border-neutral-800/60 pt-2 overflow-x-auto no-scrollbar w-full max-w-full pb-1">
+        <div className="flex items-center gap-1.5 mt-3 border-t border-slate-200 dark:border-neutral-800/60 pt-2 overflow-x-auto no-scrollbar w-full max-w-full pb-1">
           <button
             onClick={() => setActiveSubTab('open')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'open'
                 ? 'bg-[#E51937] text-white shadow-xs'
-                : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-neutral-400 dark:hover:text-white dark:hover:bg-neutral-800/60'
             }`}
           >
             <span>Open Positions</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/30 font-mono">
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${activeSubTab === 'open' ? 'bg-black/30 text-white' : 'bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300'}`}>
               {positions.length}
             </span>
           </button>
@@ -401,11 +401,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'pending'
                 ? 'bg-[#E51937] text-white shadow-xs'
-                : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-neutral-400 dark:hover:text-white dark:hover:bg-neutral-800/60'
             }`}
           >
             <span>Pending Orders</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/30 font-mono">
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${activeSubTab === 'pending' ? 'bg-black/30 text-white' : 'bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300'}`}>
               {pendingOrders.length}
             </span>
           </button>
@@ -415,11 +415,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'closed'
                 ? 'bg-[#E51937] text-white shadow-xs'
-                : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-neutral-400 dark:hover:text-white dark:hover:bg-neutral-800/60'
             }`}
           >
             <span>Trade History</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-black/30 font-mono">
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${activeSubTab === 'closed' ? 'bg-black/30 text-white' : 'bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300'}`}>
               {closedTrades.length}
             </span>
           </button>
@@ -429,10 +429,10 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeSubTab === 'reconciliation'
                 ? 'bg-[#E51937] text-white shadow-xs'
-                : 'text-neutral-500 dark:text-neutral-400 hover:text-white'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-neutral-400 dark:hover:text-white dark:hover:bg-neutral-800/60'
             }`}
           >
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
             <span>Audit &amp; Reconciliation</span>
           </button>
         </div>
@@ -484,31 +484,35 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                             <span
                               className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
                                 pos.side === 'BUY'
-                                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                                  : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                  ? isDarkMode
+                                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : isDarkMode
+                                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                  : 'bg-rose-50 text-rose-700 border border-rose-200'
                               }`}
                             >
                               {pos.side} {pos.lots}
                             </span>
-                            <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono truncate">#{pos.ticket}</span>
+                            <span className="text-xs text-slate-500 dark:text-neutral-400 font-mono truncate">#{pos.ticket}</span>
                           </div>
 
                           <div className="text-right shrink-0">
-                            <span className={`text-base font-black font-mono ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            <span className={`text-base font-black font-mono ${isProfit ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                               {isProfit ? '+' : ''}${fmt(pos.pnl, 2)}
                             </span>
                           </div>
                         </div>
 
                         {/* Second Row: Prices (Entry ➔ Current) | SL / TP */}
-                        <div className="flex items-center justify-between text-xs font-mono my-2.5 py-2 border-y border-neutral-800/60">
-                          <div className="flex items-center gap-1.5 text-neutral-200 truncate">
+                        <div className="flex items-center justify-between text-xs font-mono my-2.5 py-2 border-y border-slate-200 dark:border-neutral-800/60">
+                          <div className={`flex items-center gap-1.5 truncate ${isDarkMode ? 'text-neutral-200' : 'text-slate-800 font-semibold'}`}>
                             <span>{fmt(pos.openPrice, decimals)}</span>
-                            <span className="text-neutral-500 font-sans">➔</span>
-                            <span className="text-sky-400 font-bold">{fmt(pos.currentPrice || pos.openPrice, decimals)}</span>
+                            <span className="text-slate-400 font-sans">➔</span>
+                            <span className="text-sky-600 dark:text-sky-400 font-bold">{fmt(pos.currentPrice || pos.openPrice, decimals)}</span>
                           </div>
 
-                          <div className="text-right text-[11px] text-neutral-500 dark:text-neutral-400 shrink-0 font-sans">
+                          <div className="text-right text-[11px] text-slate-500 dark:text-neutral-400 shrink-0 font-sans">
                             <span>SL: {pos.sl ? fmt(pos.sl, decimals) : '—'}</span>
                             <span className="mx-1">•</span>
                             <span>TP: {pos.tp ? fmt(pos.tp, decimals) : '—'}</span>
@@ -517,21 +521,21 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
                         {/* SL & TP Modifier Form if active */}
                         {isModifying ? (
-                          <div className="my-2 p-3 rounded-xl bg-neutral-900 border border-sky-500/50 space-y-2.5 shadow-lg">
-                            <div className="flex items-center justify-between border-b border-neutral-800 pb-1.5">
+                          <div className="my-2 p-3 rounded-xl bg-slate-50 dark:bg-neutral-900 border border-sky-500/50 space-y-2.5 shadow-lg">
+                            <div className="flex items-center justify-between border-b border-slate-200 dark:border-neutral-800 pb-1.5">
                               <div className="flex items-center gap-2">
-                                <span className="text-[11px] font-bold text-sky-400">Modify SL / TP (#{pos.ticket})</span>
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-300 font-mono">
+                                <span className="text-[11px] font-bold text-sky-600 dark:text-sky-400">Modify SL / TP (#{pos.ticket})</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-neutral-800 text-slate-800 dark:text-neutral-300 font-mono">
                                   Price: {fmt(pos.currentPrice || pos.openPrice, decimals)}
                                 </span>
                               </div>
-                              <button onClick={() => setModifyingPosId(null)} className="text-neutral-500 dark:text-neutral-400 hover:text-white cursor-pointer">
+                              <button onClick={() => setModifyingPosId(null)} className="text-slate-500 dark:text-neutral-400 hover:text-slate-900 dark:hover:text-white cursor-pointer">
                                 <X className="w-3.5 h-3.5" />
                               </button>
                             </div>
 
                             {modifyError && (
-                              <div className="text-[11px] text-rose-400 bg-rose-500/10 p-2 rounded-lg border border-rose-500/30">
+                              <div className="text-[11px] text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 p-2 rounded-lg border border-rose-200 dark:border-rose-500/30">
                                 {modifyError}
                               </div>
                             )}
@@ -539,14 +543,14 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                             <div className="grid grid-cols-2 gap-2.5">
                               <div>
                                 <div className="flex items-center justify-between mb-1">
-                                  <label className="text-[10px] text-neutral-400 uppercase font-semibold">
+                                  <label className="text-[10px] text-slate-600 dark:text-neutral-400 uppercase font-semibold">
                                     Stop Loss (SL)
                                   </label>
                                   {editSl && (
                                     <button
                                       type="button"
                                       onClick={() => setEditSl('')}
-                                      className="text-[9px] text-rose-400 hover:underline cursor-pointer"
+                                      className="text-[9px] text-rose-600 dark:text-rose-400 hover:underline cursor-pointer font-bold"
                                     >
                                       Clear
                                     </button>
@@ -558,23 +562,23 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                                   value={editSl}
                                   onChange={(e) => setEditSl(e.target.value)}
                                   placeholder={pos.sl ? String(pos.sl) : 'None (0 to remove)'}
-                                  className="w-full px-2.5 py-1.5 bg-neutral-800 border border-neutral-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-sky-500"
+                                  className="w-full px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-slate-300 dark:border-neutral-700 rounded-lg text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:border-sky-500"
                                 />
-                                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                                <span className="text-[9px] text-slate-500 dark:text-neutral-500 block mt-0.5">
                                   {pos.side === 'BUY' ? `< ${fmt(pos.currentPrice || pos.openPrice, decimals)}` : `> ${fmt(pos.currentPrice || pos.openPrice, decimals)}`}
                                 </span>
                               </div>
 
                               <div>
                                 <div className="flex items-center justify-between mb-1">
-                                  <label className="text-[10px] text-neutral-400 uppercase font-semibold">
+                                  <label className="text-[10px] text-slate-600 dark:text-neutral-400 uppercase font-semibold">
                                     Take Profit (TP)
                                   </label>
                                   {editTp && (
                                     <button
                                       type="button"
                                       onClick={() => setEditTp('')}
-                                      className="text-[9px] text-emerald-400 hover:underline cursor-pointer"
+                                      className="text-[9px] text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer font-bold"
                                     >
                                       Clear
                                     </button>
@@ -586,23 +590,23 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                                   value={editTp}
                                   onChange={(e) => setEditTp(e.target.value)}
                                   placeholder={pos.tp ? String(pos.tp) : 'None (0 to remove)'}
-                                  className="w-full px-2.5 py-1.5 bg-neutral-800 border border-neutral-700 rounded-lg text-xs font-mono text-white focus:outline-none focus:border-sky-500"
+                                  className="w-full px-2.5 py-1.5 bg-white dark:bg-neutral-800 border border-slate-300 dark:border-neutral-700 rounded-lg text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:border-sky-500"
                                 />
-                                <span className="text-[9px] text-neutral-500 block mt-0.5">
+                                <span className="text-[9px] text-slate-500 dark:text-neutral-500 block mt-0.5">
                                   {pos.side === 'BUY' ? `> ${fmt(pos.currentPrice || pos.openPrice, decimals)}` : `< ${fmt(pos.currentPrice || pos.openPrice, decimals)}`}
                                 </span>
                               </div>
                             </div>
 
-                            <div className="flex items-center justify-between pt-1 border-t border-neutral-800/60">
-                              <span className="text-[10px] text-neutral-500">
+                            <div className="flex items-center justify-between pt-1 border-t border-slate-200 dark:border-neutral-800/60">
+                              <span className="text-[10px] text-slate-500 dark:text-neutral-500">
                                 Leave blank or enter 0 to remove
                               </span>
                               <div className="flex items-center gap-2">
                                 <button
                                   type="button"
                                   onClick={() => setModifyingPosId(null)}
-                                  className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-xs font-semibold text-neutral-300 cursor-pointer"
+                                  className="px-2.5 py-1 rounded bg-slate-200 hover:bg-slate-300 dark:bg-neutral-800 dark:hover:bg-neutral-700 text-xs font-semibold text-slate-800 dark:text-neutral-300 cursor-pointer"
                                 >
                                   Cancel
                                 </button>
@@ -621,13 +625,15 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                       </div>
 
                       {/* Bottom Row: Modify (SL / TP) | Close Position */}
-                      <div className="pt-3 border-t border-neutral-800/70 flex items-center justify-between gap-3">
+                      <div className="pt-3 border-t border-slate-200 dark:border-neutral-800/70 flex items-center justify-between gap-3">
                         <button
                           onClick={() => handleStartModify(pos)}
                           className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
                             isModifying
                               ? 'bg-sky-600 text-white border-sky-500 shadow-md'
-                              : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700/60'
+                              : isDarkMode
+                              ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border-neutral-700/60'
+                              : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-slate-300 shadow-xs'
                           }`}
                         >
                           Modify (SL / TP)
@@ -636,7 +642,11 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                         <button
                           onClick={() => handleExecuteClose(pos.id)}
                           disabled={closingId === pos.id}
-                          className="px-4 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 disabled:bg-neutral-800 text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer flex items-center gap-1.5"
+                          className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all shadow-xs active:scale-95 cursor-pointer flex items-center gap-1.5 border ${
+                            isDarkMode
+                              ? 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border-rose-500/30'
+                              : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200'
+                          }`}
                         >
                           {closingId === pos.id ? (
                             <span>Closing...</span>
@@ -790,36 +800,44 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                 </span>
               </div>
 
-              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'}`}>
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block font-sans">Win Rate</span>
-                <span className="text-base font-black font-mono text-sky-400">{historyStats.winRate}%</span>
-                <span className="text-[10px] text-neutral-500 block mt-0.5">Verified Executions</span>
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Closed Trades</span>
+                <span className="text-base font-black font-mono text-slate-900 dark:text-white">{historyStats.totalTrades}</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">
+                  {historyStats.wins} Win / {historyStats.losses} Loss
+                </span>
               </div>
 
-              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'}`}>
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block font-sans">Gross Profit</span>
-                <span className="text-base font-black font-mono text-emerald-400">+${historyStats.grossProfit.toFixed(2)}</span>
-                <span className="text-[10px] text-neutral-500 block mt-0.5">Winning positions</span>
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Win Rate</span>
+                <span className="text-base font-black font-mono text-sky-600 dark:text-sky-400">{historyStats.winRate}%</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">Verified Executions</span>
               </div>
 
-              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'}`}>
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block font-sans">Gross Loss</span>
-                <span className="text-base font-black font-mono text-rose-400">-${historyStats.grossLoss.toFixed(2)}</span>
-                <span className="text-[10px] text-neutral-500 block mt-0.5">Losing positions</span>
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Gross Profit</span>
+                <span className="text-base font-black font-mono text-emerald-600 dark:text-emerald-400">+${historyStats.grossProfit.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">Winning positions</span>
               </div>
 
-              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'}`}>
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block font-sans">Total Fees</span>
-                <span className="text-base font-black font-mono text-slate-300">${historyStats.totalFees.toFixed(2)}</span>
-                <span className="text-[10px] text-neutral-500 block mt-0.5">Swap &amp; Commission</span>
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Gross Loss</span>
+                <span className="text-base font-black font-mono text-rose-600 dark:text-rose-400">-${historyStats.grossLoss.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">Losing positions</span>
               </div>
 
-              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'}`}>
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 block font-sans">Net Realized P/L</span>
-                <span className={`text-base font-black font-mono ${historyStats.netPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Total Fees</span>
+                <span className="text-base font-black font-mono text-slate-800 dark:text-slate-300">${historyStats.totalFees.toFixed(2)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">Swap &amp; Commission</span>
+              </div>
+
+              <div className={`p-3 rounded-2xl border ${isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'}`}>
+                <span className="text-[11px] text-slate-500 dark:text-neutral-400 block font-sans font-semibold">Net Realized P/L</span>
+                <span className={`text-base font-black font-mono ${historyStats.netPnl >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                   {historyStats.netPnl >= 0 ? '+' : ''}${historyStats.netPnl.toFixed(2)}
                 </span>
-                <span className="text-[10px] text-neutral-500 block mt-0.5">Net cash impact</span>
+                <span className="text-[10px] text-slate-500 dark:text-neutral-500 block mt-0.5">Net cash impact</span>
               </div>
             </div>
 
@@ -827,12 +845,12 @@ export const TradesTab: React.FC<TradesTabProps> = ({
             {filteredClosedTrades.length === 0 ? (
               <div
                 className={`p-10 rounded-2xl border text-center flex flex-col items-center justify-center space-y-3 ${
-                  isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'
+                  isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
                 }`}
               >
-                <Clock className="w-10 h-10 text-neutral-500 opacity-60" />
+                <Clock className="w-10 h-10 text-slate-400 dark:text-neutral-500 opacity-60" />
                 <h3 className="text-base font-bold">No Trades for Selected Period</h3>
-                <p className="text-xs text-neutral-500 dark:text-neutral-400 max-w-sm">
+                <p className="text-xs text-slate-600 dark:text-neutral-400 max-w-sm">
                   No historical trades closed in the chosen date range. Switch to "All History" to view all settled executions.
                 </p>
               </div>
@@ -855,39 +873,39 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                     <div
                       key={cl.id}
                       className={`p-4 rounded-2xl border flex flex-col justify-between transition-all ${
-                        isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-neutral-200'
+                        isDarkMode ? 'bg-[#14161f] border-neutral-800' : 'bg-white border-slate-200 shadow-xs'
                       }`}
                     >
                       <div>
                         {/* Header: Symbol | Side & Lots | Net PnL */}
                         <div className="flex justify-between items-center mb-2">
                           <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm tracking-tight">{cl.symbol}</span>
+                            <span className="font-bold text-sm tracking-tight text-slate-900 dark:text-white">{cl.symbol}</span>
                             <span
                               className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                                 cl.side === 'BUY'
-                                  ? 'bg-emerald-500/20 text-emerald-400'
-                                  : 'bg-rose-500/20 text-rose-400'
+                                  ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-rose-500/20 text-rose-600 dark:text-rose-400'
                               }`}
                             >
                               {cl.side} {cl.lots}
                             </span>
                           </div>
-                          <span className={`font-mono text-sm font-black ${isWin ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          <span className={`font-mono text-sm font-black ${isWin ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                             {isWin ? '+' : ''}${Number(cl.pnl || 0).toFixed(2)}
                           </span>
                         </div>
 
                         {/* Open -> Close Prices */}
-                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono my-2 py-1.5 border-y border-neutral-800/60">
+                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono my-2 py-1.5 border-y border-slate-200 dark:border-neutral-800/60">
                           <div>
-                            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Open ➔ Close</span>
-                            <span>{fmt(cl.openPrice, decimals)} ➔ {fmt(cl.closePrice, decimals)}</span>
+                            <span className="text-[10px] text-slate-500 dark:text-neutral-400 block font-sans">Open ➔ Close</span>
+                            <span className="text-slate-800 dark:text-neutral-200">{fmt(cl.openPrice, decimals)} ➔ {fmt(cl.closePrice, decimals)}</span>
                           </div>
                           <div className="text-right">
-                            <span className="text-[10px] text-neutral-500 dark:text-neutral-400 block font-sans">Closing Reason</span>
+                            <span className="text-[10px] text-slate-500 dark:text-neutral-400 block font-sans">Closing Reason</span>
                             <span className={`font-bold uppercase ${
-                              cl.reason === 'TP' ? 'text-emerald-400' : cl.reason === 'SL' ? 'text-rose-400' : 'text-sky-400'
+                              cl.reason === 'TP' ? 'text-emerald-600 dark:text-emerald-400' : cl.reason === 'SL' ? 'text-rose-600 dark:text-rose-400' : 'text-sky-600 dark:text-sky-400'
                             }`}>
                               {cl.reason || 'MANUAL'}
                             </span>
@@ -896,7 +914,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
 
                         {/* SL & TP if available */}
                         {(cl.sl || cl.tp) && (
-                          <div className="flex items-center justify-between text-[10px] font-mono text-neutral-500 dark:text-neutral-400 py-1">
+                          <div className="flex items-center justify-between text-[10px] font-mono text-slate-500 dark:text-neutral-400 py-1">
                             <span>SL: {cl.sl ? fmt(cl.sl, decimals) : 'None'}</span>
                             <span>TP: {cl.tp ? fmt(cl.tp, decimals) : 'None'}</span>
                           </div>
@@ -904,7 +922,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
                       </div>
 
                       {/* Footer: Ticket & Timestamp */}
-                      <div className="flex justify-between items-center text-[10px] text-neutral-500 dark:text-neutral-400 font-mono mt-2 pt-2 border-t border-neutral-800/60">
+                      <div className="flex justify-between items-center text-[10px] text-slate-500 dark:text-neutral-400 font-mono mt-2 pt-2 border-t border-slate-200 dark:border-neutral-800/60">
                         <span>Ticket #{cl.ticket || cl.id.slice(-6)}</span>
                         <span>{closeDateStr}</span>
                       </div>
