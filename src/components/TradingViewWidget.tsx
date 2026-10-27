@@ -580,7 +580,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
           {bid !== undefined && ask !== undefined && (() => {
             const marketStatus = checkInstrumentMarketHours(symbol);
             return (
-              <div className="flex items-center gap-1.5 font-mono text-[11px]">
+              <div className="hidden md:flex items-center gap-1 font-mono text-[10px] shrink-0">
                 {/* Closed Indicator */}
                 {!marketStatus.isOpen && (
                   <span className="hidden xs:flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[9px] font-extrabold tracking-wider uppercase">
@@ -589,23 +589,23 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
                   </span>
                 )}
 
-                {/* SELL / Bid Badge (Red) - Animated reaction on price change */}
+                {/* SELL / Bid Badge (Red) - Fixed stable width, no expanding/jittering */}
                 <div
                   title="SELL (Bid) Price"
-                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
+                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-colors duration-150 ${
                     bidTick === 'UP'
-                      ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'
+                      ? 'border-emerald-400'
                       : bidTick === 'DOWN'
-                      ? 'border-rose-400 ring-1 ring-rose-400 scale-105'
+                      ? 'border-rose-400'
                       : 'border-red-800/80'
                   } bg-[#1A1215]`}
                 >
-                  <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                  <span className="bg-[#990F20] text-red-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5 select-none">
                     SELL
-                    {bidTick === 'UP' && <span className="text-emerald-300 text-[10px]">▲</span>}
-                    {bidTick === 'DOWN' && <span className="text-rose-300 text-[10px]">▼</span>}
+                    {bidTick === 'UP' && <span className="text-emerald-300 text-[9px]">▲</span>}
+                    {bidTick === 'DOWN' && <span className="text-rose-300 text-[9px]">▼</span>}
                   </span>
-                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white transition-all ${
+                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums min-w-[52px] text-right transition-colors duration-150 ${
                     bidTick === 'UP' ? 'bg-[#00C076]' : bidTick === 'DOWN' ? 'bg-[#FF2E4D]' : 'bg-[#E51937]'
                   }`}>
                     {bid.toFixed(decimals)}
@@ -613,29 +613,29 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
                 </div>
 
                 {/* Spread Points Pill */}
-                <div className="hidden sm:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[10px] font-semibold border border-neutral-700/60">
+                <div className="hidden lg:flex items-center px-1.5 py-0.5 rounded bg-neutral-800/80 text-amber-300 text-[9px] font-semibold border border-neutral-700/60 tabular-nums">
                   <span>
                     {`${(spread !== undefined && spread > 0 && spread <= 1.2 ? spread : 0.42).toFixed(2)} pts`}
                   </span>
                 </div>
 
-                {/* BUY / Ask Badge (Green) - Animated reaction on price change */}
+                {/* BUY / Ask Badge (Green) - Fixed stable width, no expanding/jittering */}
                 <div
                   title="BUY (Ask) Price"
-                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-all ${
+                  className={`flex items-center rounded overflow-hidden shadow-xs border transition-colors duration-150 ${
                     askTick === 'UP'
-                      ? 'border-emerald-400 ring-1 ring-emerald-400 scale-105'
+                      ? 'border-emerald-400'
                       : askTick === 'DOWN'
-                      ? 'border-rose-400 ring-1 ring-rose-400 scale-105'
+                      ? 'border-rose-400'
                       : 'border-emerald-800/80'
                   } bg-[#121A15]`}
                 >
-                  <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5">
+                  <span className="bg-[#007A4A] text-emerald-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider flex items-center gap-0.5 select-none">
                     BUY
-                    {askTick === 'UP' && <span className="text-emerald-300 text-[10px]">▲</span>}
-                    {askTick === 'DOWN' && <span className="text-rose-300 text-[10px]">▼</span>}
+                    {askTick === 'UP' && <span className="text-emerald-300 text-[9px]">▲</span>}
+                    {askTick === 'DOWN' && <span className="text-rose-300 text-[9px]">▼</span>}
                   </span>
-                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white transition-all ${
+                  <span className={`px-1.5 py-0.5 text-[10px] font-bold text-white tabular-nums min-w-[52px] text-right transition-colors duration-150 ${
                     askTick === 'UP' ? 'bg-[#00E58D] text-black font-extrabold' : askTick === 'DOWN' ? 'bg-[#FF2E4D]' : 'bg-[#00C076]'
                   }`}>
                     {ask.toFixed(decimals)}

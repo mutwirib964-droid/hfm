@@ -1454,119 +1454,196 @@ export function executeInternalTransfer(
     };
   }
 
-  let updatedWallet = currentState.walletBalance;
-  let updatedAccounts = [...currentState.accounts];
+  const cleanAmount = Number(amount.toFixed(2));
+  let updatedWallet = Number(currentState.walletBalance.toFixed(2));
+  let updatedAccounts = currentState.accounts.map((acc) => ({ ...acc }));
 
   if (isFromWallet && !isToWallet) {
     // Wallet -> Trading Account
-    if (updatedWallet < amount) {
+    if (updatedWallet < cleanAmount) {
       return {
         success: false,
-        message: `Insufficient VTM Wallet balance ($${updatedWallet.toFixed(2)}) for transfer of $${amount.toFixed(2)}`,
+        message: `Insufficient VTM Wallet balance ($${updatedWallet.toFixed(2)}) for transfer of $${cleanAmount.toFixed(2)}`,
         newWalletBalance: currentState.walletBalance,
         newAccounts: currentState.accounts,
         newTransactions: currentState.transactions,
       };
     }
 
-    // Deduct from wallet
-    updatedWallet = Number((updatedWallet - amount).toFixed(2));
+    const cleanTo = toAccount.replace(/^Account\s*#/i, '').trim();
+    const targetIdx = updatedAccounts.findIndex(
+      (acc) =>
+        acc.id === toAccount ||
+        acc.accountNumber === cleanTo ||
+        acc.accountNumber === toAccount ||
+        `Account #${acc.accountNumber}` === toAccount
+    );
 
-    // Add to target trading account
-    updatedAccounts = updatedAccounts.map((acc) => {
-      const match = acc.id === toAccount || acc.accountNumber === toAccount || toAccount.includes(acc.accountNumber);
-      if (match) {
-        const newBal = Number((acc.balance + amount).toFixed(2));
-        const newEq = Number((acc.equity + amount).toFixed(2));
-        const newFree = Number((acc.freeMargin + amount).toFixed(2));
-        return {
-          ...acc,
-          balance: newBal,
-          equity: newEq,
-          freeMargin: newFree,
-          lastDepositAt: Date.now(),
-          lastActivityAt: Date.now(),
-        };
-      }
-      return acc;
-    });
+    if (targetIdx < 0) {
+      return {
+        success: false,
+        message: `Destination trading account (${toAccount}) not found`,
+        newWalletBalance: currentState.walletBalance,
+        newAccounts: currentState.accounts,
+        newTransactions: currentState.transactions,
+      };
+    }
+
+    // Deduct exact amount from wallet
+    updatedWallet = Number((updatedWallet - cleanAmount).toFixed(2));
+
+    // Add exact amount to destination account
+    const targetAcc = updatedAccounts[targetIdx];
+    const newBal = Number((targetAcc.balance + cleanAmount).toFixed(2));
+    const newEq = Number((targetAcc.equity + cleanAmount).toFixed(2));
+    const newFree = Number((targetAcc.freeMargin + cleanAmount).toFixed(2));
+    updatedAccounts[targetIdx] = {
+      ...targetAcc,
+      balance: newBal,
+      equity: newEq,
+      freeMargin: newFree,
+      lastDepositAt: Date.now(),
+      lastActivityAt: Date.now(),
+    };
   } else if (!isFromWallet && isToWallet) {
     // Trading Account -> Wallet
-    const sourceAcc = updatedAccounts.find(
-      (a) => a.id === fromAccount || a.accountNumber === fromAccount || fromAccount.includes(a.accountNumber)
+    const cleanFrom = fromAccount.replace(/^Account\s*#/i, '').trim();
+    const sourceIdx = updatedAccounts.findIndex(
+      (a) =>
+        a.id === fromAccount ||
+        a.accountNumber === cleanFrom ||
+        a.accountNumber === fromAccount ||
+        `Account #${a.accountNumber}` === fromAccount
     );
 
-    if (!sourceAcc) {
+    if (sourceIdx < 0) {
       return {
         success: false,
-        message: `Source trading account not found`,
+        message: `Source trading account (${fromAccount}) not found`,
         newWalletBalance: currentState.walletBalance,
         newAccounts: currentState.accounts,
         newTransactions: currentState.transactions,
       };
     }
 
-    if (sourceAcc.balance < amount) {
+    const sourceAcc = updatedAccounts[sourceIdx];
+    const usedMargin = sourceAcc.margin || 0;
+    const availableToTransfer = Number(Math.max(0, sourceAcc.balance - usedMargin).toFixed(2));
+
+    if (availableToTransfer < cleanAmount) {
       return {
         success: false,
-        message: `Insufficient account balance in #${sourceAcc.accountNumber} ($${sourceAcc.balance.toFixed(2)}) for transfer`,
+        message: `Insufficient available balance in #${sourceAcc.accountNumber} ($${availableToTransfer.toFixed(2)}) for transfer`,
         newWalletBalance: currentState.walletBalance,
         newAccounts: currentState.accounts,
         newTransactions: currentState.transactions,
       };
     }
 
-    // Deduct from trading account
-    updatedAccounts = updatedAccounts.map((acc) => {
-      if (acc.id === sourceAcc.id) {
-        const newBal = Number((acc.balance - amount).toFixed(2));
-        const newEq = Number((acc.equity - amount).toFixed(2));
-        const newFree = Number(Math.max(0, acc.freeMargin - amount).toFixed(2));
-        return {
-          ...acc,
-          balance: newBal,
-          equity: newEq,
-          freeMargin: newFree,
-        };
-      }
-      return acc;
-    });
+    // Deduct exact amount from trading account
+    const newBal = Number((sourceAcc.balance - cleanAmount).toFixed(2));
+    const newEq = Number((sourceAcc.equity - cleanAmount).toFixed(2));
+    const newFree = Number(Math.max(0, sourceAcc.freeMargin - cleanAmount).toFixed(2));
+    updatedAccounts[sourceIdx] = {
+      ...sourceAcc,
+      balance: newBal,
+      equity: newEq,
+      freeMargin: newFree,
+      lastActivityAt: Date.now(),
+    };
 
-    // Add to wallet
-    updatedWallet = Number((updatedWallet + amount).toFixed(2));
+    // Add exact amount to wallet
+    updatedWallet = Number((updatedWallet + cleanAmount).toFixed(2));
   } else if (!isFromWallet && !isToWallet) {
     // Account to Account
-    const sourceAcc = updatedAccounts.find(
-      (a) => a.id === fromAccount || a.accountNumber === fromAccount || fromAccount.includes(a.accountNumber)
+    const cleanFrom = fromAccount.replace(/^Account\s*#/i, '').trim();
+    const cleanTo = toAccount.replace(/^Account\s*#/i, '').trim();
+
+    const sourceIdx = updatedAccounts.findIndex(
+      (a) =>
+        a.id === fromAccount ||
+        a.accountNumber === cleanFrom ||
+        a.accountNumber === fromAccount ||
+        `Account #${a.accountNumber}` === fromAccount
     );
-    if (!sourceAcc || sourceAcc.balance < amount) {
+    const targetIdx = updatedAccounts.findIndex(
+      (a) =>
+        a.id === toAccount ||
+        a.accountNumber === cleanTo ||
+        a.accountNumber === toAccount ||
+        `Account #${a.accountNumber}` === toAccount
+    );
+
+    if (sourceIdx < 0) {
       return {
         success: false,
-        message: 'Insufficient balance in source account',
+        message: 'Source account not found',
+        newWalletBalance: currentState.walletBalance,
+        newAccounts: currentState.accounts,
+        newTransactions: currentState.transactions,
+      };
+    }
+    if (targetIdx < 0) {
+      return {
+        success: false,
+        message: 'Destination account not found',
         newWalletBalance: currentState.walletBalance,
         newAccounts: currentState.accounts,
         newTransactions: currentState.transactions,
       };
     }
 
-    updatedAccounts = updatedAccounts.map((acc) => {
-      if (acc.id === sourceAcc.id) {
-        return {
-          ...acc,
-          balance: Number((acc.balance - amount).toFixed(2)),
-          equity: Number((acc.equity - amount).toFixed(2)),
-        };
-      }
-      const isTarget = acc.id === toAccount || acc.accountNumber === toAccount || toAccount.includes(acc.accountNumber);
-      if (isTarget) {
-        return {
-          ...acc,
-          balance: Number((acc.balance + amount).toFixed(2)),
-          equity: Number((acc.equity + amount).toFixed(2)),
-        };
-      }
-      return acc;
-    });
+    const sourceAcc = updatedAccounts[sourceIdx];
+    const usedMargin = sourceAcc.margin || 0;
+    const available = Number(Math.max(0, sourceAcc.balance - usedMargin).toFixed(2));
+    if (available < cleanAmount) {
+      return {
+        success: false,
+        message: `Insufficient balance in source account #${sourceAcc.accountNumber} ($${available.toFixed(2)})`,
+        newWalletBalance: currentState.walletBalance,
+        newAccounts: currentState.accounts,
+        newTransactions: currentState.transactions,
+      };
+    }
+
+    // Deduct from source
+    updatedAccounts[sourceIdx] = {
+      ...sourceAcc,
+      balance: Number((sourceAcc.balance - cleanAmount).toFixed(2)),
+      equity: Number((sourceAcc.equity - cleanAmount).toFixed(2)),
+      freeMargin: Number(Math.max(0, sourceAcc.freeMargin - cleanAmount).toFixed(2)),
+      lastActivityAt: Date.now(),
+    };
+
+    // Add to target
+    const targetAcc = updatedAccounts[targetIdx];
+    updatedAccounts[targetIdx] = {
+      ...targetAcc,
+      balance: Number((targetAcc.balance + cleanAmount).toFixed(2)),
+      equity: Number((targetAcc.equity + cleanAmount).toFixed(2)),
+      freeMargin: Number((targetAcc.freeMargin + cleanAmount).toFixed(2)),
+      lastDepositAt: Date.now(),
+      lastActivityAt: Date.now(),
+    };
+  }
+
+  // Conservation check: Total money before transfer MUST strictly equal total money after transfer
+  const totalBefore = Number(
+    (currentState.walletBalance + currentState.accounts.reduce((s, a) => s + (a.balance || 0), 0)).toFixed(2)
+  );
+  const totalAfter = Number(
+    (updatedWallet + updatedAccounts.reduce((s, a) => s + (a.balance || 0), 0)).toFixed(2)
+  );
+
+  if (Math.abs(totalBefore - totalAfter) > 0.01) {
+    console.error(`Transfer conservation failure: Before $${totalBefore} != After $${totalAfter}`);
+    return {
+      success: false,
+      message: 'Transfer error: Total balance invariant check failed.',
+      newWalletBalance: currentState.walletBalance,
+      newAccounts: currentState.accounts,
+      newTransactions: currentState.transactions,
+    };
   }
 
   // Record transaction with explicit New Bal stamp when wallet is involved

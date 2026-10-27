@@ -118,6 +118,7 @@ import {
   syncUserLedgerFromCloud,
   LedgerEntry,
 } from './utils/financialLedger';
+import { referralService } from './services/referralService';
 
 
 let isAudioMuted = false;
@@ -1927,6 +1928,11 @@ export default function App() {
     []
   );
 
+  // Capture incoming referral link code if visitor arrived via ?ref=...
+  useEffect(() => {
+    referralService.captureIncomingReferral();
+  }, []);
+
   // Synchronize dark mode class to document element for Tailwind CSS
   useEffect(() => {
     if (isDarkMode) {
@@ -2128,8 +2134,8 @@ export default function App() {
     // Initial immediate fetch
     fetchTradingViewFeed();
 
-    // Fast master live feed from TradingView - runs directly so all platform prices and movements match TradingView 1:1
-    const tvInterval = setInterval(fetchTradingViewFeed, 250);
+    // Master live feed from TradingView - runs smoothly in synchronization with real-time WebSocket ticks
+    const tvInterval = setInterval(fetchTradingViewFeed, 2000);
 
     // Dedicated timeframe & live dynamic spread monitor (0.16 - 1.18, max 1.2)
     // Strictly anchors Bid 1:1 to the real TradingView chart price (never adds artificial bidJitter so buttons never drift ahead or behind the chart)
@@ -4119,6 +4125,17 @@ export default function App() {
         metadata: { amount: amountUsd, targetAccount: params.targetAccount, reference: ref },
       });
 
+      // Credit referral commission if user joined via a referral link and deposit is >= $16
+      const incomingRefCode = referralService.getReferredByCode();
+      if (incomingRefCode && amountUsd >= 16) {
+        referralService.recordDepositForReferrerCode(incomingRefCode, amountUsd, {
+          email: currentUser.email,
+          name: currentUser.name || 'Referred Trader',
+          accountNumber: params.targetAccount,
+          reference: ref,
+        });
+      }
+
       // Record double-entry credit in immutable financial ledger
       if (currentUser.email) {
         const savedLedger = appendLedgerEntry({
@@ -4149,6 +4166,92 @@ export default function App() {
         method: params.method,
         reference: ref,
         accountNumber: params.targetAccount,
+      },
+    });
+  };
+
+  const handleClaimReferralCommission = (amountToClaim: number) => {
+    const amount = Number(amountToClaim.toFixed(2));
+    if (amount < 20.0) return;
+
+    const claimRef = `REF-COMM-${Date.now()}`;
+    const nextWallet = Number((walletBalanceRef.current + amount).toFixed(2));
+
+    const claimTx: Transaction = {
+      id: `tx-claim-${Date.now()}`,
+      type: 'DEPOSIT',
+      method: 'Referral 5% Commission',
+      amount: amount,
+      currency: 'USD',
+      status: 'COMPLETED',
+      timestamp: Date.now(),
+      reference: claimRef,
+      accountNumber: 'VTM One Wallet',
+      details: `Claimed 5% referral commission payout ($${amount.toFixed(2)} USD)`,
+    };
+
+    const nextTransactions = [claimTx, ...transactionsRef.current];
+    transactionsRef.current = nextTransactions;
+    setTransactions(nextTransactions);
+
+    walletBalanceRef.current = nextWallet;
+    setWalletBalance(nextWallet);
+    lastLocalFinancialUpdateRef.current = Date.now();
+
+    if (currentUser) {
+      saveUserFinancials(currentUser, {
+        walletBalance: nextWallet,
+        accounts: accountsRef.current,
+        selectedAccountId: selectedAccountRef.current?.id,
+        transactions: nextTransactions,
+      });
+
+      if (currentUser.email) {
+        const savedLedger = appendLedgerEntry({
+          userEmail: currentUser.email,
+          accountNumber: 'VTM One Wallet',
+          type: 'DEPOSIT',
+          amount: amount,
+          previousBalance: Math.max(0, Number((nextWallet - amount).toFixed(2))),
+          newBalance: nextWallet,
+          referenceId: claimRef,
+          reason: `Referral 5% Affiliate Commission Claim`,
+          metadata: {
+            method: 'Referral Commission',
+            rate: '5%',
+            minClaimThreshold: '$20.00',
+            reference: claimRef,
+          },
+        });
+        supabaseService.syncLedgerEntry(currentUser, savedLedger).catch(() => {});
+      }
+
+      supabaseService.saveDeposit(currentUser, {
+        id: claimTx.id,
+        targetAccount: 'VTM One Wallet',
+        amountUsd: amount,
+        method: 'Referral Commission Payout (5%)',
+        reference: claimRef,
+        status: 'COMPLETED',
+      });
+      supabaseService.syncTransactions(currentUser, nextTransactions);
+      supabaseService.syncActivity(currentUser, {
+        type: 'DEPOSIT',
+        description: `Claimed referral commission payout of $${amount.toFixed(2)} to VTM One Wallet`,
+        metadata: { amount, method: 'Referral Commission', reference: claimRef },
+      });
+    }
+
+    addNotification(`Claimed +$${amount.toFixed(2)} referral commission to Live Wallet!`);
+    triggerActionPopup({
+      type: 'SUCCESS',
+      title: 'Referral Commission Claimed!',
+      subtitle: `+$${amount.toFixed(2)} USD successfully credited to your Live Wallet.`,
+      details: {
+        amount,
+        method: 'Referral 5% Commission Payout',
+        reference: claimRef,
+        accountNumber: 'VTM One Wallet',
       },
     });
   };
@@ -4527,6 +4630,53 @@ export default function App() {
       return;
     }
 
+    const sourceAcc = params.sourceAccount;
+    const isWalletSource =
+      sourceAcc === 'VTM Wallet' ||
+      sourceAcc === 'VTM One Wallet' ||
+      sourceAcc === 'HF Wallet' ||
+      sourceAcc.toLowerCase().includes('wallet');
+
+    let availableFunds = 0;
+    if (isWalletSource) {
+      availableFunds = Number((walletBalanceRef.current || 0).toFixed(2));
+    } else {
+      const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
+      const targetAcc = accountsRef.current.find(
+        (acc) =>
+          acc.accountNumber === cleanSource ||
+          acc.accountNumber === sourceAcc ||
+          `Account #${acc.accountNumber}` === sourceAcc ||
+          acc.id === sourceAcc
+      );
+      if (!targetAcc) {
+        triggerActionPopup({
+          type: 'WITHDRAWAL_FAILED',
+          title: 'Withdrawal Failed',
+          subtitle: `Selected source account (${sourceAcc}) could not be located.`,
+        });
+        return;
+      }
+      const usedMargin = targetAcc.margin || 0;
+      availableFunds = Number(Math.max(0, targetAcc.balance - usedMargin).toFixed(2));
+    }
+
+    // Strict validation: User CANNOT withdraw more than they actually own
+    if (availableFunds < amountUsd) {
+      const failReason = `Insufficient funds: You requested $${amountUsd.toFixed(2)} USD, but your available balance in ${sourceAcc} is only $${availableFunds.toFixed(2)} USD.`;
+      triggerActionPopup({
+        type: 'WITHDRAWAL_FAILED',
+        title: 'Insufficient Funds',
+        subtitle: failReason,
+        details: {
+          amount: amountUsd,
+          method: params.method,
+          reason: failReason,
+        },
+      });
+      return;
+    }
+
     const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
     const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
@@ -4534,15 +4684,9 @@ export default function App() {
     let nextWallet = walletBalanceRef.current;
     let nextAccounts = [...accountsRef.current];
     let resultingBalance = 0;
-    const sourceAcc = params.sourceAccount;
 
-    if (
-      sourceAcc === 'VTM Wallet' ||
-      sourceAcc === 'VTM One Wallet' ||
-      sourceAcc === 'HF Wallet' ||
-      sourceAcc.toLowerCase().includes('wallet')
-    ) {
-      nextWallet = Math.max(0, Number((walletBalanceRef.current - amountUsd).toFixed(2)));
+    if (isWalletSource) {
+      nextWallet = Number((walletBalanceRef.current - amountUsd).toFixed(2));
       resultingBalance = nextWallet;
       walletBalanceRef.current = nextWallet;
       setWalletBalance(nextWallet);
@@ -4555,9 +4699,9 @@ export default function App() {
           `Account #${acc.accountNumber}` === sourceAcc ||
           acc.id === sourceAcc
         ) {
-          const newBal = Math.max(0, Number((acc.balance - amountUsd).toFixed(2)));
-          const newEq = Math.max(0, Number((acc.equity - amountUsd).toFixed(2)));
-          const newFree = Math.max(0, Number((acc.freeMargin - amountUsd).toFixed(2)));
+          const newBal = Number((acc.balance - amountUsd).toFixed(2));
+          const newEq = Number((acc.equity - amountUsd).toFixed(2));
+          const newFree = Number(Math.max(0, acc.freeMargin - amountUsd).toFixed(2));
           resultingBalance = newBal;
           return {
             ...acc,
@@ -4621,7 +4765,8 @@ export default function App() {
   };
 
   const handleTransfer = (params: { fromAccount: string; toAccount: string; amount: number }) => {
-    if (params.amount <= 0 || params.fromAccount === params.toAccount) {
+    const cleanAmount = Number(params.amount.toFixed(2));
+    if (cleanAmount <= 0 || params.fromAccount === params.toAccount) {
       triggerActionPopup({
         type: 'TRANSFER_FAILED',
         title: 'Transfer Failed',
@@ -4636,11 +4781,11 @@ export default function App() {
     const result = executeInternalTransfer(currentUser, {
       fromAccount: params.fromAccount,
       toAccount: params.toAccount,
-      amount: params.amount,
+      amount: cleanAmount,
       currentState: {
-        walletBalance,
-        accounts,
-        transactions,
+        walletBalance: walletBalanceRef.current,
+        accounts: accountsRef.current,
+        transactions: transactionsRef.current,
       },
     });
 
@@ -7341,6 +7486,7 @@ export default function App() {
           onSignOut={handleUserSignOut}
           onOpenInstall={pwa.openInstallDialog}
           isInstalled={pwa.isInstalled}
+          onClaimReferralCommission={handleClaimReferralCommission}
         />
 
         {/* PWA Native Installation Engine Dialogs */}

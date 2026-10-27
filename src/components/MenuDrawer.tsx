@@ -25,11 +25,13 @@ import {
   Bot,
   Download,
   Headphones,
+  Gift,
 } from 'lucide-react';
 import { ActiveTab } from '../types';
 import { RiskPipCalculatorModal } from './RiskPipCalculatorModal';
 import { TradersRewardsModal } from './TradersRewardsModal';
 import { DedicatedTraderSupportModal } from './DedicatedTraderSupportModal';
+import { ReferralModal } from './ReferralModal';
 import { UserAuthProfile } from '../types/botTypes';
 
 interface MenuDrawerProps {
@@ -43,6 +45,7 @@ interface MenuDrawerProps {
   onSignOut?: () => void;
   onOpenInstall?: () => void;
   isInstalled?: boolean;
+  onClaimReferralCommission?: (amount: number) => void;
 }
 
 export const MenuDrawer: React.FC<MenuDrawerProps> = ({
@@ -56,14 +59,16 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onSignOut,
   onOpenInstall,
   isInstalled = false,
+  onClaimReferralCommission,
 }) => {
   const [copiedAccount, setCopiedAccount] = useState(false);
   const [modalNotice, setModalNotice] = useState<string | null>(null);
   const [isRiskCalcOpen, setIsRiskCalcOpen] = useState(false);
   const [isRewardsOpen, setIsRewardsOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
+  const [isReferralOpen, setIsReferralOpen] = useState(false);
 
-  if (!isOpen && !isRiskCalcOpen && !isRewardsOpen && !isSupportOpen) return null;
+  if (!isOpen && !isRiskCalcOpen && !isRewardsOpen && !isSupportOpen && !isReferralOpen) return null;
 
   const handleCopyAccount = () => {
     navigator.clipboard.writeText('8842-9102-LIVE');
@@ -281,6 +286,23 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 </div>
                 <ChevronRight className="w-3.5 h-3.5 text-slate-400 dark:text-neutral-500" />
               </button>
+
+              <button
+                id="menu-referral-program-btn"
+                onClick={() => {
+                  setIsReferralOpen(true);
+                  onClose();
+                }}
+                className="w-full px-2.5 py-2 rounded-xl flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-neutral-200 hover:bg-slate-100 dark:hover:bg-neutral-800 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Gift className="w-4 h-4 text-emerald-500" />
+                  <span>Referral Program</span>
+                </div>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 font-bold border border-emerald-500/30">
+                  Commissions
+                </span>
+              </button>
             </div>
           </div>
 
@@ -397,6 +419,18 @@ export const MenuDrawer: React.FC<MenuDrawerProps> = ({
         onClose={() => setIsSupportOpen(false)}
         isDarkMode={isDarkMode}
         currentUser={currentUser}
+      />
+
+      <ReferralModal
+        isOpen={isReferralOpen}
+        onClose={() => setIsReferralOpen(false)}
+        isDarkMode={isDarkMode}
+        currentUser={currentUser}
+        onClaimCommissionToWallet={(amount) => {
+          if (onClaimReferralCommission) {
+            onClaimReferralCommission(amount);
+          }
+        }}
       />
     </>
   );

@@ -328,6 +328,7 @@ export class TradingViewPriceService {
 
   private initSpreadBreather() {
     if (typeof window === 'undefined') return;
+    // Gentle liveness check every 3 seconds for symbols that haven't received external ticks
     setInterval(() => {
       this.breatherPhase += 1;
       const now = Date.now();
@@ -337,9 +338,9 @@ export class TradingViewPriceService {
         const mStatus = checkInstrumentMarketHours(sym);
         if (!mStatus.isOpen) return;
 
-        // If a fresh external tick arrived within the last 280ms, let that tick stand
+        // If external ticks from TradingView or server arrived recently (within 25s), let real ticks govern price hand-in-hand
         const lastExt = this.lastExternalPriceAt.get(sym) || 0;
-        if (now - lastExt < 280) return;
+        if (lastExt > 0 && now - lastExt < 25000) return;
 
         const raw = this.rawTvFields.get(sym);
         const existing = this.lastQuotes.get(sym);
@@ -349,27 +350,10 @@ export class TradingViewPriceService {
           null;
         if (!baseLp || baseLp <= 0) return;
 
-        const point = Math.pow(10, -conf.decimals);
-        const symSeed = sym
-          .split('')
-          .reduce((acc, ch, idx) => acc + ch.charCodeAt(0) * (idx + 1), 0);
-
-        // Smooth organic micro-tick oscillation (±1 to ±4 points around live TradingView price)
-        const wave =
-          Math.sin(this.breatherPhase * 0.85 + symSeed * 0.37) * 2.2 +
-          Math.cos(this.breatherPhase * 1.45 - symSeed * 0.23) * 1.6;
-        const pointDelta = Math.round(wave);
-        const microDelta =
-          pointDelta === 0
-            ? (this.breatherPhase + symSeed) % 2 === 0
-              ? point
-              : -point
-            : pointDelta * point;
-
-        const liveBid = Number(Math.max(point, baseLp + microDelta).toFixed(conf.decimals));
-        const baseSpread = 0.26 + ((symSeed % 5) * 0.04);
-        const spreadWave = Math.sin(this.breatherPhase * 0.6 + symSeed) * 0.04;
-        const spread = Number(Math.min(1.18, Math.max(0.18, baseSpread + spreadWave)).toFixed(2));
+        // When external stream is paused/idle, keep bid locked strictly 1:1 to baseLp (no erratic wave jumps)
+        const liveBid = Number(baseLp.toFixed(conf.decimals));
+        const baseSpread = 0.28 + ((sym.charCodeAt(0) % 4) * 0.05);
+        const spread = Number(Math.min(1.18, Math.max(0.18, baseSpread)).toFixed(2));
         this.lastSpreads.set(sym, spread);
 
         let priceGap = spread;
@@ -412,7 +396,7 @@ export class TradingViewPriceService {
       if (anyUpdated) {
         this.notifyListeners();
       }
-    }, 350);
+    }, 3000);
   }
 
   private ingestServerQuotesObject(quotesObj: Record<string, any>) {
@@ -433,9 +417,6 @@ export class TradingViewPriceService {
       }
 
       const prevRaw = this.rawTvFields.get(symbol);
-      const prevLp = prevRaw?.lp;
-      const existingQuote = this.lastQuotes.get(symbol);
-
       this.rawTvFields.set(symbol, {
         ...(prevRaw || {}),
         lp: chartPrice,
@@ -443,12 +424,6 @@ export class TradingViewPriceService {
         high_price: data.high24h ?? prevRaw?.high_price,
         low_price: data.low24h ?? prevRaw?.low_price,
       });
-
-      // If the server returned the exact same underlying chartPrice as last poll and we already have an active quote for this symbol,
-      // let the 350ms micro-tick breather continue oscillating smoothly around lp instead of pinning the price flat!
-      if (existingQuote && typeof prevLp === 'number' && Math.abs(chartPrice - prevLp) < 1e-9) {
-        return;
-      }
 
       this.lastExternalPriceAt.set(symbol, now);
       const mStatus = checkInstrumentMarketHours(symbol);

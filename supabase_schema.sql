@@ -189,3 +189,98 @@ CREATE POLICY "financial_ledger_access" ON public.financial_ledger
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+
+-- ============================================================================
+-- 9. REFERRAL & AFFILIATE PROGRAM TABLES (5% Commission, $20 Claim Threshold)
+-- ============================================================================
+
+-- 9.1 Referrals Registry
+CREATE TABLE IF NOT EXISTS public.vtm_referrals (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  referrer_email TEXT NOT NULL,
+  referrer_code TEXT NOT NULL,
+  referred_email TEXT NOT NULL,
+  referred_name TEXT DEFAULT 'Referred Trader',
+  referred_account_number TEXT,
+  total_deposited_usd NUMERIC(15, 2) NOT NULL DEFAULT 0.00 CHECK (total_deposited_usd >= 0),
+  total_commission_usd NUMERIC(15, 2) NOT NULL DEFAULT 0.00 CHECK (total_commission_usd >= 0),
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'INACTIVE', 'SUSPENDED')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(referrer_email, referred_email)
+);
+
+-- 9.2 Referral Commissions Ledger (5% on every deposit)
+CREATE TABLE IF NOT EXISTS public.vtm_referral_commissions (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  referrer_email TEXT NOT NULL,
+  referred_email TEXT NOT NULL,
+  deposit_amount_usd NUMERIC(15, 2) NOT NULL CHECK (deposit_amount_usd > 0),
+  commission_rate NUMERIC(5, 4) NOT NULL DEFAULT 0.0500 CHECK (commission_rate = 0.0500),
+  commission_earned_usd NUMERIC(15, 2) NOT NULL CHECK (commission_earned_usd > 0),
+  deposit_reference TEXT,
+  claimed BOOLEAN NOT NULL DEFAULT false,
+  claimed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 9.3 Referral Payout / Claims (Minimum $20.00 threshold)
+CREATE TABLE IF NOT EXISTS public.vtm_referral_claims (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  referrer_email TEXT NOT NULL,
+  amount_claimed_usd NUMERIC(15, 2) NOT NULL CHECK (amount_claimed_usd >= 20.00),
+  wallet_tx_reference TEXT NOT NULL UNIQUE,
+  wallet_credited BOOLEAN NOT NULL DEFAULT true,
+  status TEXT NOT NULL DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED', 'PENDING', 'FAILED')),
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Indexes for fast lookups
+CREATE INDEX IF NOT EXISTS idx_vtm_referrals_referrer_email ON public.vtm_referrals (LOWER(referrer_email));
+CREATE INDEX IF NOT EXISTS idx_vtm_referrals_referrer_code ON public.vtm_referrals (referrer_code);
+CREATE INDEX IF NOT EXISTS idx_vtm_referrals_referred_email ON public.vtm_referrals (LOWER(referred_email));
+CREATE INDEX IF NOT EXISTS idx_vtm_ref_comm_referrer ON public.vtm_referral_commissions (LOWER(referrer_email), claimed, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vtm_ref_claims_referrer ON public.vtm_referral_claims (LOWER(referrer_email), claimed_at DESC);
+
+-- Enable RLS
+ALTER TABLE public.vtm_referrals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vtm_referral_commissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.vtm_referral_claims ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "vtm_referrals_access" ON public.vtm_referrals;
+CREATE POLICY "vtm_referrals_access" ON public.vtm_referrals
+  FOR ALL TO anon, authenticated, service_role
+  USING (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0)
+  WITH CHECK (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0);
+
+DROP POLICY IF EXISTS "vtm_referral_commissions_access" ON public.vtm_referral_commissions;
+CREATE POLICY "vtm_referral_commissions_access" ON public.vtm_referral_commissions
+  FOR ALL TO anon, authenticated, service_role
+  USING (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0)
+  WITH CHECK (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0);
+
+DROP POLICY IF EXISTS "vtm_referral_claims_access" ON public.vtm_referral_claims;
+CREATE POLICY "vtm_referral_claims_access" ON public.vtm_referral_claims
+  FOR ALL TO anon, authenticated, service_role
+  USING (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0)
+  WITH CHECK (referrer_email IS NOT NULL AND length(trim(referrer_email)) > 0);
+
+-- Trigger to guarantee exactly 5% commission math on insert
+CREATE OR REPLACE FUNCTION public.fn_calculate_referral_commission()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.commission_rate := 0.0500;
+  NEW.commission_earned_usd := ROUND(NEW.deposit_amount_usd * 0.05, 2);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_calc_referral_commission ON public.vtm_referral_commissions;
+CREATE TRIGGER trg_calc_referral_commission
+BEFORE INSERT ON public.vtm_referral_commissions
+FOR EACH ROW
+EXECUTE FUNCTION public.fn_calculate_referral_commission();
+
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
