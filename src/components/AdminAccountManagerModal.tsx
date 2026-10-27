@@ -21,10 +21,13 @@ import {
   Download,
   ArrowUpRight,
   FileText,
+  Gift,
+  Share2,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
 import { getUsdKesRate } from '../services/payheroService';
+import { referralService } from '../services/referralService';
 import {
   getAllRegisteredUsers,
   loadUserFinancials,
@@ -56,7 +59,7 @@ interface AdminAccountManagerModalProps {
   isFullPage?: boolean;
 }
 
-type AdminTab = 'users' | 'balances' | 'deposits';
+type AdminTab = 'users' | 'balances' | 'deposits' | 'referrals';
 
 function formatAccountCreatedDate(ts?: number): string {
   if (!ts || isNaN(ts)) {
@@ -553,6 +556,147 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     };
   }, [userMetrics]);
 
+  // Marketers-Only Referral Analytics (Strictly Marketers & their referred users + deposits)
+  const marketersReferralsData = useMemo(() => {
+    const marketers = userMetrics.filter((m) => m.user.role === 'marketer');
+    const rate = getUsdKesRate();
+
+    const marketerRows = marketers.map((m) => {
+      const state = referralService.getReferralState(m.user.email, m.user.accountNumber);
+      const refCodeUpper = (state.referralCode || '').trim().toUpperCase();
+
+      // Merge referrals stored in referralService state + any registered user whose referredByCode matches this marketer
+      const mergedReferralsMap = new Map<
+        string,
+        {
+          id: string;
+          name: string;
+          email: string;
+          accountNumber: string;
+          joinedAt: string;
+          totalDepositedUsd: number;
+          commissionUsd: number;
+        }
+      >();
+
+      (state.referrals || []).forEach((ref) => {
+        const key = (ref.referredEmail || ref.id || '').toLowerCase();
+        if (!key) return;
+        const matchedMetric = userMetrics.find(
+          (u) => u.user.email.toLowerCase() === (ref.referredEmail || '').toLowerCase()
+        );
+        const actualDepositedUsd = Math.max(
+          Number(ref.totalDepositedUsd || 0),
+          Number(matchedMetric?.totalDepositedUsd || 0)
+        );
+        const commissionUsd = Number((actualDepositedUsd * 0.05).toFixed(2));
+        mergedReferralsMap.set(key, {
+          id: ref.id,
+          name: matchedMetric?.user.name || ref.referredName || 'Referred Trader',
+          email: ref.referredEmail || matchedMetric?.user.email || '',
+          accountNumber: matchedMetric?.user.accountNumber || ref.referredAccountNumber || 'N/A',
+          joinedAt:
+            (ref.createdAt ? new Date(ref.createdAt).toISOString() : '') ||
+            matchedMetric?.user.createdAt ||
+            new Date().toISOString(),
+          totalDepositedUsd: Number(actualDepositedUsd.toFixed(2)),
+          commissionUsd,
+        });
+      });
+
+      // Also check all platform users who signed up with this marketer's referral code
+      userMetrics.forEach((um) => {
+        if (um.user.email.toLowerCase() === m.user.email.toLowerCase()) return;
+        const userRefCode = (
+          um.user.referredByCode ||
+          referralService.getReferredByCodeForUser(um.user.email) ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+
+        if (refCodeUpper && userRefCode === refCodeUpper) {
+          const key = um.user.email.toLowerCase();
+          const existing = mergedReferralsMap.get(key);
+          const actualDepositedUsd = Math.max(
+            Number(existing?.totalDepositedUsd || 0),
+            Number(um.totalDepositedUsd || 0)
+          );
+          const commissionUsd = Number((actualDepositedUsd * 0.05).toFixed(2));
+          mergedReferralsMap.set(key, {
+            id: existing?.id || `ref-${um.user.id}`,
+            name: um.user.name || existing?.name || 'Referred Trader',
+            email: um.user.email,
+            accountNumber: um.user.accountNumber || existing?.accountNumber || 'N/A',
+            joinedAt: existing?.joinedAt || um.user.createdAt || new Date().toISOString(),
+            totalDepositedUsd: Number(actualDepositedUsd.toFixed(2)),
+            commissionUsd,
+          });
+        }
+      });
+
+      const referralsList = Array.from(mergedReferralsMap.values()).sort(
+        (a, b) => b.totalDepositedUsd - a.totalDepositedUsd
+      );
+
+      const totalReferralsCount = referralsList.length;
+      const totalReferralsDepositedUsd = Number(
+        referralsList.reduce((sum, r) => sum + r.totalDepositedUsd, 0).toFixed(2)
+      );
+      const totalReferralsDepositedKes = Number((totalReferralsDepositedUsd * rate).toFixed(2));
+      const totalCommissionEarnedUsd = Number(
+        referralsList.reduce((sum, r) => sum + r.commissionUsd, 0).toFixed(2)
+      );
+
+      return {
+        marketer: m.user,
+        referralCode: state.referralCode,
+        referralLink: state.referralLink,
+        referralsList,
+        totalReferralsCount,
+        totalReferralsDepositedUsd,
+        totalReferralsDepositedKes,
+        totalCommissionEarnedUsd,
+      };
+    });
+
+    // Filter by search query if active on referrals tab
+    const q = searchQuery.trim().toLowerCase();
+    const filteredMarketers = q
+      ? marketerRows.filter(
+          (row) =>
+            row.marketer.name.toLowerCase().includes(q) ||
+            row.marketer.email.toLowerCase().includes(q) ||
+            row.referralCode.toLowerCase().includes(q) ||
+            row.referralsList.some(
+              (r) =>
+                r.name.toLowerCase().includes(q) ||
+                r.email.toLowerCase().includes(q)
+            )
+        )
+      : marketerRows;
+
+    const totalMarketerReferrals = marketerRows.reduce((s, r) => s + r.totalReferralsCount, 0);
+    const totalMarketerReferralDepositsUsd = Number(
+      marketerRows.reduce((s, r) => s + r.totalReferralsDepositedUsd, 0).toFixed(2)
+    );
+    const totalMarketerReferralDepositsKes = Number(
+      (totalMarketerReferralDepositsUsd * rate).toFixed(2)
+    );
+    const totalMarketerCommissionsUsd = Number(
+      marketerRows.reduce((s, r) => s + r.totalCommissionEarnedUsd, 0).toFixed(2)
+    );
+
+    return {
+      marketers: filteredMarketers,
+      allMarketersCount: marketerRows.length,
+      totalMarketerReferrals,
+      totalMarketerReferralDepositsUsd,
+      totalMarketerReferralDepositsKes,
+      totalMarketerCommissionsUsd,
+    };
+  }, [userMetrics, searchQuery]);
+
   if (!isOpen) return null;
 
   const selectedAcc = editableAccounts[selectedAccIndex] || null;
@@ -676,12 +820,12 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
       {/* MAIN CONTAINER */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* EXECUTIVE KPI SUMMARY ROW (3 CARDS: USERS, MONEY DEPOSITED, LIVE TRADING ACCOUNTS IN NUMBERS) */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* EXECUTIVE KPI SUMMARY ROW (4 CARDS: USERS, MONEY DEPOSITED, LIVE ACCOUNTS, MARKETER REFERRALS) */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {/* KPI 1: Number of Users in the Website */}
           <div
             onClick={() => setActiveTab('users')}
-            className={`p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className={`text-xs font-medium ${mutedText}`}>
@@ -689,10 +833,10 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </span>
               <Users className={`w-4 h-4 ${mutedText}`} />
             </div>
-            <div className="text-3xl font-semibold font-mono tabular-nums tracking-tight">
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
               {platformStats.totalUsers}
             </div>
-            <div className={`mt-2 flex items-center gap-2 text-xs ${mutedText}`}>
+            <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs ${mutedText}`}>
               <span>{platformStats.marketersCount} Marketers</span>
               <span aria-hidden="true">·</span>
               <span>{platformStats.tradersCount} Retail Traders</span>
@@ -702,7 +846,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           {/* KPI 2: Money Deposited (Money In - Strictly COMPLETED Transactions Only) */}
           <div
             onClick={() => setActiveTab('deposits')}
-            className={`p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className={`text-xs font-medium ${mutedText}`}>
@@ -710,16 +854,16 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </span>
               <ArrowDownLeft className="w-4 h-4 text-emerald-500" />
             </div>
-            <div className="text-3xl font-semibold font-mono tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400">
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight text-emerald-600 dark:text-emerald-400">
               ${depositsData.totalDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </div>
-            <div className={`mt-2 flex items-center gap-2 text-xs font-mono tabular-nums ${mutedText}`}>
+            <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs font-mono tabular-nums ${mutedText}`}>
               <span>
                 KES {depositsData.totalDepositedKes.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
               <span aria-hidden="true">·</span>
               <span className="font-sans">
-                {depositsData.deposits.filter((d) => d.status === 'COMPLETED').length} completed deposits
+                {depositsData.deposits.filter((d) => d.status === 'COMPLETED').length} completed
               </span>
             </div>
           </div>
@@ -727,7 +871,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           {/* KPI 3: Live Trading Accounts (Strictly in terms of numbers / count, NOT dollar amount) */}
           <div
             onClick={() => setActiveTab('balances')}
-            className={`p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
           >
             <div className="flex items-center justify-between mb-2">
               <span className={`text-xs font-medium ${mutedText}`}>
@@ -735,23 +879,46 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </span>
               <Hash className="w-4 h-4 text-sky-500" />
             </div>
-            <div className="text-3xl font-semibold font-mono tabular-nums tracking-tight">
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
               {platformStats.totalLiveAccountsCount}
             </div>
             <div className={`mt-2 flex items-center gap-2 text-xs ${mutedText}`}>
-              <span>Active live accounts opened across users</span>
+              <span>Active live accounts opened</span>
+            </div>
+          </div>
+
+          {/* KPI 4: Marketers Referrals & Deposits (Strictly Marketers Only) */}
+          <div
+            onClick={() => setActiveTab('referrals')}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className={`text-xs font-medium ${mutedText}`}>
+                Marketer Referrals
+              </span>
+              <Gift className="w-4 h-4 text-amber-500" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight text-amber-500">
+              {marketersReferralsData.totalMarketerReferrals}
+            </div>
+            <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs font-mono tabular-nums ${mutedText}`}>
+              <span className="text-emerald-500 font-semibold">
+                ${marketersReferralsData.totalMarketerReferralDepositsUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })} deposited
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-sans">{marketersReferralsData.allMarketersCount} Marketers</span>
             </div>
           </div>
         </section>
 
-        {/* SEGMENTED NAVIGATION BAR */}
+        {/* SEGMENTED NAVIGATION BAR (MOBILE-COMPACT GRID + DESKTOP FLEX) */}
         <div
-          className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 ${
+          className={`flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b pb-3 ${
             isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'
           }`}
         >
           <div
-            className={`inline-flex items-center gap-1 p-1 rounded-xl border ${
+            className={`grid grid-cols-2 sm:inline-flex sm:flex-wrap items-center gap-1.5 p-1.5 rounded-xl border w-full lg:w-auto ${
               isDarkMode
                 ? 'bg-[#0E1118] border-white/[0.08]'
                 : 'bg-slate-200/70 border-slate-300/80'
@@ -760,7 +927,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             <button
               type="button"
               onClick={() => setActiveTab('users')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
+              className={`px-2.5 sm:px-3.5 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer flex items-center justify-center sm:justify-start gap-1.5 min-w-0 ${
                 activeTab === 'users'
                   ? 'bg-[#E51937] text-white shadow-xs'
                   : isDarkMode
@@ -768,14 +935,14 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Users className="w-3.5 h-3.5" />
-              <span>Website Users ({userMetrics.length})</span>
+              <Users className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Users ({userMetrics.length})</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveTab('balances')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
+              className={`px-2.5 sm:px-3.5 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer flex items-center justify-center sm:justify-start gap-1.5 min-w-0 ${
                 activeTab === 'balances'
                   ? 'bg-[#E51937] text-white shadow-xs'
                   : isDarkMode
@@ -783,14 +950,14 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <SlidersHorizontal className="w-3.5 h-3.5" />
-              <span>Edit Account Balances &amp; Roles</span>
+              <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Balances &amp; Roles</span>
             </button>
 
             <button
               type="button"
               onClick={() => setActiveTab('deposits')}
-              className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-2 ${
+              className={`px-2.5 sm:px-3.5 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer flex items-center justify-center sm:justify-start gap-1.5 min-w-0 ${
                 activeTab === 'deposits'
                   ? 'bg-[#E51937] text-white shadow-xs'
                   : isDarkMode
@@ -798,8 +965,23 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <ArrowDownLeft className="w-3.5 h-3.5" />
-              <span>Money Deposited (${depositsData.totalDepositedUsd.toFixed(2)})</span>
+              <ArrowDownLeft className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Deposited (${depositsData.totalDepositedUsd.toFixed(0)})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('referrals')}
+              className={`px-2.5 sm:px-3.5 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors cursor-pointer flex items-center justify-center sm:justify-start gap-1.5 min-w-0 ${
+                activeTab === 'referrals'
+                  ? 'bg-[#E51937] text-white shadow-xs'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Gift className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Marketer Referrals ({marketersReferralsData.totalMarketerReferrals})</span>
             </button>
           </div>
 
@@ -1491,7 +1673,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         {activeTab === 'deposits' && (
           <section className={`rounded-xl border overflow-hidden ${cardBg} space-y-4 p-4`}>
             {/* Header: Title, Search, and Export */}
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pb-3 border-b border-white/[0.08]">
+            <div className={`flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 pb-3 border-b ${isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'}`}>
               <div>
                 <h2 className="text-base font-bold flex items-center gap-2">
                   <FileText className="w-4 h-4 text-[#E51937]" />
@@ -1558,7 +1740,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </div>
 
               {/* Row 2: Status & Date Filters */}
-              <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 pt-2 border-t border-white/[0.06]">
+              <div className={`flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 pt-2 border-t ${isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}`}>
                 {/* Status Filter */}
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <span className={`text-xs font-semibold ${mutedText} mr-1`}>Status:</span>
@@ -1673,7 +1855,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
                 <span className={`text-[11px] font-medium block ${mutedText}`}>Total Volume</span>
-                <span className="text-base font-bold font-mono tracking-tight text-white dark:text-white">
+                <span className={`text-base font-bold font-mono tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                   ${transactionPeriodMetrics.totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
                 <span className={`text-[10px] block mt-0.5 ${mutedText}`}>{transactionPeriodMetrics.totalCount} transactions</span>
@@ -1681,15 +1863,15 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
               <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
                 <span className={`text-[11px] font-medium block ${mutedText}`}>Approved Volume</span>
-                <span className="text-base font-bold font-mono tracking-tight text-emerald-500">
+                <span className="text-base font-bold font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
                   ${transactionPeriodMetrics.approvedVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
-                <span className={`text-[10px] block mt-0.5 text-emerald-500/80`}>{transactionPeriodMetrics.completedCount} completed</span>
+                <span className="text-[10px] block mt-0.5 text-emerald-600 dark:text-emerald-400">{transactionPeriodMetrics.completedCount} completed</span>
               </div>
 
               <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
                 <span className={`text-[11px] font-medium block ${mutedText}`}>Pending Volume</span>
-                <span className="text-base font-bold font-mono tracking-tight text-amber-500">
+                <span className="text-base font-bold font-mono tracking-tight text-amber-600 dark:text-amber-400">
                   ${transactionPeriodMetrics.pendingVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
                 <span className={`text-[10px] block mt-0.5 ${mutedText}`}>In flight</span>
@@ -1697,7 +1879,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
               <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
                 <span className={`text-[11px] font-medium block ${mutedText}`}>Success Rate</span>
-                <span className="text-base font-bold font-mono tracking-tight text-sky-400">
+                <span className="text-base font-bold font-mono tracking-tight text-sky-600 dark:text-sky-400">
                   {transactionPeriodMetrics.successRate}%
                 </span>
                 <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Execution reliability</span>
@@ -1710,7 +1892,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 No transaction records match the current filters.
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-white/[0.06]">
+              <div className={`overflow-x-auto rounded-xl border ${isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'}`}>
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr
@@ -1796,7 +1978,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                               {isCompleted ? 'Completed' : isPending ? 'Pending' : 'Failed'}
                             </span>
                             {tx.status === 'FAILED' && (
-                              <div className="text-[11px] text-slate-300 dark:text-slate-300 mt-1 max-w-[220px] ml-auto text-right font-normal">
+                              <div className={`text-[11px] mt-1 max-w-[220px] ml-auto text-right font-normal ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                                 {tx.details || (tx as any).resultDesc || 'You cancelled the M-PESA payment request.'}
                               </div>
                             )}
@@ -1806,6 +1988,176 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                     })}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* TAB 4: MARKETERS ONLY REFERRALS & TOTAL REFERRED DEPOSITS */}
+        {activeTab === 'referrals' && (
+          <section className={`rounded-xl border overflow-hidden ${cardBg} space-y-4 p-3.5 sm:p-5`}>
+            {/* Header */}
+            <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b ${isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'}`}>
+              <div>
+                <h2 className="text-sm sm:text-base font-bold flex items-center gap-2">
+                  <Gift className="w-4 h-4 text-[#E51937] shrink-0" />
+                  <span>Marketers Referral Performance &amp; Deposit Ledger</span>
+                </h2>
+                <p className={`text-xs ${mutedText} mt-0.5`}>
+                  Strictly showing assigned Marketers only, their total referred traders, and the total money their referrals have deposited.
+                </p>
+              </div>
+            </div>
+
+            {/* 4 Summary KPI Cards for Marketer Referrals */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Active Marketers</span>
+                <span className={`text-base sm:text-lg font-bold font-mono tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  {marketersReferralsData.allMarketersCount}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Marketer role accounts</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Total Referrals</span>
+                <span className="text-base sm:text-lg font-bold font-mono tracking-tight text-amber-500">
+                  {marketersReferralsData.totalMarketerReferrals}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Referred by marketers</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Referrals Total Deposited</span>
+                <span className="text-base sm:text-lg font-bold font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
+                  ${marketersReferralsData.totalMarketerReferralDepositsUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] font-mono block mt-0.5 ${mutedText}`}>
+                  KES {marketersReferralsData.totalMarketerReferralDepositsKes.toLocaleString('en-US', { minimumFractionDigits: 0 })}
+                </span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Marketer Commissions</span>
+                <span className="text-base sm:text-lg font-bold font-mono tracking-tight text-sky-600 dark:text-sky-400">
+                  ${marketersReferralsData.totalMarketerCommissionsUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Earned from referral deposits</span>
+              </div>
+            </div>
+
+            {/* Marketers List */}
+            {marketersReferralsData.marketers.length === 0 ? (
+              <div className={`p-8 rounded-xl border text-center space-y-2 ${isDarkMode ? 'bg-white/[0.01] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <Share2 className={`w-7 h-7 mx-auto ${mutedText}`} />
+                <div className="text-sm font-semibold">No Marketers Assigned Yet</div>
+                <p className={`text-xs max-w-md mx-auto ${mutedText}`}>
+                  Assign a user the <span className="font-semibold text-amber-500">Marketer</span> role in the Website Users tab to track their referrals and total referral deposits here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3.5">
+                {marketersReferralsData.marketers.map((item) => (
+                  <div
+                    key={item.marketer.email}
+                    className={`rounded-xl border overflow-hidden ${
+                      isDarkMode ? 'bg-[#090B10]/80 border-white/[0.08]' : 'bg-slate-50/70 border-slate-200'
+                    }`}
+                  >
+                    {/* Marketer Top Summary Bar */}
+                    <div className={`p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b ${
+                      isDarkMode ? 'border-white/[0.06]' : 'border-slate-200'
+                    }`}>
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-bold text-sm truncate">{item.marketer.name}</span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-500 border border-amber-500/30">
+                            Marketer
+                          </span>
+                          <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold ${
+                            isDarkMode ? 'bg-white/[0.06] text-emerald-400' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}>
+                            Code: {item.referralCode}
+                          </span>
+                        </div>
+                        <div className={`text-xs truncate ${mutedText}`}>
+                          {item.marketer.email} · Acc: <span className="font-mono">{item.marketer.accountNumber}</span>
+                        </div>
+                      </div>
+
+                      {/* Marketer KPI Pills (Mobile-friendly 3-column grid on small screens) */}
+                      <div className="grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-4 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60 dark:border-white/[0.06]">
+                        <div>
+                          <span className={`text-[10px] block ${mutedText}`}>Referrals</span>
+                          <span className="text-xs sm:text-sm font-bold font-mono text-amber-500">
+                            {item.totalReferralsCount} {item.totalReferralsCount === 1 ? 'Trader' : 'Traders'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className={`text-[10px] block ${mutedText}`}>Referrals Deposited</span>
+                          <span className="text-xs sm:text-sm font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                            ${item.totalReferralsDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                        <div>
+                          <span className={`text-[10px] block ${mutedText}`}>Commission</span>
+                          <span className="text-xs sm:text-sm font-bold font-mono text-sky-600 dark:text-sky-400">
+                            ${item.totalCommissionEarnedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Marketer's Referred Traders Breakdown */}
+                    {item.referralsList.length === 0 ? (
+                      <div className={`px-4 py-3 text-xs ${mutedText}`}>
+                        No traders have signed up with <span className="font-mono font-semibold">{item.referralCode}</span> yet.
+                      </div>
+                    ) : (
+                      <div className={`divide-y ${isDarkMode ? 'divide-white/[0.05]' : 'divide-slate-200/80'}`}>
+                        {item.referralsList.map((ref) => (
+                          <div
+                            key={ref.id}
+                            className={`px-3.5 sm:px-4 py-2.5 flex flex-col xs:flex-row xs:items-center justify-between gap-2 text-xs ${
+                              isDarkMode ? 'hover:bg-white/[0.02]' : 'hover:bg-white'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="font-semibold truncate">{ref.name}</span>
+                                <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                                  isDarkMode ? 'bg-white/[0.05] text-slate-300' : 'bg-slate-200/70 text-slate-700'
+                                }`}>
+                                  #{ref.accountNumber}
+                                </span>
+                              </div>
+                              <div className={`text-[11px] truncate ${mutedText}`}>
+                                {ref.email || 'Registered via referral link'} · Joined {new Date(ref.joinedAt).toLocaleDateString()}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between xs:justify-end gap-3 shrink-0 pt-1 xs:pt-0">
+                              <div className="text-left xs:text-right">
+                                <span className={`text-[10px] block ${mutedText}`}>Total Deposited</span>
+                                <span className={`font-mono font-bold ${
+                                  ref.totalDepositedUsd > 0 ? 'text-emerald-600 dark:text-emerald-400' : mutedText
+                                }`}>
+                                  ${ref.totalDepositedUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-[10px] block ${mutedText}`}>Marketer Earned</span>
+                                <span className="font-mono font-semibold text-sky-600 dark:text-sky-400">
+                                  +${ref.commissionUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </section>

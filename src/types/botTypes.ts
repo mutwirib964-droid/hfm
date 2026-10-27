@@ -100,4 +100,5 @@ export interface UserAuthProfile {
   isNewRegistration?: boolean;
   avatar?: string;
   createdAt: number;
+  referredByCode?: string; // Optional referral code applied during account creation
 }

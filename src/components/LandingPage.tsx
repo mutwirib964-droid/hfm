@@ -32,6 +32,8 @@ import {
   ShieldCheck,
   Maximize2,
   Minimize2,
+  Gift,
+  Users,
 } from 'lucide-react';
 import { VTMLogo } from './VTMLogo';
 import { Instrument } from '../types';
@@ -53,6 +55,7 @@ import {
   calculateNetWalletFromLedger,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
+import { referralService } from '../services/referralService';
 
 import {
   COUNTRY_OPTIONS as PHONE_CONFIGS,
@@ -128,11 +131,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [referralCodeInput, setReferralCodeInput] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Native Full Screen state and handler for Desktop PC
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Detect incoming referral parameter from URL or storage
+  useEffect(() => {
+    const incomingRef =
+      referralService.captureIncomingReferral() || referralService.getReferredByCode();
+    if (incomingRef) {
+      setReferralCodeInput(incomingRef);
+      setAuthMode('register');
+    }
+  }, []);
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -215,6 +229,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       const fullPhoneNumber = phoneValidation.formattedDisplay;
+      const cleanRefCode = referralCodeInput.trim().toUpperCase();
 
       const newUserProfile: UserAuthProfile = {
         id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : generateSupabaseUuid(),
@@ -229,6 +244,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         isLoggedIn: true,
         isNewRegistration: true,
         createdAt: Date.now(),
+        referredByCode: cleanRefCode || undefined,
       };
 
       // 1. Register in Auth service to obtain official Auth UID if available
@@ -278,9 +294,23 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       registerNewUser(newUserProfile, password);
       initializeUserFinancials(newUserProfile, true);
 
+      // 5. Connect referral attribution immediately if referral code was entered or captured
+      if (cleanRefCode) {
+        referralService.registerReferralSignup(cleanRefCode, {
+          email: newUserProfile.email,
+          name: newUserProfile.name,
+          accountNumber: newUserProfile.accountNumber,
+        });
+      }
+
       await supabaseService.syncActivity(newUserProfile, {
         type: 'REGISTRATION',
         description: `New user registration for ${newUserProfile.email}`,
+        metadata: {
+          name: newUserProfile.name,
+          accountNumber: newUserProfile.accountNumber,
+          referredByCode: cleanRefCode || undefined,
+        },
       });
       await supabaseService.syncDevice(newUserProfile);
 
@@ -1668,6 +1698,44 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                           {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Referral Code (Optional) */}
+                  {authMode === 'register' && (
+                    <div className="w-full max-w-full">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className={`text-xs font-bold flex items-center gap-1.5 ${isDarkMode ? 'text-neutral-200' : 'text-slate-700'}`}>
+                          <Gift className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Referral Code</span>
+                          <span className="text-[10px] font-normal text-neutral-400 font-sans">(Optional)</span>
+                        </label>
+                        {referralCodeInput.trim() && (
+                          <span className="text-[10px] font-bold text-emerald-500 font-mono flex items-center gap-1">
+                            <Check className="w-3 h-3" />
+                            Applied
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative w-full max-w-full">
+                        <Users className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+                        <input
+                          type="text"
+                          placeholder="e.g. VTM-674343"
+                          value={referralCodeInput}
+                          onChange={(e) => setReferralCodeInput(e.target.value.toUpperCase())}
+                          className={`w-full pl-10 pr-4 py-2.5 rounded-xl border text-base sm:text-sm font-mono uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${
+                            isDarkMode
+                              ? 'bg-neutral-900/90 border-neutral-700 text-white placeholder-neutral-500'
+                              : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400'
+                          }`}
+                        />
+                      </div>
+                      <p className={`text-[10px] mt-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+                        {referralCodeInput.trim()
+                          ? 'Referral benefits linked. Your referrer will be attributed immediately upon account creation.'
+                          : 'Invited by a fellow trader? Paste their referral code above (or leave blank).'}
+                      </p>
                     </div>
                   )}
 

@@ -749,8 +749,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-3 border-t border-slate-200 dark:border-neutral-800/70 flex items-center justify-between gap-2">
-                      <div className="text-[11px] text-slate-500 dark:text-neutral-400 font-mono">
+                    <div className="pt-3 border-t border-slate-200 dark:border-neutral-800/70 flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-[11px] text-slate-500 dark:text-neutral-400 font-mono min-w-0">
                         Default: {bot.defaultLotSize} Lots | TP: {bot.defaultTpPips}p | SL: {bot.defaultSlPips}p
                       </div>
 
@@ -758,7 +758,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         <button
                           id={`btn-deploy-${bot.id}`}
                           onClick={() => setActiveSubTab('runs')}
-                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors shadow-xs cursor-pointer"
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors shadow-xs cursor-pointer shrink-0"
                           title="Bot is already deployed in Active Bots engine"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -768,7 +768,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                         <button
                           id={`btn-deploy-${bot.id}`}
                           onClick={() => handleDeployToActiveBots(bot)}
-                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-colors shadow-xs cursor-pointer"
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-colors shadow-xs cursor-pointer shrink-0"
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>Deploy Bot</span>
@@ -785,8 +785,8 @@ export const BotsTab: React.FC<BotsTabProps> = ({
         {/* SUBTAB 2: Active Bots Management */}
         {activeSubTab === 'runs' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="min-w-0">
                 <h2 className="text-sm sm:text-base font-bold">Active Bots &amp; Execution Engine</h2>
                 <p className="text-xs text-neutral-500 dark:text-neutral-400">
                   Configure settings and click Run Bot to start autonomous market execution. Deployed bots stay here until deleted.
@@ -795,7 +795,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
               <button
                 onClick={() => setActiveSubTab('bots')}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all cursor-pointer"
+                className="flex items-center justify-center gap-1.5 px-3.5 py-2 sm:py-1.5 rounded-xl bg-[#E51937] hover:bg-[#C0102A] text-white text-xs font-bold transition-all cursor-pointer shrink-0 w-full sm:w-auto"
               >
                 <Plus className="w-3.5 h-3.5" />
                 <span>Deploy Another Bot</span>

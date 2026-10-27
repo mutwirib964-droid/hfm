@@ -56,6 +56,21 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
       setClaimSuccessMsg(null);
       setClaimErrorMsg(null);
     }
+
+    const handleRealtimeUpdate = () => {
+      const refreshed = referralService.getReferralState(
+        currentUser?.email,
+        currentUser?.accountNumber
+      );
+      setState(refreshed);
+    };
+
+    window.addEventListener('vtm_referral_update', handleRealtimeUpdate);
+    window.addEventListener('storage', handleRealtimeUpdate);
+    return () => {
+      window.removeEventListener('vtm_referral_update', handleRealtimeUpdate);
+      window.removeEventListener('storage', handleRealtimeUpdate);
+    };
   }, [isOpen, currentUser]);
 
   if (!isOpen) return null;
@@ -129,9 +144,9 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
   const remainingUsd = Math.max(0, Number((MIN_CLAIM_AMOUNT_USD - state.availableCommissionUsd).toFixed(2)));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200">
       <div
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] ${
+        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] min-w-0 ${
           isDarkMode
             ? 'bg-[#0E1117] border-neutral-800 text-neutral-100 shadow-[0_20px_50px_rgba(0,0,0,0.8)]'
             : 'bg-white border-slate-300 text-slate-900 shadow-xl'
@@ -139,36 +154,36 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
       >
         {/* Header */}
         <div
-          className={`flex items-center justify-between px-5 py-4 border-b ${
+          className={`flex items-center justify-between gap-2 px-3.5 sm:px-5 py-3.5 sm:py-4 border-b ${
             isDarkMode
               ? 'border-neutral-800 bg-gradient-to-r from-[#141822] via-[#10131A] to-[#141822]'
               : 'border-slate-200 bg-slate-50'
           }`}
         >
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/25 via-blue-500/15 to-transparent border border-emerald-500/30 flex items-center justify-center text-emerald-500 shadow-inner">
-              <Gift className="w-5 h-5 stroke-[2.2]" />
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-emerald-500/25 via-blue-500/15 to-transparent border border-emerald-500/30 flex items-center justify-center text-emerald-500 shadow-inner shrink-0">
+              <Gift className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.2]" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h2
-                className={`text-base sm:text-lg font-black tracking-tight font-sans ${
+                className={`text-sm sm:text-lg font-black tracking-tight font-sans truncate ${
                   isDarkMode ? 'text-white' : 'text-slate-900'
                 }`}
               >
                 Referral &amp; Affiliate Program
               </h2>
               <p
-                className={`text-xs font-medium ${
-                  isDarkMode ? 'text-neutral-400' : 'text-slate-500'
+                className={`text-[11px] sm:text-xs font-medium leading-snug ${
+                  isDarkMode ? 'text-neutral-400' : 'text-slate-600'
                 }`}
               >
-                Earn commissions when your referrals deposit (minimum deposit of $16) • Claim from $20.00
+                Earn commissions when your referrals deposit (min. $16) • Claim from $20.00
               </p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className={`p-1.5 rounded-xl transition-colors cursor-pointer border border-transparent ${
+            className={`p-1.5 rounded-xl transition-colors cursor-pointer border border-transparent shrink-0 ${
               isDarkMode
                 ? 'hover:bg-neutral-800/80 text-neutral-400 hover:text-white hover:border-neutral-700'
                 : 'hover:bg-slate-200 text-slate-500 hover:text-slate-900 hover:border-slate-300'
@@ -181,16 +196,18 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
 
         {/* Tab Switcher */}
         <div
-          className={`flex items-center gap-1 px-5 pt-3 border-b text-xs font-bold ${
+          className={`flex items-center gap-1 px-3.5 sm:px-5 pt-2.5 border-b text-xs font-bold overflow-x-auto no-scrollbar ${
             isDarkMode ? 'border-neutral-800 bg-[#12151D]' : 'border-slate-200 bg-slate-100/60'
           }`}
         >
           <button
             onClick={() => setActiveTab('overview')}
-            className={`py-2 px-3 border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`py-2 px-3 border-b-2 transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'overview'
-                ? 'border-emerald-500 text-emerald-500'
-                : 'border-transparent text-neutral-400 hover:text-neutral-200'
+                ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                : isDarkMode
+                ? 'border-transparent text-neutral-400 hover:text-neutral-200'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
             <Share2 className="w-3.5 h-3.5" />
@@ -199,10 +216,12 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
 
           <button
             onClick={() => setActiveTab('referrals')}
-            className={`py-2 px-3 border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+            className={`py-2 px-3 border-b-2 transition-all cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'referrals'
-                ? 'border-emerald-500 text-emerald-500'
-                : 'border-transparent text-neutral-400 hover:text-neutral-200'
+                ? 'border-emerald-500 text-emerald-600 dark:text-emerald-400'
+                : isDarkMode
+                ? 'border-transparent text-neutral-400 hover:text-neutral-200'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
@@ -211,18 +230,18 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-5 overflow-y-auto space-y-4 no-scrollbar">
+        <div className="p-3.5 sm:p-5 overflow-y-auto overflow-x-hidden space-y-3.5 sm:space-y-4 no-scrollbar min-w-0">
           {/* Notifications */}
           {claimSuccessMsg && (
-            <div className="p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2.5 animate-fadeIn">
-              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+            <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs flex items-center gap-2.5 animate-fadeIn">
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
               <span className="font-semibold">{claimSuccessMsg}</span>
             </div>
           )}
 
           {claimErrorMsg && (
-            <div className="p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2.5 animate-fadeIn">
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+            <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-600 dark:text-rose-400 text-xs flex items-center gap-2.5 animate-fadeIn">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />
               <span>{claimErrorMsg}</span>
             </div>
           )}
@@ -231,38 +250,40 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
             <>
               {/* Program Rule Explainer Banner */}
               <div
-                className={`p-4 rounded-2xl border relative overflow-hidden ${
+                className={`p-3.5 sm:p-4 rounded-2xl border relative overflow-hidden ${
                   isDarkMode
                     ? 'bg-gradient-to-r from-emerald-950/30 via-[#131922] to-blue-950/20 border-emerald-500/30'
-                    : 'bg-emerald-50 border-emerald-200'
+                    : 'bg-emerald-50/80 border-emerald-200'
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <span className="text-[10px] font-mono uppercase font-black tracking-wider text-emerald-500 block mb-1">
+                  <div className="min-w-0">
+                    <span className="text-[10px] font-mono uppercase font-black tracking-wider text-emerald-600 dark:text-emerald-400 block mb-1">
                       Deposit Commission Program
                     </span>
-                    <h3 className="text-sm font-bold text-slate-900 dark:text-white leading-snug">
+                    <h3 className={`text-sm font-bold leading-snug ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                       Earn cash commissions when your referrals deposit.
                     </h3>
-                    <p className="text-xs text-slate-600 dark:text-neutral-400 mt-1 leading-relaxed">
-                      Share your referral link with traders. When your referrals make a deposit of minimum <span className="font-bold text-slate-900 dark:text-white">$16.00</span>, you will earn commissions credited directly to your referral balance. Once your commissions reach <span className="font-bold text-emerald-500">$20.00</span>, you can claim the funds directly into your Live Wallet.
+                    <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
+                      Share your referral link with traders. When your referrals make a deposit of minimum{' '}
+                      <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>$16.00</span>, you will earn commissions credited directly to your referral balance. Once your commissions reach{' '}
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">$20.00</span>, you can claim the funds directly into your Live Wallet.
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-3 pt-3 border-t border-emerald-500/20 grid grid-cols-3 gap-2 text-center text-xs">
-                  <div className="p-2 rounded-xl bg-black/20">
-                    <span className="text-[10px] text-neutral-400 block font-medium">Min. Referral Deposit</span>
-                    <span className="text-sm font-black text-emerald-400 font-mono">$16.00</span>
+                <div className="mt-3 pt-3 border-t border-emerald-500/20 grid grid-cols-3 gap-1.5 sm:gap-2 text-center text-xs">
+                  <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-black/25 border-white/5' : 'bg-white border-emerald-200/80 shadow-2xs'}`}>
+                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Min. Deposit</span>
+                    <span className="text-xs sm:text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">$16.00</span>
                   </div>
-                  <div className="p-2 rounded-xl bg-black/20">
-                    <span className="text-[10px] text-neutral-400 block font-medium">Minimum Claim</span>
-                    <span className="text-sm font-black text-amber-400 font-mono">$20.00</span>
+                  <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-black/25 border-white/5' : 'bg-white border-emerald-200/80 shadow-2xs'}`}>
+                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Min. Claim</span>
+                    <span className="text-xs sm:text-sm font-black text-amber-600 dark:text-amber-400 font-mono">$20.00</span>
                   </div>
-                  <div className="p-2 rounded-xl bg-black/20">
-                    <span className="text-[10px] text-neutral-400 block font-medium">Available Balance</span>
-                    <span className="text-sm font-black text-emerald-400 font-mono">
+                  <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-black/25 border-white/5' : 'bg-white border-emerald-200/80 shadow-2xs'}`}>
+                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Available</span>
+                    <span className="text-xs sm:text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">
                       ${state.availableCommissionUsd.toFixed(2)}
                     </span>
                   </div>
@@ -271,32 +292,32 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
 
               {/* Earnings & Claim Progress Card */}
               <div
-                className={`p-4 rounded-2xl border ${
+                className={`p-3.5 sm:p-4 rounded-2xl border ${
                   isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
                   <div>
-                    <span className="text-[10px] text-neutral-400 uppercase font-bold tracking-wider block">
+                    <span className={`text-[10px] uppercase font-bold tracking-wider block ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                       Available Commission to Claim
                     </span>
                     <div className="flex items-baseline gap-2 mt-0.5">
-                      <span className="text-2xl font-black font-mono tracking-tight text-emerald-500">
+                      <span className="text-xl sm:text-2xl font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
                         ${state.availableCommissionUsd.toFixed(2)}
                       </span>
-                      <span className="text-xs text-neutral-400">
+                      <span className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                         / ${MIN_CLAIM_AMOUNT_USD.toFixed(2)} Target
                       </span>
                     </div>
                   </div>
 
                   {isClaimEligible ? (
-                    <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shadow-xs">
+                    <span className="px-2.5 py-1 rounded-full text-[11px] sm:text-xs font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shadow-xs shrink-0">
                       <Unlock className="w-3.5 h-3.5" />
                       Claim Ready!
                     </span>
                   ) : (
-                    <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1">
+                    <span className="px-2.5 py-1 rounded-full text-[11px] sm:text-xs font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 flex items-center gap-1 shrink-0">
                       <Lock className="w-3.5 h-3.5" />
                       ${remainingUsd.toFixed(2)} Remaining
                     </span>
@@ -304,12 +325,12 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 </div>
 
                 {/* Progress Bar */}
-                <div className="space-y-1.5 mb-4">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-neutral-400">
-                    <span>Progress: {progressPercent}% of $20.00 claim goal</span>
-                    <span>Total Referral Deposits: ${state.totalReferralDepositsUsd.toFixed(2)}</span>
+                <div className="space-y-1.5 mb-3.5">
+                  <div className={`flex items-center justify-between flex-wrap gap-1 text-[10px] sm:text-[11px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
+                    <span>Progress: {progressPercent}% of $20.00 goal</span>
+                    <span>Referral Deposits: ${state.totalReferralDepositsUsd.toFixed(2)}</span>
                   </div>
-                  <div className="h-2.5 w-full rounded-full bg-neutral-200 dark:bg-neutral-800 overflow-hidden p-0.5">
+                  <div className="h-2.5 w-full rounded-full bg-slate-200 dark:bg-neutral-800 overflow-hidden p-0.5">
                     <div
                       className={`h-full rounded-full transition-all duration-500 ${
                         isClaimEligible
@@ -325,14 +346,16 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 <button
                   onClick={handleClaim}
                   disabled={!isClaimEligible}
-                  className={`w-full py-3 px-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  className={`w-full py-2.5 sm:py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer text-center ${
                     isClaimEligible
                       ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 active:scale-[0.99]'
-                      : 'bg-neutral-200 dark:bg-neutral-800 text-neutral-400 cursor-not-allowed opacity-60'
+                      : isDarkMode
+                      ? 'bg-neutral-800 text-neutral-400 cursor-not-allowed opacity-70'
+                      : 'bg-slate-200 text-slate-500 cursor-not-allowed opacity-80'
                   }`}
                 >
-                  <Coins className="w-4 h-4" />
-                  <span>
+                  <Coins className="w-4 h-4 shrink-0" />
+                  <span className="leading-tight">
                     {isClaimEligible
                       ? `Claim $${state.availableCommissionUsd.toFixed(2)} to Live Wallet`
                       : `Minimum $20.00 Required to Claim ($${remainingUsd.toFixed(2)} needed)`}
@@ -340,97 +363,102 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 </button>
               </div>
 
-              {/* Share Box */}
+              {/* Share Box (Compact & Strictly Contained on Mobile Screens) */}
               <div
-                className={`p-4 rounded-2xl border space-y-3 ${
+                className={`p-3.5 sm:p-4 rounded-2xl border space-y-3 min-w-0 overflow-hidden ${
                   isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-                    <Share2 className="w-3.5 h-3.5 text-emerald-500" />
-                    Share Your Link &amp; Code
+                <div className="flex items-center justify-between flex-wrap gap-1">
+                  <span className={`text-xs font-bold flex items-center gap-1.5 ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                    <Share2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                    <span>Share Your Link &amp; Code</span>
                   </span>
-                  <span className="text-[10px] text-neutral-400 font-mono">
+                  <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                     Passive Earnings on Referral Deposits
                   </span>
                 </div>
 
-                {/* Referral Link Input */}
-                <div>
-                  <label className="text-[11px] text-neutral-400 font-medium block mb-1">
+                {/* Referral Link Input — min-w-0 w-0 flex-1 prevents mobile flexbox overflow */}
+                <div className="min-w-0 w-full">
+                  <label className={`text-[11px] font-medium block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Your Personal Referral Link:
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2 w-full min-w-0">
                     <input
                       type="text"
                       readOnly
                       value={state.referralLink}
-                      className={`flex-1 px-3 py-2 rounded-xl text-xs font-mono border outline-none ${
+                      className={`min-w-0 w-0 flex-1 px-2.5 sm:px-3 py-2 rounded-xl text-[11px] sm:text-xs font-mono border outline-none truncate ${
                         isDarkMode
                           ? 'bg-[#0E1117] border-neutral-700 text-neutral-200'
                           : 'bg-white border-slate-300 text-slate-800'
                       }`}
                     />
                     <button
+                      type="button"
                       onClick={handleCopyLink}
-                      className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0 shadow-xs"
+                      className="px-2.5 sm:px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shrink-0 whitespace-nowrap shadow-xs"
                     >
-                      {copiedLink ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedLink ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Copy className="w-3.5 h-3.5 shrink-0" />}
                       <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
                     </button>
                   </div>
                 </div>
 
                 {/* Referral Code */}
-                <div>
-                  <label className="text-[11px] text-neutral-400 font-medium block mb-1">
+                <div className="min-w-0 w-full">
+                  <label className={`text-[11px] font-medium block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Your Referral Code:
                   </label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2 w-full min-w-0">
                     <div
-                      className={`flex-1 px-3 py-2 rounded-xl text-xs font-mono font-bold tracking-wider border ${
+                      className={`min-w-0 w-0 flex-1 px-2.5 sm:px-3 py-2 rounded-xl text-xs font-mono font-bold tracking-wider border truncate ${
                         isDarkMode
                           ? 'bg-[#0E1117] border-neutral-700 text-emerald-400'
-                          : 'bg-white border-slate-300 text-emerald-600'
+                          : 'bg-white border-slate-300 text-emerald-700'
                       }`}
                     >
                       {state.referralCode}
                     </div>
                     <button
+                      type="button"
                       onClick={handleCopyCode}
-                      className="px-3 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white text-xs font-bold transition-all flex items-center gap-1 cursor-pointer shrink-0"
+                      className="px-2.5 sm:px-3.5 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
                     >
-                      {copiedCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copiedCode ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Copy className="w-3.5 h-3.5 shrink-0" />}
                       <span>{copiedCode ? 'Copied' : 'Copy Code'}</span>
                     </button>
                   </div>
                 </div>
 
                 {/* Quick Share Buttons */}
-                <div className="pt-2 flex items-center gap-2">
+                <div className="pt-1.5 grid grid-cols-3 gap-1.5 sm:gap-2 w-full">
                   <button
+                    type="button"
                     onClick={handleShareWhatsApp}
-                    className="flex-1 py-2 px-2.5 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/30 text-emerald-500 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="min-w-0 py-2 px-2 rounded-xl bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate"
                   >
-                    <Smartphone className="w-3.5 h-3.5" />
-                    <span>WhatsApp</span>
+                    <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">WhatsApp</span>
                   </button>
 
                   <button
+                    type="button"
                     onClick={handleShareTelegram}
-                    className="flex-1 py-2 px-2.5 rounded-xl bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/30 text-sky-400 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="min-w-0 py-2 px-2 rounded-xl bg-sky-600/15 hover:bg-sky-600/25 border border-sky-500/30 text-sky-600 dark:text-sky-400 text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate"
                   >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Telegram</span>
+                    <Send className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Telegram</span>
                   </button>
 
                   <button
+                    type="button"
                     onClick={handleShareNative}
-                    className="flex-1 py-2 px-2.5 rounded-xl bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/30 text-purple-400 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    className="min-w-0 py-2 px-2 rounded-xl bg-purple-600/15 hover:bg-purple-600/25 border border-purple-500/30 text-purple-600 dark:text-purple-400 text-[11px] sm:text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer truncate"
                   >
-                    <Share2 className="w-3.5 h-3.5" />
-                    <span>Share More</span>
+                    <Share2 className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Share More</span>
                   </button>
                 </div>
               </div>
@@ -438,38 +466,38 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
           )}
 
           {activeTab === 'referrals' && (
-            <div className="space-y-4">
+            <div className="space-y-4 min-w-0">
               {/* Summary Stats Row */}
-              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="grid grid-cols-3 gap-1.5 sm:gap-2 text-center text-xs">
                 <div
-                  className={`p-3 rounded-xl border ${
-                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-white border-slate-200'
+                  className={`p-2.5 sm:p-3 rounded-xl border ${
+                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}
                 >
-                  <span className="text-[10px] text-neutral-400 block font-medium">Referred Traders</span>
-                  <span className="text-base font-black text-slate-900 dark:text-white font-mono">
+                  <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Referred Traders</span>
+                  <span className={`text-sm sm:text-base font-black font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     {state.referrals.length}
                   </span>
                 </div>
 
                 <div
-                  className={`p-3 rounded-xl border ${
-                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-white border-slate-200'
+                  className={`p-2.5 sm:p-3 rounded-xl border ${
+                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}
                 >
-                  <span className="text-[10px] text-neutral-400 block font-medium">Total Deposited</span>
-                  <span className="text-base font-black text-blue-400 font-mono">
+                  <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Total Deposited</span>
+                  <span className="text-sm sm:text-base font-black text-blue-600 dark:text-blue-400 font-mono">
                     ${state.totalReferralDepositsUsd.toFixed(2)}
                   </span>
                 </div>
 
                 <div
-                  className={`p-3 rounded-xl border ${
-                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-white border-slate-200'
+                  className={`p-2.5 sm:p-3 rounded-xl border ${
+                    isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-slate-50 border-slate-200'
                   }`}
                 >
-                  <span className="text-[10px] text-neutral-400 block font-medium">Total Earned</span>
-                  <span className="text-base font-black text-emerald-400 font-mono">
+                  <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Total Earned</span>
+                  <span className="text-sm sm:text-base font-black text-emerald-600 dark:text-emerald-400 font-mono">
                     ${state.totalCommissionEarnedUsd.toFixed(2)}
                   </span>
                 </div>
@@ -481,41 +509,41 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                   isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-white border-slate-200'
                 }`}
               >
-                <div className="p-3 border-b border-neutral-800/60 font-bold text-xs flex items-center justify-between">
+                <div className={`p-3 border-b font-bold text-xs flex items-center justify-between ${isDarkMode ? 'border-neutral-800/60' : 'border-slate-200 bg-slate-50'}`}>
                   <span>Referred Accounts</span>
-                  <span className="text-[10px] font-mono text-neutral-400">Earned Commissions</span>
+                  <span className={`text-[10px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Earned Commissions</span>
                 </div>
 
                 {state.referrals.length === 0 ? (
-                  <div className="p-8 text-center text-neutral-400 text-xs">
+                  <div className={`p-8 text-center text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                     No referred traders yet. Share your referral link above to earn commissions when your referrals make a deposit!
                   </div>
                 ) : (
-                  <div className="divide-y divide-neutral-800/40 text-xs">
+                  <div className={`divide-y text-xs ${isDarkMode ? 'divide-neutral-800/40' : 'divide-slate-200'}`}>
                     {state.referrals.map((ref) => (
                       <div
                         key={ref.id}
-                        className="p-3 flex items-center justify-between hover:bg-neutral-800/20 transition-colors"
+                        className={`p-3 flex items-center justify-between gap-2 transition-colors ${isDarkMode ? 'hover:bg-neutral-800/20' : 'hover:bg-slate-50'}`}
                       >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900 dark:text-white">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className={`font-bold truncate ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                               {ref.referredName}
                             </span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-neutral-800 text-neutral-400 font-mono">
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${isDarkMode ? 'bg-neutral-800 text-neutral-400' : 'bg-slate-200 text-slate-700'}`}>
                               #{ref.referredAccountNumber}
                             </span>
                           </div>
-                          <span className="text-[11px] text-neutral-400 font-mono">
+                          <span className={`text-[11px] font-mono block ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                             Joined {new Date(ref.createdAt).toLocaleDateString()}
                           </span>
                         </div>
 
-                        <div className="text-right">
-                          <span className="text-[11px] text-neutral-400 block font-mono">
+                        <div className="text-right shrink-0">
+                          <span className={`text-[11px] block font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                             Deposits: ${ref.totalDepositedUsd.toFixed(2)}
                           </span>
-                          <span className="font-bold text-emerald-500 font-mono text-xs">
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-xs">
                             +${ref.totalCommissionUsd.toFixed(2)} USD
                           </span>
                         </div>
@@ -532,28 +560,28 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                     isDarkMode ? 'bg-[#141822] border-neutral-800' : 'bg-white border-slate-200'
                   }`}
                 >
-                  <div className="p-3 border-b border-neutral-800/60 font-bold text-xs flex items-center justify-between">
+                  <div className={`p-3 border-b font-bold text-xs flex items-center justify-between ${isDarkMode ? 'border-neutral-800/60' : 'border-slate-200 bg-slate-50'}`}>
                     <span>Payout &amp; Claim History</span>
-                    <span className="text-[10px] font-mono text-emerald-400">
+                    <span className="text-[10px] font-mono text-emerald-600 dark:text-emerald-400">
                       Total Claimed: ${state.totalClaimedUsd.toFixed(2)}
                     </span>
                   </div>
 
-                  <div className="divide-y divide-neutral-800/40 text-xs">
+                  <div className={`divide-y text-xs ${isDarkMode ? 'divide-neutral-800/40' : 'divide-slate-200'}`}>
                     {state.claims.map((claim) => (
                       <div
                         key={claim.id}
-                        className="p-3 flex items-center justify-between"
+                        className="p-3 flex items-center justify-between gap-2"
                       >
-                        <div>
-                          <span className="font-bold text-emerald-400 font-mono">
+                        <div className="min-w-0">
+                          <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono">
                             +${claim.amountUsd.toFixed(2)} USD
                           </span>
-                          <span className="text-[10px] text-neutral-400 block font-mono">
+                          <span className={`text-[10px] block font-mono truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                             Ref: {claim.walletTxReference}
                           </span>
                         </div>
-                        <div className="text-right text-[11px] text-neutral-400 font-mono">
+                        <div className={`text-right text-[11px] font-mono shrink-0 ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
                           {new Date(claim.claimedAt).toLocaleString()}
                         </div>
                       </div>
@@ -568,3 +596,4 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
     </div>
   );
 };
+

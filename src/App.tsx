@@ -4126,7 +4126,10 @@ export default function App() {
       });
 
       // Credit referral commission if user joined via a referral link and deposit is >= $16
-      const incomingRefCode = referralService.getReferredByCode();
+      const incomingRefCode =
+        currentUser.referredByCode ||
+        referralService.getReferredByCodeForUser(currentUser.email) ||
+        referralService.getReferredByCode();
       if (incomingRefCode && amountUsd >= 16) {
         referralService.recordDepositForReferrerCode(incomingRefCode, amountUsd, {
           email: currentUser.email,

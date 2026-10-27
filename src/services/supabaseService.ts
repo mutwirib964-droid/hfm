@@ -360,6 +360,7 @@ class SupabaseService {
           role: safeRole,
           isLoggedIn: true,
           createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+          referredByCode: row.referred_by_code || undefined,
         };
         return { profile, password: parsedHash.password, hasVerifiedUid };
       }
@@ -458,6 +459,9 @@ class SupabaseService {
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
+      if (profile.referredByCode) {
+        payload.referred_by_code = profile.referredByCode.trim().toUpperCase();
+      }
 
       const res = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
         method: 'POST',
@@ -470,8 +474,8 @@ class SupabaseService {
         return true;
       }
 
-      // Fallback POST without uid column in case table schema only has password_hash (which already encodes uid:<uuid>|<password>)
-      const { uid: _omitUid, ...payloadWithoutUid } = payload;
+      // Fallback POST without optional columns (uid, referred_by_code) in case table schema doesn't have them yet
+      const { uid: _omitUid, referred_by_code: _omitRef, ...payloadWithoutUid } = payload;
       const retryPostRes = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
         method: 'POST',
         headers: this.getHeaders(),
@@ -684,6 +688,7 @@ class SupabaseService {
       const deletedByEmail: Record<string, Set<string>> = {};
       const uidByEmail: Record<string, string> = {};
       const nameByEmail: Record<string, string> = {};
+      const referredByEmail: Record<string, string> = {};
 
       const getDeletedSetForEmail = (email: string): Set<string> => {
         const clean = email.trim().toLowerCase();
@@ -695,9 +700,12 @@ class SupabaseService {
 
       if (Array.isArray(actRows)) {
         actRows.forEach((act: any) => {
+          const actEmail = String(act?.user_email || '').trim().toLowerCase();
+          if (actEmail && act?.metadata?.referredByCode) {
+            referredByEmail[actEmail] = String(act.metadata.referredByCode).trim().toUpperCase();
+          }
           if (act && act.activity_type === 'ACCOUNT_DELETED' && !act.metadata?.silent) {
             const accNum = act.metadata?.accountNumber;
-            const actEmail = String(act.user_email || '').trim().toLowerCase();
             if (accNum && actEmail) {
               getDeletedSetForEmail(actEmail).add(String(accNum));
               markAccountDeletedLocally(actEmail, String(accNum));
@@ -944,6 +952,9 @@ class SupabaseService {
             ? 'marketer'
             : 'normal';
 
+          const resolvedRefCode =
+            row.referred_by_code || referredByEmail[canonicalEmail] || undefined;
+
           usersMap.set(canonicalEmail, {
             id: resolvedUid,
             name: isAdmin ? 'mutwiri' : row.name || nameByEmail[canonicalEmail] || 'Trader',
@@ -956,6 +967,7 @@ class SupabaseService {
             role: safeRole,
             isLoggedIn: false,
             createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+            referredByCode: resolvedRefCode,
           });
         });
       }
@@ -988,6 +1000,7 @@ class SupabaseService {
             role: isAdmin ? 'admin' : 'normal',
             isLoggedIn: false,
             createdAt: fin?.lastUpdated || Date.now(),
+            referredByCode: referredByEmail[canonicalEmail] || undefined,
           });
         }
       });

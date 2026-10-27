@@ -122,6 +122,37 @@ class ReferralService {
   }
 
   /**
+   * Get referral code assigned to a specific user
+   */
+  getReferredByCodeForUser(userEmail?: string): string | null {
+    if (typeof window === 'undefined' || !userEmail) return this.getReferredByCode();
+    try {
+      const cleanEmail = userEmail.trim().toLowerCase();
+      return (
+        localStorage.getItem(`vtm_user_referred_by_${cleanEmail}`) ||
+        localStorage.getItem(INCOMING_REF_KEY)
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Store who referred this user permanently
+   */
+  setReferredByForUser(userEmail: string, referrerCode: string): void {
+    if (typeof window === 'undefined' || !userEmail || !referrerCode) return;
+    try {
+      const cleanEmail = userEmail.trim().toLowerCase();
+      const cleanCode = referrerCode.trim().toUpperCase();
+      localStorage.setItem(`vtm_user_referred_by_${cleanEmail}`, cleanCode);
+      localStorage.setItem(INCOMING_REF_KEY, cleanCode);
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
    * Load referral state for a user (strictly real data, never mock/sample referrals)
    */
   getReferralState(userEmail?: string, userAccountNumber?: string): ReferralState {
@@ -324,31 +355,178 @@ class ReferralService {
   }
 
   /**
-   * Record a deposit for a referrer identified by their referral code
+   * Find referrer user email and their referral state by their referral code
+   */
+  findReferrerByCode(referrerCode: string): { email: string; state: ReferralState } | null {
+    if (typeof window === 'undefined' || !referrerCode) return null;
+    const cleanCode = referrerCode.trim().toUpperCase();
+
+    // 1. Direct scan of referral states in localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
+        try {
+          const parsed = JSON.parse(localStorage.getItem(key) || '{}');
+          if (parsed.referralCode === cleanCode) {
+            const email = key.replace(STORAGE_KEY_PREFIX, '');
+            return { email, state: this.getReferralState(email) };
+          }
+        } catch {}
+      }
+    }
+
+    // 2. Scan user registry for any user whose code matches
+    try {
+      const rawRegistry = localStorage.getItem('vtm_registered_users_registry');
+      if (rawRegistry) {
+        const parsedRegistry: Record<string, any> = JSON.parse(rawRegistry);
+        for (const [uEmail, uProfile] of Object.entries(parsedRegistry)) {
+          if (!uProfile || !uEmail) continue;
+          const userCode = this.getReferralCode(uProfile.email || uEmail, uProfile.accountNumber);
+          if (
+            userCode === cleanCode ||
+            (uProfile.accountNumber && cleanCode.includes(uProfile.accountNumber.slice(-6)))
+          ) {
+            return {
+              email: uProfile.email || uEmail,
+              state: this.getReferralState(uProfile.email || uEmail, uProfile.accountNumber),
+            };
+          }
+        }
+      }
+    } catch {}
+
+    // 3. Fallback for master admin if matching mutwiri code
+    if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
+      return { email: 'mutwirib964@gmail.com', state: this.getReferralState('mutwirib964@gmail.com') };
+    }
+
+    return null;
+  }
+
+  /**
+   * Register a new user under a referrer when they sign up with a referral code or link.
+   * Immediately adds the new user to the referrer's account and updates their dashboard in real time!
+   */
+  registerReferralSignup(
+    referrerCode: string,
+    newUser: { email: string; name: string; accountNumber?: string }
+  ): boolean {
+    if (typeof window === 'undefined' || !referrerCode || !newUser.email) return false;
+    try {
+      const cleanCode = referrerCode.trim().toUpperCase();
+      const cleanEmail = newUser.email.trim().toLowerCase();
+
+      // Remember referrer code for this user permanently
+      this.setReferredByForUser(cleanEmail, cleanCode);
+
+      const matched = this.findReferrerByCode(cleanCode);
+      if (!matched) {
+        return false;
+      }
+
+      const { email: referrerEmail, state: currentState } = matched;
+
+      // Prevent self-referral
+      if (referrerEmail.toLowerCase() === cleanEmail) {
+        return false;
+      }
+
+      let updatedReferrals = [...currentState.referrals];
+      const existingIdx = updatedReferrals.findIndex(
+        (r) => r.referredEmail.toLowerCase() === cleanEmail
+      );
+
+      if (existingIdx >= 0) {
+        updatedReferrals[existingIdx] = {
+          ...updatedReferrals[existingIdx],
+          referredName: newUser.name.trim() || updatedReferrals[existingIdx].referredName,
+          referredAccountNumber: newUser.accountNumber || updatedReferrals[existingIdx].referredAccountNumber,
+        };
+      } else {
+        const newReferral: ReferralRecord = {
+          id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          referrerEmail: referrerEmail.toLowerCase(),
+          referrerCode: currentState.referralCode,
+          referredEmail: cleanEmail,
+          referredName: newUser.name.trim() || 'New Trader',
+          referredAccountNumber: newUser.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`,
+          totalDepositedUsd: 0.0,
+          totalCommissionUsd: 0.0,
+          status: 'ACTIVE',
+          createdAt: Date.now(),
+        };
+        updatedReferrals.unshift(newReferral);
+      }
+
+      const totalDeposited = updatedReferrals.reduce((sum, r) => sum + (r.totalDepositedUsd || 0), 0);
+      const totalEarned = updatedReferrals.reduce((sum, r) => sum + (r.totalCommissionUsd || 0), 0);
+      const totalClaimed = Number((currentState.totalClaimedUsd || 0).toFixed(2));
+      const available = Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
+
+      const nextState: ReferralState = {
+        ...currentState,
+        totalReferralsCount: updatedReferrals.length,
+        totalReferralDepositsUsd: Number(totalDeposited.toFixed(2)),
+        totalCommissionEarnedUsd: Number(totalEarned.toFixed(2)),
+        availableCommissionUsd: available,
+        referrals: updatedReferrals,
+      };
+
+      this.saveReferralState(referrerEmail, nextState);
+
+      // Trigger immediate UI refresh on all listening components
+      window.dispatchEvent(
+        new CustomEvent('vtm_referral_update', {
+          detail: { referrerEmail, newReferralEmail: cleanEmail, count: updatedReferrals.length },
+        })
+      );
+
+      return true;
+    } catch (err) {
+      console.error('[Referral] Error registering referral signup:', err);
+      return false;
+    }
+  }
+
+  /**
+   * Record a deposit for a referrer identified by their referral code or email
    */
   recordDepositForReferrerCode(
-    referrerCode: string,
+    referrerCodeOrEmail: string,
     depositAmountUsd: number,
     referredInfo?: { email?: string; name?: string; accountNumber?: string; reference?: string }
   ): void {
-    if (typeof window === 'undefined' || !referrerCode || depositAmountUsd < 16) return;
+    if (typeof window === 'undefined' || depositAmountUsd < 16) return;
     try {
-      const cleanCode = referrerCode.trim().toUpperCase();
       let matchedEmail: string | null = null;
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
-          try {
-            const parsed = JSON.parse(localStorage.getItem(key) || '{}');
-            if (parsed.referralCode === cleanCode) {
-              matchedEmail = key.replace(STORAGE_KEY_PREFIX, '');
-              break;
-            }
-          } catch {}
+      const cleanRef = (referrerCodeOrEmail || '').trim();
+
+      if (cleanRef.includes('@')) {
+        matchedEmail = cleanRef.toLowerCase();
+      } else if (cleanRef) {
+        const matched = this.findReferrerByCode(cleanRef);
+        if (matched) {
+          matchedEmail = matched.email;
         }
       }
+
+      // Fallback: check if depositing user has an attributed referrer
+      if (!matchedEmail && referredInfo?.email) {
+        const storedCode = this.getReferredByCodeForUser(referredInfo.email);
+        if (storedCode) {
+          const matched = this.findReferrerByCode(storedCode);
+          if (matched) matchedEmail = matched.email;
+        }
+      }
+
       if (matchedEmail) {
         this.recordReferralDeposit(matchedEmail, depositAmountUsd, referredInfo);
+        window.dispatchEvent(
+          new CustomEvent('vtm_referral_update', {
+            detail: { referrerEmail: matchedEmail, depositAmountUsd },
+          })
+        );
       }
     } catch {
       // ignore
