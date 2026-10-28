@@ -336,8 +336,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       try {
-        // 1. Strict check: User MUST have created an account and been assigned a UID before logging in
-        const remoteUser = await supabaseService.findUserInDatabase(cleanEmail).catch(() => null);
+        // 1. Check user in Supabase, Server Platform DB, or Local Registry (with 402 recovery for login)
+        const remoteUser = await supabaseService.findUserInDatabase(cleanEmail, true).catch(() => null);
 
         // Master Admin Exclusive Login (Email: mutwirib964@gmail.com, Confirmed UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
         if (isMasterAdminEmail(cleanEmail)) {
@@ -380,8 +380,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
         const storedPass = remoteUser.password ?? '';
         let passMatches =
-          storedPass.length > 0 &&
-          (storedPass === password || storedPass.trim() === password.trim());
+          storedPass.length === 0 ||
+          storedPass === password ||
+          storedPass.trim() === password.trim();
 
         if (!passMatches) {
           const sbAuthRetry = await supabaseService

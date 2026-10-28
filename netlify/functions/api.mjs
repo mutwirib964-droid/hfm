@@ -1,6 +1,7 @@
 // Netlify Serverless Function handling all /api/* routes in production on Netlify
 import WebSocket from 'ws';
 import crypto from 'crypto';
+import fs from 'fs';
 
 const TV_LIVE_SYMBOLS = {
   // Forex
@@ -1895,6 +1896,367 @@ export async function handler(event) {
       };
     });
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ success: true, evaluated, timestamp: Date.now() }) };
+  }
+
+  // 7b. Platform Database Fallback (/api/platform-db)
+  if (rawPath.includes('platform-db')) {
+    const dbFilePath = '/tmp/.platform-db.json';
+    const now = Date.now();
+    const getSeedData = () => ({
+      users: {
+        'mutwirib964@gmail.com': {
+          id: '84a1e1db-f302-4dac-a077-291128ae0cea',
+          name: 'mutwiri',
+          email: 'mutwirib964@gmail.com',
+          phoneNumber: '+254 741114162',
+          phone: '+254 741114162',
+          countryCode: '+254',
+          countryName: 'Kenya',
+          accountNumber: '27330648',
+          role: 'admin',
+          isLoggedIn: true,
+          createdAt: 1790257470000,
+        },
+        'joelndungu1022@gmail.com': {
+          id: 'c2940f1a-8e33-411b-a910-763566710220',
+          name: 'Joel Ndungu',
+          email: 'joelndungu1022@gmail.com',
+          phoneNumber: '+254 700000000',
+          phone: '+254 700000000',
+          countryCode: '+254',
+          countryName: 'Kenya',
+          accountNumber: '7635667',
+          role: 'marketer',
+          isLoggedIn: true,
+          createdAt: 1790340000000,
+        },
+        'kelvinmunene263@gmail.com': {
+          id: 'b1839e2b-7c44-422c-b821-849201402630',
+          name: 'Kelvin Munene',
+          email: 'kelvinmunene263@gmail.com',
+          phoneNumber: '+254 712345678',
+          phone: '+254 712345678',
+          countryCode: '+254',
+          countryName: 'Kenya',
+          accountNumber: '8492014',
+          role: 'normal',
+          isLoggedIn: true,
+          createdAt: 1790420000000,
+        },
+      },
+      passwords: {},
+      financesByEmail: {
+        'mutwirib964@gmail.com': {
+          walletBalance: 0,
+          accounts: [
+            {
+              id: 'acc-27330648',
+              accountNumber: '27330648',
+              server: 'VTMarkets-LiveServer1',
+              type: 'Live',
+              tier: 'Premium',
+              balance: 0,
+              equity: 0,
+              margin: 0,
+              freeMargin: 0,
+              marginLevel: 0,
+              currency: 'USD',
+              leverage: '1:500',
+              createdAt: 1790257470000,
+            },
+          ],
+          selectedAccountId: 'acc-27330648',
+          transactions: [],
+          lastUpdated: now,
+        },
+        'joelndungu1022@gmail.com': {
+          walletBalance: 352.0,
+          accounts: [
+            {
+              id: 'acc-7635667',
+              accountNumber: '7635667',
+              server: 'VTMarkets-LiveServer1',
+              type: 'Live',
+              tier: 'Premium',
+              balance: 201.39,
+              equity: 201.39,
+              margin: 0,
+              freeMargin: 201.39,
+              marginLevel: 0,
+              currency: 'USD',
+              leverage: '1:500',
+              createdAt: 1790340000000,
+            },
+            {
+              id: 'acc-7821884',
+              accountNumber: '7821884',
+              server: 'VTMarkets-DemoServer',
+              type: 'Demo',
+              tier: 'Premium',
+              balance: 131936.92,
+              equity: 131936.92,
+              margin: 0,
+              freeMargin: 131936.92,
+              marginLevel: 0,
+              currency: 'USD',
+              leverage: '1:500',
+              createdAt: 1790340000000,
+            },
+          ],
+          selectedAccountId: 'acc-7635667',
+          transactions: [
+            {
+              id: 'tx-joel-dep-1',
+              type: 'DEPOSIT',
+              method: 'M-Pesa Express',
+              amount: 352.0,
+              currency: 'USD',
+              status: 'COMPLETED',
+              timestamp: 1790341000000,
+              reference: 'MPESA-JOEL-352',
+              accountNumber: 'VTM Wallet',
+              details: 'M-Pesa Deposit to VTM Wallet',
+            },
+          ],
+          lastUpdated: now,
+        },
+        'kelvinmunene263@gmail.com': {
+          walletBalance: 0,
+          accounts: [
+            {
+              id: 'acc-8492014',
+              accountNumber: '8492014',
+              server: 'VTMarkets-LiveServer1',
+              type: 'Live',
+              tier: 'Premium',
+              balance: 16.0,
+              equity: 16.0,
+              margin: 0,
+              freeMargin: 16.0,
+              marginLevel: 0,
+              currency: 'USD',
+              leverage: '1:500',
+              createdAt: 1790420000000,
+            },
+          ],
+          selectedAccountId: 'acc-8492014',
+          transactions: [
+            {
+              id: 'tx-kelvin-dep-1',
+              type: 'DEPOSIT',
+              method: 'M-Pesa Express',
+              amount: 16.0,
+              currency: 'USD',
+              status: 'COMPLETED',
+              timestamp: 1790421000000,
+              reference: 'MPESA-KELVIN-16',
+              accountNumber: '8492014',
+              details: 'M-Pesa Deposit to #8492014',
+            },
+          ],
+          lastUpdated: now,
+        },
+      },
+      cloudStates: {},
+    });
+
+    const loadDb = () => {
+      const seed = getSeedData();
+      try {
+        if (fs.existsSync(dbFilePath)) {
+          const parsed = JSON.parse(fs.readFileSync(dbFilePath, 'utf-8'));
+          return {
+            users: { ...seed.users, ...(parsed.users || {}) },
+            passwords: { ...seed.passwords, ...(parsed.passwords || {}) },
+            financesByEmail: { ...seed.financesByEmail, ...(parsed.financesByEmail || {}) },
+            cloudStates: { ...seed.cloudStates, ...(parsed.cloudStates || {}) },
+          };
+        }
+      } catch {}
+      return seed;
+    };
+
+    const saveDb = (db) => {
+      try {
+        fs.writeFileSync(dbFilePath, JSON.stringify(db, null, 2), 'utf-8');
+      } catch {}
+    };
+
+    const db = loadDb();
+
+    if (event.httpMethod === 'GET') {
+      const emailParam = String(event.queryStringParameters?.email || '').trim().toLowerCase();
+      const stateKeyParam = String(event.queryStringParameters?.stateKey || '').trim();
+
+      if (emailParam && stateKeyParam) {
+        const data = db.cloudStates?.[emailParam]?.[stateKeyParam] || null;
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, data }) };
+      }
+
+      if (emailParam) {
+        const isAdmin =
+          emailParam === 'mutwirib964@gmail.com' ||
+          emailParam === 'mutwrib@gmail.com' ||
+          emailParam === 'mutwirib@gmail.com';
+        const lookupEmail = isAdmin ? 'mutwirib964@gmail.com' : emailParam;
+        const user = db.users[lookupEmail] || null;
+        const password = db.passwords[lookupEmail] || '';
+        const finances = db.financesByEmail[lookupEmail] || null;
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, user, password, finances }),
+        };
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          ok: true,
+          users: Object.values(db.users),
+          passwords: db.passwords,
+          financesByEmail: db.financesByEmail,
+        }),
+      };
+    }
+
+    if (event.httpMethod === 'POST') {
+      const action = body.action;
+      if (action === 'upsert_user' && body.user?.email) {
+        const rawEmail = String(body.user.email).trim().toLowerCase();
+        const isAdmin =
+          rawEmail === 'mutwirib964@gmail.com' ||
+          rawEmail === 'mutwrib@gmail.com' ||
+          rawEmail === 'mutwirib@gmail.com';
+        const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+        const existing = db.users[cleanEmail] || {};
+        db.users[cleanEmail] = {
+          ...existing,
+          ...body.user,
+          email: cleanEmail,
+          id: isAdmin
+            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+            : body.user.id || existing.id,
+          role: isAdmin
+            ? 'admin'
+            : body.user.role === 'marketer' || existing.role === 'marketer'
+            ? 'marketer'
+            : 'normal',
+          createdAt: existing.createdAt || body.user.createdAt || Date.now(),
+        };
+        if (body.password && String(body.password).trim()) {
+          db.passwords[cleanEmail] = String(body.password).trim();
+        }
+        saveDb(db);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, user: db.users[cleanEmail] }),
+        };
+      }
+
+      if (action === 'bulk_upsert_users' && Array.isArray(body.users)) {
+        let count = 0;
+        body.users.forEach((rawUser) => {
+          if (!rawUser || !rawUser.email) return;
+          const rawEmail = String(rawUser.email).trim().toLowerCase();
+          const isAdmin =
+            rawEmail === 'mutwirib964@gmail.com' ||
+            rawEmail === 'mutwrib@gmail.com' ||
+            rawEmail === 'mutwirib@gmail.com';
+          const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+          const existing = db.users[cleanEmail] || {};
+          const resolvedUid = isAdmin
+            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+            : rawUser.uid || rawUser.id || existing.id || `usr-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const safeRole = isAdmin
+            ? 'admin'
+            : rawUser.role === 'marketer' || existing.role === 'marketer'
+            ? 'marketer'
+            : 'normal';
+
+          db.users[cleanEmail] = {
+            ...existing,
+            ...rawUser,
+            email: cleanEmail,
+            id: resolvedUid,
+            name: isAdmin ? 'mutwiri' : rawUser.name || existing.name || cleanEmail.split('@')[0],
+            role: safeRole,
+            createdAt: existing.createdAt || rawUser.createdAt || (rawUser.created_at ? new Date(rawUser.created_at).getTime() : Date.now()),
+            accountNumber: rawUser.account_number || rawUser.accountNumber || existing.accountNumber || String(Math.floor(10000000 + Math.random() * 90000000)),
+            countryCode: rawUser.country_code || rawUser.countryCode || existing.countryCode || '+254',
+            countryName: rawUser.country_name || rawUser.countryName || existing.countryName || 'Kenya',
+            phoneNumber: rawUser.phone_number || rawUser.phoneNumber || existing.phoneNumber || '',
+            phone: rawUser.phone_number || rawUser.phoneNumber || existing.phone || '',
+            referredByCode: rawUser.referred_by_code || rawUser.referredByCode || existing.referredByCode || undefined,
+          };
+
+          if (rawUser.password_hash) {
+            const match = String(rawUser.password_hash).match(/^uid:[^|]+\|(.*)$/);
+            if (match && match[1]) {
+              db.passwords[cleanEmail] = match[1];
+            }
+          } else if (rawUser.password) {
+            db.passwords[cleanEmail] = String(rawUser.password).trim();
+          }
+
+          count++;
+        });
+
+        saveDb(db);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, count, totalUsers: Object.keys(db.users).length }),
+        };
+      }
+
+      if (action === 'update_role' && body.email) {
+        const rawEmail = String(body.email).trim().toLowerCase();
+        const isAdmin =
+          rawEmail === 'mutwirib964@gmail.com' ||
+          rawEmail === 'mutwrib@gmail.com' ||
+          rawEmail === 'mutwirib@gmail.com';
+        const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+        const safeRole = isAdmin ? 'admin' : body.role === 'marketer' ? 'marketer' : 'normal';
+        if (db.users[cleanEmail]) {
+          db.users[cleanEmail].role = safeRole;
+        }
+        saveDb(db);
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({ ok: true, user: db.users[cleanEmail] }),
+        };
+      }
+
+      if (action === 'upsert_finances' && body.email && body.finances) {
+        const rawEmail = String(body.email).trim().toLowerCase();
+        const isAdmin =
+          rawEmail === 'mutwirib964@gmail.com' ||
+          rawEmail === 'mutwrib@gmail.com' ||
+          rawEmail === 'mutwirib@gmail.com';
+        const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+        db.financesByEmail[cleanEmail] = {
+          ...(db.financesByEmail[cleanEmail] || {}),
+          ...body.finances,
+          lastUpdated: Date.now(),
+        };
+        saveDb(db);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
+      }
+
+      if (action === 'upsert_cloud_state' && body.email && body.stateKey) {
+        const cleanEmail = String(body.email).trim().toLowerCase();
+        if (!db.cloudStates[cleanEmail]) db.cloudStates[cleanEmail] = {};
+        db.cloudStates[cleanEmail][body.stateKey] = body.data;
+        saveDb(db);
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true }) };
+      }
+
+      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok: false }) };
+    }
   }
 
   // 8. ForexFactory Calendar (/api/forexfactory-calendar)

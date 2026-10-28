@@ -23,6 +23,10 @@ import {
   FileText,
   Gift,
   Share2,
+  UploadCloud,
+  AlertTriangle,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -43,6 +47,7 @@ import {
   MASTER_ADMIN_UID,
   isMasterAdminEmail,
   replaceLocalRegistryWithSupabase,
+  bulkImportUsersLocally,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
@@ -116,6 +121,69 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     text: string;
     type: 'success' | 'error' | 'info';
   } | null>(null);
+
+  // Supabase 50+ Users Direct Import & Quota State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importRawJsonText, setImportRawJsonText] = useState('');
+  const [isImportingUsers, setIsImportingUsers] = useState(false);
+  const [importFeedback, setImportFeedback] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [sqlCopied, setSqlCopied] = useState(false);
+  const [isQuotaNoticeDismissed, setIsQuotaNoticeDismissed] = useState(false);
+  const isSupabaseQuotaRestricted = supabaseService.isProjectRestrictedByQuota();
+
+  const handleCopyExportSql = () => {
+    const sql = `SELECT json_agg(u) FROM (\n  SELECT email, uid, password_hash, name, phone_number, country_code, country_name, account_number, role, created_at\n  FROM public.vtm_registered_users\n) u;`;
+    navigator.clipboard.writeText(sql);
+    setSqlCopied(true);
+    setTimeout(() => setSqlCopied(false), 2500);
+  };
+
+  const handleBulkImportUsers = async () => {
+    if (!importRawJsonText.trim()) {
+      setImportFeedback({ text: 'Please paste the JSON output or user records from Supabase.', type: 'error' });
+      return;
+    }
+    setIsImportingUsers(true);
+    setImportFeedback(null);
+    try {
+      let rawList: any[] = [];
+      const trimmed = importRawJsonText.trim();
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        const parsed = JSON.parse(trimmed);
+        rawList = Array.isArray(parsed) ? parsed : [parsed];
+      } else {
+        const emails = trimmed.split(/[\n,]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@'));
+        rawList = emails.map((em) => ({ email: em }));
+      }
+
+      if (rawList.length === 0) {
+        setImportFeedback({ text: 'No valid user emails or records found in the input.', type: 'error' });
+        setIsImportingUsers(false);
+        return;
+      }
+
+      const localCount = bulkImportUsersLocally(rawList);
+      await supabaseService.bulkImportUsers(rawList);
+      loadLocalAdminMetrics();
+
+      setImportFeedback({
+        text: `Success! Synced ${localCount} users from Supabase into the system database.`,
+        type: 'success',
+      });
+      setTimeout(() => {
+        setIsImportModalOpen(false);
+        setImportRawJsonText('');
+        setImportFeedback(null);
+      }, 1800);
+    } catch (err: any) {
+      setImportFeedback({
+        text: `Invalid JSON format: ${err.message || 'Please verify the pasted data'}.`,
+        type: 'error',
+      });
+    } finally {
+      setIsImportingUsers(false);
+    }
+  };
 
   const loadLocalAdminMetrics = useCallback(() => {
     const metrics = getAllPlatformUsersWithMetrics();
@@ -196,8 +264,10 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     loadLocalAdminMetrics();
     syncFromSupabaseCloud();
     const interval = setInterval(() => {
-      syncFromSupabaseCloud();
-    }, 8000);
+      if (typeof document === 'undefined' || !document.hidden) {
+        syncFromSupabaseCloud();
+      }
+    }, 20000);
     return () => clearInterval(interval);
   }, [isOpen]);
 
@@ -747,7 +817,20 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                setImportFeedback(null);
+                setIsImportModalOpen(true);
+              }}
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors bg-blue-600 hover:bg-blue-500 border-blue-500 text-white shadow-xs"
+              title="Sync 50+ Users from Supabase"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>Sync 50+ Users</span>
+            </button>
+
             <button
               type="button"
               onClick={syncFromSupabaseCloud}
@@ -820,6 +903,50 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
       {/* MAIN CONTAINER */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {/* Supabase Egress Quota Diagnostic & Direct Sync Banner */}
+        {isSupabaseQuotaRestricted && !isQuotaNoticeDismissed && (
+          <div className={`p-4 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs ${
+            isDarkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-900'
+          }`}>
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div className="font-bold text-sm flex items-center gap-1.5">
+                  <span>Supabase Egress Bandwidth Reached (HTTP 402)</span>
+                  <span className="px-1.5 py-0.5 text-[10px] font-mono rounded bg-amber-500/20 text-amber-300">
+                    exceed_egress_quota
+                  </span>
+                </div>
+                <p className="leading-relaxed opacity-90 max-w-3xl">
+                  Supabase has temporarily capped direct REST API queries because monthly egress bandwidth was exceeded. All your 50+ registered users are completely safe in Supabase!
+                  To resume automatic REST sync: In Supabase Dashboard, go to <strong>Project Settings → Billing</strong> and turn off Spend Cap.
+                  Or click <strong>Sync 50+ Users</strong> to load all users into the platform database right now.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setImportFeedback(null);
+                  setIsImportModalOpen(true);
+                }}
+                className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold cursor-pointer shadow-xs whitespace-nowrap"
+              >
+                Sync 50+ Users
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsQuotaNoticeDismissed(true)}
+                className="px-2 py-1.5 rounded-lg opacity-70 hover:opacity-100 cursor-pointer"
+                title="Dismiss notice"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* EXECUTIVE KPI SUMMARY ROW (4 CARDS: USERS, MONEY DEPOSITED, LIVE ACCOUNTS, MARKETER REFERRALS) */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {/* KPI 1: Number of Users in the Website */}
@@ -1702,6 +1829,41 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </div>
             </div>
 
+            {/* PERIOD SUMMARY METRICS KPI CARD — Prominently at the top so Total Volume is immediately visible on mobile */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Total Volume</span>
+                <span className={`text-sm sm:text-base font-bold font-mono tracking-tight break-words ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  ${transactionPeriodMetrics.totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>{transactionPeriodMetrics.totalCount} transactions</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Approved Volume</span>
+                <span className="text-sm sm:text-base font-bold font-mono tracking-tight break-words text-emerald-600 dark:text-emerald-400">
+                  ${transactionPeriodMetrics.approvedVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className="text-[10px] block mt-0.5 text-emerald-600 dark:text-emerald-400">{transactionPeriodMetrics.completedCount} completed</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Pending Volume</span>
+                <span className="text-sm sm:text-base font-bold font-mono tracking-tight break-words text-amber-600 dark:text-amber-400">
+                  ${transactionPeriodMetrics.pendingVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>In flight</span>
+              </div>
+
+              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
+                <span className={`text-[11px] font-medium block ${mutedText}`}>Success Rate</span>
+                <span className="text-sm sm:text-base font-bold font-mono tracking-tight break-words text-sky-600 dark:text-sky-400">
+                  {transactionPeriodMetrics.successRate}%
+                </span>
+                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Execution reliability</span>
+              </div>
+            </div>
+
             {/* Filter Controls Row */}
             <div className="space-y-3">
               {/* Row 1: Search and Type Filters */}
@@ -1849,41 +2011,6 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   />
                 </div>
               )}
-            </div>
-
-            {/* PERIOD SUMMARY METRICS KPI CARD */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
-                <span className={`text-[11px] font-medium block ${mutedText}`}>Total Volume</span>
-                <span className={`text-base font-bold font-mono tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                  ${transactionPeriodMetrics.totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </span>
-                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>{transactionPeriodMetrics.totalCount} transactions</span>
-              </div>
-
-              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
-                <span className={`text-[11px] font-medium block ${mutedText}`}>Approved Volume</span>
-                <span className="text-base font-bold font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
-                  ${transactionPeriodMetrics.approvedVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </span>
-                <span className="text-[10px] block mt-0.5 text-emerald-600 dark:text-emerald-400">{transactionPeriodMetrics.completedCount} completed</span>
-              </div>
-
-              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
-                <span className={`text-[11px] font-medium block ${mutedText}`}>Pending Volume</span>
-                <span className="text-base font-bold font-mono tracking-tight text-amber-600 dark:text-amber-400">
-                  ${transactionPeriodMetrics.pendingVolume.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                </span>
-                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>In flight</span>
-              </div>
-
-              <div className={`p-3 rounded-xl border ${isDarkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-slate-50 border-slate-200'}`}>
-                <span className={`text-[11px] font-medium block ${mutedText}`}>Success Rate</span>
-                <span className="text-base font-bold font-mono tracking-tight text-sky-600 dark:text-sky-400">
-                  {transactionPeriodMetrics.successRate}%
-                </span>
-                <span className={`text-[10px] block mt-0.5 ${mutedText}`}>Execution reliability</span>
-              </div>
             </div>
 
             {/* TRANSACTIONS TABLE */}
@@ -2163,6 +2290,124 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           </section>
         )}
       </main>
+
+      {/* SYNC 50+ USERS FROM SUPABASE MODAL */}
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+          <div
+            className={`w-full max-w-xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
+              isDarkMode ? 'bg-[#0E1118] border-white/10 text-white' : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            {/* Modal Header */}
+            <div className={`p-4 sm:p-5 border-b flex items-center justify-between ${
+              isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'
+            }`}>
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-600/15 text-blue-500">
+                  <UploadCloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold">Sync 50+ Users from Supabase</h3>
+                  <p className={`text-xs ${mutedText}`}>
+                    Instantly import and populate all registered accounts into the platform database.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className={`p-1.5 rounded-lg text-xs cursor-pointer ${
+                  isDarkMode ? 'hover:bg-white/10 text-slate-400' : 'hover:bg-slate-100 text-slate-600'
+                }`}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1">
+              {/* Step 1: SQL Export Query */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className={`text-xs font-semibold ${mutedText}`}>
+                    Step 1: Run this 1-line query in Supabase SQL Editor
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleCopyExportSql}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-blue-600/15 hover:bg-blue-600/25 text-blue-500 cursor-pointer flex items-center gap-1 transition-colors"
+                  >
+                    {sqlCopied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                    <span>{sqlCopied ? 'Copied SQL!' : 'Copy SQL Script'}</span>
+                  </button>
+                </div>
+                <div className={`p-2.5 rounded-lg font-mono text-[11px] border overflow-x-auto select-all ${
+                  isDarkMode ? 'bg-[#090B10] border-white/[0.06] text-emerald-400' : 'bg-slate-50 border-slate-200 text-emerald-700'
+                }`}>
+                  SELECT json_agg(u) FROM (SELECT email, uid, password_hash, name, phone_number, country_code, country_name, account_number, role, created_at FROM public.vtm_registered_users) u;
+                </div>
+              </div>
+
+              {/* Step 2: Paste Output */}
+              <div className="space-y-1.5">
+                <label className={`text-xs font-semibold ${mutedText}`}>
+                  Step 2: Paste the JSON output or users list below
+                </label>
+                <textarea
+                  rows={6}
+                  value={importRawJsonText}
+                  onChange={(e) => setImportRawJsonText(e.target.value)}
+                  placeholder='Paste the JSON result from Supabase here (e.g. [{"email": "user@example.com", "name": "Trader", ...}]) or a list of emails...'
+                  className={`w-full p-3 rounded-xl border text-xs font-mono outline-none focus:border-blue-500 transition-colors resize-none ${inputBg}`}
+                />
+              </div>
+
+              {/* Feedback Alert */}
+              {importFeedback && (
+                <div
+                  className={`p-3 rounded-lg text-xs font-medium flex items-center gap-2 ${
+                    importFeedback.type === 'success'
+                      ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400'
+                      : 'bg-rose-500/15 border border-rose-500/30 text-rose-400'
+                  }`}
+                >
+                  {importFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-500" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                  )}
+                  <span>{importFeedback.text}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className={`p-4 sm:p-5 border-t flex items-center justify-end gap-2.5 ${
+              isDarkMode ? 'border-white/[0.08]' : 'border-slate-200'
+            }`}>
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  isDarkMode ? 'hover:bg-white/10 text-slate-300' : 'hover:bg-slate-100 text-slate-700'
+                }`}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkImportUsers}
+                disabled={isImportingUsers || !importRawJsonText.trim()}
+                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all"
+              >
+                <UploadCloud className={`w-4 h-4 ${isImportingUsers ? 'animate-bounce' : ''}`} />
+                <span>{isImportingUsers ? 'Syncing Users...' : 'Sync All Users Now'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -379,17 +379,17 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                   </span>
                 </div>
 
-                {/* Referral Link Input — min-w-0 w-0 flex-1 prevents mobile flexbox overflow */}
+                {/* Referral Link Input — stacks vertically on mobile to prevent overflow */}
                 <div className="min-w-0 w-full">
                   <label className={`text-[11px] font-medium block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Your Personal Referral Link:
                   </label>
-                  <div className="flex items-center gap-1.5 sm:gap-2 w-full min-w-0">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full min-w-0">
                     <input
                       type="text"
                       readOnly
                       value={state.referralLink}
-                      className={`min-w-0 w-0 flex-1 px-2.5 sm:px-3 py-2 rounded-xl text-[11px] sm:text-xs font-mono border outline-none truncate ${
+                      className={`w-full sm:w-0 sm:flex-1 px-3 py-2 rounded-xl text-xs font-mono border outline-none truncate ${
                         isDarkMode
                           ? 'bg-[#0E1117] border-neutral-700 text-neutral-200'
                           : 'bg-white border-slate-300 text-slate-800'
@@ -398,7 +398,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                     <button
                       type="button"
                       onClick={handleCopyLink}
-                      className="px-2.5 sm:px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shrink-0 whitespace-nowrap shadow-xs"
+                      className="w-full sm:w-auto px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 shadow-xs"
                     >
                       {copiedLink ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Copy className="w-3.5 h-3.5 shrink-0" />}
                       <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
@@ -411,9 +411,9 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                   <label className={`text-[11px] font-medium block mb-1 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Your Referral Code:
                   </label>
-                  <div className="flex items-center gap-1.5 sm:gap-2 w-full min-w-0">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full min-w-0">
                     <div
-                      className={`min-w-0 w-0 flex-1 px-2.5 sm:px-3 py-2 rounded-xl text-xs font-mono font-bold tracking-wider border truncate ${
+                      className={`w-full sm:w-0 sm:flex-1 px-3 py-2 rounded-xl text-xs font-mono font-bold tracking-wider border truncate text-center sm:text-left ${
                         isDarkMode
                           ? 'bg-[#0E1117] border-neutral-700 text-emerald-400'
                           : 'bg-white border-slate-300 text-emerald-700'
@@ -424,7 +424,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                     <button
                       type="button"
                       onClick={handleCopyCode}
-                      className="px-2.5 sm:px-3.5 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer shrink-0 whitespace-nowrap"
+                      className="w-full sm:w-auto px-4 py-2 rounded-xl bg-neutral-700 hover:bg-neutral-600 text-white text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
                     >
                       {copiedCode ? <Check className="w-3.5 h-3.5 shrink-0" /> : <Copy className="w-3.5 h-3.5 shrink-0" />}
                       <span>{copiedCode ? 'Copied' : 'Copy Code'}</span>

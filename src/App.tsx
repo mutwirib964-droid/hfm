@@ -958,10 +958,12 @@ export default function App() {
 
     syncUserWithSupabase(true);
 
-    // Fast polling (every 2 seconds) so Admin edits to Marketer Role or Live Accounts take effect immediately
+    // Poll cloud updates without exhausting Supabase egress bandwidth
     const pollInterval = setInterval(() => {
-      syncUserWithSupabase(false);
-    }, 2000);
+      if (typeof document === 'undefined' || !document.hidden) {
+        syncUserWithSupabase(false);
+      }
+    }, 20000);
 
 
 
