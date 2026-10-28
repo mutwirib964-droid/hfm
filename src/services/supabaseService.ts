@@ -789,7 +789,7 @@ class SupabaseService {
       if (!this.isQuotaRestricted()) {
         const [usersRes, finRes, actRes] = await Promise.all([
           fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?select=email,uid,password_hash,name,phone_number,country_code,country_name,account_number,role,created_at,referred_by_code&order=created_at.desc&limit=5000`,
+            `${this.config.url}/rest/v1/vtm_registered_users?select=*&order=created_at.desc&limit=5000`,
             {
               method: 'GET',
               headers: {
@@ -811,14 +811,14 @@ class SupabaseService {
             }
           ).catch(() => null),
           fetch(
-            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=150`,
+            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
             {
               method: 'GET',
               headers: {
                 apikey: this.config.anonKey,
                 Authorization: `Bearer ${this.config.anonKey}`,
               },
-              signal: AbortSignal.timeout(5000),
+              signal: AbortSignal.timeout(6000),
             }
           ).catch(() => null),
         ]);
@@ -840,11 +840,16 @@ class SupabaseService {
         }
       }
 
+      const hasCloudData =
+        (Array.isArray(usersRows) && usersRows.length > 0) ||
+        (Array.isArray(finRows) && finRows.length > 0);
+
       const financesByEmail: Record<string, UserFinancialState> = {};
       const deletedByEmail: Record<string, Set<string>> = {};
       const uidByEmail: Record<string, string> = {};
       const nameByEmail: Record<string, string> = {};
       const referredByEmail: Record<string, string> = {};
+      const signupTimeByEmail: Record<string, number> = {};
 
       const getDeletedSetForEmail = (email: string): Set<string> => {
         const clean = email.trim().toLowerCase();
@@ -859,6 +864,16 @@ class SupabaseService {
           const actEmail = String(act?.user_email || '').trim().toLowerCase();
           if (actEmail && act?.metadata?.referredByCode) {
             referredByEmail[actEmail] = String(act.metadata.referredByCode).trim().toUpperCase();
+          }
+          if (
+            actEmail &&
+            (act?.activity_type === 'REGISTRATION' || act?.activity_type === 'SIGNUP') &&
+            act?.created_at
+          ) {
+            const ts = new Date(act.created_at).getTime();
+            if (Number.isFinite(ts) && ts > 0) {
+              signupTimeByEmail[actEmail] = ts;
+            }
           }
           if (act && act.activity_type === 'ACCOUNT_DELETED' && !act.metadata?.silent) {
             const accNum = act.metadata?.accountNumber;
@@ -1111,6 +1126,10 @@ class SupabaseService {
           const resolvedRefCode =
             row.referred_by_code || referredByEmail[canonicalEmail] || undefined;
 
+          const rowCreatedAt = row.created_at
+            ? new Date(row.created_at).getTime()
+            : signupTimeByEmail[canonicalEmail] || Date.now();
+
           usersMap.set(canonicalEmail, {
             id: resolvedUid,
             name: isAdmin ? 'mutwiri' : row.name || nameByEmail[canonicalEmail] || 'Trader',
@@ -1122,7 +1141,7 @@ class SupabaseService {
             accountNumber: row.account_number || '27330648',
             role: safeRole,
             isLoggedIn: false,
-            createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+            createdAt: rowCreatedAt,
             referredByCode: resolvedRefCode,
           });
         });
@@ -1155,91 +1174,92 @@ class SupabaseService {
             accountNumber: firstAccNum,
             role: isAdmin ? 'admin' : 'normal',
             isLoggedIn: false,
-            createdAt: fin?.lastUpdated || Date.now(),
+            createdAt: signupTimeByEmail[canonicalEmail] || fin?.lastUpdated || Date.now(),
             referredByCode: referredByEmail[canonicalEmail] || undefined,
           });
         }
       });
 
-      // Merge users and financials from Server Platform DB (/api/platform-db) and Local Registry
-      try {
-        const srvRes = await fetch('/api/platform-db', {
-          method: 'GET',
-          signal: AbortSignal.timeout(4000),
-        });
-        if (srvRes.ok) {
-          const srvData = await srvRes.json();
-          if (srvData?.ok) {
-            if (Array.isArray(srvData.users)) {
-              srvData.users.forEach((u: any) => {
-                if (!u || !u.email) return;
-                const isAdmin = this.isMasterAdminEmail(u.email);
-                const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : String(u.email).trim().toLowerCase();
-                const existing = usersMap.get(canonicalEmail);
-                const resolvedUid = isAdmin
-                  ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                  : this.isValidUuid(existing?.id)
-                  ? existing!.id
-                  : this.isValidUuid(u.id)
-                  ? u.id
-                  : this.deterministicUuidFromEmail(canonicalEmail);
-                usersMap.set(canonicalEmail, {
-                  ...(existing || {}),
-                  ...u,
-                  id: resolvedUid,
-                  email: canonicalEmail,
-                  name: isAdmin ? 'mutwiri' : existing?.name || u.name || canonicalEmail.split('@')[0],
-                  role: isAdmin
-                    ? 'admin'
-                    : existing?.role === 'marketer' || u.role === 'marketer'
-                    ? 'marketer'
-                    : 'normal',
-                  referredByCode: existing?.referredByCode || u.referredByCode,
+      // Only fall back to Server Platform DB or Local Registry if Supabase returned no rows (e.g. offline/quota)
+      if (!hasCloudData) {
+        try {
+          const srvRes = await fetch('/api/platform-db', {
+            method: 'GET',
+            signal: AbortSignal.timeout(4000),
+          });
+          if (srvRes.ok) {
+            const srvData = await srvRes.json();
+            if (srvData?.ok) {
+              if (Array.isArray(srvData.users)) {
+                srvData.users.forEach((u: any) => {
+                  if (!u || !u.email) return;
+                  const isAdmin = this.isMasterAdminEmail(u.email);
+                  const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : String(u.email).trim().toLowerCase();
+                  const existing = usersMap.get(canonicalEmail);
+                  const resolvedUid = isAdmin
+                    ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+                    : this.isValidUuid(existing?.id)
+                    ? existing!.id
+                    : this.isValidUuid(u.id)
+                    ? u.id
+                    : this.deterministicUuidFromEmail(canonicalEmail);
+                  usersMap.set(canonicalEmail, {
+                    ...(existing || {}),
+                    ...u,
+                    id: resolvedUid,
+                    email: canonicalEmail,
+                    name: isAdmin ? 'mutwiri' : existing?.name || u.name || canonicalEmail.split('@')[0],
+                    role: isAdmin
+                      ? 'admin'
+                      : existing?.role === 'marketer' || u.role === 'marketer'
+                      ? 'marketer'
+                      : 'normal',
+                    referredByCode: existing?.referredByCode || u.referredByCode,
+                  });
                 });
-              });
-            }
-            if (srvData.financesByEmail && typeof srvData.financesByEmail === 'object') {
-              Object.entries(srvData.financesByEmail).forEach(([em, srvFin]: [string, any]) => {
-                const canonicalEmail = this.isMasterAdminEmail(em)
-                  ? 'mutwirib964@gmail.com'
-                  : em.trim().toLowerCase();
-                if (!financesByEmail[canonicalEmail] || (financesByEmail[canonicalEmail].accounts?.length || 0) === 0) {
-                  financesByEmail[canonicalEmail] = srvFin;
-                }
-              });
+              }
+              if (srvData.financesByEmail && typeof srvData.financesByEmail === 'object') {
+                Object.entries(srvData.financesByEmail).forEach(([em, srvFin]: [string, any]) => {
+                  const canonicalEmail = this.isMasterAdminEmail(em)
+                    ? 'mutwirib964@gmail.com'
+                    : em.trim().toLowerCase();
+                  if (!financesByEmail[canonicalEmail]) {
+                    financesByEmail[canonicalEmail] = srvFin;
+                  }
+                });
+              }
             }
           }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
 
-      // Also merge any local registry users and their local financials
-      try {
-        const localUsers = getAllRegisteredUsers();
-        localUsers.forEach((lu) => {
-          if (!lu || !lu.email) return;
-          const isAdmin = this.isMasterAdminEmail(lu.email);
-          const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : lu.email.trim().toLowerCase();
-          if (!usersMap.has(canonicalEmail)) {
-            usersMap.set(canonicalEmail, {
-              ...lu,
-              id: isAdmin
-                ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                : this.isValidUuid(lu.id)
-                ? lu.id
-                : this.deterministicUuidFromEmail(canonicalEmail),
-              email: canonicalEmail,
-              role: isAdmin ? 'admin' : lu.role === 'marketer' ? 'marketer' : 'normal',
-            });
-          }
-          const localFin = loadUserFinancials(lu);
-          if (localFin && (!financesByEmail[canonicalEmail] || (financesByEmail[canonicalEmail].accounts?.length || 0) === 0)) {
-            financesByEmail[canonicalEmail] = localFin;
-          }
-        });
-      } catch {
-        // ignore
+        try {
+          const localUsers = getAllRegisteredUsers();
+          localUsers.forEach((lu) => {
+            if (!lu || !lu.email) return;
+            const isAdmin = this.isMasterAdminEmail(lu.email);
+            const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : lu.email.trim().toLowerCase();
+            if (!usersMap.has(canonicalEmail)) {
+              usersMap.set(canonicalEmail, {
+                ...lu,
+                id: isAdmin
+                  ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+                  : this.isValidUuid(lu.id)
+                  ? lu.id
+                  : this.deterministicUuidFromEmail(canonicalEmail),
+                email: canonicalEmail,
+                role: isAdmin ? 'admin' : lu.role === 'marketer' ? 'marketer' : 'normal',
+              });
+            }
+            const localFin = loadUserFinancials(lu);
+            if (localFin && !financesByEmail[canonicalEmail]) {
+              financesByEmail[canonicalEmail] = localFin;
+            }
+          });
+        } catch {
+          // ignore
+        }
       }
 
       // Guarantee Master Admin is always present with confirmed UID
@@ -1259,8 +1279,14 @@ class SupabaseService {
         });
       }
 
+      const sortedUsers = Array.from(usersMap.values()).sort((a, b) => {
+        const tsA = typeof a.createdAt === 'number' ? a.createdAt : a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const tsB = typeof b.createdAt === 'number' ? b.createdAt : b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return (Number.isFinite(tsB) ? tsB : 0) - (Number.isFinite(tsA) ? tsA : 0);
+      });
+
       return {
-        users: Array.from(usersMap.values()),
+        users: sortedUsers,
         financesByEmail,
       };
     } catch (e) {

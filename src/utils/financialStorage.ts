@@ -730,21 +730,6 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
         } else if (key.startsWith('vtm_referral_state_')) {
           const em = key.slice('vtm_referral_state_'.length).trim().toLowerCase();
           recordDiscoveredEmail(em);
-          try {
-            const refState = JSON.parse(localStorage.getItem(key) || '{}');
-            if (Array.isArray(refState.referrals)) {
-              refState.referrals.forEach((r: any) => {
-                if (r?.referredEmail) {
-                  recordDiscoveredEmail(r.referredEmail, {
-                    name: r.referredName,
-                    accountNumber: r.referredAccountNumber,
-                    createdAt: r.createdAt,
-                    referredByCode: refState.referralCode,
-                  });
-                }
-              });
-            }
-          } catch {}
         } else if (
           key.startsWith('vtm_open_positions_') ||
           key.startsWith('vtm_closed_trades_') ||
@@ -1103,7 +1088,10 @@ export function replaceLocalRegistryWithSupabase(
 ): void {
   try {
     const existingRegistry = ensureDefaultPlatformRegistry();
-    const newRegistry: Record<string, UserAuthProfile> = { ...existingRegistry };
+    const isAuthoritativeCloudSync = cloudUsers.length > 3 || Object.keys(financesByEmail).length > 3;
+    const newRegistry: Record<string, UserAuthProfile> = isAuthoritativeCloudSync
+      ? {}
+      : { ...existingRegistry };
 
     cloudUsers.forEach((u) => {
       if (!u || !u.email) return;
@@ -1111,7 +1099,13 @@ export function replaceLocalRegistryWithSupabase(
       const cleanEmail = isMaster ? MASTER_ADMIN_EMAIL : u.email.trim().toLowerCase();
       if (!isMaster && !isValidUserUid(u.id)) return;
 
-      const prev = newRegistry[cleanEmail];
+      const prev = existingRegistry[cleanEmail];
+      const verifiedLocalRefCode = localStorage.getItem(`vtm_user_referred_by_${cleanEmail}`) || undefined;
+      const resolvedCreatedAt =
+        u.createdAt && u.createdAt !== 1790400000000
+          ? u.createdAt
+          : prev?.createdAt || u.createdAt || Date.now();
+
       const profile: UserAuthProfile = {
         ...(prev || {}),
         ...u,
@@ -1123,25 +1117,46 @@ export function replaceLocalRegistryWithSupabase(
           : u.role === 'marketer' || prev?.role === 'marketer'
           ? 'marketer'
           : 'normal',
-        referredByCode: u.referredByCode || prev?.referredByCode,
+        createdAt: resolvedCreatedAt,
+        referredByCode: u.referredByCode || verifiedLocalRefCode || undefined,
         isLoggedIn: true,
       };
       newRegistry[cleanEmail] = profile;
 
       const fin = financesByEmail[cleanEmail] || financesByEmail[u.email.toLowerCase()];
       if (fin) {
-        const existingLocal = loadUserFinancials(profile);
-        const mergedState = existingLocal
-          ? mergeUserFinancialStates(fin, existingLocal, cleanEmail)
-          : {
-              ...fin,
-              walletBalance: reconcileWalletBalanceWithTransactions(
-                Number(fin.walletBalance || 0),
-                fin.transactions,
-                fin.accounts
-              ),
-            };
-        localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(mergedState));
+        if (isAuthoritativeCloudSync) {
+          // Use authoritative Supabase financial state so Android & Desktop match 100% without stale local test deposits
+          const cleanTxs = sanitizeRealTransactions(fin.transactions);
+          const authoritativeState: UserFinancialState = {
+            ...fin,
+            walletBalance: reconcileWalletBalanceWithTransactions(
+              Number(fin.walletBalance || 0),
+              cleanTxs,
+              fin.accounts
+            ),
+            accounts: Array.isArray(fin.accounts) ? fin.accounts : [],
+            transactions: cleanTxs,
+            lastUpdated: fin.lastUpdated || Date.now(),
+          };
+          localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(authoritativeState));
+        } else {
+          const existingLocal = loadUserFinancials(profile);
+          const mergedState = existingLocal
+            ? mergeUserFinancialStates(fin, existingLocal, cleanEmail)
+            : {
+                ...fin,
+                walletBalance: reconcileWalletBalanceWithTransactions(
+                  Number(fin.walletBalance || 0),
+                  fin.transactions,
+                  fin.accounts
+                ),
+              };
+          localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(mergedState));
+        }
+      } else if (isAuthoritativeCloudSync && !SEEDED_PLATFORM_FINANCES[cleanEmail]) {
+        // User has no financial record in Supabase — clear any stale local test finances on this device
+        localStorage.removeItem(STORAGE_PREFIX + cleanEmail);
       }
     });
 
@@ -1303,6 +1318,13 @@ export function getAllRegisteredUsers(): UserAuthProfile[] {
           role: u.role === 'marketer' ? 'marketer' : 'normal',
         });
       }
+    });
+
+    // Sort users newest first (descending by createdAt) and oldest at the bottom
+    usersList.sort((a, b) => {
+      const tsA = typeof a.createdAt === 'number' ? a.createdAt : a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const tsB = typeof b.createdAt === 'number' ? b.createdAt : b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return (Number.isFinite(tsB) ? tsB : 0) - (Number.isFinite(tsA) ? tsA : 0);
     });
 
     return usersList;
@@ -1677,6 +1699,20 @@ export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
       depositsCount: completedDeposits.length,
       lastActive: finances?.lastUpdated || u.createdAt,
     };
+  }).sort((a, b) => {
+    const tsA =
+      typeof a.user.createdAt === 'number'
+        ? a.user.createdAt
+        : a.user.createdAt
+        ? new Date(a.user.createdAt).getTime()
+        : 0;
+    const tsB =
+      typeof b.user.createdAt === 'number'
+        ? b.user.createdAt
+        : b.user.createdAt
+        ? new Date(b.user.createdAt).getTime()
+        : 0;
+    return (Number.isFinite(tsB) ? tsB : 0) - (Number.isFinite(tsA) ? tsA : 0);
   });
 }
 

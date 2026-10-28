@@ -122,16 +122,13 @@ class ReferralService {
   }
 
   /**
-   * Get referral code assigned to a specific user
+   * Get referral code assigned to a specific user (never falls back to global incoming link code)
    */
   getReferredByCodeForUser(userEmail?: string): string | null {
-    if (typeof window === 'undefined' || !userEmail) return this.getReferredByCode();
+    if (typeof window === 'undefined' || !userEmail) return null;
     try {
       const cleanEmail = userEmail.trim().toLowerCase();
-      return (
-        localStorage.getItem(`vtm_user_referred_by_${cleanEmail}`) ||
-        localStorage.getItem(INCOMING_REF_KEY)
-      );
+      return localStorage.getItem(`vtm_user_referred_by_${cleanEmail}`) || null;
     } catch {
       return null;
     }
@@ -146,7 +143,7 @@ class ReferralService {
       const cleanEmail = userEmail.trim().toLowerCase();
       const cleanCode = referrerCode.trim().toUpperCase();
       localStorage.setItem(`vtm_user_referred_by_${cleanEmail}`, cleanCode);
-      localStorage.setItem(INCOMING_REF_KEY, cleanCode);
+      localStorage.removeItem(INCOMING_REF_KEY);
     } catch {
       // ignore
     }
@@ -191,8 +188,10 @@ class ReferralService {
     const emailKey = (userEmail || 'guest@vtm.com').trim().toLowerCase();
     const referralCode = this.getReferralCode(userEmail, userAccountNumber);
     const referralLink = this.getReferralLink(referralCode);
+    const codeUpper = referralCode.trim().toUpperCase();
 
     let stored: any = null;
+    let registryMap: Record<string, any> = {};
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem(`${STORAGE_KEY_PREFIX}${emailKey}`);
@@ -200,30 +199,34 @@ class ReferralService {
       } catch {
         stored = null;
       }
+      try {
+        const rawMainReg = localStorage.getItem('vtm_user_registry');
+        const rawLegacyReg = localStorage.getItem('vtm_registered_users_registry');
+        const mainReg = rawMainReg ? JSON.parse(rawMainReg) : {};
+        const legacyReg = rawLegacyReg ? JSON.parse(rawLegacyReg) : {};
+        registryMap = { ...legacyReg, ...mainReg };
+      } catch {
+        registryMap = {};
+      }
     }
 
-    // Filter out test, mock, or simulated referrals (e.g. VIP Trader John from previous testing)
-    const isTestReferral = (r: any): boolean => {
+    // Filter out test, mock, or simulated referrals, or unverified entries polluted by old INCOMING_REF_KEY bug
+    const isTestOrInvalidReferral = (r: any): boolean => {
       if (!r || typeof r !== 'object') return true;
       const id = String(r.id || '').toLowerCase();
       const name = String(r.referredName || '').toLowerCase();
-      const email = String(r.referredEmail || '').toLowerCase();
+      const email = String(r.referredEmail || '').trim().toLowerCase();
       if (id.startsWith('ref-sample-') || id.startsWith('ref-sim-') || id.startsWith('ref-test-')) return true;
       if (
         name.includes('vip trader') ||
         name.includes('trader john') ||
         name.includes('active referral') ||
         name.includes('sample') ||
-        name.includes('test') ||
-        name.includes('simulate') ||
-        name.includes('kevin') ||
-        name.includes('alex') ||
-        name.includes('sarah')
+        name.includes('simulate')
       ) {
         return true;
       }
       if (
-        email.includes('test') ||
         email.includes('sample') ||
         email.includes('demo') ||
         email.includes('@vtm.net') ||
@@ -231,49 +234,60 @@ class ReferralService {
       ) {
         return true;
       }
+
+      // If this user exists in the platform user registry, verify their profile actually has referredByCode === referralCode
+      const regUser = email ? registryMap[email] : null;
+      if (regUser) {
+        const verifiedCode = (
+          regUser.referredByCode ||
+          this.getReferredByCodeForUser(email) ||
+          ''
+        )
+          .trim()
+          .toUpperCase();
+        if (verifiedCode !== codeUpper) {
+          return true;
+        }
+      }
       return false;
     };
 
     const rawReferrals: ReferralRecord[] =
       stored && Array.isArray(stored.referrals)
-        ? stored.referrals.filter((r: any) => !isTestReferral(r))
+        ? stored.referrals.filter((r: any) => !isTestOrInvalidReferral(r))
         : [];
 
-    // Reconcile any registered users who signed up with this user's referralCode
-    if (typeof window !== 'undefined' && referralCode) {
+    // Reconcile any registered users who genuinely signed up with this user's referralCode
+    if (typeof window !== 'undefined' && codeUpper) {
       try {
-        const rawRegistry = localStorage.getItem('vtm_registered_users_registry');
-        if (rawRegistry) {
-          const registry: Record<string, any> = JSON.parse(rawRegistry);
-          for (const [uEmail, uProfile] of Object.entries(registry)) {
-            if (!uProfile || !uEmail) continue;
-            const cleanUEmail = (uProfile.email || uEmail).trim().toLowerCase();
-            if (cleanUEmail === emailKey) continue;
-            const userRefCode = (
-              uProfile.referredByCode ||
-              this.getReferredByCodeForUser(cleanUEmail) ||
-              ''
-            )
-              .trim()
-              .toUpperCase();
-            if (userRefCode === referralCode.toUpperCase()) {
-              const exists = rawReferrals.some(
-                (r) => (r.referredEmail || '').trim().toLowerCase() === cleanUEmail
-              );
-              if (!exists) {
-                rawReferrals.push({
-                  id: `ref-${uProfile.id || Date.now()}`,
-                  referrerEmail: emailKey,
-                  referrerCode: referralCode,
-                  referredEmail: cleanUEmail,
-                  referredName: uProfile.name || cleanUEmail.split('@')[0],
-                  referredAccountNumber: uProfile.accountNumber || '8842-1001',
-                  totalDepositedUsd: 0,
-                  totalCommissionUsd: 0,
-                  status: 'ACTIVE',
-                  createdAt: uProfile.createdAt ? new Date(uProfile.createdAt).getTime() : Date.now(),
-                });
-              }
+        for (const [uEmail, uProfile] of Object.entries(registryMap)) {
+          if (!uProfile || !uEmail) continue;
+          const cleanUEmail = (uProfile.email || uEmail).trim().toLowerCase();
+          if (cleanUEmail === emailKey) continue;
+          const userRefCode = (
+            uProfile.referredByCode ||
+            this.getReferredByCodeForUser(cleanUEmail) ||
+            ''
+          )
+            .trim()
+            .toUpperCase();
+          if (userRefCode === codeUpper) {
+            const exists = rawReferrals.some(
+              (r) => (r.referredEmail || '').trim().toLowerCase() === cleanUEmail
+            );
+            if (!exists) {
+              rawReferrals.push({
+                id: `ref-${uProfile.id || Date.now()}`,
+                referrerEmail: emailKey,
+                referrerCode: referralCode,
+                referredEmail: cleanUEmail,
+                referredName: uProfile.name || cleanUEmail.split('@')[0],
+                referredAccountNumber: uProfile.accountNumber || '8842-1001',
+                totalDepositedUsd: 0,
+                totalCommissionUsd: 0,
+                status: 'ACTIVE',
+                createdAt: uProfile.createdAt ? new Date(uProfile.createdAt).getTime() : Date.now(),
+              });
             }
           }
         }
@@ -283,10 +297,16 @@ class ReferralService {
     }
 
     // Deduplicate Events so at most ONE (the earliest/first) deposit commission event exists per referredEmail
+    const validRefEmailSet = new Set(
+      rawReferrals.map((r) => (r.referredEmail || '').trim().toLowerCase()).filter(Boolean)
+    );
     const rawEvents: ReferralCommissionEvent[] =
       stored && Array.isArray(stored.recentEvents)
         ? stored.recentEvents.filter(
-            (e: any) => !e.id?.startsWith('evt-sample-') && !e.id?.startsWith('evt-test-')
+            (e: any) =>
+              !e.id?.startsWith('evt-sample-') &&
+              !e.id?.startsWith('evt-test-') &&
+              validRefEmailSet.has(String(e.referredEmail || '').trim().toLowerCase())
           )
         : [];
 
@@ -302,26 +322,28 @@ class ReferralService {
     }
 
     // Enforce FIRST DEPOSIT ONLY for every referred user on the user/marketer dashboard
-    const cleanReferrals: ReferralRecord[] = rawReferrals.map((r) => {
-      const refEmailKey = (r.referredEmail || '').trim().toLowerCase();
-      const firstDepositFromFinances = this.getFirstDepositForUser(refEmailKey);
-      const firstEvent = firstEventByEmail.get(refEmailKey);
+    const cleanReferrals: ReferralRecord[] = rawReferrals
+      .map((r) => {
+        const refEmailKey = (r.referredEmail || '').trim().toLowerCase();
+        const firstDepositFromFinances = this.getFirstDepositForUser(refEmailKey);
+        const firstEvent = firstEventByEmail.get(refEmailKey);
 
-      let firstDepositUsd = Number(r.totalDepositedUsd || 0);
-      if (firstDepositFromFinances > 0) {
-        firstDepositUsd = firstDepositFromFinances;
-      } else if (firstEvent && Number(firstEvent.depositAmountUsd) > 0) {
-        firstDepositUsd = Number(Number(firstEvent.depositAmountUsd).toFixed(2));
-      }
+        let firstDepositUsd = Number(r.totalDepositedUsd || 0);
+        if (firstDepositFromFinances > 0) {
+          firstDepositUsd = firstDepositFromFinances;
+        } else if (firstEvent && Number(firstEvent.depositAmountUsd) > 0) {
+          firstDepositUsd = Number(Number(firstEvent.depositAmountUsd).toFixed(2));
+        }
 
-      const firstCommissionUsd = Number((firstDepositUsd * COMMISSION_RATE).toFixed(2));
+        const firstCommissionUsd = Number((firstDepositUsd * COMMISSION_RATE).toFixed(2));
 
-      return {
-        ...r,
-        totalDepositedUsd: Number(firstDepositUsd.toFixed(2)),
-        totalCommissionUsd: firstCommissionUsd,
-      };
-    });
+        return {
+          ...r,
+          totalDepositedUsd: Number(firstDepositUsd.toFixed(2)),
+          totalCommissionUsd: firstCommissionUsd,
+        };
+      })
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 
     const hasRealReferrals = cleanReferrals.length > 0;
     const cleanClaims = hasRealReferrals && stored && Array.isArray(stored.claims) ? stored.claims : [];

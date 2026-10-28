@@ -418,20 +418,36 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     return () => clearTimeout(timer);
   }, [searchQuery, loadLocalAdminMetrics]);
 
-  // Filtered users — strictly from database records (never fabricates non-existent users)
+  // Filtered users — strictly from database records, sorted newest at top and oldest at bottom
   const filteredUsers = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    return userMetrics.filter((m) => {
-      const u = m.user;
-      const matchesSearch =
-        !q ||
-        (u.name && u.name.toLowerCase().includes(q)) ||
-        (u.email && u.email.toLowerCase().includes(q)) ||
-        (u.accountNumber && u.accountNumber.toLowerCase().includes(q));
+    return userMetrics
+      .filter((m) => {
+        const u = m.user;
+        const matchesSearch =
+          !q ||
+          (u.name && u.name.toLowerCase().includes(q)) ||
+          (u.email && u.email.toLowerCase().includes(q)) ||
+          (u.accountNumber && u.accountNumber.toLowerCase().includes(q));
 
-      const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
-      return matchesSearch && matchesRole;
-    });
+        const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
+        return matchesSearch && matchesRole;
+      })
+      .sort((a, b) => {
+        const tsA =
+          typeof a.user.createdAt === 'number'
+            ? a.user.createdAt
+            : a.user.createdAt
+            ? new Date(a.user.createdAt).getTime()
+            : 0;
+        const tsB =
+          typeof b.user.createdAt === 'number'
+            ? b.user.createdAt
+            : b.user.createdAt
+            ? new Date(b.user.createdAt).getTime()
+            : 0;
+        return (Number.isFinite(tsB) ? tsB : 0) - (Number.isFinite(tsA) ? tsA : 0);
+      });
   }, [userMetrics, searchQuery, roleFilter]);
 
   // Comprehensive Filtered Transactions (Deposits and Withdrawals)
@@ -611,20 +627,30 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         const matchedMetric = userMetrics.find(
           (u) => u.user.email.toLowerCase() === (ref.referredEmail || '').toLowerCase()
         );
-        const actualDepositedUsd = Math.max(
-          Number(ref.totalDepositedUsd || 0),
-          Number(matchedMetric?.totalDepositedUsd || 0)
-        );
+        // If user exists in platform database, strictly verify their referredByCode matches this marketer
+        if (matchedMetric) {
+          const verifiedRefCode = (
+            matchedMetric.user.referredByCode ||
+            referralService.getReferredByCodeForUser(matchedMetric.user.email) ||
+            ''
+          )
+            .trim()
+            .toUpperCase();
+          if (verifiedRefCode !== refCodeUpper) {
+            return;
+          }
+        }
+        const actualDepositedUsd = matchedMetric
+          ? Number(matchedMetric.totalDepositedUsd || 0)
+          : Number(ref.totalDepositedUsd || 0);
         const commissionUsd = Number((actualDepositedUsd * 0.05).toFixed(2));
+        const joinedTs = matchedMetric?.user.createdAt || ref.createdAt || Date.now();
         mergedReferralsMap.set(key, {
           id: ref.id,
           name: matchedMetric?.user.name || ref.referredName || 'Referred Trader',
           email: ref.referredEmail || matchedMetric?.user.email || '',
           accountNumber: matchedMetric?.user.accountNumber || ref.referredAccountNumber || 'N/A',
-          joinedAt:
-            (ref.createdAt ? new Date(ref.createdAt).toISOString() : '') ||
-            matchedMetric?.user.createdAt ||
-            new Date().toISOString(),
+          joinedAt: new Date(joinedTs).toISOString(),
           totalDepositedUsd: Number(actualDepositedUsd.toFixed(2)),
           commissionUsd,
         });
@@ -644,17 +670,15 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         if (refCodeUpper && userRefCode === refCodeUpper) {
           const key = um.user.email.toLowerCase();
           const existing = mergedReferralsMap.get(key);
-          const actualDepositedUsd = Math.max(
-            Number(existing?.totalDepositedUsd || 0),
-            Number(um.totalDepositedUsd || 0)
-          );
+          const actualDepositedUsd = Number(um.totalDepositedUsd || 0);
           const commissionUsd = Number((actualDepositedUsd * 0.05).toFixed(2));
+          const joinedTs = um.user.createdAt || (existing?.joinedAt ? new Date(existing.joinedAt).getTime() : Date.now());
           mergedReferralsMap.set(key, {
             id: existing?.id || `ref-${um.user.id}`,
             name: um.user.name || existing?.name || 'Referred Trader',
             email: um.user.email,
             accountNumber: um.user.accountNumber || existing?.accountNumber || 'N/A',
-            joinedAt: existing?.joinedAt || um.user.createdAt || new Date().toISOString(),
+            joinedAt: new Date(joinedTs).toISOString(),
             totalDepositedUsd: Number(actualDepositedUsd.toFixed(2)),
             commissionUsd,
           });
@@ -662,7 +686,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       });
 
       const referralsList = Array.from(mergedReferralsMap.values()).sort(
-        (a, b) => b.totalDepositedUsd - a.totalDepositedUsd
+        (a, b) => new Date(b.joinedAt).getTime() - new Date(a.joinedAt).getTime()
       );
 
       const totalReferralsCount = referralsList.length;
