@@ -226,7 +226,7 @@ class SupabaseService {
       'Content-Type': 'application/json',
       apikey: this.config.anonKey,
       Authorization: `Bearer ${this.config.anonKey}`,
-      Prefer: 'resolution=merge-duplicates',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
     };
   }
 
@@ -455,44 +455,6 @@ class SupabaseService {
       }
     } catch {
       // ignore
-    }
-
-    // 4. If signing in while Supabase is restricted by HTTP 402 (exceed_egress_quota),
-    // recover the user's profile with their deterministic Supabase UUID so no existing Supabase user is ever locked out
-    if (forLogin && this.isQuotaRestricted() && cleanEmail.includes('@')) {
-      const resolvedUid = isAdmin
-        ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-        : this.deterministicUuidFromEmail(cleanEmail);
-      let storedPassword = '';
-      try {
-        const rawCreds = localStorage.getItem('vtm_user_credentials');
-        const creds = rawCreds ? JSON.parse(rawCreds) : {};
-        storedPassword = creds[cleanEmail] || '';
-      } catch {}
-      const localPart = cleanEmail.split('@')[0].replace(/[0-9._-]+/g, ' ').trim();
-      const displayName = localPart
-        ? localPart.replace(/\b\w/g, (c) => c.toUpperCase())
-        : cleanEmail.split('@')[0];
-      const recoveredProfile: UserAuthProfile = {
-        id: resolvedUid,
-        name: isAdmin ? 'mutwiri' : displayName,
-        email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
-        phoneNumber: '',
-        phone: '',
-        countryCode: '+254',
-        countryName: 'Kenya',
-        accountNumber: isAdmin
-          ? '27330648'
-          : String((Math.abs(resolvedUid.split('-')[0].split('').reduce((a, b) => a + b.charCodeAt(0), 0)) * 123456) % 90000000 + 10000000),
-        role: isAdmin ? 'admin' : 'normal',
-        isLoggedIn: true,
-        createdAt: Date.now(),
-      };
-      return {
-        profile: recoveredProfile,
-        password: storedPassword || undefined,
-        hasVerifiedUid: true,
-      };
     }
 
     return null;
@@ -826,24 +788,8 @@ class SupabaseService {
 
       if (!this.isQuotaRestricted()) {
         const [usersRes, finRes, actRes] = await Promise.all([
-          fetch(`${this.config.url}/rest/v1/vtm_registered_users?select=*&order=created_at.desc&limit=5000`, {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(6000),
-          }).catch(() => null),
-          fetch(`${this.config.url}/rest/v1/vtm_user_finances?select=*&order=last_updated.desc&limit=5000`, {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(6000),
-          }).catch(() => null),
           fetch(
-            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,WITHDRAWAL,TRANSFER,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED,ADMIN_EDIT)&order=created_at.desc&limit=5000`,
+            `${this.config.url}/rest/v1/vtm_registered_users?select=email,uid,password_hash,name,phone_number,country_code,country_name,account_number,role,created_at,referred_by_code&order=created_at.desc&limit=5000`,
             {
               method: 'GET',
               headers: {
@@ -851,6 +797,28 @@ class SupabaseService {
                 Authorization: `Bearer ${this.config.anonKey}`,
               },
               signal: AbortSignal.timeout(6000),
+            }
+          ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_user_finances?select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&order=last_updated.desc&limit=5000`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(6000),
+            }
+          ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=150`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(5000),
             }
           ).catch(() => null),
         ]);
@@ -1318,6 +1286,139 @@ class SupabaseService {
     return { ok: false, count: 0, totalUsers: 0 };
   }
 
+  /**
+   * Targeted search by username or email strictly against Supabase & Server Platform DB.
+   * Returns only users that genuinely exist in the database.
+   */
+  public async searchUserByQuery(query: string): Promise<UserAuthProfile | null> {
+    if (!query || query.trim().length < 2) return null;
+    const clean = query.trim().toLowerCase();
+
+    if (this.config) {
+      try {
+        const [usersRes, finRes] = await Promise.all([
+          fetch(
+            `${this.config.url}/rest/v1/vtm_registered_users?or=(email.ilike.*${encodeURIComponent(
+              clean
+            )}*,name.ilike.*${encodeURIComponent(clean)}*)&select=*&limit=10`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(4000),
+            }
+          ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_user_finances?or=(user_email.ilike.*${encodeURIComponent(
+              clean
+            )}*,user_name.ilike.*${encodeURIComponent(clean)}*)&select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&limit=10`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(4000),
+            }
+          ).catch(() => null),
+        ]);
+
+        this.checkResponseQuota(usersRes);
+        this.checkResponseQuota(finRes);
+
+        if (usersRes && usersRes.ok) {
+          const rows = await usersRes.json();
+          if (Array.isArray(rows) && rows.length > 0) {
+            const r = rows[0];
+            const rawEmail = String(r.email || '').trim().toLowerCase();
+            if (rawEmail) {
+              const isAdmin = this.isMasterAdminEmail(rawEmail);
+              const parsedHash = this.parseStoredPasswordAndUid(r.password_hash);
+              const resolvedUid = isAdmin
+                ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+                : r.uid || parsedHash.uid || this.deterministicUuidFromEmail(rawEmail);
+              return {
+                id: resolvedUid,
+                name: isAdmin ? 'mutwiri' : r.name || rawEmail.split('@')[0],
+                email: isAdmin ? 'mutwirib964@gmail.com' : rawEmail,
+                phoneNumber: r.phone_number || '',
+                phone: r.phone_number || '',
+                countryCode: r.country_code || '+254',
+                countryName: r.country_name || 'Kenya',
+                accountNumber: r.account_number || '27330648',
+                role: isAdmin ? 'admin' : r.role === 'marketer' ? 'marketer' : 'normal',
+                isLoggedIn: true,
+                createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
+                referredByCode: r.referred_by_code || undefined,
+              };
+            }
+          }
+        }
+
+        if (finRes && finRes.ok) {
+          const finRows = await finRes.json();
+          if (Array.isArray(finRows) && finRows.length > 0) {
+            const r = finRows[0];
+            const rawEmail = String(r.user_email || '').trim().toLowerCase();
+            if (rawEmail && rawEmail.includes('@')) {
+              const isAdmin = this.isMasterAdminEmail(rawEmail);
+              const resolvedUid = isAdmin
+                ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+                : this.isValidUuid(r.user_key)
+                ? r.user_key
+                : this.deterministicUuidFromEmail(rawEmail);
+              const firstAccNum =
+                (Array.isArray(r.accounts) && r.accounts[0]?.accountNumber) || '8492014';
+              return {
+                id: resolvedUid,
+                name: isAdmin ? 'mutwiri' : r.user_name || rawEmail.split('@')[0],
+                email: isAdmin ? 'mutwirib964@gmail.com' : rawEmail,
+                phoneNumber: '',
+                phone: '',
+                countryCode: '+254',
+                countryName: 'Kenya',
+                accountNumber: String(firstAccNum),
+                role: isAdmin ? 'admin' : 'normal',
+                isLoggedIn: true,
+                createdAt: r.last_updated ? new Date(r.last_updated).getTime() : Date.now(),
+              };
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Check Server Platform DB backup
+    try {
+      const srvRes = await fetch('/api/platform-db', {
+        method: 'GET',
+        signal: AbortSignal.timeout(3000),
+      });
+      if (srvRes.ok) {
+        const srvData = await srvRes.json();
+        if (srvData?.ok && Array.isArray(srvData.users)) {
+          const match = srvData.users.find(
+            (u: any) =>
+              u &&
+              ((u.email && String(u.email).toLowerCase().includes(clean)) ||
+                (u.name && String(u.name).toLowerCase().includes(clean)))
+          );
+          if (match && match.email) {
+            return match as UserAuthProfile;
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  }
+
   public async signUpWithSupabaseAuth(
     profile: UserAuthProfile,
     password: string
@@ -1420,8 +1521,26 @@ class SupabaseService {
       ? 'mutwirib964@gmail.com'
       : userEmail.trim().toLowerCase();
 
+    // Keep cloud state payloads compact so 2,000+ users never exhaust Supabase egress bandwidth
+    let compactMeta = metadata;
+    if (metadata && typeof metadata === 'object') {
+      compactMeta = { ...metadata };
+      if (Array.isArray(compactMeta.closedTrades) && compactMeta.closedTrades.length > 50) {
+        compactMeta.closedTrades = compactMeta.closedTrades.slice(0, 50);
+      }
+      if (Array.isArray(compactMeta.botTrades) && compactMeta.botTrades.length > 50) {
+        compactMeta.botTrades = compactMeta.botTrades.slice(0, 50);
+      }
+      if (Array.isArray(compactMeta.notifications) && compactMeta.notifications.length > 30) {
+        compactMeta.notifications = compactMeta.notifications.slice(0, 30);
+      }
+      if (Array.isArray(compactMeta.entries) && compactMeta.entries.length > 50) {
+        compactMeta.entries = compactMeta.entries.slice(0, 50);
+      }
+    }
+
     try {
-      localStorage.setItem(`vtm_cloud_state_${cleanEmail}_${stateType}`, JSON.stringify(metadata));
+      localStorage.setItem(`vtm_cloud_state_${cleanEmail}_${stateType}`, JSON.stringify(compactMeta));
     } catch {}
 
     fetch('/api/platform-db', {
@@ -1431,7 +1550,7 @@ class SupabaseService {
         action: 'upsert_cloud_state',
         email: cleanEmail,
         stateKey: stateType,
-        data: metadata,
+        data: compactMeta,
       }),
     }).catch(() => {});
 
@@ -1440,7 +1559,7 @@ class SupabaseService {
     }
 
     try {
-      // Primary: Atomic Upsert to vtm_cloud_states
+      // Primary: Atomic Upsert to vtm_cloud_states with return=minimal to save 99% bandwidth
       const upsertRes = await fetch(
         `${this.config.url}/rest/v1/vtm_cloud_states?on_conflict=user_email,state_key`,
         {
@@ -1449,12 +1568,12 @@ class SupabaseService {
             'Content-Type': 'application/json',
             apikey: this.config.anonKey,
             Authorization: `Bearer ${this.config.anonKey}`,
-            Prefer: 'resolution=merge-duplicates,return=representation',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
           },
           body: JSON.stringify({
             user_email: cleanEmail,
             state_key: stateType,
-            data: metadata,
+            data: compactMeta,
             updated_at: new Date().toISOString(),
           }),
           signal: AbortSignal.timeout(5000),

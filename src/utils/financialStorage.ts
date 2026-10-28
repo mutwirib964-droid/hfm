@@ -438,6 +438,48 @@ export function generateSupabaseUuid(): string {
   });
 }
 
+export function deterministicUuidFromEmail(email: string): string {
+  const clean = email.trim().toLowerCase();
+  let h1 = 0xdeadbeef ^ clean.length;
+  let h2 = 0x41c6ce57 ^ clean.length;
+  let h3 = 0x1b873593 ^ clean.length;
+  let h4 = 0x85ebca6b ^ clean.length;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+    h3 = Math.imul(h3 ^ ch, 2246822507);
+    h4 = Math.imul(h4 ^ ch, 3266489909);
+  }
+  const hex = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
+  const full = hex(h1) + hex(h2) + hex(h3) + hex(h4);
+  return `${full.slice(0, 8)}-${full.slice(8, 12)}-4${full.slice(13, 16)}-a${full.slice(17, 20)}-${full.slice(20, 32)}`;
+}
+
+export function deterministicAccountNumberFromEmail(email: string): string {
+  const clean = email.trim().toLowerCase();
+  let hash = 2166136261;
+  for (let i = 0; i < clean.length; i++) {
+    hash ^= clean.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  const num = (Math.abs(hash) % 8999999) + 1000000;
+  return String(num);
+}
+
+export function formatDisplayNameFromEmailOrQuery(raw: string): string {
+  const local = raw.includes('@') ? raw.split('@')[0] : raw;
+  const cleaned = local
+    .replace(/[._-]+/g, ' ')
+    .replace(/([a-zA-Z])(\d+)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) {
+    return local.trim() || 'Trader';
+  }
+  return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 const SEEDED_PLATFORM_USERS: Record<string, UserAuthProfile> = {
   [MASTER_ADMIN_EMAIL]: {
     id: MASTER_ADMIN_UID,
@@ -576,6 +618,33 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
     const registry: Record<string, UserAuthProfile> = raw ? JSON.parse(raw) : {};
     let changed = false;
 
+    // 1. Merge any users stored in legacy vtm_registered_users_registry
+    try {
+      const legacyRaw = localStorage.getItem('vtm_registered_users_registry');
+      if (legacyRaw) {
+        const legacyReg: Record<string, any> = JSON.parse(legacyRaw);
+        Object.entries(legacyReg).forEach(([em, prof]) => {
+          const clean = (prof?.email || em || '').trim().toLowerCase();
+          if (clean && clean.includes('@') && !registry[clean]) {
+            const isMaster = isMasterAdminEmail(clean);
+            registry[clean] = {
+              ...prof,
+              id: isMaster ? MASTER_ADMIN_UID : prof?.id || deterministicUuidFromEmail(clean),
+              email: isMaster ? MASTER_ADMIN_EMAIL : clean,
+              name: isMaster ? MASTER_ADMIN_NAME : prof?.name || formatDisplayNameFromEmailOrQuery(clean),
+              accountNumber: prof?.accountNumber || deterministicAccountNumberFromEmail(clean),
+              role: isMaster ? 'admin' : prof?.role === 'marketer' ? 'marketer' : 'normal',
+              createdAt: prof?.createdAt || Date.now(),
+            };
+            changed = true;
+          }
+        });
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2. Ensure core seeded accounts exist
     Object.entries(SEEDED_PLATFORM_USERS).forEach(([em, seedProfile]) => {
       if (!registry[em] || !isValidUserUid(registry[em].id)) {
         registry[em] = { ...seedProfile, ...(registry[em] || {}), id: seedProfile.id };
@@ -597,6 +666,147 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
         } catch {
           localStorage.setItem(finKey, JSON.stringify(seedFin));
         }
+      }
+    });
+
+    // 3. Deep Recovery: Scan all localStorage keys (vtm_finances_*, vtm_cloud_state_*, vtm_referral_state_*,
+    // vtm_open_positions_*, vtm_closed_trades_*, vtm_bot_runs_*, vtm_user_credentials, etc.)
+    // so any of the 50+ users cached at midnight are immediately restored to the registry!
+    const discoveredEmails = new Map<
+      string,
+      { name?: string; accountNumber?: string; createdAt?: number; referredByCode?: string }
+    >();
+
+    const recordDiscoveredEmail = (
+      rawEmail?: string | null,
+      info?: { name?: string; accountNumber?: string; createdAt?: number; referredByCode?: string }
+    ) => {
+      if (!rawEmail || typeof rawEmail !== 'string') return;
+      const clean = rawEmail.trim().toLowerCase();
+      if (
+        !clean.includes('@') ||
+        clean === 'guest@vtm.com' ||
+        clean === 'default_user' ||
+        clean === 'mutwrib@gmail.com' ||
+        clean.includes('@vtm.net')
+      ) {
+        return;
+      }
+      const prev = discoveredEmails.get(clean) || {};
+      discoveredEmails.set(clean, {
+        name: info?.name || prev.name,
+        accountNumber: info?.accountNumber || prev.accountNumber,
+        createdAt: info?.createdAt || prev.createdAt,
+        referredByCode: info?.referredByCode || prev.referredByCode,
+      });
+    };
+
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+
+        if (key.startsWith(STORAGE_PREFIX)) {
+          const em = key.slice(STORAGE_PREFIX.length).trim().toLowerCase();
+          if (em.includes('@')) {
+            let accNum: string | undefined;
+            let createdTs: number | undefined;
+            try {
+              const fin = JSON.parse(localStorage.getItem(key) || '{}');
+              const firstLive = Array.isArray(fin.accounts)
+                ? fin.accounts.find((a: any) => a?.type === 'Live') || fin.accounts[0]
+                : null;
+              if (firstLive?.accountNumber) accNum = String(firstLive.accountNumber);
+              if (firstLive?.createdAt) createdTs = Number(firstLive.createdAt);
+              else if (fin.lastUpdated) createdTs = Number(fin.lastUpdated);
+            } catch {}
+            recordDiscoveredEmail(em, { accountNumber: accNum, createdAt: createdTs });
+          }
+        } else if (key.startsWith('vtm_cloud_state_')) {
+          const rest = key.slice('vtm_cloud_state_'.length);
+          const stateIdx = rest.indexOf('_STATE_');
+          const em = (stateIdx > 0 ? rest.slice(0, stateIdx) : rest).trim().toLowerCase();
+          recordDiscoveredEmail(em);
+        } else if (key.startsWith('vtm_referral_state_')) {
+          const em = key.slice('vtm_referral_state_'.length).trim().toLowerCase();
+          recordDiscoveredEmail(em);
+          try {
+            const refState = JSON.parse(localStorage.getItem(key) || '{}');
+            if (Array.isArray(refState.referrals)) {
+              refState.referrals.forEach((r: any) => {
+                if (r?.referredEmail) {
+                  recordDiscoveredEmail(r.referredEmail, {
+                    name: r.referredName,
+                    accountNumber: r.referredAccountNumber,
+                    createdAt: r.createdAt,
+                    referredByCode: refState.referralCode,
+                  });
+                }
+              });
+            }
+          } catch {}
+        } else if (
+          key.startsWith('vtm_open_positions_') ||
+          key.startsWith('vtm_closed_trades_') ||
+          key.startsWith('vtm_bot_runs_') ||
+          key.startsWith('vtm_bot_trades_') ||
+          key.startsWith('vtm_ledger_') ||
+          key.startsWith('vtm_selected_account_') ||
+          key.startsWith('vtm_welcome_date_')
+        ) {
+          const prefixes = [
+            'vtm_open_positions_',
+            'vtm_closed_trades_',
+            'vtm_bot_runs_',
+            'vtm_bot_trades_',
+            'vtm_ledger_',
+            'vtm_selected_account_',
+            'vtm_welcome_date_',
+          ];
+          for (const p of prefixes) {
+            if (key.startsWith(p)) {
+              recordDiscoveredEmail(key.slice(p.length));
+              break;
+            }
+          }
+        }
+      }
+
+      // Check credentials map & referred_by map
+      const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
+      if (rawCreds) {
+        const creds = JSON.parse(rawCreds);
+        Object.keys(creds || {}).forEach((em) => recordDiscoveredEmail(em));
+      }
+      const rawRefMap = localStorage.getItem('vtm_referred_by_map');
+      if (rawRefMap) {
+        const refMap = JSON.parse(rawRefMap);
+        Object.entries(refMap || {}).forEach(([em, code]) =>
+          recordDiscoveredEmail(em, { referredByCode: String(code || '') })
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    discoveredEmails.forEach((info, cleanEmail) => {
+      if (isMasterAdminEmail(cleanEmail)) return;
+      if (!registry[cleanEmail] || !isValidUserUid(registry[cleanEmail].id)) {
+        registry[cleanEmail] = {
+          id: deterministicUuidFromEmail(cleanEmail),
+          email: cleanEmail,
+          name: info.name || formatDisplayNameFromEmailOrQuery(cleanEmail),
+          phoneNumber: '',
+          phone: '',
+          countryCode: '+254',
+          countryName: 'Kenya',
+          accountNumber: info.accountNumber || deterministicAccountNumberFromEmail(cleanEmail),
+          role: 'normal',
+          isLoggedIn: true,
+          createdAt: info.createdAt || 1790400000000,
+          referredByCode: info.referredByCode || undefined,
+        };
+        changed = true;
       }
     });
 
@@ -1468,6 +1678,76 @@ export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
       lastActive: finances?.lastUpdated || u.createdAt,
     };
   });
+}
+
+/**
+ * Universal Admin Search Resolver:
+ * When the Admin searches by ANY username or email that is not yet in the loaded userMetrics list,
+ * resolves or constructs that user's profile and metrics so they are immediately visible and manageable.
+ */
+export function resolveSearchedUserMetric(rawQuery: string): PlatformUserMetric | null {
+  if (!rawQuery || typeof rawQuery !== 'string') return null;
+  const trimmed = rawQuery.trim();
+  if (trimmed.length < 2) return null;
+
+  let resolvedEmail = '';
+  let resolvedName = '';
+
+  if (trimmed.includes('@')) {
+    const parts = trimmed.toLowerCase().split('@');
+    const localPart = parts[0].replace(/[^a-z0-9._+-]/g, '');
+    const domainPart = (parts[1] || 'gmail.com').replace(/[^a-z0-9.-]/g, '') || 'gmail.com';
+    if (!localPart) return null;
+    resolvedEmail = `${localPart}@${domainPart.includes('.') ? domainPart : 'gmail.com'}`;
+    resolvedName = formatDisplayNameFromEmailOrQuery(localPart);
+  } else {
+    const cleanAlphaNum = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!cleanAlphaNum) return null;
+    resolvedEmail = `${cleanAlphaNum}@gmail.com`;
+    resolvedName = formatDisplayNameFromEmailOrQuery(trimmed);
+  }
+
+  const isMaster = isMasterAdminEmail(resolvedEmail);
+  const canonicalEmail = isMaster ? MASTER_ADMIN_EMAIL : resolvedEmail;
+  const existingUser = findRegisteredUser(canonicalEmail);
+
+  const profile: UserAuthProfile = existingUser || {
+    id: isMaster ? MASTER_ADMIN_UID : deterministicUuidFromEmail(canonicalEmail),
+    email: canonicalEmail,
+    name: isMaster ? MASTER_ADMIN_NAME : resolvedName,
+    phoneNumber: '',
+    phone: '',
+    countryCode: '+254',
+    countryName: 'Kenya',
+    accountNumber: deterministicAccountNumberFromEmail(canonicalEmail),
+    role: isMaster ? 'admin' : 'normal',
+    isLoggedIn: true,
+    createdAt: 1790400000000,
+  };
+
+  const finances = loadUserFinancials(profile);
+  const walletBalance = finances?.walletBalance ?? 0;
+  const allAccounts = finances?.accounts ?? [];
+  const liveAccounts = allAccounts.filter((a) => a.type === 'Live');
+  const accountsBalance = liveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
+  const txs = sanitizeRealTransactions(finances?.transactions);
+  const completedDeposits = txs.filter(
+    (t) => t.type === 'DEPOSIT' && String(t.status || '').toUpperCase() === 'COMPLETED'
+  );
+  const totalDepositedUsd = completedDeposits.reduce(
+    (sum, t) => sum + Math.abs(Number(t.amount || 0)),
+    0
+  );
+
+  return {
+    user: profile,
+    walletBalance: Number(walletBalance.toFixed(2)),
+    accountsBalance: Number(accountsBalance.toFixed(2)),
+    accountsCount: liveAccounts.length,
+    totalDepositedUsd: Number(totalDepositedUsd.toFixed(2)),
+    depositsCount: completedDeposits.length,
+    lastActive: finances?.lastUpdated || profile.createdAt,
+  };
 }
 
 /**

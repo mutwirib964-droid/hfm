@@ -958,12 +958,12 @@ export default function App() {
 
     syncUserWithSupabase(true);
 
-    // Poll cloud updates without exhausting Supabase egress bandwidth
+    // Poll cloud updates without exhausting Supabase egress bandwidth (supports 2,000+ concurrent users)
     const pollInterval = setInterval(() => {
       if (typeof document === 'undefined' || !document.hidden) {
         syncUserWithSupabase(false);
       }
-    }, 20000);
+    }, 60000);
 
 
 

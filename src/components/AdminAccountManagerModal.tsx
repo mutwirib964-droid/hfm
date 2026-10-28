@@ -48,6 +48,7 @@ import {
   isMasterAdminEmail,
   replaceLocalRegistryWithSupabase,
   bulkImportUsersLocally,
+  getOrCreateUserProfile,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
@@ -185,6 +186,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     }
   };
 
+  const hasSyncedRecoveredUsersRef = useRef(false);
+
   const loadLocalAdminMetrics = useCallback(() => {
     const metrics = getAllPlatformUsersWithMetrics();
     setUserMetrics(metrics);
@@ -192,6 +195,12 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     setDepositsData(deposits);
     const txObj = getAllPlatformTransactions();
     setAllTransactions(txObj.transactions);
+
+    // If localStorage recovered additional users (e.g. from midnight cache), back them up to server DB automatically
+    if (!hasSyncedRecoveredUsersRef.current && metrics.length > 3) {
+      hasSyncedRecoveredUsersRef.current = true;
+      supabaseService.bulkImportUsers(metrics.map((m) => m.user)).catch(() => {});
+    }
     return metrics;
   }, []);
 
@@ -267,7 +276,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       if (typeof document === 'undefined' || !document.hidden) {
         syncFromSupabaseCloud();
       }
-    }, 20000);
+    }, 60000);
     return () => clearInterval(interval);
   }, [isOpen]);
 
@@ -463,15 +472,30 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     }
   };
 
-  // Filtered users
+  // On-demand targeted Supabase search when Admin types a username or email
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) return;
+    const timer = setTimeout(async () => {
+      const found = await supabaseService.searchUserByQuery(q);
+      if (found && found.email) {
+        getOrCreateUserProfile(found);
+        loadLocalAdminMetrics();
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, loadLocalAdminMetrics]);
+
+  // Filtered users — strictly from database records (never fabricates non-existent users)
   const filteredUsers = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
     return userMetrics.filter((m) => {
       const u = m.user;
-      const q = searchQuery.toLowerCase().trim();
       const matchesSearch =
         !q ||
         (u.name && u.name.toLowerCase().includes(q)) ||
-        (u.email && u.email.toLowerCase().includes(q));
+        (u.email && u.email.toLowerCase().includes(q)) ||
+        (u.accountNumber && u.accountNumber.toLowerCase().includes(q));
 
       const matchesRole = roleFilter === 'ALL' || u.role === roleFilter;
       return matchesSearch && matchesRole;
@@ -1240,7 +1264,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   {filteredUsers.length === 0 ? (
                     <tr>
                       <td colSpan={6} className={`py-10 text-center ${mutedText}`}>
-                        No matching users found.
+                        No user found
                       </td>
                     </tr>
                   ) : (
@@ -1403,6 +1427,11 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                       </button>
                     )}
                   </div>
+                  {searchQuery.trim() && filteredUsers.length === 0 && (
+                    <p className="text-[11px] font-medium text-rose-500 mt-1.5">
+                      No user found
+                    </p>
+                  )}
                 </div>
 
                 <div>

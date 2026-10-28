@@ -153,7 +153,39 @@ class ReferralService {
   }
 
   /**
-   * Load referral state for a user (strictly real data, never mock/sample referrals)
+   * Helper: inspect local financial storage for a referred user and return ONLY their first completed deposit amount in USD.
+   */
+  getFirstDepositForUser(referredEmail?: string): number {
+    if (typeof window === 'undefined' || !referredEmail) return 0;
+    try {
+      const cleanEmail = referredEmail.trim().toLowerCase();
+      const rawFin = localStorage.getItem(`vtm_finances_${cleanEmail}`);
+      if (!rawFin) return 0;
+      const parsed = JSON.parse(rawFin);
+      if (!parsed || !Array.isArray(parsed.transactions)) return 0;
+
+      const completedDeposits = parsed.transactions
+        .filter(
+          (tx: any) =>
+            tx &&
+            tx.type === 'DEPOSIT' &&
+            tx.status === 'COMPLETED' &&
+            Number(tx.amount) > 0
+        )
+        .sort((a: any, b: any) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
+
+      if (completedDeposits.length > 0) {
+        return Number(Number(completedDeposits[0].amount).toFixed(2));
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  }
+
+  /**
+   * Load referral state for a user (strictly real data, never mock/sample referrals,
+   * and strictly calculating ONLY the first deposit of each referred user)
    */
   getReferralState(userEmail?: string, userAccountNumber?: string): ReferralState {
     const emailKey = (userEmail || 'guest@vtm.com').trim().toLowerCase();
@@ -170,95 +202,158 @@ class ReferralService {
       }
     }
 
-    if (stored && typeof stored === 'object') {
-      // Filter out test, mock, or simulated referrals (e.g. VIP Trader John from previous testing)
-      const isTestReferral = (r: any): boolean => {
-        if (!r || typeof r !== 'object') return true;
-        const id = String(r.id || '').toLowerCase();
-        const name = String(r.referredName || '').toLowerCase();
-        const email = String(r.referredEmail || '').toLowerCase();
-        if (id.startsWith('ref-sample-') || id.startsWith('ref-sim-') || id.startsWith('ref-test-')) return true;
-        if (
-          name.includes('vip trader') ||
-          name.includes('trader john') ||
-          name.includes('active referral') ||
-          name.includes('sample') ||
-          name.includes('test') ||
-          name.includes('simulate') ||
-          name.includes('kevin') ||
-          name.includes('alex') ||
-          name.includes('sarah')
-        ) {
-          return true;
-        }
-        if (
-          email.includes('test') ||
-          email.includes('sample') ||
-          email.includes('demo') ||
-          email.includes('@vtm.net') ||
-          email.includes('trader-')
-        ) {
-          return true;
-        }
-        return false;
-      };
+    // Filter out test, mock, or simulated referrals (e.g. VIP Trader John from previous testing)
+    const isTestReferral = (r: any): boolean => {
+      if (!r || typeof r !== 'object') return true;
+      const id = String(r.id || '').toLowerCase();
+      const name = String(r.referredName || '').toLowerCase();
+      const email = String(r.referredEmail || '').toLowerCase();
+      if (id.startsWith('ref-sample-') || id.startsWith('ref-sim-') || id.startsWith('ref-test-')) return true;
+      if (
+        name.includes('vip trader') ||
+        name.includes('trader john') ||
+        name.includes('active referral') ||
+        name.includes('sample') ||
+        name.includes('test') ||
+        name.includes('simulate') ||
+        name.includes('kevin') ||
+        name.includes('alex') ||
+        name.includes('sarah')
+      ) {
+        return true;
+      }
+      if (
+        email.includes('test') ||
+        email.includes('sample') ||
+        email.includes('demo') ||
+        email.includes('@vtm.net') ||
+        email.includes('trader-')
+      ) {
+        return true;
+      }
+      return false;
+    };
 
-      const cleanReferrals = Array.isArray(stored.referrals)
+    const rawReferrals: ReferralRecord[] =
+      stored && Array.isArray(stored.referrals)
         ? stored.referrals.filter((r: any) => !isTestReferral(r))
         : [];
 
-      // If there are no real referrals, any test claims and events must also be wiped clean
-      const hasRealReferrals = cleanReferrals.length > 0;
-      const cleanClaims = hasRealReferrals && Array.isArray(stored.claims) ? stored.claims : [];
-      const cleanEvents = hasRealReferrals && Array.isArray(stored.recentEvents)
-        ? stored.recentEvents.filter((e: any) => !e.id?.startsWith('evt-sample-') && !e.id?.startsWith('evt-test-'))
-        : [];
-
-      const totalDeposited = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalDepositedUsd || 0), 0);
-      const totalEarned = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalCommissionUsd || 0), 0);
-      const totalClaimed = hasRealReferrals ? Number((stored.totalClaimedUsd || 0).toFixed(2)) : 0.0;
-      const available = Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
-
-      const sanitizedState: ReferralState = {
-        referralCode,
-        referralLink,
-        commissionRate: COMMISSION_RATE,
-        minClaimAmountUsd: MIN_CLAIM_AMOUNT_USD,
-        minReferralDepositsUsd: MIN_DEPOSITS_REQUIRED_USD,
-        totalReferralsCount: cleanReferrals.length,
-        totalReferralDepositsUsd: Number(totalDeposited.toFixed(2)),
-        totalCommissionEarnedUsd: Number(totalEarned.toFixed(2)),
-        availableCommissionUsd: available,
-        totalClaimedUsd: totalClaimed,
-        referrals: cleanReferrals,
-        claims: cleanClaims,
-        recentEvents: cleanEvents,
-      };
-
-      // Persist the sanitized state back so client storage is permanently cleaned
-      this.saveReferralState(emailKey, sanitizedState);
-      return sanitizedState;
+    // Reconcile any registered users who signed up with this user's referralCode
+    if (typeof window !== 'undefined' && referralCode) {
+      try {
+        const rawRegistry = localStorage.getItem('vtm_registered_users_registry');
+        if (rawRegistry) {
+          const registry: Record<string, any> = JSON.parse(rawRegistry);
+          for (const [uEmail, uProfile] of Object.entries(registry)) {
+            if (!uProfile || !uEmail) continue;
+            const cleanUEmail = (uProfile.email || uEmail).trim().toLowerCase();
+            if (cleanUEmail === emailKey) continue;
+            const userRefCode = (
+              uProfile.referredByCode ||
+              this.getReferredByCodeForUser(cleanUEmail) ||
+              ''
+            )
+              .trim()
+              .toUpperCase();
+            if (userRefCode === referralCode.toUpperCase()) {
+              const exists = rawReferrals.some(
+                (r) => (r.referredEmail || '').trim().toLowerCase() === cleanUEmail
+              );
+              if (!exists) {
+                rawReferrals.push({
+                  id: `ref-${uProfile.id || Date.now()}`,
+                  referrerEmail: emailKey,
+                  referrerCode: referralCode,
+                  referredEmail: cleanUEmail,
+                  referredName: uProfile.name || cleanUEmail.split('@')[0],
+                  referredAccountNumber: uProfile.accountNumber || '8842-1001',
+                  totalDepositedUsd: 0,
+                  totalCommissionUsd: 0,
+                  status: 'ACTIVE',
+                  createdAt: uProfile.createdAt ? new Date(uProfile.createdAt).getTime() : Date.now(),
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
 
-    // Completely empty real initial state: 0 referrals, $0.00 deposited, $0.00 earned
-    const defaultState: ReferralState = {
+    // Deduplicate Events so at most ONE (the earliest/first) deposit commission event exists per referredEmail
+    const rawEvents: ReferralCommissionEvent[] =
+      stored && Array.isArray(stored.recentEvents)
+        ? stored.recentEvents.filter(
+            (e: any) => !e.id?.startsWith('evt-sample-') && !e.id?.startsWith('evt-test-')
+          )
+        : [];
+
+    const firstEventByEmail = new Map<string, ReferralCommissionEvent>();
+    const sortedAscEvents = [...rawEvents].sort(
+      (a, b) => (Number(a.createdAt) || 0) - (Number(b.createdAt) || 0)
+    );
+    for (const evt of sortedAscEvents) {
+      const eKey = (evt.referredEmail || '').trim().toLowerCase();
+      if (eKey && !firstEventByEmail.has(eKey)) {
+        firstEventByEmail.set(eKey, evt);
+      }
+    }
+
+    // Enforce FIRST DEPOSIT ONLY for every referred user on the user/marketer dashboard
+    const cleanReferrals: ReferralRecord[] = rawReferrals.map((r) => {
+      const refEmailKey = (r.referredEmail || '').trim().toLowerCase();
+      const firstDepositFromFinances = this.getFirstDepositForUser(refEmailKey);
+      const firstEvent = firstEventByEmail.get(refEmailKey);
+
+      let firstDepositUsd = Number(r.totalDepositedUsd || 0);
+      if (firstDepositFromFinances > 0) {
+        firstDepositUsd = firstDepositFromFinances;
+      } else if (firstEvent && Number(firstEvent.depositAmountUsd) > 0) {
+        firstDepositUsd = Number(Number(firstEvent.depositAmountUsd).toFixed(2));
+      }
+
+      const firstCommissionUsd = Number((firstDepositUsd * COMMISSION_RATE).toFixed(2));
+
+      return {
+        ...r,
+        totalDepositedUsd: Number(firstDepositUsd.toFixed(2)),
+        totalCommissionUsd: firstCommissionUsd,
+      };
+    });
+
+    const hasRealReferrals = cleanReferrals.length > 0;
+    const cleanClaims = hasRealReferrals && stored && Array.isArray(stored.claims) ? stored.claims : [];
+    const cleanEvents = hasRealReferrals
+      ? Array.from(firstEventByEmail.values()).sort(
+          (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
+        )
+      : [];
+
+    const totalDeposited = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalDepositedUsd || 0), 0);
+    const totalEarned = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalCommissionUsd || 0), 0);
+    const totalClaimed = hasRealReferrals && stored ? Number((stored.totalClaimedUsd || 0).toFixed(2)) : 0.0;
+    const available = Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
+
+    const sanitizedState: ReferralState = {
       referralCode,
       referralLink,
       commissionRate: COMMISSION_RATE,
       minClaimAmountUsd: MIN_CLAIM_AMOUNT_USD,
       minReferralDepositsUsd: MIN_DEPOSITS_REQUIRED_USD,
-      totalReferralsCount: 0,
-      totalReferralDepositsUsd: 0.0,
-      totalCommissionEarnedUsd: 0.0,
-      availableCommissionUsd: 0.0,
-      totalClaimedUsd: 0.0,
-      referrals: [],
-      claims: [],
-      recentEvents: [],
+      totalReferralsCount: cleanReferrals.length,
+      totalReferralDepositsUsd: Number(totalDeposited.toFixed(2)),
+      totalCommissionEarnedUsd: Number(totalEarned.toFixed(2)),
+      availableCommissionUsd: available,
+      totalClaimedUsd: totalClaimed,
+      referrals: cleanReferrals,
+      claims: cleanClaims,
+      recentEvents: cleanEvents,
     };
 
-    this.saveReferralState(emailKey, defaultState);
-    return defaultState;
+    this.saveReferralState(emailKey, sanitizedState);
+    return sanitizedState;
   }
 
   /**
@@ -275,8 +370,8 @@ class ReferralService {
   }
 
   /**
-   * Record a new referral deposit and award 5% commission
-   * e.g. deposit of $16.00 awards exactly $0.80 commission
+   * Record a new referral deposit and award 5% commission ONLY on the referred user's FIRST deposit.
+   * Subsequent deposits by the same referred user are ignored on the user/marketer referral dashboard.
    */
   recordReferralDeposit(
     userEmail: string,
@@ -285,25 +380,28 @@ class ReferralService {
   ): ReferralState {
     const currentState = this.getReferralState(userEmail);
     const amount = Number(depositAmountUsd.toFixed(2));
+    if (amount <= 0) return currentState;
     const commission = Number((amount * COMMISSION_RATE).toFixed(2)); // 5%
 
-    const refEmail = referredInfo?.email || `trader-${Date.now().toString(36).slice(-4)}@vtm.net`;
+    const refEmail = (referredInfo?.email || `trader-${Date.now().toString(36).slice(-4)}@vtm.net`).trim().toLowerCase();
     const refName = referredInfo?.name || 'VTM Active Referral';
     const refAccount = referredInfo?.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`;
     const depositRef = referredInfo?.reference || `REF-DEP-${Date.now()}`;
 
     // Update or add to referrals list
     let updatedReferrals = [...currentState.referrals];
-    const existingIdx = updatedReferrals.findIndex((r) => r.referredEmail.toLowerCase() === refEmail.toLowerCase());
+    const existingIdx = updatedReferrals.findIndex((r) => r.referredEmail.toLowerCase() === refEmail);
 
     if (existingIdx >= 0) {
       const existing = updatedReferrals[existingIdx];
-      const nextDeposited = Number((existing.totalDepositedUsd + amount).toFixed(2));
-      const nextCommission = Number((existing.totalCommissionUsd + commission).toFixed(2));
+      // Strictly count ONLY the first deposit of the referred user on the user/marketer dashboard!
+      if ((existing.totalDepositedUsd || 0) > 0) {
+        return currentState;
+      }
       updatedReferrals[existingIdx] = {
         ...existing,
-        totalDepositedUsd: nextDeposited,
-        totalCommissionUsd: nextCommission,
+        totalDepositedUsd: amount,
+        totalCommissionUsd: commission,
         lastDepositAt: Date.now(),
       };
     } else {
@@ -322,7 +420,10 @@ class ReferralService {
       });
     }
 
-    // Add to recent commission events
+    // Add to recent commission events only if this referred user does not already have a first-deposit event
+    const hasExistingEvent = currentState.recentEvents.some(
+      (e) => (e.referredEmail || '').toLowerCase() === refEmail
+    );
     const newEvent: ReferralCommissionEvent = {
       id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       referrerEmail: userEmail.trim().toLowerCase(),
@@ -335,10 +436,18 @@ class ReferralService {
       createdAt: Date.now(),
     };
 
-    const nextEvents = [newEvent, ...currentState.recentEvents].slice(0, 50);
-    const nextTotalDeposits = Number((currentState.totalReferralDepositsUsd + amount).toFixed(2));
-    const nextTotalEarned = Number((currentState.totalCommissionEarnedUsd + commission).toFixed(2));
-    const nextAvailable = Number((currentState.availableCommissionUsd + commission).toFixed(2));
+    const nextEvents = hasExistingEvent
+      ? currentState.recentEvents
+      : [newEvent, ...currentState.recentEvents].slice(0, 50);
+
+    const nextTotalDeposits = Number(
+      updatedReferrals.reduce((sum, r) => sum + (r.totalDepositedUsd || 0), 0).toFixed(2)
+    );
+    const nextTotalEarned = Number(
+      updatedReferrals.reduce((sum, r) => sum + (r.totalCommissionUsd || 0), 0).toFixed(2)
+    );
+    const totalClaimed = Number((currentState.totalClaimedUsd || 0).toFixed(2));
+    const nextAvailable = Math.max(0, Number((nextTotalEarned - totalClaimed).toFixed(2)));
 
     const nextState: ReferralState = {
       ...currentState,
