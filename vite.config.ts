@@ -3670,6 +3670,96 @@ export default defineConfig(() => {
     };
   };
 
+  const seoSitelinkPagesPlugin = () => {
+    const sitelinkRoutes = [
+      {
+        slug: 'login',
+        title: 'VTM Markets Login',
+        description:
+          'VTM Markets Login page. Log in to your VTM Markets account and access your Central VTM One Wallet, open accounts, and active positions.',
+        url: 'https://vtmmarkets.com/login',
+      },
+      {
+        slug: 'signup',
+        title: 'VTM Markets Sign Up',
+        description:
+          'VTM Markets Sign Up page. Sign up and start trading 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto.',
+        url: 'https://vtmmarkets.com/signup',
+      },
+      {
+        slug: 'terminal',
+        title: 'VTM Markets Terminal',
+        description:
+          'VTM Markets WebTrader Terminal. Access global financial markets with raw interbank spreads from 0.0 pips and ultra-fast institutional STP execution.',
+        url: 'https://vtmmarkets.com/terminal',
+      },
+      {
+        slug: 'demo',
+        title: 'Demo trading account',
+        description:
+          'Get started with demo trading at VTM Markets. Open a risk-free Demo Account credited with $100,000 in virtual funds.',
+        url: 'https://vtmmarkets.com/demo',
+      },
+      {
+        slug: 'markets',
+        title: 'VTM Markets Live Markets',
+        description:
+          'Trade 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto on VTM Markets with raw interbank spreads from 0.0 pips.',
+        url: 'https://vtmmarkets.com/markets',
+      },
+    ];
+
+    return {
+      name: 'vtm-seo-sitelink-pages',
+      closeBundle() {
+        try {
+          const distDir = path.resolve(__dirname, 'dist');
+          const indexHtmlPath = path.join(distDir, 'index.html');
+          if (!fs.existsSync(indexHtmlPath)) return;
+          const baseHtml = fs.readFileSync(indexHtmlPath, 'utf-8');
+
+          for (const route of sitelinkRoutes) {
+            const routeDir = path.join(distDir, route.slug);
+            fs.mkdirSync(routeDir, { recursive: true });
+            const customHtml = baseHtml
+              .replace(/<title>.*?<\/title>/, `<title>${route.title}</title>`)
+              .replace(
+                /<meta name="description" content="[^"]*"\s*\/?>/,
+                `<meta name="description" content="${route.description}" />`
+              )
+              .replace(
+                /<link id="canonical-link" rel="canonical" href="[^"]*"\s*\/?>/,
+                `<link id="canonical-link" rel="canonical" href="${route.url}" />`
+              )
+              .replace(
+                /<meta property="og:title" content="[^"]*"\s*\/?>/,
+                `<meta property="og:title" content="${route.title}" />`
+              )
+              .replace(
+                /<meta property="og:description" content="[^"]*"\s*\/?>/,
+                `<meta property="og:description" content="${route.description}" />`
+              )
+              .replace(
+                /<meta property="og:url" content="[^"]*"\s*\/?>/,
+                `<meta property="og:url" content="${route.url}" />`
+              )
+              .replace(
+                /<meta name="twitter:title" content="[^"]*"\s*\/?>/,
+                `<meta name="twitter:title" content="${route.title}" />`
+              )
+              .replace(
+                /<meta name="twitter:description" content="[^"]*"\s*\/?>/,
+                `<meta name="twitter:description" content="${route.description}" />`
+              );
+            fs.writeFileSync(path.join(routeDir, 'index.html'), customHtml, 'utf-8');
+          }
+        } catch (err) {
+          console.error('[SEO Sitelinks] Failed to generate sitelink HTML pages:', err);
+        }
+      },
+    };
+  };
+
   return {
     plugins: [
       safeWsPlugin(),
@@ -3681,6 +3771,7 @@ export default defineConfig(() => {
       supabaseConfigPlugin(),
       serverAccountingEnginePlugin(),
       platformDbPlugin(),
+      seoSitelinkPagesPlugin(),
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: [
@@ -3690,6 +3781,8 @@ export default defineConfig(() => {
           'pwa-192x192.png',
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
+          'sitemap.xml',
+          'robots.txt',
         ],
         manifest: {
           id: '/',

@@ -138,13 +138,34 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   // Native Full Screen state and handler for Desktop PC
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Detect incoming referral parameter from URL or storage
+  // Detect incoming referral parameter or Google Search sitelink route from URL
   useEffect(() => {
     const incomingRef =
       referralService.captureIncomingReferral() || referralService.getReferredByCode();
     if (incomingRef) {
       setReferralCodeInput(incomingRef);
       setAuthMode('register');
+    }
+
+    try {
+      const path = (window.location.pathname || '/').replace(/\/+$/, '').toLowerCase() || '/';
+      if (path === '/login') {
+        setAuthMode('signin');
+        setValidationError(null);
+        setShowAuthModal(true);
+      } else if (path === '/signup' || path === '/demo') {
+        setAuthMode('register');
+        setValidationError(null);
+        setShowAuthModal(true);
+      } else if (path === '/terminal') {
+        const el = document.getElementById('platform');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      } else if (path === '/markets') {
+        const el = document.getElementById('markets');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }
+    } catch {
+      // ignore
     }
   }, []);
 
@@ -1385,6 +1406,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
 
           {/* Copyright */}
           <div
+            data-nosnippet
             className={`pt-6 border-t flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] ${
               isDarkMode ? 'border-neutral-800/80 text-neutral-400' : 'border-slate-200 text-slate-500'
             }`}
@@ -1398,6 +1420,32 @@ export const LandingPage: React.FC<LandingPageProps> = ({
               <span className="hover:underline cursor-pointer">Anti-Fraud & Withdrawal Security Policy</span>
             </div>
           </div>
+
+          {/* Crawlable Google Search Sitelinks Navigation (Visually Hidden) */}
+          <nav aria-label="VTM Markets Site Links" className="sr-only">
+            <ul>
+              <li>
+                <a href="/login">VTM Markets Login</a>
+                <p>VTM Markets Login page. Log in to your VTM Markets account and access your Central VTM One Wallet, open accounts, and active positions.</p>
+              </li>
+              <li>
+                <a href="/signup">VTM Markets Sign Up</a>
+                <p>VTM Markets Sign Up page. Sign up and start trading 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto.</p>
+              </li>
+              <li>
+                <a href="/terminal">VTM Markets Terminal</a>
+                <p>VTM Markets WebTrader Terminal. Access global financial markets with raw interbank spreads from 0.0 pips and ultra-fast institutional STP execution.</p>
+              </li>
+              <li>
+                <a href="/demo">Demo trading account</a>
+                <p>Get started with demo trading at VTM Markets. Open a risk-free Demo Account credited with $100,000 in virtual funds.</p>
+              </li>
+              <li>
+                <a href="/markets">VTM Markets Live Markets</a>
+                <p>Trade 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto on VTM Markets with raw interbank spreads from 0.0 pips.</p>
+              </li>
+            </ul>
+          </nav>
         </div>
       </footer>
 

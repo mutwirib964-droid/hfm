@@ -1,6 +1,6 @@
 {
   "name": "VTM Markets",
-  "description": "VTM Markets - Global Multi-Asset CFD Broker with Raw Spreads from 0.0 Pips, High-Speed STP Execution, and Advanced WebTrader Terminal.",
+  "description": "Trade the World's Financial Markets with a Trusted Global Leader. Access 500+ CFDs across Forex, Gold, Oil, Global Indices, Stocks, and Crypto. Enjoy raw interbank spreads from 0.0 pips, ultra-fast institutional execution, and tier-1 bank fund segregation.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
