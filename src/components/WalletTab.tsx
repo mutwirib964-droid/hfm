@@ -214,7 +214,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
         })
         .catch(() => {});
     }
-  }, [activeModal, currentUser]);
+  }, [activeModal, currentUser?.email, currentUser?.role]);
 
   // 3-second countdown timer for withdrawal pending state
   useEffect(() => {

@@ -300,14 +300,14 @@ export function mergeUserFinancialStates(
   const txMap = new Map<string, Transaction>();
   for (const tx of [...(primary.transactions || []), ...(secondary.transactions || [])]) {
     if (!tx) continue;
-    const key = String(tx.id || tx.reference || `${tx.type}-${tx.timestamp}`);
+    const key = String(tx.reference || tx.id || `${tx.type}-${tx.timestamp}`);
     if (!txMap.has(key)) {
       txMap.set(key, tx);
     } else {
       const existing = txMap.get(key)!;
       const incomingFailed =
         tx.status === 'FAILED' ||
-        /capacity exceeded|unsuccessful|failed|bounced back/i.test(String(tx.details || ''));
+        /capacity exceeded|unsuccessful|failed|bounced back|rejected/i.test(String(tx.details || ''));
       if (incomingFailed && existing.status !== 'FAILED') {
         txMap.set(key, {
           ...existing,
@@ -2502,4 +2502,197 @@ export function getPlatformFinancialSummary(): {
     totalLiveAccountsCount,
   };
 }
+
+/**
+ * Allows the Master Admin to manually Approve or Reject a PENDING Crypto Deposit
+ * after confirming the blockchain TxHash / TxID.
+ */
+export async function adminResolveCryptoDeposit(params: {
+  userEmail: string;
+  txId: string;
+  referenceId?: string;
+  action: 'APPROVE' | 'REJECT';
+}): Promise<{
+  success: boolean;
+  message: string;
+  updatedState?: UserFinancialState;
+  user?: UserAuthProfile;
+}> {
+  try {
+    const cleanEmail = (params.userEmail || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      return { success: false, message: 'Invalid user email for crypto deposit.' };
+    }
+
+    const user: UserAuthProfile = findRegisteredUser(cleanEmail) || {
+      id: deterministicUuidFromEmail(cleanEmail),
+      email: cleanEmail,
+      name: formatDisplayNameFromEmailOrQuery(cleanEmail),
+      role: 'normal',
+      accountNumber: deterministicAccountNumberFromEmail(cleanEmail),
+      isLoggedIn: false,
+      createdAt: Date.now(),
+    };
+
+    const currentFin = loadUserFinancials(user) || {
+      walletBalance: 0,
+      accounts: [],
+      selectedAccountId: null,
+      transactions: [],
+      lastUpdated: Date.now(),
+    };
+
+    const txList = Array.isArray(currentFin.transactions) ? [...currentFin.transactions] : [];
+    const txIndex = txList.findIndex(
+      (t) =>
+        t.type === 'DEPOSIT' &&
+        (t.id === params.txId ||
+          (params.referenceId && t.reference === params.referenceId) ||
+          t.reference === params.txId)
+    );
+
+    if (txIndex === -1) {
+      return { success: false, message: 'Crypto deposit transaction not found in user ledger.' };
+    }
+
+    const targetTx = txList[txIndex];
+    if (targetTx.status === 'COMPLETED') {
+      return { success: false, message: 'This crypto deposit has already been approved.' };
+    }
+    if (targetTx.status === 'FAILED') {
+      return { success: false, message: 'This crypto deposit has already been rejected.' };
+    }
+
+    const amountUsd = Math.max(0, Number(targetTx.amount || 0));
+    const txRef = targetTx.reference || params.referenceId || params.txId;
+    const targetAccStr = String(targetTx.accountNumber || 'VTM Wallet').trim();
+    const isWalletTarget = /wallet/i.test(targetAccStr);
+    const now = Date.now();
+
+    let updatedWallet = Number(currentFin.walletBalance || 0);
+    let updatedAccounts = Array.isArray(currentFin.accounts)
+      ? currentFin.accounts.map((a) => ({ ...a }))
+      : [];
+
+    if (params.action === 'APPROVE') {
+      let creditedToAccount = false;
+
+      if (!isWalletTarget) {
+        updatedAccounts = updatedAccounts.map((acc) => {
+          if (
+            acc.type === 'Live' &&
+            (acc.accountNumber === targetAccStr || acc.id === targetAccStr)
+          ) {
+            creditedToAccount = true;
+            const newBal = Number((Number(acc.balance || 0) + amountUsd).toFixed(2));
+            const newEq = Number((Number(acc.equity || acc.balance || 0) + amountUsd).toFixed(2));
+            const newFree = Number((Number(acc.freeMargin || 0) + amountUsd).toFixed(2));
+            return {
+              ...acc,
+              balance: newBal,
+              equity: newEq,
+              freeMargin: newFree,
+              lastDepositAt: now,
+              lastActivityAt: now,
+            };
+          }
+          return acc;
+        });
+      }
+
+      if (isWalletTarget || !creditedToAccount) {
+        updatedWallet = Number((updatedWallet + amountUsd).toFixed(2));
+      }
+
+      const resolvedDetails =
+        isWalletTarget || !creditedToAccount
+          ? `Funded to VTM One Wallet (New Bal: $${updatedWallet.toFixed(2)}) • TxHash Verified`
+          : `Funded to Account #${targetAccStr} • TxHash Verified`;
+
+      const updatedTx: Transaction = {
+        ...targetTx,
+        status: 'COMPLETED',
+        timestamp: now,
+        details: resolvedDetails,
+      };
+      txList[txIndex] = updatedTx;
+
+      const updatedState: UserFinancialState = {
+        ...currentFin,
+        walletBalance: updatedWallet,
+        accounts: updatedAccounts,
+        transactions: txList,
+        lastUpdated: now,
+      };
+
+      saveUserFinancials(user, updatedState, true);
+
+      await Promise.allSettled([
+        supabaseService.syncUserFinancials(user, updatedState),
+        supabaseService.saveDeposit(user, {
+          id: updatedTx.id,
+          targetAccount: isWalletTarget || !creditedToAccount ? 'VTM Wallet' : targetAccStr,
+          amountUsd,
+          amountKes: Number((amountUsd * getUsdKesRate()).toFixed(2)),
+          method: updatedTx.method || 'Crypto Deposit',
+          reference: txRef,
+          status: 'COMPLETED',
+        }),
+        supabaseService.syncTransactions(user, txList),
+      ]);
+
+      return {
+        success: true,
+        message: `Approved $${amountUsd.toFixed(2)} crypto deposit (${txRef}) for ${user.name || user.email}.`,
+        updatedState,
+        user,
+      };
+    } else {
+      const updatedTx: Transaction = {
+        ...targetTx,
+        status: 'FAILED',
+        details: 'Crypto deposit rejected after TxHash/TxID verification.',
+      };
+      txList[txIndex] = updatedTx;
+
+      const updatedState: UserFinancialState = {
+        ...currentFin,
+        walletBalance: updatedWallet,
+        accounts: updatedAccounts,
+        transactions: txList,
+        lastUpdated: now,
+      };
+
+      saveUserFinancials(user, updatedState, true);
+
+      await Promise.allSettled([
+        supabaseService.syncUserFinancials(user, updatedState),
+        supabaseService.saveDeposit(user, {
+          id: updatedTx.id,
+          targetAccount: isWalletTarget ? 'VTM Wallet' : targetAccStr,
+          amountUsd,
+          amountKes: Number((amountUsd * getUsdKesRate()).toFixed(2)),
+          method: updatedTx.method || 'Crypto Deposit',
+          reference: txRef,
+          status: 'FAILED',
+        }),
+        supabaseService.syncTransactions(user, txList),
+      ]);
+
+      return {
+        success: true,
+        message: `Rejected $${amountUsd.toFixed(2)} crypto deposit (${txRef}) for ${user.name || user.email}.`,
+        updatedState,
+        user,
+      };
+    }
+  } catch (e: any) {
+    console.error('Failed to resolve crypto deposit:', e);
+    return {
+      success: false,
+      message: e?.message || 'Failed to resolve crypto deposit.',
+    };
+  }
+}
+
 

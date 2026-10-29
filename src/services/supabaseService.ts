@@ -811,7 +811,7 @@ class SupabaseService {
             }
           ).catch(() => null),
           fetch(
-            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
+            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,DEPOSIT_CRYPTO_PENDING,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
             {
               method: 'GET',
               headers: {
@@ -955,9 +955,17 @@ class SupabaseService {
               });
               incomingTxs.forEach((tx) => {
                 const key = tx.reference || tx.id;
-                if (key && !mergedTxMap.has(key) && (!tx.id || !seenTxIds.has(tx.id))) {
+                if (!key) return;
+                const prev = mergedTxMap.get(key);
+                if (!prev && (!tx.id || !seenTxIds.has(tx.id))) {
                   mergedTxMap.set(key, tx);
                   if (tx.id) seenTxIds.add(tx.id);
+                } else if (prev) {
+                  if (tx.status === 'FAILED' && prev.status !== 'FAILED') {
+                    mergedTxMap.set(key, { ...prev, ...tx, status: 'FAILED' });
+                  } else if (tx.status === 'COMPLETED' && prev.status === 'PENDING') {
+                    mergedTxMap.set(key, { ...prev, ...tx, status: 'COMPLETED' });
+                  }
                 }
               });
             }
@@ -1016,7 +1024,10 @@ class SupabaseService {
           const meta = act.metadata || {};
           const userDeletedSet = getDeletedSetForEmail(canonicalEmail);
 
-          if (act.activity_type === 'DEPOSIT' && !this.isMasterAdminEmail(canonicalEmail)) {
+          if (
+            (act.activity_type === 'DEPOSIT' || act.activity_type === 'DEPOSIT_CRYPTO_PENDING') &&
+            !this.isMasterAdminEmail(canonicalEmail)
+          ) {
             const amt = Number(meta.amountUsd ?? meta.amount ?? 0);
             if (amt > 0) {
               const ref =
@@ -1024,7 +1035,9 @@ class SupabaseService {
                 meta.checkoutId ||
                 meta.id ||
                 `DB-DEP-${String(act.id || '').slice(0, 8).toUpperCase()}`;
-              const rawStatus = String(meta.status || 'COMPLETED').toUpperCase();
+              const defaultStatus =
+                act.activity_type === 'DEPOSIT_CRYPTO_PENDING' ? 'PENDING' : 'COMPLETED';
+              const rawStatus = String(meta.status || defaultStatus).toUpperCase();
               const status: 'COMPLETED' | 'PENDING' | 'FAILED' =
                 rawStatus === 'FAILED'
                   ? 'FAILED'
@@ -1035,18 +1048,22 @@ class SupabaseService {
               const isWalletTarget = /wallet/i.test(targetAcc);
               void isWalletTarget;
 
-              const alreadyExists = (fin.transactions || []).some(
+              const existingIdx = (fin.transactions || []).findIndex(
                 (t) =>
                   t.type === 'DEPOSIT' &&
                   (t.reference === ref || t.id === meta.id || t.id === act.id)
               );
-              if (!alreadyExists) {
+              if (existingIdx === -1) {
                 fin.transactions = [
                   ...(fin.transactions || []),
                   {
                     id: meta.id || act.id || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     type: 'DEPOSIT',
-                    method: meta.method || 'Instant Deposit',
+                    method:
+                      meta.method ||
+                      (act.activity_type === 'DEPOSIT_CRYPTO_PENDING'
+                        ? 'Crypto Deposit'
+                        : 'Instant Deposit'),
                     amount: amt,
                     currency: 'USD',
                     status,
@@ -1056,6 +1073,15 @@ class SupabaseService {
                     details: act.description || `Deposit to ${targetAcc}`,
                   },
                 ];
+              } else if (
+                fin.transactions &&
+                fin.transactions[existingIdx].status === 'PENDING' &&
+                (status === 'COMPLETED' || status === 'FAILED')
+              ) {
+                fin.transactions[existingIdx] = {
+                  ...fin.transactions[existingIdx],
+                  status,
+                };
               }
             }
           } else if (

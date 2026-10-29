@@ -33,6 +33,7 @@ import {
   calculateBotPnL,
   getInstrumentPipSize,
   getContractSize,
+  isMarketerExclusiveWeekendBot,
 } from '../services/botTradingService';
 
 interface BotsTabProps {
@@ -182,8 +183,36 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     setRunToDelete(null);
   };
 
-  // Combined all bots into a single list
-  const allBots: BotStrategyConfig[] = [...inbuiltBots, ...importedBots];
+  // Combined all bots into a single list — Wizard and Vortex are strictly visible to Marketers only (never to Retail Traders)
+  const allBots: BotStrategyConfig[] = useMemo(
+    () =>
+      [...inbuiltBots, ...importedBots].filter((bot) => {
+        if (
+          bot.marketerOnly ||
+          isMarketerExclusiveWeekendBot(bot.id) ||
+          isMarketerExclusiveWeekendBot(bot.name)
+        ) {
+          return userRole === 'marketer';
+        }
+        return true;
+      }),
+    [inbuiltBots, importedBots, userRole]
+  );
+
+  // Hide Wizard and Vortex runs from Active Bots if the user is a Retail Trader ('normal')
+  const visibleBotRuns: BotRunInstance[] = useMemo(
+    () =>
+      botRuns.filter((run) => {
+        if (
+          isMarketerExclusiveWeekendBot(run.botId) ||
+          isMarketerExclusiveWeekendBot(run.botName)
+        ) {
+          return userRole === 'marketer';
+        }
+        return true;
+      }),
+    [botRuns, userRole]
+  );
 
   // Map for fast instrument lookup
   const instMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
@@ -306,7 +335,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
   // Compute each bot run's exact performance metrics, realized profits, floating P/L, and verified win rate
   const runMetrics = useMemo(() => {
-    return botRuns.map((run) => {
+    return visibleBotRuns.map((run) => {
       const runKey = run.id || run.runId;
       const closedForRun = adjustedClosedTrades.filter(
         (t) =>
@@ -377,7 +406,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
         runWinRate,
       };
     });
-  }, [botRuns, adjustedClosedTrades, liveOpenTrades, allBots]);
+  }, [visibleBotRuns, adjustedClosedTrades, liveOpenTrades, allBots]);
 
   // Actual total bot profit strictly according to the runs of bot
   const overallProfit = useMemo(() => {
@@ -405,7 +434,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
     return '94.6';
   }, [runMetrics, adjustedClosedTrades]);
 
-  const runningBotsCount = botRuns.filter((r) => r.status === 'RUNNING').length;
+  const runningBotsCount = visibleBotRuns.filter((r) => r.status === 'RUNNING').length;
 
   const handleOpenConfigModal = (bot: BotStrategyConfig) => {
     setSelectedBotForConfig(bot);
@@ -535,7 +564,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             <div className="text-[10px] text-slate-500 dark:text-neutral-400 uppercase font-semibold">Active Bot Runs</div>
             <div className="text-base font-black font-mono mt-0.5 flex items-center gap-1.5">
               <span className="text-emerald-600 dark:text-emerald-400">{runningBotsCount}</span>
-              <span className="text-xs text-slate-500 dark:text-neutral-500 font-normal">/ {botRuns.length} total</span>
+              <span className="text-xs text-slate-500 dark:text-neutral-500 font-normal">/ {visibleBotRuns.length} total</span>
             </div>
           </div>
 
@@ -617,7 +646,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
           )}
           <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-neutral-800 text-neutral-300 font-mono font-bold">
-            {botRuns.length}
+            {visibleBotRuns.length}
           </span>
         </button>
 
@@ -666,7 +695,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
               {allBots.map((bot) => {
-                const deployedRun = botRuns.find(
+                const deployedRun = visibleBotRuns.find(
                   (r) => r.botId === bot.id || r.botName === bot.name
                 );
 
@@ -792,7 +821,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               </button>
             </div>
 
-            {botRuns.length === 0 ? (
+            {visibleBotRuns.length === 0 ? (
               <div
                 className={`p-8 rounded-2xl border text-center flex flex-col items-center justify-center space-y-3 ${
                   isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'

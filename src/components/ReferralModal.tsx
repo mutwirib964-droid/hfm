@@ -71,7 +71,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
       window.removeEventListener('vtm_referral_update', handleRealtimeUpdate);
       window.removeEventListener('storage', handleRealtimeUpdate);
     };
-  }, [isOpen, currentUser]);
+  }, [isOpen, currentUser?.email, currentUser?.accountNumber]);
 
   if (!isOpen) return null;
 

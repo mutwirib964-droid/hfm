@@ -21,8 +21,11 @@ import {
   Download,
   ArrowUpRight,
   FileText,
-  Gift,
+   Gift,
   Share2,
+  Copy,
+  Check,
+  XCircle,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -44,6 +47,7 @@ import {
   isMasterAdminEmail,
   replaceLocalRegistryWithSupabase,
   getOrCreateUserProfile,
+  adminResolveCryptoDeposit,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 
@@ -117,6 +121,9 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     text: string;
     type: 'success' | 'error' | 'info';
   } | null>(null);
+  const [confirmedCryptoTxMap, setConfirmedCryptoTxMap] = useState<Record<string, boolean>>({});
+  const [resolvingCryptoTxKey, setResolvingCryptoTxKey] = useState<string | null>(null);
+  const [copiedCryptoTxKey, setCopiedCryptoTxKey] = useState<string | null>(null);
 
   const hasSyncedRecoveredUsersRef = useRef(false);
 
@@ -581,6 +588,89 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Manual Admin Approval / Rejection strictly for Pending Crypto Deposits after confirming TxHash / TxID
+  const handleResolveCryptoDeposit = async (
+    tx: PlatformTransactionRecord,
+    action: 'APPROVE' | 'REJECT'
+  ) => {
+    const txKey = `${tx.id}-${tx.referenceId || ''}`;
+    if (!confirmedCryptoTxMap[txKey]) {
+      setStatusMessage({
+        text: 'Please confirm the submitted TxHash / TxID first before approving or rejecting this crypto deposit.',
+        type: 'error',
+      });
+      return;
+    }
+
+    setResolvingCryptoTxKey(txKey);
+    try {
+      const result = await adminResolveCryptoDeposit({
+        userEmail: tx.userEmail,
+        txId: tx.id,
+        referenceId: tx.referenceId,
+        action,
+      });
+
+      if (!result.success) {
+        setStatusMessage({
+          text: result.message,
+          type: 'error',
+        });
+        return;
+      }
+
+      if (action === 'APPROVE' && result.user && tx.amountUsd >= 16) {
+        const refCode =
+          result.user.referredByCode ||
+          referralService.getReferredByCodeForUser(result.user.email);
+        if (refCode) {
+          referralService.recordDepositForReferrerCode(refCode, tx.amountUsd, {
+            email: result.user.email,
+            name: result.user.name || 'Referred Trader',
+            accountNumber: tx.accountNumber || 'VTM Wallet',
+            reference: tx.referenceId || tx.id,
+          });
+        }
+      }
+
+      loadLocalAdminMetrics();
+      if (selectedUserEmail.toLowerCase() === (tx.userEmail || '').toLowerCase()) {
+        handleSelectUserForEdit(tx.userEmail);
+      }
+
+      if (
+        currentUser &&
+        result.updatedState &&
+        currentUser.email.toLowerCase() === (tx.userEmail || '').toLowerCase()
+      ) {
+        onApplyChanges(result.updatedState.walletBalance, result.updatedState.accounts);
+      }
+
+      try {
+        if (typeof BroadcastChannel !== 'undefined') {
+          const bc = new BroadcastChannel('vtm_global_sync');
+          bc.postMessage({
+            type: 'ADMIN_CRYPTO_DEPOSIT_RESOLVED',
+            email: tx.userEmail,
+            reference: tx.referenceId,
+            status: action === 'APPROVE' ? 'COMPLETED' : 'FAILED',
+            timestamp: Date.now(),
+          });
+          bc.close();
+        }
+      } catch {
+        // ignore
+      }
+
+      setStatusMessage({
+        text: result.message,
+        type: action === 'APPROVE' ? 'success' : 'info',
+      });
+    } finally {
+      setResolvingCryptoTxKey(null);
+    }
   };
 
   // Platform Aggregate Totals (Live Trading Accounts strictly in terms of numbers/count)
@@ -1974,6 +2064,13 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                       const isDeposit = tx.type === 'DEPOSIT';
                       const isCompleted = tx.status === 'COMPLETED';
                       const isPending = tx.status === 'PENDING';
+                      const isCryptoDeposit =
+                        isDeposit &&
+                        /crypto|btc|eth|usdt|trc20|erc20|bep20/i.test(String(tx.method || ''));
+                      const txKey = `${tx.id}-${tx.referenceId || ''}`;
+                      const isTxHashConfirmed = Boolean(confirmedCryptoTxMap[txKey]);
+                      const isProcessingThisTx = resolvingCryptoTxKey === txKey;
+
                       return (
                         <tr
                           key={`${tx.id}-${tx.userEmail || ''}-${idx}`}
@@ -2008,7 +2105,53 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                             {tx.method}
                           </td>
                           <td className={`py-3 px-4 font-mono text-[11px] ${mutedText}`}>
-                            {tx.referenceId}
+                            {isCryptoDeposit ? (
+                              <div className="flex flex-col gap-1 max-w-[240px]">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30 shrink-0">
+                                    TxHash / TxID
+                                  </span>
+                                  {tx.referenceId && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        navigator.clipboard?.writeText(tx.referenceId).catch(() => {});
+                                        setCopiedCryptoTxKey(txKey);
+                                        setTimeout(() => {
+                                          setCopiedCryptoTxKey((prev) => (prev === txKey ? null : prev));
+                                        }, 2000);
+                                      }}
+                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-sans font-medium border transition-colors cursor-pointer ${
+                                        isDarkMode
+                                          ? 'border-white/10 bg-white/[0.04] hover:bg-white/[0.1] text-slate-300'
+                                          : 'border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700'
+                                      }`}
+                                      title="Copy TxHash / TxID"
+                                    >
+                                      {copiedCryptoTxKey === txKey ? (
+                                        <>
+                                          <Check className="w-3 h-3 text-emerald-400" />
+                                          <span className="text-emerald-400">Copied</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Copy className="w-3 h-3" />
+                                          <span>Copy</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  )}
+                                </div>
+                                <span
+                                  className="break-all select-all text-[11px] font-mono"
+                                  title={tx.referenceId}
+                                >
+                                  {tx.referenceId || 'N/A'}
+                                </span>
+                              </div>
+                            ) : (
+                              tx.referenceId
+                            )}
                           </td>
                           <td
                             className={`py-3 px-4 text-right font-mono tabular-nums font-semibold ${
@@ -2032,6 +2175,66 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                             >
                               {isCompleted ? 'Completed' : isPending ? 'Pending' : 'Failed'}
                             </span>
+
+                            {isCryptoDeposit && isPending && (
+                              <div className="mt-2 flex flex-col items-end gap-1.5">
+                                <label
+                                  className={`inline-flex items-center gap-1.5 text-[11px] font-medium cursor-pointer select-none px-2 py-1 rounded-md border ${
+                                    isTxHashConfirmed
+                                      ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                                      : isDarkMode
+                                      ? 'border-white/10 bg-white/[0.03] text-slate-300'
+                                      : 'border-slate-300 bg-slate-100 text-slate-700'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isTxHashConfirmed}
+                                    onChange={(e) =>
+                                      setConfirmedCryptoTxMap((prev) => ({
+                                        ...prev,
+                                        [txKey]: e.target.checked,
+                                      }))
+                                    }
+                                    className="w-3.5 h-3.5 accent-emerald-500 rounded cursor-pointer"
+                                  />
+                                  <span>Confirm TxHash / TxID</span>
+                                </label>
+
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={!isTxHashConfirmed || isProcessingThisTx}
+                                    onClick={() => handleResolveCryptoDeposit(tx, 'APPROVE')}
+                                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                                    title={
+                                      isTxHashConfirmed
+                                        ? 'Approve crypto deposit and credit user balance'
+                                        : 'Tick "Confirm TxHash / TxID" first to enable approval'
+                                    }
+                                  >
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>{isProcessingThisTx ? 'Processing...' : 'Approve'}</span>
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    disabled={!isTxHashConfirmed || isProcessingThisTx}
+                                    onClick={() => handleResolveCryptoDeposit(tx, 'REJECT')}
+                                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-rose-600 hover:bg-rose-500 text-white transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-1"
+                                    title={
+                                      isTxHashConfirmed
+                                        ? 'Reject crypto deposit'
+                                        : 'Tick "Confirm TxHash / TxID" first to enable rejection'
+                                    }
+                                  >
+                                    <XCircle className="w-3 h-3" />
+                                    <span>Reject</span>
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+
                             {tx.status === 'FAILED' && (
                               <div className={`text-[11px] mt-1 max-w-[220px] ml-auto text-right font-normal ${isDarkMode ? 'text-slate-300' : 'text-slate-600'}`}>
                                 {tx.details || (tx as any).resultDesc || 'You cancelled the M-PESA payment request.'}

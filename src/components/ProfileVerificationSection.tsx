@@ -84,7 +84,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
         setPhone(currentUser.phoneNumber || (currentUser as any)?.phone || '');
       }
     }
-  }, [currentUser]);
+  }, [currentUser?.email, currentUser?.name, currentUser?.countryCode, currentUser?.countryName, currentUser?.phoneNumber]);
 
   // Document upload selections
   const [idType, setIdType] = useState<'ID' | 'DRIVING_LICENCE'>('ID');

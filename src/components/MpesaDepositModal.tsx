@@ -173,7 +173,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         setPhoneInput(maskPhoneNumber(userPhone));
       }
     }
-  }, [currentUser]);
+  }, [currentUser?.email, currentUser?.countryCode, currentUser?.phoneNumber]);
 
   useEffect(() => {
     if (defaultTarget) {

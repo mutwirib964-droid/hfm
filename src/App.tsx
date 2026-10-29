@@ -77,6 +77,7 @@ import {
   getContractSize,
   getAccountMaxOpenTrades,
   getTargetConcurrentBotTrades,
+  isMarketerExclusiveWeekendBot,
 } from './services/botTradingService';
 import { Wifi, Battery, Signal, Zap, Radio } from 'lucide-react';
 import { AdminAccountManagerModal } from './components/AdminAccountManagerModal';
@@ -327,12 +328,17 @@ export default function App() {
 
     const applyRoleUpdateToUser = (nextRole: UserRole) => {
       const safeRole: UserRole = nextRole === 'marketer' ? 'marketer' : 'normal';
-      if (userRoleRef.current === safeRole && currentUser?.role === safeRole) {
+      if (userRoleRef.current === safeRole && currentUserRef.current?.role === safeRole) {
         return;
       }
       userRoleRef.current = safeRole;
       setUserRole(safeRole);
-      setCurrentUser((prev) => (prev && prev.role !== safeRole ? { ...prev, role: safeRole } : prev));
+      setCurrentUser((prev) => {
+        if (!prev || prev.role === safeRole) return prev;
+        const nextUser = { ...prev, role: safeRole };
+        currentUserRef.current = nextUser;
+        return nextUser;
+      });
       try {
         localStorage.setItem('vtm_user_role', safeRole);
         const activeRaw = localStorage.getItem('vtm_auth_user');
@@ -348,17 +354,50 @@ export default function App() {
       // Immediately switch all open bot trades and manual positions to the appropriate outcome
       if (safeRole === 'marketer') {
         setBotTrades((prevTrades) => {
+          if (!prevTrades.some((t) => t.status === 'OPEN' && t.targetOutcome !== 'WIN')) {
+            return prevTrades;
+          }
           const updated = prevTrades.map((t) =>
             t.status === 'OPEN' ? { ...t, targetOutcome: 'WIN' as const } : t
           );
           botTradesRef.current = updated;
-          if (currentUser?.email) saveStoredBotTrades(updated, currentUser.email);
+          if (currentUserRef.current?.email) saveStoredBotTrades(updated, currentUserRef.current.email);
           return updated;
         });
         setPositions((prevPositions) => {
+          if (prevPositions.length === 0 || prevPositions.every((p) => p.targetOutcome === 'WIN')) {
+            return prevPositions;
+          }
           const updated = prevPositions.map((p) => ({ ...p, targetOutcome: 'WIN' as const }));
           positionsRef.current = updated;
           return updated;
+        });
+      } else {
+        // When set back to Retail Trader ('normal'), pause any Marketer-exclusive bots (Wizard / Vortex)
+        setBotRuns((prevRuns) => {
+          let changed = false;
+          const nowTs = Date.now();
+          const updatedRuns = prevRuns.map((r) => {
+            if (
+              (isMarketerExclusiveWeekendBot(r.botId) ||
+                isMarketerExclusiveWeekendBot(r.botName)) &&
+              r.status === 'RUNNING'
+            ) {
+              changed = true;
+              return {
+                ...r,
+                status: 'PAUSED' as const,
+                statusUpdatedAt: nowTs,
+                stoppedAt: nowTs,
+              };
+            }
+            return r;
+          });
+          if (changed) {
+            botRunsRef.current = updatedRuns;
+            if (currentUserRef.current?.email) saveStoredBotRuns(updatedRuns, currentUserRef.current.email);
+          }
+          return changed ? updatedRuns : prevRuns;
         });
       }
     };
@@ -376,13 +415,14 @@ export default function App() {
 
       // Immediately apply any Marketer/Normal role assignment made by Admin
       const remoteRole: UserRole = remote.profile.role === 'marketer' ? 'marketer' : 'normal';
-      if (userRoleRef.current !== remoteRole || currentUser.role !== remoteRole) {
+      if (userRoleRef.current !== remoteRole || currentUserRef.current?.role !== remoteRole) {
         applyRoleUpdateToUser(remoteRole);
       }
       setCurrentUser((prevUser) => {
         if (!prevUser) return null;
         if (prevUser.role !== remoteRole || String(prevUser.id) !== String(remote.profile.id)) {
           const updated = { ...prevUser, id: String(remote.profile.id), role: remoteRole };
+          currentUserRef.current = updated;
           localStorage.setItem('vtm_auth_user', JSON.stringify(updated));
           return updated;
         }
@@ -1969,7 +2009,7 @@ export default function App() {
     let isMounted = true;
     let highlightTimeout: any = null;
 
-    // Core quote applicator - updates instruments, ticks, and chart candles instantaneously
+    // Core quote applicator - updates instruments and tick highlights cleanly without nested setState inside functional updaters
     const applyQuotes = (quotes: Map<string, TVQuote>) => {
       if (!isMounted || quotes.size === 0) return;
 
@@ -1977,97 +2017,52 @@ export default function App() {
         realTVQuotesRef.current.set(sym, q);
       });
 
+      const currentInsts = instrumentsRef.current;
+      const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
+      let hasPriceChanged = false;
+
+      currentInsts.forEach((inst) => {
+        const quote = quotes.get(inst.symbol);
+        if (!quote) return;
+        const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
+        if (!mStatus.isOpen) return;
+
+        if (quote.bid > inst.bid || (quote.bid === inst.bid && quote.ask > inst.ask)) {
+          nextTickStates[inst.symbol] = 'UP';
+          hasPriceChanged = true;
+        } else if (quote.bid < inst.bid || (quote.bid === inst.bid && quote.ask < inst.ask)) {
+          nextTickStates[inst.symbol] = 'DOWN';
+          hasPriceChanged = true;
+        }
+      });
+
       setInstruments((prevInstruments) => {
-        const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
-        let hasPriceChanged = false;
-        const activeSym = selectedSymbolRef.current;
+        let anyItemChanged = false;
 
         const updated = prevInstruments.map((inst) => {
           const quote = quotes.get(inst.symbol);
           if (!quote) return inst;
 
           const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-          const oldBid = inst.bid;
-          const oldAsk = inst.ask;
           const newBid = quote.bid;
           const newAsk = quote.ask;
+          const nextSpread = quote.spread > 0 ? quote.spread : inst.spread;
+
+          if (inst.bid === newBid && inst.ask === newAsk && inst.spread === nextSpread) {
+            return inst;
+          }
+          anyItemChanged = true;
 
           if (!mStatus.isOpen) {
             return {
               ...inst,
               bid: newBid,
               ask: newAsk,
-              spread: quote.spread > 0 ? quote.spread : inst.spread,
+              spread: nextSpread,
               change24h: quote.change24h,
               high24h: quote.high24h,
               low24h: quote.low24h,
             };
-          }
-
-          let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-          if (newBid > oldBid || (newBid === oldBid && newAsk > oldAsk)) {
-            direction = 'UP';
-            hasPriceChanged = true;
-          } else if (newBid < oldBid || (newBid === oldBid && newAsk < oldAsk)) {
-            direction = 'DOWN';
-            hasPriceChanged = true;
-          }
-          if (direction !== 'NEUTRAL') {
-            nextTickStates[inst.symbol] = direction;
-          }
-
-          // Immediately update chart candle when master TradingView feed updates active pair
-          if (inst.symbol === activeSym && (newBid !== oldBid || newAsk !== inst.ask)) {
-            const activeChartPrice = newBid;
-            const now = Date.now();
-            const currentTf = timeframeRef.current || '15M';
-            const intervalMs = getTimeframeDurationMs(currentTf);
-
-            setCandles((prev) => {
-              if (prev.length === 0) {
-                return generateCandles(activeChartPrice, currentTf, 75, inst.decimals);
-              }
-              const last = prev[prev.length - 1];
-
-              // If previous candles were seeded from initial static mock prices and differ from the live feed by >0.25%, rebase the chart candles around the real live price so the chart and Buy/Sell buttons match 1:1
-              if (last.open > 0 && Math.abs(activeChartPrice - last.open) / last.open > 0.0025) {
-                return generateCandles(activeChartPrice, currentTf, 75, inst.decimals);
-              }
-
-              // If time selected is over, form a brand new candle!
-              if (now >= last.time + intervalMs) {
-                const newSlot = Math.floor(now / intervalMs) * intervalMs;
-                const newCandle: Candle = {
-                  time: newSlot,
-                  open: last.close,
-                  high: Math.max(last.close, activeChartPrice),
-                  low: Math.min(last.close, activeChartPrice),
-                  close: activeChartPrice,
-                  volume: 1,
-                };
-                const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
-                return [...trimmed, newCandle];
-              }
-
-              // Natural realistic candle wicks (like real TradingView candlesticks)
-              const bodyTop = Math.max(last.open, activeChartPrice);
-              const bodyBottom = Math.min(last.open, activeChartPrice);
-              const bodySize = bodyTop - bodyBottom;
-              const minStep = Math.pow(10, -inst.decimals);
-              const maxWick = Math.max(minStep * 2, bodySize * 0.25);
-
-              const safeHigh = Math.max(bodyTop, Math.min(Math.max(last.high, activeChartPrice), bodyTop + maxWick));
-              const safeLow = Math.min(bodyBottom, Math.max(Math.min(last.low, activeChartPrice), bodyBottom - maxWick));
-
-              const updatedLast: Candle = {
-                ...last,
-                close: activeChartPrice,
-                high: Number(safeHigh.toFixed(inst.decimals)),
-                low: Number(safeLow.toFixed(inst.decimals)),
-                volume: (last.volume || 1) + 1,
-              };
-              return [...prev.slice(0, prev.length - 1), updatedLast];
-            });
           }
 
           // Keep sparkline anchored smoothly around live newBid with natural multi-wave curvature so it never flattens
@@ -2088,7 +2083,7 @@ export default function App() {
             ...inst,
             bid: newBid,
             ask: newAsk,
-            spread: quote.spread > 0 ? quote.spread : inst.spread,
+            spread: nextSpread,
             change24h: quote.change24h,
             high24h: quote.high24h,
             low24h: quote.low24h,
@@ -2096,26 +2091,20 @@ export default function App() {
           };
         });
 
-        if (hasPriceChanged) {
-          setTickStates((prev) => ({ ...prev, ...nextTickStates }));
-          if (highlightTimeout) clearTimeout(highlightTimeout);
-          highlightTimeout = setTimeout(() => {
-            if (isMounted) setTickStates({});
-          }, 800);
+        if (!anyItemChanged) {
+          return prevInstruments;
         }
-
-        if (!hasPriceChanged) {
-          const anyItemChanged = updated.some((inst, idx) => {
-            const prev = prevInstruments[idx];
-            return !prev || prev.bid !== inst.bid || prev.ask !== inst.ask || prev.spread !== inst.spread;
-          });
-          if (!anyItemChanged) {
-            return prevInstruments;
-          }
-        }
-
+        instrumentsRef.current = updated;
         return updated;
       });
+
+      if (hasPriceChanged) {
+        setTickStates((prev) => ({ ...prev, ...nextTickStates }));
+        if (highlightTimeout) clearTimeout(highlightTimeout);
+        highlightTimeout = setTimeout(() => {
+          if (isMounted) setTickStates({});
+        }, 800);
+      }
     };
 
     // 1. Subscribe to immediate real-time WebSocket & SSE ticks
@@ -2263,9 +2252,11 @@ export default function App() {
         // Pure market P&L calculation: driven strictly by actual entry price, executable bid/ask price, position volume, and contract specifications
         const currentPrice = Number(rawMarketPrice.toFixed(inst.decimals));
         const grossPnl = calculateUnifiedPnL(pos.symbol, pos.side, pos.openPrice, currentPrice, pos.lots);
-        let pnl = Number((grossPnl + (pos.swap || 0) + (pos.commission || 0)).toFixed(2));
-
-
+        const rawPnl = Number((grossPnl + (pos.swap || 0) + (pos.commission || 0)).toFixed(2));
+        if (!Number.isFinite(currentPrice) || !Number.isFinite(rawPnl)) {
+          return pos;
+        }
+        const pnl = rawPnl;
 
         // Authoritative SL / TP check: Trigger when market price hits SL/TP price, or fallback to USD target if no price set
         const hitTpByPrice =
@@ -2304,7 +2295,9 @@ export default function App() {
           return pos;
         }
 
-        if (pos.currentPrice !== currentPrice || pos.pnl !== pnl) {
+        const prevPrice = Number.isFinite(pos.currentPrice) ? pos.currentPrice : 0;
+        const prevPnl = Number.isFinite(pos.pnl) ? pos.pnl : 0;
+        if (prevPrice !== currentPrice || prevPnl !== pnl) {
           changed = true;
           return {
             ...pos,
@@ -2380,6 +2373,10 @@ export default function App() {
             };
             const trimmed = prevCandles.length >= 85 ? prevCandles.slice(1) : prevCandles;
             return [...trimmed, newCandle];
+          }
+
+          if (last.close === executionPrice) {
+            return prevCandles;
           }
 
           const bodyTop = Math.max(last.open, executionPrice);
@@ -2582,15 +2579,14 @@ export default function App() {
       return stopped;
     });
 
-    // 2. Batch close all open positions atomically in one single pass (prevents setState loop / Maximum update depth exceeded)
+    // 2. Batch close all open positions & open bot trades atomically in one single pass (prevents setState loop / Maximum update depth exceeded)
     const closedPositions: ClosedTrade[] = [];
     const closedIds = new Set<string>();
     let totalRealizedPnl = 0;
 
     for (const pos of accPositions) {
-      if (closingPositionIdsRef.current.has(pos.id)) continue;
-      closingPositionIdsRef.current.add(pos.id);
       closedIds.add(pos.id);
+      closingPositionIdsRef.current.delete(pos.id);
       if (currentUserRef.current?.email) {
         markTradeSettled(currentUserRef.current.email, pos.id);
       }
@@ -2608,7 +2604,7 @@ export default function App() {
           (pos.commission || 0)
         ).toFixed(2)
       );
-      totalRealizedPnl += calculatedPnl;
+      totalRealizedPnl += Number.isFinite(calculatedPnl) ? calculatedPnl : 0;
       closedPositions.push({
         id: pos.id,
         ticket: pos.ticket,
@@ -2617,7 +2613,7 @@ export default function App() {
         lots: pos.lots,
         openPrice: pos.openPrice,
         closePrice: finalClosePrice,
-        pnl: calculatedPnl,
+        pnl: Number.isFinite(calculatedPnl) ? calculatedPnl : 0,
         openTime: pos.openTime,
         closeTime: stopOutTs,
         reason: 'SL',
@@ -2626,10 +2622,107 @@ export default function App() {
       });
     }
 
+    // 3. Batch close all open bot trades belonging to curAcc atomically
+    const closedBotIds = new Set<string>();
+    const closedBotTickets = new Set<string>();
+    let totalBotRealizedPnl = 0;
+
+    for (const bt of accOpenBotTrades) {
+      if (bt.id) closedBotIds.add(bt.id);
+      if (bt.ticket !== undefined) closedBotTickets.add(String(bt.ticket));
+      if (currentUserRef.current?.email && bt.id) {
+        markTradeSettled(currentUserRef.current.email, bt.id);
+      }
+      const inst = instrumentsRef.current.find((i) => i.symbol === bt.symbol);
+      const decimals = inst?.decimals ?? getInstrumentSpec(bt.symbol).decimals;
+      const exitPrice = Number(
+        (typeof bt.currentPrice === 'number' && !isNaN(bt.currentPrice) && bt.currentPrice > 0
+          ? bt.currentPrice
+          : bt.side === 'BUY'
+          ? inst?.bid || bt.openPrice
+          : inst?.ask || bt.openPrice
+        ).toFixed(decimals)
+      );
+      const rawBotPnl = calculateBotPnL(bt.symbol, bt.side, bt.openPrice, exitPrice, bt.lotSize);
+      const botPnl = Number((Number.isFinite(rawBotPnl) ? rawBotPnl : 0).toFixed(2));
+      totalBotRealizedPnl += botPnl;
+
+      closedPositions.push({
+        id: `cl-bot-${bt.id || bt.ticket}`,
+        ticket: bt.ticket,
+        symbol: bt.symbol,
+        side: bt.side,
+        lots: bt.lotSize,
+        openPrice: bt.openPrice,
+        closePrice: exitPrice,
+        pnl: botPnl,
+        openTime: bt.openTime,
+        closeTime: stopOutTs,
+        reason: 'SL',
+        accountId: curAcc.id,
+        accountNumber: curAcc.accountNumber,
+      });
+    }
+
+    if (accOpenBotTrades.length > 0) {
+      const nextBotTrades = (botTradesRef.current || []).map((t) => {
+        if (
+          t.status === 'OPEN' &&
+          ((t.id && closedBotIds.has(t.id)) ||
+            (t.ticket !== undefined && closedBotTickets.has(String(t.ticket))) ||
+            belongsToAccount(t, curAcc))
+        ) {
+          const inst = instrumentsRef.current.find((i) => i.symbol === t.symbol);
+          const decimals = inst?.decimals ?? getInstrumentSpec(t.symbol).decimals;
+          const exitPrice = Number(
+            (typeof t.currentPrice === 'number' && !isNaN(t.currentPrice) && t.currentPrice > 0
+              ? t.currentPrice
+              : t.side === 'BUY'
+              ? inst?.bid || t.openPrice
+              : inst?.ask || t.openPrice
+            ).toFixed(decimals)
+          );
+          const rawBotPnl = calculateBotPnL(t.symbol, t.side, t.openPrice, exitPrice, t.lotSize);
+          const botPnl = Number((Number.isFinite(rawBotPnl) ? rawBotPnl : 0).toFixed(2));
+          return {
+            ...t,
+            status: 'CLOSED' as const,
+            currentPrice: exitPrice,
+            closePrice: exitPrice,
+            exitPrice,
+            profitUsd: botPnl,
+            closeReason: 'STOP_LOSS' as const,
+            exitReason: 'SL' as const,
+            closeTime: stopOutTs,
+          };
+        }
+        return t;
+      });
+      botTradesRef.current = nextBotTrades;
+      lastLocalBotsUpdateRef.current = stopOutTs;
+      setBotTrades(nextBotTrades);
+      saveStoredBotTrades(nextBotTrades, currentUserRef.current?.email);
+    }
+
     if (closedIds.size > 0) {
-      const remaining = (positionsRef.current || []).filter((p) => !closedIds.has(p.id));
+      const remaining = (positionsRef.current || []).filter(
+        (p) => !closedIds.has(p.id) && !belongsToAccount(p, curAcc)
+      );
       positionsRef.current = remaining;
       setPositions(remaining);
+      if (currentUserRef.current?.email) {
+        try {
+          localStorage.setItem(
+            `vtm_open_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
+            JSON.stringify(remaining)
+          );
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (closedPositions.length > 0) {
       setClosedTrades((prev) => {
         const deduped = prev.filter((ct) => !closedIds.has(ct.id));
         const updated = [...closedPositions, ...deduped];
@@ -2639,10 +2732,6 @@ export default function App() {
               `vtm_closed_trades_${currentUserRef.current.email.trim().toLowerCase()}`,
               JSON.stringify(updated)
             );
-            localStorage.setItem(
-              `vtm_open_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
-              JSON.stringify(remaining)
-            );
           } catch {
             // ignore
           }
@@ -2650,17 +2739,13 @@ export default function App() {
         return updated;
       });
 
-      commitAccountBalanceChange(totalRealizedPnl, curAcc.id, {
+      const combinedRealizedPnl = Number((totalRealizedPnl + totalBotRealizedPnl).toFixed(2));
+      commitAccountBalanceChange(combinedRealizedPnl, curAcc.id, {
         type: 'REALIZED_TRADE_PNL',
         referenceId: `stopout-${stopOutTs}`,
         reason: `Margin Stop-Out: ${closedPositions.length} positions closed`,
       });
     }
-
-    // 3. Close open bot trades
-    accOpenBotTrades.forEach((bt) => {
-      handleCloseBotTrade(bt.id);
-    });
 
     const latestAcc =
       accountsRef.current.find((a) => a.id === curAcc.id || a.accountNumber === curAcc.accountNumber) ||
@@ -2709,8 +2794,8 @@ export default function App() {
     const allQuotesHydrated = accountPositions.every((p) => realTVQuotesRef.current.has(p.symbol));
     if (!allQuotesHydrated) return;
 
-    const manualPnl = accountPositions.reduce((acc, p) => acc + p.pnl, 0);
-    const openBotPnl = openBotTradesList.reduce((acc, bt) => acc + (bt.profitUsd || 0), 0);
+    const manualPnl = accountPositions.reduce((acc, p) => acc + (Number.isFinite(p.pnl) ? p.pnl : 0), 0);
+    const openBotPnl = openBotTradesList.reduce((acc, bt) => acc + (Number.isFinite(bt.profitUsd) ? (bt.profitUsd || 0) : 0), 0);
     const totalPnl = manualPnl + openBotPnl;
     const calculatedEquity = selectedAccountWithEquity.equity;
 
@@ -2725,7 +2810,14 @@ export default function App() {
     ) {
       handleZeroBalanceStopOut(protectionFloor);
     }
-  }, [positions, botTrades, selectedAccountWithEquity]);
+  }, [
+    positions,
+    botTrades,
+    selectedAccountWithEquity?.id,
+    selectedAccountWithEquity?.balance,
+    selectedAccountWithEquity?.equity,
+    selectedAccountWithEquity?.type,
+  ]);
 
   // Helper to add notification with guaranteed unique key and persistent storage + Supabase sync
   const addNotification = (title: string) => {
@@ -4576,7 +4668,7 @@ export default function App() {
         })
         .catch(() => {});
     });
-  }, [currentUser, userRole, transactions]);
+  }, [currentUser?.email, userRole, transactions.length]);
 
   // Withdrawal Handlers - Minimum withdrawal is strictly $35 ($50 for Crypto)
   // Records as PENDING for 3 seconds while verifying capacity, then deducts and completes if successful or marks FAILED without deducting if capacity exceeded.
@@ -5102,7 +5194,7 @@ export default function App() {
   // - If user explicitly selected a specific currency in Settings (customSymbolSelected && symbol !== 'ALL'), return ONLY that currency.
   // - Otherwise (default before selecting any currency in Settings, or 'ALL' mode), return all labeled recommendedInstruments for the bot.
   const getBotCandidateInstruments = (
-    run: { symbol?: string; customSymbolSelected?: boolean },
+    run: { symbol?: string; customSymbolSelected?: boolean; botId?: string; botName?: string },
     botConfig?: BotStrategyConfig
   ): Instrument[] => {
     const allInst = instrumentsRef.current.length > 0 ? instrumentsRef.current : instruments;
@@ -5112,6 +5204,18 @@ export default function App() {
     if (isSpecificCurrency) {
       const exactMatch = allInst.find((i) => i.symbol.toUpperCase() === cleanSym);
       return exactMatch ? [exactMatch] : [];
+    }
+
+    const isMarketerWeekendBot =
+      Boolean(botConfig?.tradesOnWeekends) ||
+      isMarketerExclusiveWeekendBot(run.botId) ||
+      isMarketerExclusiveWeekendBot(run.botName) ||
+      isMarketerExclusiveWeekendBot(botConfig?.id) ||
+      isMarketerExclusiveWeekendBot(botConfig?.name);
+
+    // Wizard and Vortex can trade all currencies on the website
+    if (isMarketerWeekendBot && allInst.length > 0) {
+      return allInst;
     }
 
     const recSyms =
@@ -5128,12 +5232,23 @@ export default function App() {
     return matchedRecs.length > 0 ? matchedRecs : [allInst[0]];
   };
 
-  // Return ONLY candidate instruments whose market is currently OPEN (prices moving). Never fall back to unrelated crypto pairs on weekends.
+  // Return ONLY candidate instruments whose market is currently OPEN (prices moving) — EXCEPT for Wizard and Vortex (Marketer-exclusive 24/7 bots) which trade all website currencies even on weekends.
   const getOpenBotInstruments = (
-    run: { symbol?: string; customSymbolSelected?: boolean },
+    run: { symbol?: string; customSymbolSelected?: boolean; botId?: string; botName?: string },
     botConfig?: BotStrategyConfig
   ): Instrument[] => {
     const candidates = getBotCandidateInstruments(run, botConfig);
+    const isMarketerWeekendBot =
+      userRoleRef.current === 'marketer' &&
+      (Boolean(botConfig?.tradesOnWeekends) ||
+        isMarketerExclusiveWeekendBot(run.botId) ||
+        isMarketerExclusiveWeekendBot(run.botName) ||
+        isMarketerExclusiveWeekendBot(botConfig?.id) ||
+        isMarketerExclusiveWeekendBot(botConfig?.name));
+
+    if (isMarketerWeekendBot) {
+      return candidates;
+    }
     return candidates.filter((inst) => checkInstrumentMarketHours(inst.symbol, inst.category).isOpen);
   };
 
@@ -6299,8 +6414,14 @@ export default function App() {
           (parentRun ? getBotCandidateInstruments(parentRun)[0] : allInstruments[0]);
         if (!tradeInst) return;
 
+        const isMarketerWeekendTrade =
+          currentRole === 'marketer' &&
+          (isMarketerExclusiveWeekendBot(activeTrade.botId) ||
+            isMarketerExclusiveWeekendBot(activeTrade.botName) ||
+            isMarketerExclusiveWeekendBot(parentRun?.botId) ||
+            isMarketerExclusiveWeekendBot(parentRun?.botName));
         const mStatus = checkInstrumentMarketHours(tradeInst.symbol, tradeInst.category);
-        if (!mStatus.isOpen) return;
+        if (!mStatus.isOpen && !isMarketerWeekendTrade) return;
 
         const pipSize = getInstrumentPipSize(activeTrade.symbol);
         const durationMs = Date.now() - (activeTrade.openTime || Date.now());
@@ -6678,6 +6799,28 @@ export default function App() {
         const botConfig = allBotConfigs.find(
           (b) => b.id === run.botId || b.name === run.botName
         );
+        const isMarketerExclusiveRun =
+          Boolean(botConfig?.marketerOnly) ||
+          isMarketerExclusiveWeekendBot(run.botId) ||
+          isMarketerExclusiveWeekendBot(run.botName);
+
+        // Marketer-only bots (Wizard & Vortex) cannot run if the user is a Retail Trader ('normal')
+        if (isMarketerExclusiveRun && currentRole !== 'marketer') {
+          const rolePauseTs = Date.now();
+          nextRuns = nextRuns.map((r) =>
+            r.id === run.id || r.runId === runKey
+              ? {
+                  ...r,
+                  status: 'PAUSED' as const,
+                  statusUpdatedAt: rolePauseTs,
+                  stoppedAt: rolePauseTs,
+                }
+              : r
+          );
+          runsChanged = true;
+          return;
+        }
+
         const claimedWinRateStr = botConfig?.claimedWinRate || '94.2%';
 
         // Resolve only open (market-active) instruments for this bot:
@@ -6797,8 +6940,13 @@ export default function App() {
           // Cycle across all open candidate instruments (all recommended pairs in default 'ALL' mode, or the 1 selected pair if set in Settings)
           const targetInst =
             openInsts[(openCountNow + Math.floor(Date.now() / 1500)) % openInsts.length];
+          const isMarketerWeekendBotRun =
+            currentRole === 'marketer' &&
+            (Boolean(botConfig?.tradesOnWeekends) ||
+              isMarketerExclusiveWeekendBot(run.botId) ||
+              isMarketerExclusiveWeekendBot(run.botName));
           const mStatus = checkInstrumentMarketHours(targetInst.symbol, targetInst.category);
-          if (!mStatus.isOpen) break;
+          if (!mStatus.isOpen && !isMarketerWeekendBotRun) break;
 
           const cleanRunTpPips = Number(run.tpPips) > 0 ? Number(run.tpPips) : 30;
           const cleanRunSlPips = Number(run.slPips) > 0 ? Number(run.slPips) : 20;

@@ -20,6 +20,8 @@ export interface BotStrategyConfig {
   importedFileName?: string;
   customCodeSnippet?: string;
   claimedWinRate?: string;
+  marketerOnly?: boolean;
+  tradesOnWeekends?: boolean;
 }
 
 export interface BotRunInstance {
@@ -51,6 +53,7 @@ export interface BotRunInstance {
   userStartedVersion?: number;
   accountId?: string;
   accountNumber?: string;
+  claimedWinRate?: string;
 }
 
 export interface BotTrade {

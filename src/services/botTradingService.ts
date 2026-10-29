@@ -1,7 +1,58 @@
 import { BotStrategyConfig, BotRunInstance, BotTrade, UserRole, BotType } from '../types/botTypes';
 import { Instrument } from '../types';
 
+export const isMarketerExclusiveWeekendBot = (botIdOrName?: string | null): boolean => {
+  if (!botIdOrName) return false;
+  const clean = String(botIdOrName).trim().toLowerCase();
+  return (
+    clean === 'vtm-wizard-bot' ||
+    clean === 'vtm-vortex-bot' ||
+    clean === 'wizard' ||
+    clean === 'vortex' ||
+    clean.includes('wizard') ||
+    clean.includes('vortex')
+  );
+};
+
 export const DEFAULT_INBUILT_BOTS: BotStrategyConfig[] = [
+  {
+    id: 'vtm-wizard-bot',
+    name: 'Wizard',
+    type: 'INBUILT',
+    tag: 'Multi-Asset Momentum',
+    description: 'Institutional multi-timeframe liquidity and momentum filter combining dynamic EMA alignment with ATR trailing stops.',
+    recommendedInstruments: ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'NAS100', 'US30', 'BTCUSD', 'TSLA'],
+    defaultLotSize: 0.1,
+    defaultTpPips: 35,
+    defaultSlPips: 20,
+    author: 'VTM Quantitative Labs',
+    version: 'v6.4 Pro',
+    timeframe: 'M15',
+    strategyLogic: 'Multi-session liquidity sweep and momentum matrix with dynamic order block confirmation.',
+    indicatorTriggers: ['EMA 20/50/200', 'Dynamic ATR Trailing', 'Order Flow Delta'],
+    claimedWinRate: '95.8%',
+    marketerOnly: true,
+    tradesOnWeekends: true,
+  },
+  {
+    id: 'vtm-vortex-bot',
+    name: 'Vortex',
+    type: 'INBUILT',
+    tag: 'Institutional Volatility',
+    description: 'High-precision volatility breakout and order flow imbalance algorithm engineered for institutional execution.',
+    recommendedInstruments: ['XAUUSD', 'GBPUSD', 'EURUSD', 'US500', 'NAS100', 'ETHUSD', 'AAPL', 'NVDA'],
+    defaultLotSize: 0.1,
+    defaultTpPips: 40,
+    defaultSlPips: 22,
+    author: 'VTM Algo Engineering',
+    version: 'v6.2 Ultra',
+    timeframe: 'M5',
+    strategyLogic: 'High-velocity institutional order block and volatility breakout execution at key session pivots.',
+    indicatorTriggers: ['Vortex Volatility Index', 'VWAP Deviation Bands', 'Tick Momentum Surge'],
+    claimedWinRate: '96.1%',
+    marketerOnly: true,
+    tradesOnWeekends: true,
+  },
   {
     id: 'vtm-trend-matrix',
     name: 'VTM Trend Matrix EA',
