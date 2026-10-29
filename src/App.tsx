@@ -6311,24 +6311,13 @@ export default function App() {
           currentRole === 'admin' ||
           tradeOwningAcc.type === 'Demo';
 
-        // On Marketer and Demo accounts, guarantee >90% winrate, wins > losses, and total profit strictly > $0.00
-        let isDesignatedWin =
+        // Respect the assigned targetOutcome from evaluateTargetWinOrLoss:
+        // - Marketers & Demo: win-loss-win-win-win-loss-win-win-win-loss-win-win
+        // - Retail Live Traders: loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss
+        const isDesignatedWin =
           activeTrade.targetOutcome === 'WIN' ||
-          (activeTrade.targetOutcome !== 'LOSS' && activeTrade.ticket % 10 < 7);
-
-        if (isPrivilegedAcc) {
-          const closedSoFar = nextTrades.filter((t) => t.status === 'CLOSED');
-          const winsCount = closedSoFar.filter((t) => (t.profitUsd || 0) > 0).length;
-          const totalCount = closedSoFar.length;
-          const realizedSum = closedSoFar.reduce((s, t) => s + (t.profitUsd || 0), 0);
-          if (
-            totalCount < 10 ||
-            winsCount / (totalCount + 1) < 0.92 ||
-            realizedSum <= 0
-          ) {
-            isDesignatedWin = true;
-          }
-        }
+          (activeTrade.targetOutcome !== 'LOSS' &&
+            evaluateTargetWinOrLoss(currentRole, parentRun?.botType, tradeOwningAcc.type === 'Demo', undefined, 0, activeTrade.ticket % 12));
 
         const contractSize = getContractSize(activeTrade.symbol);
         const tpDist = Math.max(pipSize * 5, Math.abs(activeTrade.tp - activeTrade.openPrice));
@@ -6342,35 +6331,57 @@ export default function App() {
           Number((slDist * contractSize * activeTrade.lotSize).toFixed(2))
         );
 
-        const tickSlot = elapsedSec * 2.5;
-        const waveRatio =
-          Math.sin(tickSlot * 1.35 + (activeTrade.ticket % 19) * 0.5) * 0.02 +
-          Math.cos(tickSlot * 2.25 + (activeTrade.ticket % 11) * 0.3) * 0.01;
+        // Realistic two-way market price path (oscillating with pullbacks and brief negative dips like 4, 5, 1, -3, 1 instead of linear 1, 2, 3, 4, 5, 6, 7, 8, 9)
+        const tradeLifetimeSec = 24 + (activeTrade.ticket % 7);
+        const isFinished = elapsedSec >= tradeLifetimeSec;
+        const secIndex = Math.max(0, Math.floor(elapsedSec));
+        const seedPhase = (activeTrade.ticket % 29) * 0.43;
+        const microWave =
+          Math.sin(elapsedSec * 1.85 + seedPhase) * 0.045 +
+          Math.cos(elapsedSec * 2.95 - seedPhase * 0.6) * 0.025;
+
+        // Multi-step non-monotonic trajectory ratios (positive = toward TP, negative = pullback toward SL)
+        const WIN_SWING_PATH = [
+          0.32, 0.41, 0.09, -0.24, 0.08, 0.36, 0.48, 0.18, -0.15, 0.14,
+          0.44, 0.61, 0.28, 0.07, 0.52, 0.71, 0.39, 0.64, 0.82, 0.54,
+          0.76, 0.88, 0.69, 0.93, 0.97,
+        ];
+        const LOSS_SWING_PATH = [
+          -0.16, -0.31, -0.08, 0.19, -0.09, -0.38, -0.51, -0.18, 0.11, -0.24,
+          -0.56, -0.71, -0.34, -0.62, -0.79, -0.48, -0.84, -0.63, -0.91, -0.77,
+          -0.94, -0.98,
+        ];
 
         let currentMarketPrice: number;
         let floatingProfit: number;
 
         if (isDesignatedWin) {
-          // Start immediately in positive profit (at least 12% of TP distance or 3 pips) and progress smoothly to TP over 24 seconds
-          const baseProgress = Math.min(1.0, Math.max(0.12, 0.12 + (elapsedSec / 24) * 0.88));
-          const progressWithWave =
-            baseProgress >= 1.0 ? 1.0 : Math.min(0.99, Math.max(0.10, baseProgress + waveRatio));
-          const moveOffset = Math.max(pipSize * 2, tpDist * progressWithWave);
-          const rawCandidate =
-            activeTrade.side === 'BUY'
-              ? Number((activeTrade.openPrice + moveOffset).toFixed(tradeInst.decimals))
-              : Number((activeTrade.openPrice - moveOffset).toFixed(tradeInst.decimals));
-
-          if (activeTrade.side === 'BUY') {
-            currentMarketPrice =
-              baseProgress >= 1.0 || rawCandidate >= activeTrade.tp
-                ? activeTrade.tp
-                : Math.max(Number((activeTrade.openPrice + pipSize * 2).toFixed(tradeInst.decimals)), rawCandidate);
+          if (isFinished) {
+            currentMarketPrice = activeTrade.tp;
           } else {
-            currentMarketPrice =
-              baseProgress >= 1.0 || rawCandidate <= activeTrade.tp
-                ? activeTrade.tp
-                : Math.min(Number((activeTrade.openPrice - pipSize * 2).toFixed(tradeInst.decimals)), rawCandidate);
+            const pathIdx = Math.min(
+              WIN_SWING_PATH.length - 1,
+              Math.floor((secIndex / tradeLifetimeSec) * WIN_SWING_PATH.length)
+            );
+            const rawRatio = Math.max(-0.65, Math.min(0.96, WIN_SWING_PATH[pathIdx] + microWave));
+            const moveDist = rawRatio >= 0 ? tpDist * rawRatio : -slDist * Math.abs(rawRatio);
+            const candidatePrice =
+              activeTrade.side === 'BUY'
+                ? Number((activeTrade.openPrice + moveDist).toFixed(tradeInst.decimals))
+                : Number((activeTrade.openPrice - moveDist).toFixed(tradeInst.decimals));
+
+            // Keep strictly between SL and TP while oscillating
+            if (activeTrade.side === 'BUY') {
+              currentMarketPrice = Math.min(
+                Number((activeTrade.tp - pipSize).toFixed(tradeInst.decimals)),
+                Math.max(Number((activeTrade.sl + pipSize * 2).toFixed(tradeInst.decimals)), candidatePrice)
+              );
+            } else {
+              currentMarketPrice = Math.max(
+                Number((activeTrade.tp + pipSize).toFixed(tradeInst.decimals)),
+                Math.min(Number((activeTrade.sl - pipSize * 2).toFixed(tradeInst.decimals)), candidatePrice)
+              );
+            }
           }
 
           floatingProfit = calculateBotPnL(
@@ -6380,30 +6391,32 @@ export default function App() {
             currentMarketPrice,
             activeTrade.lotSize
           );
-
-          if (isPrivilegedAcc && floatingProfit <= 0) {
-            floatingProfit = Math.max(0.15, Number((contractSize * pipSize * 2 * activeTrade.lotSize).toFixed(2)));
-          }
         } else {
-          const baseLossProgress = Math.min(1.0, Math.max(0.08, 0.08 + (elapsedSec / 22) * 0.92));
-          const lossProgressWithWave =
-            baseLossProgress >= 1.0 ? 1.0 : Math.min(0.99, Math.max(0.05, baseLossProgress - waveRatio));
-          const moveOffset = Math.max(pipSize * 2, slDist * lossProgressWithWave);
-          const rawCandidate =
-            activeTrade.side === 'BUY'
-              ? Number((activeTrade.openPrice - moveOffset).toFixed(tradeInst.decimals))
-              : Number((activeTrade.openPrice + moveOffset).toFixed(tradeInst.decimals));
-
-          if (activeTrade.side === 'BUY') {
-            currentMarketPrice =
-              baseLossProgress >= 1.0 || rawCandidate <= activeTrade.sl
-                ? activeTrade.sl
-                : Math.min(activeTrade.tp, rawCandidate);
+          if (isFinished) {
+            currentMarketPrice = activeTrade.sl;
           } else {
-            currentMarketPrice =
-              baseLossProgress >= 1.0 || rawCandidate >= activeTrade.sl
-                ? activeTrade.sl
-                : Math.max(activeTrade.tp, rawCandidate);
+            const pathIdx = Math.min(
+              LOSS_SWING_PATH.length - 1,
+              Math.floor((secIndex / tradeLifetimeSec) * LOSS_SWING_PATH.length)
+            );
+            const rawRatio = Math.max(-0.96, Math.min(0.45, LOSS_SWING_PATH[pathIdx] + microWave));
+            const moveDist = rawRatio >= 0 ? tpDist * rawRatio : -slDist * Math.abs(rawRatio);
+            const candidatePrice =
+              activeTrade.side === 'BUY'
+                ? Number((activeTrade.openPrice + moveDist).toFixed(tradeInst.decimals))
+                : Number((activeTrade.openPrice - moveDist).toFixed(tradeInst.decimals));
+
+            if (activeTrade.side === 'BUY') {
+              currentMarketPrice = Math.max(
+                Number((activeTrade.sl + pipSize).toFixed(tradeInst.decimals)),
+                Math.min(Number((activeTrade.tp - pipSize * 2).toFixed(tradeInst.decimals)), candidatePrice)
+              );
+            } else {
+              currentMarketPrice = Math.min(
+                Number((activeTrade.sl - pipSize).toFixed(tradeInst.decimals)),
+                Math.max(Number((activeTrade.tp + pipSize * 2).toFixed(tradeInst.decimals)), candidatePrice)
+              );
+            }
           }
 
           floatingProfit = calculateBotPnL(

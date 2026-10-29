@@ -195,12 +195,11 @@ export const BotsTab: React.FC<BotsTabProps> = ({
   const openTrades = botTrades.filter((t) => t.status === 'OPEN');
   const closedTrades = botTrades.filter((t) => t.status === 'CLOSED');
 
-  // Compute real-time live floating PnL for all open trades strictly following lotSize
+  // Compute real-time live floating PnL for all open trades strictly following lotSize and live oscillating currentPrice
   const liveOpenTrades = openTrades.map((t) => {
     const inst = instMap.get(t.symbol);
     const decimals = inst ? inst.decimals : t.symbol.includes('JPY') ? 3 : 2;
-    const pipSize = getInstrumentPipSize(t.symbol);
-    let currentPrice =
+    const currentPrice =
       typeof t.currentPrice === 'number' && !isNaN(t.currentPrice)
         ? t.currentPrice
         : inst
@@ -208,18 +207,6 @@ export const BotsTab: React.FC<BotsTabProps> = ({
           ? inst.bid
           : inst.ask
         : t.openPrice || 1.0;
-
-    if (isPrivilegedAccount && t.targetOutcome !== 'LOSS') {
-      const minWinPrice =
-        t.side === 'BUY'
-          ? Number((t.openPrice + pipSize * 3).toFixed(decimals))
-          : Number((t.openPrice - pipSize * 3).toFixed(decimals));
-      const inProfit =
-        t.side === 'BUY' ? currentPrice >= minWinPrice : currentPrice <= minWinPrice;
-      if (!inProfit) {
-        currentPrice = minWinPrice;
-      }
-    }
 
     const profitUsd = calculateBotPnL(
       t.symbol,
@@ -246,21 +233,24 @@ export const BotsTab: React.FC<BotsTabProps> = ({
       const inst = instMap.get(t.symbol);
       const decimals = inst ? inst.decimals : t.symbol.includes('JPY') ? 3 : 2;
       let closePriceVal = t.closePrice ?? t.exitPrice ?? t.currentPrice;
-      const forceWinOnPrivileged =
-        isPrivilegedAccount && (idx < 10 || idx % 12 !== 11);
-      const isWin =
-        forceWinOnPrivileged ||
-        (t.profitUsd || 0) > 0 ||
-        t.reason === 'TP' ||
-        t.closeReason === 'TAKE_PROFIT' ||
-        t.targetOutcome === 'WIN';
+      const isLoss =
+        (typeof t.profitUsd === 'number' && t.profitUsd < 0) ||
+        t.reason === 'SL' ||
+        t.closeReason === 'STOP_LOSS' ||
+        t.exitReason === 'SL' ||
+        (t.targetOutcome === 'LOSS' && !(typeof t.profitUsd === 'number' && t.profitUsd > 0));
+      const isWin = !isLoss;
 
       const validWinPrice =
         t.side === 'BUY'
           ? (closePriceVal || 0) >= t.openPrice + pipSize * 1.5
           : (closePriceVal || 0) <= t.openPrice - pipSize * 1.5;
+      const validLossPrice =
+        t.side === 'BUY'
+          ? (closePriceVal || 0) <= t.openPrice - pipSize * 1.5
+          : (closePriceVal || 0) >= t.openPrice + pipSize * 1.5;
 
-      if (!closePriceVal || closePriceVal === t.openPrice || (isWin && !validWinPrice)) {
+      if (!closePriceVal || closePriceVal === t.openPrice || (isWin && !validWinPrice) || (isLoss && !validLossPrice)) {
         if (isWin) {
           closePriceVal = Number(
             (
