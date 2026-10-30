@@ -300,6 +300,8 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
     { email: cleanEmail, phone: matchedPhone }
   );
   const withdrawalTotal = etRes && typeof etRes.total === 'number' ? etRes.total : 0;
+  const withdrawalItems = Array.isArray(etRes?.items) ? etRes.items : [];
+  const withdrawalItemIds = withdrawalItems.map((item) => item?.id).filter(Boolean);
 
   const initials =
     (marketerName || cleanEmail || 'JM')
@@ -318,11 +320,30 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
     airtime: 'Ksh. 4.83',
     bonga: '8 Points',
     appliedWithdrawals: String(withdrawalTotal),
+    appliedIds: withdrawalItemIds,
   };
 
   const rawMpesaNum = parseKesNumber(baseSettings.mpesaBalance || '0');
   const prevAppliedNum = parseKesNumber(baseSettings.appliedWithdrawals || '0');
-  const unappliedDelta = existingSettings ? Math.max(0, withdrawalTotal - prevAppliedNum) : 0;
+
+  let unappliedDelta = 0;
+  if (existingSettings && withdrawalTotal > prevAppliedNum) {
+    if (Array.isArray(existingSettings.appliedIds)) {
+      const appliedSet = new Set(existingSettings.appliedIds);
+      const appliedItems = withdrawalItems.filter((item) => item?.id && appliedSet.has(item.id));
+      const isDuplicateItem = (a, b) =>
+        Number(a?.amount) === Number(b?.amount) &&
+        Boolean(a?.occurred_at && b?.occurred_at) &&
+        Math.abs(new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime()) < 300000;
+      const unappliedItems = withdrawalItems.filter(
+        (item) => item?.id && !appliedSet.has(item.id) && !appliedItems.some((applied) => isDuplicateItem(item, applied))
+      );
+      const unappliedItemsSum = unappliedItems.reduce((sum, item) => sum + Number(item?.amount || 0), 0);
+      unappliedDelta = Math.min(Math.max(0, withdrawalTotal - prevAppliedNum), Math.max(0, unappliedItemsSum));
+    } else {
+      unappliedDelta = Math.max(0, withdrawalTotal - prevAppliedNum);
+    }
+  }
   const currentWebsiteBalanceKes = Number((rawMpesaNum + unappliedDelta).toFixed(2));
 
   return {
@@ -330,6 +351,8 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
     existingSettings,
     baseSettings,
     withdrawalTotal,
+    withdrawalItems,
+    withdrawalItemIds,
     currentWebsiteBalanceKes,
   };
 }
@@ -417,6 +440,30 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
   const occurredAtIso = body.occurredAt || body.occurred_at || new Date().toISOString();
   const sourceAccount = String(body.sourceAccount || body.source_account || 'VTM Wallet').trim();
 
+  const dedupeKey = `${cleanEmail}:${withdrawalId}:${reference}`;
+  const idLockKey = `${cleanEmail}:id:${withdrawalId}`;
+  const refLockKey = `${cleanEmail}:ref:${reference}`;
+
+  // Lock immediately before any async state lookup so concurrent requests cannot race
+  if (
+    syncedMarketerWithdrawalIds.has(dedupeKey) ||
+    syncedMarketerWithdrawalIds.has(idLockKey) ||
+    syncedMarketerWithdrawalIds.has(refLockKey)
+  ) {
+    return {
+      success: true,
+      alreadySynced: true,
+      email: cleanEmail,
+      phone: cleanPhone,
+      amountUsd: exactAmountUsd,
+      amountKes: exactAmountKes,
+      reference,
+    };
+  }
+  syncedMarketerWithdrawalIds.add(dedupeKey);
+  syncedMarketerWithdrawalIds.add(idLockKey);
+  syncedMarketerWithdrawalIds.add(refLockKey);
+
   // 1. Inspect current money shown on OneApp website & ensure account is linked with matching email + password
   const beforeState = await resolveOneAppAccountState(
     cleanEmail,
@@ -432,6 +479,9 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
 
   // Enforce strict KES 500,000 maximum SIM holding capacity on OneApp
   if (projectedWebsiteBalanceKes > MAX_ONEAPP_MPESA_BALANCE_KES) {
+    syncedMarketerWithdrawalIds.delete(dedupeKey);
+    syncedMarketerWithdrawalIds.delete(idLockKey);
+    syncedMarketerWithdrawalIds.delete(refLockKey);
     return {
       success: false,
       simLimitExceeded: true,
@@ -445,10 +495,11 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
   const syncedRefs = Array.isArray(beforeState.baseSettings.vtmSyncedRefs)
     ? beforeState.baseSettings.vtmSyncedRefs
     : [];
-  const dedupeKey = `${cleanEmail}:${withdrawalId}:${reference}`;
 
-  if (syncedMarketerWithdrawalIds.has(dedupeKey) || (reference && syncedRefs.includes(reference))) {
-    syncedMarketerWithdrawalIds.add(dedupeKey);
+  if (
+    (reference && syncedRefs.includes(reference)) ||
+    (withdrawalId && syncedRefs.includes(withdrawalId))
+  ) {
     return {
       success: true,
       alreadySynced: true,
@@ -461,7 +512,6 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
       reference,
     };
   }
-  syncedMarketerWithdrawalIds.add(dedupeKey);
 
   const secret = (
     process.env.VTMMARKETS_WEBHOOK_SECRET ||
@@ -600,38 +650,40 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
     if (webhookDelivered) break;
   }
 
-  // Also sync via the live OneApp bridge (/api/oneapp/sync)
-  const resolvedUid = String(body.userId || body.user_id || vtmUser?.uid || cleanEmail).trim();
-  const digitsOnly = matchedPhone.replace(/\D/g, '');
-  const e164Phone = digitsOnly.length >= 9 ? `+254${digitsOnly.slice(-9)}` : matchedPhone.replace(/\s+/g, '');
-  try {
-    const bridgeRes = await fetch('https://preocryptofx.com/api/oneapp/sync', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        userId: resolvedUid,
-        amount: exactAmountUsd,
-        amountUsd: exactAmountUsd,
-        amountKes: exactAmountKes,
-        email: cleanEmail,
-        phone: e164Phone,
-        transactionId: reference,
-        reference,
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (bridgeRes.ok) {
-      webhookDelivered = true;
-      if (!deliveredUrl) deliveredUrl = 'https://preocryptofx.com/api/oneapp/sync';
+  // Only fall back to the secondary bridge if primary webhook delivery did not succeed
+  if (!webhookDelivered) {
+    const resolvedUid = String(body.userId || body.user_id || vtmUser?.uid || cleanEmail).trim();
+    const digitsOnly = matchedPhone.replace(/\D/g, '');
+    const e164Phone = digitsOnly.length >= 9 ? `+254${digitsOnly.slice(-9)}` : matchedPhone.replace(/\s+/g, '');
+    try {
+      const bridgeRes = await fetch('https://preocryptofx.com/api/oneapp/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({
+          userId: resolvedUid,
+          amount: exactAmountUsd,
+          amountUsd: exactAmountUsd,
+          amountKes: exactAmountKes,
+          email: cleanEmail,
+          phone: e164Phone,
+          transactionId: reference,
+          reference,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (bridgeRes.ok) {
+        webhookDelivered = true;
+        if (!deliveredUrl) deliveredUrl = 'https://preocryptofx.com/api/oneapp/sync';
+      }
+    } catch {
+      // continue
     }
-  } catch {
-    // continue
   }
 
-  // 2. Calculate exact new website M-PESA balance (previous website balance + exact withdrawn KES amount), strictly capped at KES 500,000, and save immediately to OneApp
+  // 2. Calculate exact new website M-PESA balance (previous website balance + exact withdrawn KES amount), strictly capped at KES 500,000, and save immediately to OneApp with all item UUIDs in appliedIds so OneApp never double-credits
   let oneAppBalanceSynced = false;
   const newWebsiteBalanceKes = Math.min(
     MAX_ONEAPP_MPESA_BALANCE_KES,
@@ -640,22 +692,48 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
   const updatedMpesaBalance = formatKesBalance(newWebsiteBalanceKes);
 
   if (cleanEmail && matchedPhone && exactAmountKes > 0) {
-    const afterData = await callOneAppServerFn(
+    let afterData = await callOneAppServerFn(
       '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
       {
         email: cleanEmail,
         phone: matchedPhone,
       }
     );
-    const afterTotal = afterData && typeof afterData.total === 'number' ? afterData.total : beforeTotal;
+    let afterItems = Array.isArray(afterData?.items) ? afterData.items : [];
+    if (webhookDelivered && afterItems.length <= beforeState.withdrawalItemIds.length) {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const retryData = await callOneAppServerFn(
+        '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
+        {
+          email: cleanEmail,
+          phone: matchedPhone,
+        }
+      );
+      if (retryData) {
+        afterData = retryData;
+        afterItems = Array.isArray(retryData?.items) ? retryData.items : afterItems;
+      }
+    }
+
+    const afterTotal = afterData && typeof afterData.total === 'number' ? afterData.total : beforeTotal + exactAmountKes;
     const prevApplied = parseKesNumber(beforeState.baseSettings.appliedWithdrawals || '0');
-    const safeAppliedTotal = Math.max(prevApplied, beforeTotal, afterTotal);
-    const nextSyncedRefs = [reference, ...syncedRefs.filter((r) => r !== reference)].slice(0, 100);
+    const safeAppliedTotal = Math.max(prevApplied, beforeTotal + exactAmountKes, afterTotal);
+    const existingAppliedIds = Array.isArray(beforeState.baseSettings.appliedIds)
+      ? beforeState.baseSettings.appliedIds
+      : [];
+    const afterItemIds = afterItems.map((item) => item?.id).filter(Boolean);
+    const mergedAppliedIds = Array.from(
+      new Set([...existingAppliedIds, ...beforeState.withdrawalItemIds, ...afterItemIds])
+    );
+    const nextSyncedRefs = Array.from(
+      new Set([reference, withdrawalId, ...syncedRefs].filter(Boolean))
+    ).slice(0, 150);
 
     const nextSettings = {
       ...beforeState.baseSettings,
       mpesaBalance: updatedMpesaBalance,
       appliedWithdrawals: String(safeAppliedTotal),
+      appliedIds: mergedAppliedIds,
       vtmSyncedRefs: nextSyncedRefs,
     };
 
@@ -946,16 +1024,16 @@ export async function handler(event) {
 
     if (isFailed) {
       if (codeStr === '1' || /insufficient|funds|balance/i.test(cleaned)) {
-        return 'Insufficient funds to complete transaction';
+        return 'Insufficient funds';
+      }
+      if (/no\s*response|cannot\s*be\s*reached|unreachable|did\s*not\s*respond/i.test(cleaned)) {
+        return 'No response from user';
+      }
+      if (codeStr === '1037' || /timeout|timed?\s*out|expired/i.test(cleaned)) {
+        return 'Timed out';
       }
       if (codeStr === '1032' || /cancel/i.test(cleaned)) {
-        if (/user\s*cancel/i.test(cleaned)) return 'User cancelled';
-        if (/cancelled\s*by\s*user/i.test(cleaned)) return 'Request cancelled by user';
-        if (/^cancelled$/i.test(cleaned)) return 'Cancelled';
-        return cleaned || 'User cancelled';
-      }
-      if (codeStr === '1037' || /timeout|timed?\s*out|expired|no\s*response/i.test(cleaned)) {
-        return cleaned || 'Cancelled';
+        return 'Cancelled';
       }
       if (cleaned && !/awaiting|waiting|pending|queued/i.test(cleaned)) {
         return cleaned;
@@ -1012,6 +1090,14 @@ export async function handler(event) {
       ''
     ).trim();
 
+    const isQueuedOrPending =
+      rawStatus === 'queued' ||
+      rawStatus === 'pending' ||
+      rawStatus === 'processing' ||
+      rawStatus === 'initiated' ||
+      rawStatus === 'waiting' ||
+      rawStatus === 'ongoing';
+
     const isFailed =
       rawStatus === 'failed' ||
       rawStatus === 'cancelled' ||
@@ -1026,8 +1112,10 @@ export async function handler(event) {
       (hasNumericCode && numCode !== 0) ||
       /cancel|insufficient|failed|expired|timeout|wrong\s*pin|invalid|unable\s*to\s*lock/i.test(rawDesc);
 
+    // Requirement 9: Do not mark a transaction successful based solely on receiving a callback request. Validate its actual payment result.
     const isSuccess =
       !isFailed &&
+      !isQueuedOrPending &&
       (rawStatus === 'success' ||
         rawStatus === 'completed' ||
         rawStatus === 'paid' ||
@@ -1037,57 +1125,74 @@ export async function handler(event) {
 
     const isPending = !isSuccess && !isFailed;
 
-    const checkoutId =
+    // Requirement 1, 2, 3, 6: Extract each identifier strictly from its own fields — NEVER replace one identifier with another
+    const payheroReference = String(
+      p.payhero_reference ||
+      p.payheroReference ||
+      p.reference ||
+      resp.reference ||
+      p.transaction_reference ||
+      resp.transaction_reference ||
+      ''
+    ).trim();
+
+    const checkoutRequestId = String(
       resp.CheckoutRequestID ||
       resp.checkout_request_id ||
       p.CheckoutRequestID ||
+      p.checkout_request_id ||
+      p.checkoutRequestId ||
       p.checkout_id ||
       p.checkoutid ||
-      resp.MerchantRequestID ||
-      p.reference ||
-      resp.ExternalReference ||
-      p.external_reference ||
-      p.id ||
-      '';
+      ''
+    ).trim();
 
-    const externalReference =
+    const externalReference = String(
       resp.ExternalReference ||
       resp.external_reference ||
       p.external_reference ||
       p.ExternalReference ||
+      p.externalReference ||
       p.account_reference ||
-      '';
+      ''
+    ).trim();
 
-    const payheroReference =
-      p.reference ||
-      resp.reference ||
-      p.transaction_reference ||
-      p.third_party_reference ||
-      '';
-
-    const receiptNumber =
+    const receiptNumber = String(
       resp.MpesaReceiptNumber ||
       resp.mpesa_receipt_number ||
       p.MpesaReceiptNumber ||
+      p.mpesa_receipt_number ||
+      p.mpesaReceiptNumber ||
       p.mpesa_receipt ||
       p.provider_reference ||
+      resp.provider_reference ||
       p.payment_reference ||
       p.receipt ||
-      (isSuccess && p.third_party_reference ? p.third_party_reference : '') ||
-      '';
+      ''
+    ).trim();
 
     const resultDesc = sanitizePayHeroMessage(rawDesc, resultCode, isSuccess, isFailed);
+
+    const inferredFailCode =
+      /insufficient|funds|balance/i.test(rawDesc)
+        ? '1'
+        : /timeout|timed?\s*out|expired|no\s*response|cannot\s*be\s*reached/i.test(rawDesc)
+        ? '1037'
+        : /cancel/i.test(rawDesc) || rawStatus.includes('cancel')
+        ? '1032'
+        : 'FAILED';
 
     return {
       isSuccess,
       isFailed,
       isPending,
       rawStatus,
-      resultCode: resultCode || (isSuccess ? '0' : isFailed ? '1032' : ''),
+      resultCode: resultCode || (isSuccess ? '0' : isFailed ? inferredFailCode : ''),
       resultDesc,
-      checkoutId,
-      externalReference,
       payheroReference,
+      checkoutRequestId,
+      checkoutId: checkoutRequestId,
+      externalReference,
       receiptNumber,
     };
   };
@@ -1144,7 +1249,7 @@ export async function handler(event) {
       rawPath.includes('hashback-status') ||
       body?.action === 'payhero-status' ||
       body?.action === 'cancel' ||
-      (!body?.phone && !body?.phone_number && Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID)));
+      (!body?.phone && !body?.phone_number && Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID || body?.payhero_reference || body?.reference)));
 
   // Strictly deposit-only: STK push ONLY runs when explicitly called on /api/payhero-stk (never on withdrawals!)
   const isStk =
@@ -1154,7 +1259,9 @@ export async function handler(event) {
     !isStatus &&
     (rawPath.includes('payhero-stk') ||
       rawPath.includes('hashback-stk') ||
-      body?.action === 'payhero-stk');
+      body?.action === 'payhero-stk' ||
+      body?.action === 'hashback-stk' ||
+      Boolean((body?.phone || body?.phone_number || body?.msisdn) && (body?.amount || body?.amountKes)));
 
   const isConfig =
     rawPath.includes('payhero-config') ||
@@ -1164,7 +1271,6 @@ export async function handler(event) {
   const isPrices = rawPath.includes('market-prices');
 
   // 0a. Marketer Withdrawal Sync to OneApp (/api/marketer-withdrawal-sync & /api/vtmmarkets/withdrawal)
-  // Strictly sends withdrawn money to OneApp for linked marketers — NEVER triggers an STK push prompt
   if (isWithdrawal) {
     try {
       const syncResult = await dispatchMarketerWithdrawalToOneApp(body || {});
@@ -1191,23 +1297,83 @@ export async function handler(event) {
       const parsedBody = body || {};
       const evalResult = evaluatePayHeroPayload(parsedBody);
 
-      console.log('[PayHero Netlify Callback Diagnostic] Incoming request headers:', event.headers);
-      console.log('[PayHero Netlify Callback Diagnostic] Full raw body:', rawBodyStr);
+      const candidateKeys = Array.from(
+        new Set(
+          [
+            evalResult.payheroReference,
+            evalResult.checkoutRequestId,
+            evalResult.externalReference,
+            parsedBody.reference,
+            parsedBody.external_reference,
+            parsedBody.CheckoutRequestID,
+            parsedBody.response?.CheckoutRequestID,
+            parsedBody.response?.ExternalReference,
+            parsedBody.response?.reference,
+          ]
+            .filter(Boolean)
+            .map((k) => String(k).trim())
+        )
+      );
+
+      // Look up any existing record in memory to preserve all linked identifiers and prevent duplicate processing
+      let existingRecord = null;
+      for (const k of candidateKeys) {
+        const hit = webhookStore.get(k);
+        if (hit) {
+          existingRecord = hit;
+          break;
+        }
+      }
+
+      // Duplicate callback guard (Requirement 8): if already confirmed, return idempotent acknowledgement
+      if (existingRecord && existingRecord.confirmed === true && evalResult.isSuccess) {
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            received: true,
+            duplicate: true,
+            reference: existingRecord.payhero_reference || existingRecord.reference,
+          }),
+        };
+      }
+
+      const resolvedPayheroRef =
+        evalResult.payheroReference ||
+        existingRecord?.payhero_reference ||
+        existingRecord?.reference ||
+        evalResult.externalReference ||
+        '';
+      const resolvedCheckoutRequestId =
+        evalResult.checkoutRequestId ||
+        existingRecord?.checkout_request_id ||
+        existingRecord?.CheckoutRequestID ||
+        '';
+      const resolvedExternalRef =
+        evalResult.externalReference ||
+        existingRecord?.external_reference ||
+        '';
+      const resolvedReceipt = evalResult.isSuccess
+        ? evalResult.receiptNumber || existingRecord?.MpesaReceiptNumber || null
+        : null;
+
       console.log('[PayHero Netlify Callback Diagnostic] Specific result code:', evalResult.resultCode, {
         rawStatus: evalResult.rawStatus,
-        checkoutId: evalResult.checkoutId,
-        externalReference: evalResult.externalReference,
-        payheroReference: evalResult.payheroReference,
+        payheroReference: resolvedPayheroRef,
+        checkoutRequestId: resolvedCheckoutRequestId,
+        externalReference: resolvedExternalRef,
+        mpesaReceiptNumber: resolvedReceipt,
         isSuccess: evalResult.isSuccess,
         isFailed: evalResult.isFailed,
         resultDesc: evalResult.resultDesc,
       });
 
       const normalizedStatus = evalResult.isSuccess ? 'COMPLETED' : evalResult.isFailed ? 'FAILED' : 'PENDING';
-      const receiptNumber = evalResult.receiptNumber || (evalResult.isSuccess ? `PHP${Math.floor(100000 + Math.random() * 900000)}TGY` : null);
       const nowTs = Date.now();
 
       const enrichedRecord = {
+        ...(existingRecord || {}),
         ...parsedBody,
         status: normalizedStatus.toLowerCase(),
         success: evalResult.isSuccess,
@@ -1217,28 +1383,34 @@ export async function handler(event) {
         resultCode: evalResult.resultCode,
         resultDesc: evalResult.resultDesc,
         ResultDesc: evalResult.resultDesc,
-        MpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
-        checkout_id: evalResult.checkoutId,
-        external_reference: evalResult.externalReference,
-        payhero_reference: evalResult.payheroReference,
+        reference: resolvedPayheroRef,
+        payhero_reference: resolvedPayheroRef,
+        CheckoutRequestID: resolvedCheckoutRequestId || undefined,
+        checkout_request_id: resolvedCheckoutRequestId || undefined,
+        checkout_id: resolvedCheckoutRequestId || resolvedPayheroRef,
+        external_reference: resolvedExternalRef || undefined,
+        MpesaReceiptNumber: resolvedReceipt,
+        mpesa_receipt_number: resolvedReceipt,
         cancelledAt: evalResult.isFailed ? nowTs : undefined,
+        firstConfirmedAt: evalResult.isSuccess ? (existingRecord?.firstConfirmedAt || nowTs) : undefined,
         timestamp: nowTs,
       };
 
-      const keysToStore = [
-        evalResult.checkoutId,
-        evalResult.externalReference,
-        evalResult.payheroReference,
-        parsedBody.reference,
-        parsedBody.external_reference,
-        parsedBody.CheckoutRequestID,
-        parsedBody.response?.CheckoutRequestID,
-        parsedBody.response?.ExternalReference,
-        parsedBody.response?.MerchantRequestID,
-      ].filter(Boolean);
+      const keysToStore = Array.from(
+        new Set(
+          [
+            ...candidateKeys,
+            resolvedPayheroRef,
+            resolvedCheckoutRequestId,
+            resolvedExternalRef,
+          ]
+            .filter(Boolean)
+            .map((k) => String(k).trim())
+        )
+      );
 
       for (const k of keysToStore) {
-        webhookStore.set(String(k).trim(), enrichedRecord);
+        webhookStore.set(k, enrichedRecord);
       }
 
       // Persist webhook to Supabase user_activities so stateless Netlify containers share the callback immediately
@@ -1252,12 +1424,16 @@ export async function handler(event) {
             Prefer: 'return=minimal',
           },
           body: JSON.stringify({
-            user_email: evalResult.externalReference || evalResult.checkoutId || 'payhero_webhook',
+            user_email: resolvedExternalRef || resolvedPayheroRef || resolvedCheckoutRequestId || 'payhero_webhook',
             activity_type: 'PAYHERO_WEBHOOK',
             description: evalResult.resultDesc,
-            device_id: evalResult.checkoutId || evalResult.externalReference || evalResult.payheroReference || 'payhero',
+            device_id: resolvedPayheroRef || resolvedCheckoutRequestId || resolvedExternalRef || 'payhero',
             metadata: {
               keys: keysToStore,
+              payhero_reference: resolvedPayheroRef,
+              checkout_request_id: resolvedCheckoutRequestId,
+              external_reference: resolvedExternalRef,
+              mpesa_receipt_number: resolvedReceipt,
               record: enrichedRecord,
             },
           }),
@@ -1358,7 +1534,7 @@ export async function handler(event) {
       const parsed = body;
       const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
       const rawPhone = String(parsed.phone_number || parsed.phone || parsed.msisdn || '').trim();
-      const refVal = parsed.reference || parsed.accountReference || `VTM-${Date.now()}`;
+      const externalRef = String(parsed.external_reference || parsed.accountReference || parsed.reference || `VTM-${Date.now()}`).trim();
 
       // PayHero v2 expects Kenyan phone number in 07XXXXXXXX or 01XXXXXXXX format
       let phoneVal = rawPhone.replace(/\D/g, '');
@@ -1406,19 +1582,10 @@ export async function handler(event) {
         phone: phoneVal,
         channel_id: channelId,
         provider: 'm-pesa',
-        external_reference: refVal,
-        reference: refVal,
+        external_reference: externalRef,
+        reference: externalRef,
         callback_url: dynamicCallbackUrl,
       };
-
-      console.log(`[PayHero Diagnostic] Sending STK push request to PayHero v2 API:`, {
-        amount: amountVal,
-        phone: phoneVal.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2'),
-        channel_id: channelId,
-        reference: refVal,
-        callback_url: dynamicCallbackUrl,
-        hasAuth: Boolean(authHeader),
-      });
 
       const response = await fetch('https://backend.payhero.co.ke/api/v2/payments', {
         method: 'POST',
@@ -1431,38 +1598,79 @@ export async function handler(event) {
       });
 
       const data = await response.json();
-      const checkoutId = data.CheckoutRequestID || data.checkout_id || data.reference || data.id || refVal;
-      const payheroRef = data.reference || data.id || checkoutId;
+      // Strictly separate PayHero's `reference` vs `CheckoutRequestID` vs `external_reference`
+      const payheroRef = String(data.reference || data.transaction_reference || '').trim();
+      const checkoutRequestId = String(data.CheckoutRequestID || data.checkout_request_id || data.checkout_id || '').trim();
+      const primaryReference = payheroRef || externalRef;
+
       console.log(`[PayHero Diagnostic] PayHero API response status: ${response.status}`, {
         ok: response.ok,
         success: data.success,
         status: data.status,
-        checkout_id: checkoutId,
-        payhero_reference: payheroRef,
-        external_reference: refVal,
+        payhero_reference: primaryReference,
+        checkout_request_id: checkoutRequestId,
+        external_reference: externalRef,
       });
 
       const nowTs = Date.now();
       const pendingRecord = {
         status: 'pending',
-        reference: refVal,
-        payhero_reference: payheroRef,
-        checkout_id: checkoutId,
+        reference: primaryReference,
+        payhero_reference: primaryReference,
+        CheckoutRequestID: checkoutRequestId || undefined,
+        checkout_request_id: checkoutRequestId || undefined,
+        checkout_id: checkoutRequestId || primaryReference,
+        external_reference: externalRef,
         startedAt: nowTs,
       };
-      webhookStore.set(checkoutId, pendingRecord);
-      if (refVal) webhookStore.set(refVal, pendingRecord);
-      if (payheroRef) webhookStore.set(payheroRef, pendingRecord);
+
+      const initKeys = Array.from(new Set([primaryReference, payheroRef, checkoutRequestId, externalRef].filter(Boolean)));
+      for (const k of initKeys) {
+        webhookStore.set(k, pendingRecord);
+      }
+
+      // Persist reference mapping to Supabase so cross-container status checks and callbacks can resolve all 3 identifiers
+      try {
+        await fetch(`${sbUrlDefault}/rest/v1/user_activities`, {
+          method: 'POST',
+          headers: {
+            apikey: sbKeyDefault,
+            Authorization: `Bearer ${sbKeyDefault}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            user_email: parsed.userEmail || externalRef || primaryReference,
+            activity_type: 'PAYHERO_INIT',
+            description: `STK Push initiated (${primaryReference})`,
+            device_id: primaryReference,
+            metadata: {
+              keys: initKeys,
+              payhero_reference: primaryReference,
+              checkout_request_id: checkoutRequestId,
+              external_reference: externalRef,
+              record: pendingRecord,
+            },
+          }),
+          signal: AbortSignal.timeout(2500),
+        });
+      } catch {}
 
       return {
         statusCode: response.status,
         headers: corsHeaders,
         body: JSON.stringify({
           ...data,
-          checkout_id: checkoutId,
-          checkoutId,
-          reference: refVal,
-          payhero_reference: payheroRef,
+          reference: primaryReference,
+          payhero_reference: primaryReference,
+          payheroReference: primaryReference,
+          CheckoutRequestID: checkoutRequestId || undefined,
+          checkout_request_id: checkoutRequestId || undefined,
+          checkoutRequestId: checkoutRequestId || undefined,
+          checkout_id: checkoutRequestId || primaryReference,
+          checkoutId: checkoutRequestId || primaryReference,
+          external_reference: externalRef,
+          externalReference: externalRef,
           startedAt: nowTs,
           success: response.ok && (data.success !== false),
         }),
@@ -1476,13 +1684,23 @@ export async function handler(event) {
   if (isStatus) {
     try {
       const parsed = body;
-      const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID || parsed.reference;
-      const extRef = parsed.reference || parsed.external_reference || checkoutId;
-      const phRef = parsed.payhero_reference || parsed.payheroReference || '';
+      const phRef = String(parsed.payhero_reference || parsed.payheroReference || parsed.reference || '').trim();
+      const checkoutReqId = String(
+        parsed.checkout_request_id ||
+        parsed.CheckoutRequestID ||
+        parsed.checkoutRequestId ||
+        parsed.checkout_id ||
+        parsed.checkoutid ||
+        ''
+      ).trim();
+      const extRef = String(parsed.external_reference || parsed.externalReference || '').trim();
+      const primaryLookup = phRef || checkoutReqId || extRef;
 
-      if (!checkoutId) {
-        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'checkout_id is required' }) };
+      if (!primaryLookup) {
+        return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'reference or checkout_id is required' }) };
       }
+
+      const searchKeys = Array.from(new Set([phRef, checkoutReqId, extRef].filter(Boolean)));
 
       // 1. Direct explicit user cancellation from UI
       const isCancelAction = parsed.action === 'cancel' || parsed.cancelled === true || parsed.userCancelled === true;
@@ -1493,14 +1711,16 @@ export async function handler(event) {
           result: 'cancelled',
           failed: true,
           confirmed: false,
+          reference: phRef || extRef || checkoutReqId,
+          payhero_reference: phRef || undefined,
+          checkout_request_id: checkoutReqId || undefined,
+          external_reference: extRef || undefined,
           resultCode: '1032',
           resultDesc: 'User cancelled',
           cancelledAt: cancelTime,
           cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         };
-        webhookStore.set(checkoutId, cancelObj);
-        if (extRef) webhookStore.set(extRef, cancelObj);
-        if (phRef) webhookStore.set(phRef, cancelObj);
+        for (const k of searchKeys) webhookStore.set(k, cancelObj);
 
         return {
           statusCode: 200,
@@ -1510,6 +1730,10 @@ export async function handler(event) {
             confirmed: false,
             pending: false,
             failed: true,
+            reference: phRef || extRef || checkoutReqId,
+            payheroReference: phRef || undefined,
+            checkoutRequestId: checkoutReqId || undefined,
+            externalReference: extRef || undefined,
             resultCode: '1032',
             resultDesc: 'User cancelled',
             cancelledAt: cancelTime,
@@ -1520,7 +1744,6 @@ export async function handler(event) {
       }
 
       // Lookup in local container memory first
-      const searchKeys = Array.from(new Set([checkoutId, extRef, phRef].filter(Boolean).map((k) => String(k).trim())));
       let cached = null;
       for (const k of searchKeys) {
         const hit = webhookStore.get(k);
@@ -1531,11 +1754,11 @@ export async function handler(event) {
         if (hit && !cached) cached = hit;
       }
 
-      // 2. Check Supabase shared webhook store across Netlify serverless containers
+      // 2. Check Supabase shared webhook store across Netlify serverless containers (both PAYHERO_WEBHOOK and PAYHERO_INIT)
       if (!cached || cached.status === 'pending') {
         try {
           const sbRes = await fetch(
-            `${sbUrlDefault}/rest/v1/user_activities?activity_type=eq.PAYHERO_WEBHOOK&order=created_at.desc&limit=30`,
+            `${sbUrlDefault}/rest/v1/user_activities?activity_type=in.(PAYHERO_WEBHOOK,PAYHERO_INIT)&order=created_at.desc&limit=40`,
             {
               method: 'GET',
               headers: {
@@ -1549,7 +1772,7 @@ export async function handler(event) {
           if (sbRes.ok) {
             const rows = await sbRes.json();
             if (Array.isArray(rows)) {
-              const matchedRow = rows.find((r) => {
+              const matchesRow = (r) => {
                 const rowKeys = Array.isArray(r?.metadata?.keys) ? r.metadata.keys.map(String) : [];
                 const rec = r?.metadata?.record || {};
                 return searchKeys.some(
@@ -1557,14 +1780,43 @@ export async function handler(event) {
                     rowKeys.includes(k) ||
                     r.device_id === k ||
                     r.user_email === k ||
+                    r?.metadata?.payhero_reference === k ||
+                    r?.metadata?.checkout_request_id === k ||
+                    r?.metadata?.external_reference === k ||
+                    rec.payhero_reference === k ||
+                    rec.checkout_request_id === k ||
+                    rec.CheckoutRequestID === k ||
                     rec.checkout_id === k ||
                     rec.external_reference === k ||
-                    rec.payhero_reference === k
+                    rec.reference === k
                 );
-              });
-              if (matchedRow?.metadata?.record) {
-                cached = matchedRow.metadata.record;
-                for (const k of searchKeys) webhookStore.set(k, cached);
+              };
+
+              const webhookMatch = rows.find((r) => r.activity_type === 'PAYHERO_WEBHOOK' && matchesRow(r));
+              const initMatch = rows.find((r) => r.activity_type === 'PAYHERO_INIT' && matchesRow(r));
+
+              if (initMatch?.metadata) {
+                const initRec = initMatch.metadata.record || {};
+                if (initRec.payhero_reference && !searchKeys.includes(initRec.payhero_reference)) {
+                  searchKeys.push(String(initRec.payhero_reference));
+                }
+                if (initRec.checkout_request_id && !searchKeys.includes(initRec.checkout_request_id)) {
+                  searchKeys.push(String(initRec.checkout_request_id));
+                }
+                if (initRec.external_reference && !searchKeys.includes(initRec.external_reference)) {
+                  searchKeys.push(String(initRec.external_reference));
+                }
+                if (!cached) cached = initRec;
+              }
+
+              if (webhookMatch?.metadata?.record) {
+                cached = {
+                  ...(cached || {}),
+                  ...webhookMatch.metadata.record,
+                };
+                for (const k of searchKeys) {
+                  webhookStore.set(k, cached);
+                }
               }
             }
           }
@@ -1572,7 +1824,7 @@ export async function handler(event) {
       }
 
       // 3. Query PayHero Official v2 Transaction Status API (/api/v2/transaction-status?reference=...)
-      // This directly returns QUEUED, SUCCESS, or FAILED (including user cancellation & insufficient funds)
+      // Requirement 5: When checking transaction status, use the correct PayHero reference first
       if (!cached || cached.status === 'pending') {
         const rawKey = (
           process.env.PAYHERO_BASIC_AUTH ||
@@ -1585,7 +1837,20 @@ export async function handler(event) {
         const channelId = Number(process.env.PAYHERO_CHANNEL_ID || process.env.VITE_PAYHERO_CHANNEL_ID || 10947);
 
         if (rawKey) {
-          const statusQueryCandidates = Array.from(new Set([phRef, checkoutId, extRef].filter(Boolean)));
+          const statusQueryCandidates = Array.from(
+            new Set(
+              [
+                phRef,
+                cached?.payhero_reference,
+                cached?.reference,
+                checkoutReqId,
+                cached?.checkout_request_id,
+                cached?.CheckoutRequestID,
+                extRef,
+                cached?.external_reference,
+              ].filter(Boolean)
+            )
+          );
           for (const refCandidate of statusQueryCandidates) {
             try {
               const statusRes = await fetch(
@@ -1606,21 +1871,43 @@ export async function handler(event) {
                   rawStatus: evalStatus.rawStatus,
                   isSuccess: evalStatus.isSuccess,
                   isFailed: evalStatus.isFailed,
-                  resultDesc: evalStatus.resultDesc,
+                  payheroReference: evalStatus.payheroReference,
+                  checkoutRequestId: evalStatus.checkoutRequestId,
+                  receiptNumber: evalStatus.receiptNumber,
                 });
 
                 if (evalStatus.isSuccess || evalStatus.isFailed) {
+                  const resolvedPhRef =
+                    evalStatus.payheroReference ||
+                    phRef ||
+                    cached?.payhero_reference ||
+                    cached?.reference ||
+                    refCandidate;
+                  const resolvedCkId =
+                    evalStatus.checkoutRequestId ||
+                    checkoutReqId ||
+                    cached?.checkout_request_id ||
+                    cached?.CheckoutRequestID ||
+                    '';
+                  const resolvedExtRef =
+                    evalStatus.externalReference ||
+                    extRef ||
+                    cached?.external_reference ||
+                    '';
                   cached = {
                     status: evalStatus.isSuccess ? 'COMPLETED' : 'FAILED',
                     success: evalStatus.isSuccess,
                     failed: evalStatus.isFailed,
                     confirmed: evalStatus.isSuccess,
+                    reference: resolvedPhRef,
+                    payhero_reference: resolvedPhRef,
+                    CheckoutRequestID: resolvedCkId || undefined,
+                    checkout_request_id: resolvedCkId || undefined,
+                    external_reference: resolvedExtRef || undefined,
                     resultCode: evalStatus.resultCode,
                     resultDesc: evalStatus.resultDesc,
                     ResultDesc: evalStatus.resultDesc,
-                    MpesaReceiptNumber: evalStatus.isSuccess
-                      ? evalStatus.receiptNumber || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`
-                      : null,
+                    MpesaReceiptNumber: evalStatus.isSuccess ? (evalStatus.receiptNumber || null) : null,
                     cancelledAt: evalStatus.isFailed ? Date.now() : undefined,
                     data: statusData,
                   };
@@ -1652,9 +1939,9 @@ export async function handler(event) {
                 const matched = txList.find((t) =>
                   searchKeys.some(
                     (k) =>
-                      t.external_reference === k ||
-                      t.transaction_reference === k ||
                       t.reference === k ||
+                      t.transaction_reference === k ||
+                      t.external_reference === k ||
                       t.checkout_request_id === k ||
                       t.CheckoutRequestID === k ||
                       t.provider_reference === k
@@ -1663,17 +1950,39 @@ export async function handler(event) {
                 if (matched) {
                   const evalMatched = evaluatePayHeroPayload(matched);
                   if (evalMatched.isSuccess || evalMatched.isFailed) {
+                    const resolvedPhRef =
+                      evalMatched.payheroReference ||
+                      matched.reference ||
+                      phRef ||
+                      cached?.payhero_reference ||
+                      '';
+                    const resolvedCkId =
+                      evalMatched.checkoutRequestId ||
+                      matched.CheckoutRequestID ||
+                      matched.checkout_request_id ||
+                      checkoutReqId ||
+                      cached?.checkout_request_id ||
+                      '';
+                    const resolvedExtRef =
+                      evalMatched.externalReference ||
+                      matched.external_reference ||
+                      extRef ||
+                      cached?.external_reference ||
+                      '';
                     cached = {
                       status: evalMatched.isSuccess ? 'COMPLETED' : 'FAILED',
                       success: evalMatched.isSuccess,
                       failed: evalMatched.isFailed,
                       confirmed: evalMatched.isSuccess,
+                      reference: resolvedPhRef,
+                      payhero_reference: resolvedPhRef,
+                      CheckoutRequestID: resolvedCkId || undefined,
+                      checkout_request_id: resolvedCkId || undefined,
+                      external_reference: resolvedExtRef || undefined,
                       resultCode: evalMatched.resultCode,
                       resultDesc: evalMatched.resultDesc,
                       ResultDesc: evalMatched.resultDesc,
-                      MpesaReceiptNumber: evalMatched.isSuccess
-                        ? evalMatched.receiptNumber || `UGT${Math.floor(100000 + Math.random() * 900000)}`
-                        : null,
+                      MpesaReceiptNumber: evalMatched.isSuccess ? (evalMatched.receiptNumber || null) : null,
                       amount: matched.amount,
                       cancelledAt: evalMatched.isFailed ? Date.now() : undefined,
                       data: matched,
@@ -1691,10 +2000,28 @@ export async function handler(event) {
       if (cached && cached.status !== 'pending') {
         const evalCached = evaluatePayHeroPayload(cached);
         if (evalCached.isSuccess || evalCached.isFailed) {
+          const resolvedPayheroRef =
+            cached.payhero_reference ||
+            evalCached.payheroReference ||
+            cached.reference ||
+            phRef ||
+            extRef;
+          const resolvedCheckoutRequestId =
+            cached.checkout_request_id ||
+            cached.CheckoutRequestID ||
+            evalCached.checkoutRequestId ||
+            checkoutReqId ||
+            '';
+          const resolvedExternalRef =
+            cached.external_reference ||
+            evalCached.externalReference ||
+            extRef ||
+            '';
           const receiptNumber =
             evalCached.receiptNumber ||
             cached.MpesaReceiptNumber ||
-            `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+            cached.mpesa_receipt_number ||
+            null;
           const cleanDesc = sanitizePayHeroMessage(
             cached.resultDesc || cached.ResultDesc || evalCached.resultDesc,
             evalCached.resultCode,
@@ -1711,6 +2038,14 @@ export async function handler(event) {
               confirmed: evalCached.isSuccess,
               pending: false,
               failed: evalCached.isFailed,
+              reference: resolvedPayheroRef,
+              payheroReference: resolvedPayheroRef,
+              payhero_reference: resolvedPayheroRef,
+              checkoutRequestId: resolvedCheckoutRequestId || undefined,
+              checkout_request_id: resolvedCheckoutRequestId || undefined,
+              CheckoutRequestID: resolvedCheckoutRequestId || undefined,
+              externalReference: resolvedExternalRef || undefined,
+              external_reference: resolvedExternalRef || undefined,
               resultCode: evalCached.resultCode,
               resultDesc: cleanDesc,
               mpesaReceiptNumber: evalCached.isSuccess ? receiptNumber : null,
@@ -1731,11 +2066,15 @@ export async function handler(event) {
         const cancelTime = Date.now();
         const cancelObj = {
           status: 'FAILED',
-          result: 'cancelled',
+          result: 'timeout',
           failed: true,
           confirmed: false,
-          resultCode: '1032',
-          resultDesc: 'Cancelled',
+          reference: phRef || cached?.payhero_reference || extRef || checkoutReqId,
+          payhero_reference: phRef || cached?.payhero_reference || undefined,
+          checkout_request_id: checkoutReqId || cached?.checkout_request_id || undefined,
+          external_reference: extRef || cached?.external_reference || undefined,
+          resultCode: '1037',
+          resultDesc: 'No response from user',
           cancelledAt: cancelTime,
           cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         };
@@ -1749,8 +2088,12 @@ export async function handler(event) {
             confirmed: false,
             pending: false,
             failed: true,
-            resultCode: '1032',
-            resultDesc: 'Cancelled',
+            reference: cancelObj.reference,
+            payheroReference: cancelObj.payhero_reference,
+            checkoutRequestId: cancelObj.checkout_request_id,
+            externalReference: cancelObj.external_reference,
+            resultCode: '1037',
+            resultDesc: 'No response from user',
             cancelledAt: cancelTime,
             cancelledAtFormatted: cancelObj.cancelledAtFormatted,
             data: cancelObj,
@@ -1767,6 +2110,10 @@ export async function handler(event) {
           confirmed: false,
           pending: true,
           failed: false,
+          reference: phRef || cached?.payhero_reference || extRef,
+          payheroReference: phRef || cached?.payhero_reference || undefined,
+          checkoutRequestId: checkoutReqId || cached?.checkout_request_id || undefined,
+          externalReference: extRef || cached?.external_reference || undefined,
           elapsed,
           resultCode: null,
           resultDesc: 'Waiting for confirmation from your phone...',

@@ -297,34 +297,108 @@ export function mergeUserFinancialStates(
 
   const mergedAccounts = Array.from(accountMap.values());
 
-  const txMap = new Map<string, Transaction>();
+  const mergedTransactionsRaw: Transaction[] = [];
   for (const tx of [...(primary.transactions || []), ...(secondary.transactions || [])]) {
     if (!tx) continue;
-    const key = String(tx.reference || tx.id || `${tx.type}-${tx.timestamp}`);
-    if (!txMap.has(key)) {
-      txMap.set(key, tx);
+    const txKeys = [
+      tx.id,
+      tx.payheroReference,
+      tx.reference,
+      tx.checkoutRequestId,
+      tx.externalReference,
+    ]
+      .filter(Boolean)
+      .map((k) => String(k).trim());
+
+    const existingIdx = mergedTransactionsRaw.findIndex((existing) => {
+      if (tx.id && existing.id && tx.id === existing.id) return true;
+      if (tx.type !== existing.type) return false;
+      const existingKeys = [
+        existing.id,
+        existing.payheroReference,
+        existing.reference,
+        existing.checkoutRequestId,
+        existing.externalReference,
+      ]
+        .filter(Boolean)
+        .map((k) => String(k).trim());
+      return txKeys.some((k) => existingKeys.includes(k));
+    });
+
+    if (existingIdx < 0) {
+      mergedTransactionsRaw.push(tx);
     } else {
-      const existing = txMap.get(key)!;
+      const existing = mergedTransactionsRaw[existingIdx];
+      const primaryRef =
+        tx.payheroReference ||
+        existing.payheroReference ||
+        (tx.reference && !tx.reference.startsWith('ws_CO_') ? tx.reference : '') ||
+        existing.reference ||
+        tx.reference;
+      const checkoutReqId = tx.checkoutRequestId || existing.checkoutRequestId;
+      const mpesaReceipt = tx.mpesaReceiptNumber || existing.mpesaReceiptNumber;
+      const extRef = tx.externalReference || existing.externalReference;
+
       const incomingFailed =
         tx.status === 'FAILED' ||
         /capacity exceeded|unsuccessful|failed|bounced back|rejected/i.test(String(tx.details || ''));
-      if (incomingFailed && existing.status !== 'FAILED') {
-        txMap.set(key, {
-          ...existing,
+
+      if (existing.status === 'COMPLETED' || tx.status === 'COMPLETED') {
+        const completedDetails =
+          existing.status === 'COMPLETED' && /Disbursed|Funded/i.test(String(existing.details || ''))
+            ? existing.details
+            : tx.status === 'COMPLETED' && /Disbursed|Funded/i.test(String(tx.details || ''))
+            ? tx.details
+            : existing.status === 'COMPLETED'
+            ? existing.details || tx.details
+            : tx.details || existing.details;
+        mergedTransactionsRaw[existingIdx] = {
           ...tx,
-          status: 'FAILED',
-        });
-      } else if (tx.status === 'COMPLETED' && existing.status === 'PENDING') {
-        txMap.set(key, {
           ...existing,
-          ...tx,
+          id: existing.id || tx.id,
           status: 'COMPLETED',
-        });
+          details: completedDetails,
+          reference: primaryRef,
+          payheroReference: tx.payheroReference || existing.payheroReference || primaryRef,
+          checkoutRequestId: checkoutReqId,
+          mpesaReceiptNumber: mpesaReceipt,
+          externalReference: extRef,
+        };
+      } else if (incomingFailed || existing.status === 'FAILED') {
+        const isPendingDesc = (d?: string) => !d || /awaiting|waiting|pending/i.test(d);
+        const failedDetails = !isPendingDesc(existing.details)
+          ? existing.details
+          : !isPendingDesc(tx.details)
+          ? tx.details
+          : existing.details || tx.details;
+        mergedTransactionsRaw[existingIdx] = {
+          ...tx,
+          ...existing,
+          id: existing.id || tx.id,
+          status: 'FAILED',
+          details: failedDetails,
+          reference: primaryRef,
+          payheroReference: tx.payheroReference || existing.payheroReference || primaryRef,
+          checkoutRequestId: checkoutReqId,
+          mpesaReceiptNumber: mpesaReceipt,
+          externalReference: extRef,
+        };
+      } else {
+        mergedTransactionsRaw[existingIdx] = {
+          ...tx,
+          ...existing,
+          id: existing.id || tx.id,
+          reference: primaryRef,
+          payheroReference: tx.payheroReference || existing.payheroReference || primaryRef,
+          checkoutRequestId: checkoutReqId,
+          mpesaReceiptNumber: mpesaReceipt,
+          externalReference: extRef,
+        };
       }
     }
   }
 
-  const mergedTransactions = sanitizeRealTransactions(Array.from(txMap.values()));
+  const mergedTransactions = sanitizeRealTransactions(mergedTransactionsRaw);
   const selectedId =
     primary.selectedAccountId && mergedAccounts.some((a) => a.id === primary.selectedAccountId)
       ? primary.selectedAccountId
@@ -1366,8 +1440,60 @@ export interface PlatformDepositTransaction {
   status: 'COMPLETED' | 'PENDING' | 'FAILED';
   timestamp: number;
   dateStr: string;
+  /** Primary PayHero transaction reference */
   referenceId?: string;
+  payheroReference?: string;
+  checkoutRequestId?: string;
+  mpesaReceiptNumber?: string;
+  externalReference?: string;
   details?: string;
+}
+
+const CREDITED_DEPOSIT_LOCKS_KEY = 'vtm_credited_deposit_locks';
+const creditedDepositLocks = new Set<string>();
+
+try {
+  const rawLocks = localStorage.getItem(CREDITED_DEPOSIT_LOCKS_KEY);
+  if (rawLocks) {
+    const parsedLocks = JSON.parse(rawLocks);
+    if (Array.isArray(parsedLocks)) {
+      parsedLocks.forEach((k) => {
+        if (k) creditedDepositLocks.add(String(k).trim());
+      });
+    }
+  }
+} catch {
+  // ignore
+}
+
+/**
+ * Checks if any identifier associated with a deposit transaction has already been credited.
+ */
+export function isDepositAlreadyCredited(keys: (string | undefined | null)[]): boolean {
+  const validKeys = keys.filter(Boolean).map((k) => String(k).trim());
+  return validKeys.some((k) => creditedDepositLocks.has(k));
+}
+
+/**
+ * Atomically acquires the credit lock for all identifiers of a confirmed deposit transaction.
+ * Returns true if the lock was acquired for the first time; returns false if already credited.
+ */
+export function acquireDepositCreditLock(keys: (string | undefined | null)[]): boolean {
+  const validKeys = Array.from(new Set(keys.filter(Boolean).map((k) => String(k).trim())));
+  if (validKeys.length === 0) return true;
+  if (validKeys.some((k) => creditedDepositLocks.has(k))) {
+    return false;
+  }
+  validKeys.forEach((k) => creditedDepositLocks.add(k));
+  try {
+    localStorage.setItem(
+      CREDITED_DEPOSIT_LOCKS_KEY,
+      JSON.stringify(Array.from(creditedDepositLocks).slice(-3000))
+    );
+  } catch {
+    // ignore
+  }
+  return true;
 }
 
 const LEGACY_MOCK_TX_IDS = new Set([
@@ -1408,9 +1534,11 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
     // Strip any old synthetic failed withdrawal records
     if (tx.type === 'WITHDRAWAL' && String(tx.reference || '').startsWith('FAIL-WTH-')) continue;
 
-    const dedupeKey = String(tx.id || tx.reference || `${tx.type}-${tx.timestamp}`);
-    if (seenIds.has(dedupeKey)) continue;
+    const primaryRef = String(tx.payheroReference || tx.reference || '').trim();
+    const dedupeKey = String(tx.id || primaryRef || `${tx.type}-${tx.timestamp}`);
+    if (seenIds.has(dedupeKey) || (primaryRef && seenIds.has(`ref:${primaryRef}`))) continue;
     seenIds.add(dedupeKey);
+    if (primaryRef) seenIds.add(`ref:${primaryRef}`);
 
     let normalizedStatus: Transaction['status'] = tx.status;
     if (tx.type === 'WITHDRAWAL') {
@@ -1441,25 +1569,61 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
           .trim() || tx.type
       : tx.method;
 
-    const cleanedDetails =
-      tx.type === 'DEPOSIT' && normalizedStatus === 'FAILED'
-        ? (tx.details || 'You cancelled the M-PESA payment request.')
-        : tx.type === 'WITHDRAWAL' && normalizedStatus === 'FAILED'
-        ? /capacity exceeded|bounced back/i.test(String(tx.details || ''))
-          ? 'Customer wallet capacity exceeded'
-          : String(tx.details || 'Withdrawal unsuccessful')
-              .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
-              .trim()
-        : tx.details
+    let cleanedDetails: string | undefined;
+    if (tx.type === 'DEPOSIT' && normalizedStatus === 'FAILED') {
+      const rawDet = String(tx.details || '').trim();
+      if (
+        !rawDet ||
+        rawDet === 'You cancelled the M-PESA payment request.' ||
+        /^Deposit failed or cancelled/i.test(rawDet) ||
+        /awaiting|waiting|pending/i.test(rawDet)
+      ) {
+        cleanedDetails = 'Failed';
+      } else {
+        cleanedDetails = rawDet;
+      }
+    } else if (tx.type === 'WITHDRAWAL' && normalizedStatus === 'FAILED') {
+      cleanedDetails = /capacity exceeded|bounced back/i.test(String(tx.details || ''))
+        ? 'Customer wallet capacity exceeded'
+        : String(tx.details || 'Withdrawal unsuccessful')
+            .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
+            .trim();
+    } else if (tx.type === 'WITHDRAWAL' && normalizedStatus === 'COMPLETED') {
+      const baseDet = String(tx.details || '')
+        .replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '')
+        .replace(/\s*PayHero\s*\([^)]*\)/gi, '')
+        .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
+        .trim();
+      const isCryptoWithdraw = /crypto|btc|usdt|eth/i.test(String(cleanedMethod || ''));
+      const kesFormatted = Number((Math.abs(Number(tx.amount || 0)) * 126.58).toFixed(2)).toLocaleString('en-KE', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      const rawAcc = String(tx.accountNumber || 'VTM Wallet').trim();
+      const sourceLabel =
+        /^\d+$/.test(rawAcc) ? `Account #${rawAcc}` : rawAcc;
+      if (baseDet && /Disbursed/i.test(baseDet)) {
+        cleanedDetails = baseDet;
+      } else if (baseDet && !isCryptoWithdraw) {
+        cleanedDetails = `${baseDet} • Disbursed (KES ${kesFormatted})`;
+      } else if (!baseDet && !isCryptoWithdraw) {
+        cleanedDetails = `Withdrawal from ${sourceLabel} • Disbursed (KES ${kesFormatted})`;
+      } else {
+        cleanedDetails = baseDet || `Withdrawal from ${sourceLabel}`;
+      }
+    } else {
+      cleanedDetails = tx.details
         ? String(tx.details)
             .replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '')
             .replace(/\s*PayHero\s*\([^)]*\)/gi, '')
             .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
             .trim()
         : tx.details;
+    }
 
     result.push({
       ...tx,
+      reference: primaryRef || tx.reference,
       method: cleanedMethod,
       details: cleanedDetails,
       status: normalizedStatus,
@@ -1483,7 +1647,12 @@ export interface PlatformTransactionRecord {
   status: 'COMPLETED' | 'PENDING' | 'FAILED' | 'CANCELLED' | 'REJECTED';
   timestamp: number;
   dateStr: string;
+  /** Primary PayHero transaction reference */
   referenceId?: string;
+  payheroReference?: string;
+  checkoutRequestId?: string;
+  mpesaReceiptNumber?: string;
+  externalReference?: string;
   details?: string;
 }
 
@@ -1508,10 +1677,16 @@ export function getAllPlatformDeposits(): {
     txs.forEach((tx) => {
       if (tx.type === 'DEPOSIT') {
         const txIdKey = String(tx.id || `${u.id}-${tx.timestamp}`);
-        const refKey = String((tx as any).referenceId || (tx as any).checkoutRequestId || tx.reference || '');
-        if (seenIds.has(txIdKey) || (refKey && seenIds.has(`ref:${refKey}`))) return;
+        // Requirement 1 & 7: Always use PayHero's `reference` (`payheroReference || reference`) as the primary reference
+        const primaryRef = String(
+          tx.payheroReference ||
+            tx.reference ||
+            (tx as any).referenceId ||
+            `VTM-DEP-${String(tx.id || '').slice(-6).toUpperCase()}`
+        ).trim();
+        if (seenIds.has(txIdKey) || (primaryRef && seenIds.has(`ref:${primaryRef}`))) return;
         seenIds.add(txIdKey);
-        if (refKey) seenIds.add(`ref:${refKey}`);
+        if (primaryRef) seenIds.add(`ref:${primaryRef}`);
 
         const amt = Math.abs(Number(tx.amount || 0));
         const rawStatus = String(tx.status || '').toUpperCase();
@@ -1540,7 +1715,11 @@ export function getAllPlatformDeposits(): {
             hour: '2-digit',
             minute: '2-digit',
           }),
-          referenceId: (tx as any).referenceId || (tx as any).checkoutRequestId || tx.reference || `VTM-DEP-${String(tx.id || '').slice(-6).toUpperCase()}`,
+          referenceId: primaryRef,
+          payheroReference: tx.payheroReference || primaryRef,
+          checkoutRequestId: tx.checkoutRequestId,
+          mpesaReceiptNumber: tx.mpesaReceiptNumber,
+          externalReference: tx.externalReference,
           details: tx.details,
         });
       }
@@ -1587,10 +1766,15 @@ export function getAllPlatformTransactions(): {
 
     txs.forEach((tx) => {
       const txIdKey = String(tx.id || `tx-${u.id}-${tx.timestamp}`);
-      const refKey = String(tx.reference || (tx as any).referenceId || '');
-      if (seenTxKeys.has(txIdKey) || (refKey && seenTxKeys.has(`ref:${refKey}`))) return;
+      const primaryRef = String(
+        tx.payheroReference ||
+          tx.reference ||
+          (tx as any).referenceId ||
+          `REF-${String(tx.id || '').slice(-8).toUpperCase()}`
+      ).trim();
+      if (seenTxKeys.has(txIdKey) || (primaryRef && seenTxKeys.has(`ref:${primaryRef}`))) return;
       seenTxKeys.add(txIdKey);
-      if (refKey) seenTxKeys.add(`ref:${refKey}`);
+      if (primaryRef) seenTxKeys.add(`ref:${primaryRef}`);
 
       const amt = Math.abs(Number(tx.amount || 0));
       const rawStatus = String(tx.status || '').toUpperCase();
@@ -1630,7 +1814,11 @@ export function getAllPlatformTransactions(): {
           hour: '2-digit',
           minute: '2-digit',
         }),
-        referenceId: tx.reference || (tx as any).referenceId || `REF-${String(tx.id || '').slice(-8).toUpperCase()}`,
+        referenceId: primaryRef,
+        payheroReference: tx.payheroReference || primaryRef,
+        checkoutRequestId: tx.checkoutRequestId,
+        mpesaReceiptNumber: tx.mpesaReceiptNumber,
+        externalReference: tx.externalReference,
         details: tx.details,
       });
     });

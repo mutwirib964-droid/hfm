@@ -188,24 +188,89 @@
         } catch (e) {}
       })();
     </script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
   </head>
   <body class="bg-[#F4F6F9] dark:bg-[#0B0C0E] text-slate-900 dark:text-neutral-100 antialiased font-['Plus_Jakarta_Sans','Inter',sans-serif]">
     <script>
       (function () {
         try {
-          var BUILD_VER = 'vtm-release-prod-v5';
-          if (localStorage.getItem('vtm_sw_build_ver') !== BUILD_VER) {
-            localStorage.setItem('vtm_sw_build_ver', BUILD_VER);
-            if ('serviceWorker' in navigator) {
-              navigator.serviceWorker.getRegistrations().then(function (regs) {
-                regs.forEach(function (r) { r.unregister(); });
+          var BUILD_VER = '__VTM_DYNAMIC_BUILD_VER__';
+          var previousVer = localStorage.getItem('vtm_sw_build_ver');
+          var purgeCachesAndReload = function (newVer, shouldReload) {
+            try {
+              if (newVer) localStorage.setItem('vtm_sw_build_ver', newVer);
+              var tasks = [];
+              if ('serviceWorker' in navigator) {
+                tasks.push(
+                  navigator.serviceWorker.getRegistrations().then(function (regs) {
+                    return Promise.all(
+                      regs.map(function (r) {
+                        try {
+                          if (r.waiting) r.waiting.postMessage({ type: 'SKIP_WAITING' });
+                          return r.update();
+                        } catch (e) {
+                          return Promise.resolve();
+                        }
+                      })
+                    );
+                  })
+                );
+              }
+              if ('caches' in window) {
+                tasks.push(
+                  caches.keys().then(function (keys) {
+                    return Promise.all(
+                      keys.map(function (k) {
+                        return caches.delete(k);
+                      })
+                    );
+                  })
+                );
+              }
+              Promise.all(tasks).finally(function () {
+                if (shouldReload) {
+                  var reloadGuardKey = 'vtm_reloaded_for_' + (newVer || BUILD_VER);
+                  if (sessionStorage.getItem(reloadGuardKey) !== '1') {
+                    sessionStorage.setItem(reloadGuardKey, '1');
+                    window.location.reload();
+                  }
+                }
               });
-            }
-            if ('caches' in window) {
-              caches.keys().then(function (keys) {
-                keys.forEach(function (k) { caches.delete(k); });
-              });
-            }
+            } catch (e) {}
+          };
+
+          if (previousVer !== BUILD_VER) {
+            purgeCachesAndReload(BUILD_VER, Boolean(previousVer));
+          }
+
+          if ('serviceWorker' in navigator) {
+            var refreshing = false;
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+              if (refreshing) return;
+              var ctrlGuard = 'vtm_sw_ctrl_' + BUILD_VER;
+              if (sessionStorage.getItem(ctrlGuard) === '1') return;
+              sessionStorage.setItem(ctrlGuard, '1');
+              refreshing = true;
+              window.location.reload();
+            });
+
+            navigator.serviceWorker.addEventListener('message', function (event) {
+              try {
+                var data = event.data || {};
+                if (data.type === 'VTM_PING_VERSION') {
+                  if (event.ports && event.ports[0]) {
+                    event.ports[0].postMessage({ version: BUILD_VER });
+                  }
+                } else if (data.type === 'VTM_FORCE_RELOAD') {
+                  if (data.version && data.version !== BUILD_VER && !refreshing) {
+                    refreshing = true;
+                    purgeCachesAndReload(data.version, true);
+                  }
+                }
+              } catch (e) {}
+            });
           }
         } catch (e) {}
       })();

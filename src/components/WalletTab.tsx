@@ -31,6 +31,7 @@ import {
   WELL_KNOWN_AFRICAN_BANKS,
   payheroService,
   getUsdKesWithdrawRate,
+  getLocalPayHeroAuditLogs,
 } from '../services/payheroService';
 import { supabaseService } from '../services/supabaseService';
 import { maskPhoneNumber } from '../utils/countryPhoneConfig';
@@ -45,6 +46,10 @@ interface WalletTabProps {
     amount: number;
     targetAccount: string;
     reference?: string;
+    payheroReference?: string;
+    checkoutRequestId?: string;
+    mpesaReceiptNumber?: string;
+    externalReference?: string;
     status?: 'COMPLETED' | 'PENDING' | 'FAILED';
     details?: string;
   }) => void;
@@ -685,6 +690,8 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                   const isPending = tx.status === 'PENDING';
                   const isFailed =
                     tx.status === 'FAILED' ||
+                    tx.status === 'CANCELLED' ||
+                    tx.status === 'REJECTED' ||
                     /capacity exceeded|unsuccessful|failed|bounced back/i.test(tx.details || '');
                   const isSuccess = !isPending && !isFailed && tx.status === 'COMPLETED';
                   const statusLabel = isPending
@@ -694,6 +701,75 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                     : isWithdrawal
                     ? 'SUCCESSFUL'
                     : 'COMPLETED';
+
+                  const getFriendlyFailedReason = (): string => {
+                    const rawDet = String(tx.details || '').trim();
+                    if (isWithdrawal && /capacity exceeded|bounced back/i.test(rawDet)) {
+                      return 'Customer wallet capacity exceeded';
+                    }
+                    const auditLogs = getLocalPayHeroAuditLogs();
+                    const matchedLog = auditLogs.find(
+                      (l) =>
+                        (tx.id && l.id === tx.id) ||
+                        (tx.payheroReference &&
+                          (l.payheroReference === tx.payheroReference || l.reference === tx.payheroReference)) ||
+                        (tx.reference && (l.reference === tx.reference || l.payheroReference === tx.reference)) ||
+                        (tx.checkoutRequestId &&
+                          (l.checkoutRequestId === tx.checkoutRequestId || l.checkoutId === tx.checkoutRequestId))
+                    );
+                    const combinedText = `${rawDet} ${matchedLog?.resultDesc || ''}`.trim();
+                    const codeStr = matchedLog?.resultCode ? String(matchedLog.resultCode).trim() : '';
+
+                    if (
+                      codeStr === '1' ||
+                      /insufficient\s*funds|insufficient\s*balance|low\s*balance|not\s*enough/i.test(combinedText)
+                    ) {
+                      return 'Insufficient funds';
+                    }
+                    if (/no\s*response|cannot\s*be\s*reached|unreachable|did\s*not\s*respond/i.test(combinedText)) {
+                      return 'No response from user';
+                    }
+                    if (codeStr === '1037' || /timed?\s*out|timeout|expired/i.test(combinedText)) {
+                      return 'Timed out';
+                    }
+                    const cleanedCancelCheck = combinedText
+                      .replace(/You cancelled the M-PESA payment request\./gi, '')
+                      .replace(/Deposit failed or cancelled[^.]*/gi, '')
+                      .trim();
+                    if (
+                      codeStr === '1032' ||
+                      tx.status === 'CANCELLED' ||
+                      /cancel/i.test(cleanedCancelCheck)
+                    ) {
+                      return 'Cancelled';
+                    }
+                    return 'Failed';
+                  };
+
+                  const getWithdrawalSuccessSubtitle = (): string => {
+                    const baseDet = String(tx.details || '')
+                      .replace(/\s*•?\s*PayHero\s*\([^)]*\)/gi, '')
+                      .replace(/\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i, '')
+                      .trim();
+                    const isCryptoTx = /crypto|btc|usdt|eth/i.test(String(tx.method || ''));
+                    const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
+                    const kesAmount = Number((Math.abs(Number(tx.amount || 0)) * rate).toFixed(2)).toLocaleString(
+                      'en-KE',
+                      { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+                    );
+                    const rawAcc = String(tx.accountNumber || 'VTM Wallet').trim();
+                    const sourceLabel = /^\d+$/.test(rawAcc) ? `Account #${rawAcc}` : rawAcc;
+                    if (baseDet && /Disbursed/i.test(baseDet)) {
+                      return baseDet;
+                    }
+                    if (baseDet && !isCryptoTx) {
+                      return `${baseDet} • Disbursed (KES ${kesAmount})`;
+                    }
+                    if (!isCryptoTx) {
+                      return `Withdrawal from ${sourceLabel} • Disbursed (KES ${kesAmount})`;
+                    }
+                    return baseDet || `Withdrawal from ${sourceLabel}`;
+                  };
 
                   return (
                     <div
@@ -742,7 +818,7 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                               {statusLabel}
                             </span>
                           </div>
-                          <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-mono">
+                          <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-mono block">
                             {new Date(tx.timestamp).toLocaleString(undefined, {
                               month: 'short',
                               day: 'numeric',
@@ -771,11 +847,13 @@ export const WalletTab: React.FC<WalletTabProps> = ({
                         </span>
                         <span className={`text-[10px] block ${isDarkMode ? 'text-neutral-500 dark:text-neutral-400' : 'text-slate-600'}`}>
                           {isFailed
-                            ? 'Failed'
+                            ? getFriendlyFailedReason()
                             : isDeposit && isSuccess
                             ? `Funded to ${tx.accountNumber || 'VTM One Wallet'}`
                             : isDeposit && isPending
                             ? 'Awaiting confirmation'
+                            : isWithdrawal && isSuccess
+                            ? getWithdrawalSuccessSubtitle()
                             : (tx.details || (isWithdrawal ? 'Instant Payout' : 'Funded')).replace(
                                 /\s*•?\s*\$?[\d,.]+\s*(?:USD\s*)?bounced back.*$/i,
                                 ''
@@ -1542,7 +1620,11 @@ export const WalletTab: React.FC<WalletTabProps> = ({
             method: res.method,
             amount: res.amountUsd,
             targetAccount: res.targetAccount,
-            reference: res.reference,
+            reference: res.payheroReference || res.reference,
+            payheroReference: res.payheroReference || res.reference,
+            checkoutRequestId: res.checkoutRequestId,
+            mpesaReceiptNumber: res.mpesaReceiptNumber,
+            externalReference: res.externalReference,
             status: res.status || 'COMPLETED',
             details: res.details,
           });

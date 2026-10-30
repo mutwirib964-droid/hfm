@@ -93,7 +93,7 @@ export const AdminTransactionLogs: React.FC<AdminTransactionLogsProps> = ({
       const platformData = getAllPlatformDeposits();
       const USD_KES = getUsdKesRate();
 
-      const mergedMap = new Map<string, PayHeroTransactionAuditLog>();
+      const mergedList: PayHeroTransactionAuditLog[] = [];
 
       // Seed server logs
       serverLogs.forEach((item) => {
@@ -106,60 +106,90 @@ export const AdminTransactionLogs: React.FC<AdminTransactionLogsProps> = ({
             ? 'PENDING'
             : 'FAILED';
 
+        const primaryPayheroRef = item.payheroReference || item.reference;
+        const checkoutReqId =
+          item.checkoutRequestId ||
+          (item.checkoutId && item.checkoutId !== primaryPayheroRef ? item.checkoutId : item.checkoutId || '');
+        const mpesaReceipt = item.mpesaReceiptNumber || null;
+
         const sanitizedLog: PayHeroTransactionAuditLog = {
           ...item,
+          reference: primaryPayheroRef,
+          payheroReference: primaryPayheroRef,
+          checkoutId: checkoutReqId,
+          checkoutRequestId: checkoutReqId || undefined,
+          mpesaReceiptNumber: mpesaReceipt,
           status: strictStatus,
-          // If rawCallbackResponse is missing for a COMPLETED record, synthesize authentic callback structure
           rawCallbackResponse: item.rawCallbackResponse || (strictStatus === 'COMPLETED' ? {
             status: 'Success',
             response: {
-              MerchantRequestID: `29115-${Math.floor(10000000 + Math.random() * 90000000)}-1`,
-              CheckoutRequestID: item.checkoutId || `ws_CO_${Date.now()}`,
+              CheckoutRequestID: checkoutReqId || undefined,
               ResultCode: 0,
               ResultDesc: item.resultDesc || 'The service request is processed successfully.',
               Amount: item.amountKes,
-              MpesaReceiptNumber: item.mpesaReceiptNumber || `TLK${Math.floor(100000 + Math.random() * 900000)}`,
+              MpesaReceiptNumber: mpesaReceipt || undefined,
               TransactionDate: Number(new Date(item.timestamp).toISOString().replace(/\D/g, '').slice(0, 14)),
-              PhoneNumber: item.phone ? Number(item.phone.replace(/\D/g, '')) : 254712345678,
+              PhoneNumber: item.phone ? Number(item.phone.replace(/\D/g, '')) : undefined,
             },
-            reference: item.reference,
-            external_reference: item.reference,
+            reference: primaryPayheroRef,
+            external_reference: item.externalReference || primaryPayheroRef,
           } : strictStatus === 'FAILED' ? {
             status: 'Failed',
             response: {
-              MerchantRequestID: `29115-${Math.floor(10000000 + Math.random() * 90000000)}-1`,
-              CheckoutRequestID: item.checkoutId || `ws_CO_${Date.now()}`,
+              CheckoutRequestID: checkoutReqId || undefined,
               ResultCode: 1032,
               ResultDesc: item.resultDesc || 'Request cancelled by user',
               Amount: item.amountKes,
-              PhoneNumber: item.phone ? Number(item.phone.replace(/\D/g, '')) : 254712345678,
+              PhoneNumber: item.phone ? Number(item.phone.replace(/\D/g, '')) : undefined,
             },
-            reference: item.reference,
-            external_reference: item.reference,
+            reference: primaryPayheroRef,
+            external_reference: item.externalReference || primaryPayheroRef,
           } : null),
         };
 
-        const key = sanitizedLog.reference || sanitizedLog.checkoutId || sanitizedLog.id;
-        if (key) mergedMap.set(key, sanitizedLog);
+        mergedList.push(sanitizedLog);
       });
 
-      // Merge platform transactions to capture user deposits
+      // Merge platform transactions to capture user deposits with identical primary PayHero reference
       platformData.deposits.forEach((dep) => {
-        const key = dep.referenceId || dep.id;
-        if (!mergedMap.has(key)) {
-          const strictStatus: 'PENDING' | 'COMPLETED' | 'FAILED' =
-            dep.status === 'COMPLETED'
-              ? 'COMPLETED'
-              : dep.status === 'PENDING'
-              ? 'PENDING'
-              : 'FAILED';
+        const primaryRef = dep.payheroReference || dep.referenceId || `VTM-${dep.id.slice(-6)}`;
+        const checkoutReqId = dep.checkoutRequestId || '';
+        const mpesaReceipt = dep.mpesaReceiptNumber || null;
+        const extRef = dep.externalReference || primaryRef;
 
-          const receipt = dep.referenceId?.startsWith('VTM') ? null : dep.referenceId;
+        const depKeys = [dep.id, primaryRef, checkoutReqId, extRef].filter(Boolean);
+        const existingIdx = mergedList.findIndex((m) => {
+          const mKeys = [m.id, m.reference, m.payheroReference, m.checkoutId, m.checkoutRequestId, m.externalReference].filter(Boolean);
+          return depKeys.some((k) => mKeys.includes(k));
+        });
 
-          mergedMap.set(key, {
+        const strictStatus: 'PENDING' | 'COMPLETED' | 'FAILED' =
+          dep.status === 'COMPLETED'
+            ? 'COMPLETED'
+            : dep.status === 'PENDING'
+            ? 'PENDING'
+            : 'FAILED';
+
+        if (existingIdx >= 0) {
+          const prev = mergedList[existingIdx];
+          mergedList[existingIdx] = {
+            ...prev,
+            reference: prev.payheroReference || dep.payheroReference || prev.reference || primaryRef,
+            payheroReference: prev.payheroReference || dep.payheroReference || prev.reference || primaryRef,
+            checkoutId: prev.checkoutRequestId || prev.checkoutId || checkoutReqId,
+            checkoutRequestId: prev.checkoutRequestId || prev.checkoutId || checkoutReqId || undefined,
+            mpesaReceiptNumber: prev.mpesaReceiptNumber || mpesaReceipt,
+            externalReference: prev.externalReference || extRef,
+            status: prev.status === 'COMPLETED' || strictStatus === 'COMPLETED' ? 'COMPLETED' : strictStatus,
+          };
+        } else {
+          mergedList.push({
             id: `audit-${dep.id}`,
-            reference: dep.referenceId || `VTM-${dep.id.slice(-6)}`,
-            checkoutId: dep.referenceId || `ws_CO_${dep.timestamp}`,
+            reference: primaryRef,
+            payheroReference: primaryRef,
+            checkoutId: checkoutReqId,
+            checkoutRequestId: checkoutReqId || undefined,
+            externalReference: extRef,
             amountKes: dep.amountKes || Math.round(dep.amountUsd * USD_KES),
             amountUsd: dep.amountUsd,
             phone: '2547XXXXXXXX',
@@ -174,36 +204,37 @@ export const AdminTransactionLogs: React.FC<AdminTransactionLogsProps> = ({
                 : strictStatus === 'FAILED'
                 ? 'Payment rejected or cancelled by user.'
                 : 'Awaiting customer PIN entry and PayHero webhook.',
-            mpesaReceiptNumber: receipt,
+            mpesaReceiptNumber: mpesaReceipt,
             timestamp: dep.timestamp,
             callbackReceivedAt: strictStatus !== 'PENDING' ? dep.timestamp : null,
             rawCallbackResponse: strictStatus === 'COMPLETED' ? {
               status: 'Success',
               response: {
-                MerchantRequestID: `29115-${Math.floor(10000000 + Math.random() * 90000000)}-1`,
-                CheckoutRequestID: dep.referenceId,
+                CheckoutRequestID: checkoutReqId || undefined,
                 ResultCode: 0,
                 ResultDesc: 'The service request is processed successfully.',
                 Amount: dep.amountKes,
-                MpesaReceiptNumber: receipt || `UIP${Math.floor(100000 + Math.random() * 900000)}TGY`,
+                MpesaReceiptNumber: mpesaReceipt || undefined,
                 TransactionDate: Number(new Date(dep.timestamp).toISOString().replace(/\D/g, '').slice(0, 14)),
-                PhoneNumber: 254712345678,
               },
-              reference: dep.referenceId,
+              reference: primaryRef,
+              external_reference: extRef,
             } : strictStatus === 'FAILED' ? {
               status: 'Failed',
               response: {
+                CheckoutRequestID: checkoutReqId || undefined,
                 ResultCode: 1032,
                 ResultDesc: 'Request cancelled by user',
                 Amount: dep.amountKes,
               },
-              reference: dep.referenceId,
+              reference: primaryRef,
+              external_reference: extRef,
             } : null,
           });
         }
       });
 
-      const list = Array.from(mergedMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+      const list = mergedList.sort((a, b) => b.timestamp - a.timestamp);
       setLogs(list);
       setLastRefreshedAt(Date.now());
     } catch {

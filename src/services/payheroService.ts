@@ -6,9 +6,14 @@
 export interface MpesaPaymentResponse {
   success: boolean;
   message: string;
-  checkoutId?: string;
+  /** Primary payment transaction reference returned by PayHero (`reference`) */
   reference?: string;
   payheroReference?: string;
+  /** M-PESA Daraja / PayHero CheckoutRequestID (`CheckoutRequestID`) stored separately */
+  checkoutRequestId?: string;
+  checkoutId?: string;
+  /** Merchant external reference (`VTM-...`) stored separately */
+  externalReference?: string;
   amountKes?: number;
   amountUsd?: number;
   formattedPhone?: string;
@@ -31,10 +36,19 @@ export interface PayHeroStatusResponse {
   confirmed: boolean;
   pending: boolean;
   failed: boolean;
+  /** Primary PayHero transaction reference */
+  reference?: string;
+  payheroReference?: string;
+  /** Separate CheckoutRequestID */
+  checkoutRequestId?: string;
+  checkoutId?: string;
+  /** Separate MpesaReceiptNumber */
+  mpesaReceiptNumber?: string;
+  /** Separate merchant external reference */
+  externalReference?: string;
   resultCode?: string;
   resultDesc?: string;
   message?: string;
-  mpesaReceiptNumber?: string;
   cancelledAt?: number | string;
   cancelledAtFormatted?: string;
   outcome?: 'COMPLETED' | 'CANCELLED' | 'INSUFFICIENT_FUNDS' | 'TIMED_OUT' | 'FAILED';
@@ -155,7 +169,7 @@ export const convertKesToUsd = kesToUsd;
 
 export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaymentResponse> {
   const msisdn = formatSafaricomPhone(req.phone);
-  const reference = req.reference || req.accountReference || `VTM-${Date.now()}`;
+  const externalReference = req.accountReference || req.reference || `VTM-${Date.now()}`;
 
   if (!isValidSafaricomPhone(msisdn)) {
     return {
@@ -170,8 +184,9 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
     phone_number: msisdn,
     phone: msisdn,
     msisdn,
-    reference,
-    accountReference: req.accountReference,
+    reference: externalReference,
+    external_reference: externalReference,
+    accountReference: externalReference,
     targetAccount: req.targetAccount,
     userEmail: req.userEmail,
   };
@@ -202,22 +217,47 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
     };
   }
 
-  const checkoutId = data.checkout_id || data.CheckoutRequestID || data.id || reference;
-  const payheroReference = data.payhero_reference || data.raw?.reference || data.reference || checkoutId;
+  // Strictly extract PayHero's primary `reference` vs `CheckoutRequestID` vs `external_reference`
+  const rawPayheroRef = String(
+    data.payhero_reference ||
+      data.payheroReference ||
+      data.raw?.reference ||
+      data.raw?.transaction_reference ||
+      data.reference ||
+      ''
+  ).trim();
+  const rawCheckoutRequestId = String(
+    data.CheckoutRequestID ||
+      data.checkout_request_id ||
+      data.checkoutRequestId ||
+      data.raw?.CheckoutRequestID ||
+      data.raw?.checkout_request_id ||
+      data.checkout_id ||
+      data.checkoutId ||
+      ''
+  ).trim();
+
+  // Primary payment transaction reference is PayHero's `reference` (or externalReference if PayHero didn't return one yet)
+  const primaryReference = rawPayheroRef || externalReference;
+  const checkoutRequestId = rawCheckoutRequestId;
+
   const isAccepted =
     httpOk &&
     (data.success === true ||
       data.status === 'success' ||
       data.status === 'pending' ||
-      Boolean(checkoutId));
+      data.status === 'QUEUED' ||
+      Boolean(rawPayheroRef || rawCheckoutRequestId));
 
   if (isAccepted) {
     return {
       success: true,
       message: data.message || 'STK Push sent to your Safaricom phone. Please enter your M-Pesa PIN.',
-      checkoutId,
-      reference,
-      payheroReference,
+      reference: primaryReference,
+      payheroReference: primaryReference,
+      checkoutRequestId: checkoutRequestId || undefined,
+      checkoutId: checkoutRequestId || primaryReference,
+      externalReference,
       amountKes: req.amountKes,
       amountUsd: req.amountUsd,
       formattedPhone: msisdn,
@@ -234,8 +274,14 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
 
 export interface PayHeroTransactionAuditLog {
   id: string;
+  /** Primary PayHero transaction reference */
   reference: string;
+  payheroReference?: string;
+  /** Separate CheckoutRequestID */
   checkoutId: string;
+  checkoutRequestId?: string;
+  /** Separate external reference */
+  externalReference?: string;
   amountKes: number;
   amountUsd: number;
   phone: string;
@@ -245,6 +291,7 @@ export interface PayHeroTransactionAuditLog {
   status: 'PENDING' | 'COMPLETED' | 'FAILED'; // STRICTLY ONLY 'PENDING', 'COMPLETED', AND 'FAILED'
   resultCode?: string | number | null;
   resultDesc?: string | null;
+  /** Separate MpesaReceiptNumber */
   mpesaReceiptNumber?: string | null;
   timestamp: number;
   callbackReceivedAt?: number | null;
@@ -271,16 +318,16 @@ export function sanitizeUserPayHeroMessage(
 
   if (isFailed) {
     if (codeStr === '1' || /insufficient|funds|balance/i.test(cleaned)) {
-      return 'Insufficient funds to complete transaction';
+      return 'Insufficient funds';
+    }
+    if (/no\s*response|cannot\s*be\s*reached|unreachable|did\s*not\s*respond/i.test(cleaned)) {
+      return 'No response from user';
+    }
+    if (codeStr === '1037' || /timeout|timed?\s*out|expired/i.test(cleaned)) {
+      return 'Timed out';
     }
     if (codeStr === '1032' || /cancel/i.test(cleaned)) {
-      if (/user\s*cancel/i.test(cleaned)) return 'User cancelled';
-      if (/cancelled\s*by\s*user/i.test(cleaned)) return 'Request cancelled by user';
-      if (/^cancelled$/i.test(cleaned)) return 'Cancelled';
-      return cleaned || 'User cancelled';
-    }
-    if (codeStr === '1037' || /timeout|timed?\s*out|expired|no\s*response/i.test(cleaned)) {
-      return cleaned || 'Cancelled';
+      return 'Cancelled';
     }
     return cleaned || 'Failed';
   }
@@ -306,10 +353,20 @@ export function saveLocalPayHeroAuditLog(log: PayHeroTransactionAuditLog): void 
       (l) =>
         (log.id && l.id === log.id) ||
         (log.reference && l.reference === log.reference) ||
-        (log.checkoutId && l.checkoutId === log.checkoutId)
+        (log.payheroReference && (l.payheroReference === log.payheroReference || l.reference === log.payheroReference)) ||
+        (log.checkoutId && l.checkoutId === log.checkoutId) ||
+        (log.externalReference && (l.externalReference === log.externalReference || l.reference === log.externalReference))
     );
     if (existingIdx >= 0) {
-      logs[existingIdx] = { ...logs[existingIdx], ...log };
+      logs[existingIdx] = {
+        ...logs[existingIdx],
+        ...log,
+        reference: log.payheroReference || log.reference || logs[existingIdx].reference,
+        payheroReference: log.payheroReference || log.reference || logs[existingIdx].payheroReference,
+        checkoutId: log.checkoutRequestId || log.checkoutId || logs[existingIdx].checkoutId,
+        checkoutRequestId: log.checkoutRequestId || log.checkoutId || logs[existingIdx].checkoutRequestId,
+        mpesaReceiptNumber: log.mpesaReceiptNumber ?? logs[existingIdx].mpesaReceiptNumber ?? null,
+      };
     } else {
       logs.unshift(log);
     }
@@ -326,18 +383,20 @@ export async function fetchPayHeroAuditLogs(): Promise<PayHeroTransactionAuditLo
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data.logs)) {
-        // Merge with local logs
         const local = getLocalPayHeroAuditLogs();
-        const map = new Map<string, PayHeroTransactionAuditLog>();
-        data.logs.forEach((l: PayHeroTransactionAuditLog) => {
-          const key = l.reference || l.checkoutId || l.id;
-          if (key) map.set(key, l);
-        });
+        const merged: PayHeroTransactionAuditLog[] = [...data.logs];
         local.forEach((l: PayHeroTransactionAuditLog) => {
-          const key = l.reference || l.checkoutId || l.id;
-          if (key && !map.has(key)) map.set(key, l);
+          const exists = merged.some(
+            (m) =>
+              (l.id && m.id === l.id) ||
+              (l.reference && m.reference === l.reference) ||
+              (l.payheroReference && (m.payheroReference === l.payheroReference || m.reference === l.payheroReference)) ||
+              (l.checkoutId && m.checkoutId === l.checkoutId) ||
+              (l.externalReference && (l.externalReference === l.externalReference || m.reference === l.externalReference))
+          );
+          if (!exists) merged.push(l);
         });
-        return Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp);
+        return merged.sort((a, b) => b.timestamp - a.timestamp);
       }
     }
   } catch {}
@@ -356,15 +415,28 @@ export async function postAuditLogToBackend(log: PayHeroTransactionAuditLog): Pr
 }
 
 export async function checkStkPaymentStatus(
-  checkoutId: string,
-  extra?: { reference?: string; payheroReference?: string; startedAt?: number }
+  primaryReferenceOrCheckoutId: string,
+  extra?: {
+    reference?: string;
+    payheroReference?: string;
+    checkoutRequestId?: string;
+    externalReference?: string;
+    startedAt?: number;
+  }
 ): Promise<PayHeroStatusResponse> {
+  const payheroRef = extra?.payheroReference || extra?.reference || primaryReferenceOrCheckoutId;
+  const checkoutReqId = extra?.checkoutRequestId || primaryReferenceOrCheckoutId;
+  const extRef = extra?.externalReference || extra?.reference;
+
   const payload = {
     action: 'payhero-status',
-    checkout_id: checkoutId,
-    checkoutid: checkoutId,
-    reference: extra?.reference,
-    payhero_reference: extra?.payheroReference,
+    reference: payheroRef,
+    payhero_reference: payheroRef,
+    checkout_request_id: checkoutReqId,
+    CheckoutRequestID: checkoutReqId,
+    checkout_id: checkoutReqId || payheroRef,
+    checkoutid: checkoutReqId || payheroRef,
+    external_reference: extRef,
     startedAt: extra?.startedAt,
   };
 
@@ -388,12 +460,15 @@ export async function checkStkPaymentStatus(
       } else if (data.failed) {
         if (resultCode === '1' || /insufficient|balance|funds/i.test(resultDesc)) {
           outcome = 'INSUFFICIENT_FUNDS';
-          friendlyTitle = 'Insufficient funds to complete transaction';
+          friendlyTitle = 'Insufficient funds';
+        } else if (/no\s*response|cannot\s*be\s*reached|unreachable|did\s*not\s*respond/i.test(resultDesc)) {
+          outcome = 'NO_RESPONSE';
+          friendlyTitle = 'No response from user';
+        } else if (resultCode === '1037' || /timeout|timed?\s*out|expired/i.test(resultDesc)) {
+          outcome = 'TIMED_OUT';
+          friendlyTitle = 'Timed out';
         } else if (resultCode === '1032' || /cancel/i.test(resultDesc)) {
           outcome = 'CANCELLED';
-          friendlyTitle = 'Cancelled';
-        } else if (resultCode === '1037' || /timeout|time out|no response/i.test(resultDesc)) {
-          outcome = 'TIMED_OUT';
           friendlyTitle = 'Cancelled';
         } else {
           outcome = 'FAILED';
@@ -401,14 +476,45 @@ export async function checkStkPaymentStatus(
         }
       }
 
+      const resolvedPayheroRef =
+        data.payheroReference ||
+        data.payhero_reference ||
+        data.reference ||
+        data.data?.payhero_reference ||
+        data.data?.reference ||
+        payheroRef;
+      const resolvedCheckoutRequestId =
+        data.checkoutRequestId ||
+        data.checkout_request_id ||
+        data.CheckoutRequestID ||
+        data.data?.CheckoutRequestID ||
+        data.data?.checkout_request_id ||
+        extra?.checkoutRequestId ||
+        '';
+      const resolvedReceiptNumber =
+        data.mpesaReceiptNumber ||
+        data.data?.MpesaReceiptNumber ||
+        data.data?.mpesa_receipt_number ||
+        undefined;
+      const resolvedExternalRef =
+        data.externalReference ||
+        data.external_reference ||
+        data.data?.external_reference ||
+        extRef;
+
       return {
         success: Boolean(data.success),
         confirmed: Boolean(data.confirmed),
         pending: Boolean(data.pending),
         failed: Boolean(data.failed),
+        reference: resolvedPayheroRef,
+        payheroReference: resolvedPayheroRef,
+        checkoutRequestId: resolvedCheckoutRequestId || undefined,
+        checkoutId: resolvedCheckoutRequestId || undefined,
+        mpesaReceiptNumber: resolvedReceiptNumber,
+        externalReference: resolvedExternalRef,
         resultCode,
         resultDesc,
-        mpesaReceiptNumber: data.mpesaReceiptNumber,
         cancelledAt: data.cancelledAt,
         cancelledAtFormatted: data.cancelledAtFormatted,
         outcome,
@@ -425,19 +531,27 @@ export async function checkStkPaymentStatus(
     confirmed: false,
     pending: true,
     failed: false,
+    reference: payheroRef,
+    payheroReference: payheroRef,
+    checkoutRequestId: extra?.checkoutRequestId,
+    externalReference: extRef,
     resultDesc: 'Waiting for confirmation from your phone...',
   };
 }
 
 export async function cancelStkPaymentStatus(
   checkoutId: string,
-  reference?: string
+  reference?: string,
+  payheroReference?: string
 ): Promise<PayHeroStatusResponse> {
   const cancelTimestamp = Date.now();
   const payload = {
     checkout_id: checkoutId,
     checkoutid: checkoutId,
-    reference,
+    checkout_request_id: checkoutId,
+    reference: payheroReference || reference,
+    payhero_reference: payheroReference || reference,
+    external_reference: reference,
     action: 'cancel',
     cancelled: true,
     cancelledAt: cancelTimestamp,
@@ -461,6 +575,11 @@ export async function cancelStkPaymentStatus(
         confirmed: false,
         pending: false,
         failed: true,
+        reference: payheroReference || reference,
+        payheroReference: payheroReference || reference,
+        checkoutRequestId: checkoutId,
+        checkoutId,
+        externalReference: reference,
         resultCode: data.resultCode || '1032',
         resultDesc: cleanDesc,
         cancelledAt: data.cancelledAt || cancelTimestamp,
@@ -476,6 +595,11 @@ export async function cancelStkPaymentStatus(
     confirmed: false,
     pending: false,
     failed: true,
+    reference: payheroReference || reference,
+    payheroReference: payheroReference || reference,
+    checkoutRequestId: checkoutId,
+    checkoutId,
+    externalReference: reference,
     resultCode: '1032',
     resultDesc: 'User cancelled',
     cancelledAt: cancelTimestamp,

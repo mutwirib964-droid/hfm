@@ -2150,7 +2150,21 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                                 </span>
                               </div>
                             ) : (
-                              tx.referenceId
+                              <div className="flex flex-col gap-0.5">
+                                <span className="font-semibold text-blue-400">
+                                  {tx.payheroReference || tx.referenceId || 'N/A'}
+                                </span>
+                                {tx.checkoutRequestId && tx.checkoutRequestId !== (tx.payheroReference || tx.referenceId) && (
+                                  <span className="text-[10px] text-slate-500">
+                                    CheckoutID: {tx.checkoutRequestId}
+                                  </span>
+                                )}
+                                {tx.mpesaReceiptNumber && (
+                                  <span className="text-[10px] text-emerald-400 font-semibold">
+                                    M-PESA Receipt: {tx.mpesaReceiptNumber}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </td>
                           <td

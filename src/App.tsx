@@ -98,6 +98,8 @@ import {
   mergeUserFinancialStates,
   calculateNetWalletFromLedger,
   reconcileWalletBalanceWithTransactions,
+  isDepositAlreadyCredited,
+  acquireDepositCreditLock,
 } from './utils/financialStorage';
 import { supabaseService, UserPlatformSettings } from './services/supabaseService';
 import { getUsdKesWithdrawRate } from './services/payheroService';
@@ -3985,37 +3987,76 @@ export default function App() {
     amount: number;
     targetAccount: string;
     reference?: string;
+    payheroReference?: string;
+    checkoutRequestId?: string;
+    mpesaReceiptNumber?: string;
+    externalReference?: string;
     status?: 'COMPLETED' | 'PENDING' | 'FAILED';
     details?: string;
   }) => {
     const amountUsd = Number((params.amount || 0).toFixed(2));
     const txStatus = params.status || 'COMPLETED';
-    const ref = params.reference || `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+    // Requirement 1: Store PayHero's `reference` as the primary payment transaction reference
+    const primaryRef =
+      params.payheroReference ||
+      params.reference ||
+      `VTM-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
     const txId = params.id || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+    const candidateKeys = [
+      params.id,
+      params.payheroReference,
+      params.reference,
+      params.checkoutRequestId,
+      params.externalReference,
+    ]
+      .filter(Boolean)
+      .map((k) => String(k).trim());
+
+    const findMatchingDepositIndex = () =>
+      transactionsRef.current.findIndex((t) => {
+        if (t.type !== 'DEPOSIT') return false;
+        const tKeys = [
+          t.id,
+          t.payheroReference,
+          t.reference,
+          t.checkoutRequestId,
+          t.externalReference,
+        ]
+          .filter(Boolean)
+          .map((k) => String(k).trim());
+        return candidateKeys.some((k) => tKeys.includes(k));
+      });
+
     if (amountUsd < 16 || txStatus === 'FAILED') {
-      const failRef = params.reference || `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`;
-      const existingIdx = transactionsRef.current.findIndex(
-        (t) =>
-          t.type === 'DEPOSIT' &&
-          ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
-      );
+      const existingIdx = findMatchingDepositIndex();
+      const existingTx = existingIdx >= 0 ? transactionsRef.current[existingIdx] : null;
+      const failRef =
+        params.payheroReference ||
+        existingTx?.payheroReference ||
+        params.reference ||
+        existingTx?.reference ||
+        `FAIL-${Math.floor(10000000 + Math.random() * 90000000)}`;
 
       const failedTx: Transaction = {
-        id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
+        id: existingTx ? existingTx.id : txId,
         type: 'DEPOSIT',
         method: params.method,
         amount: amountUsd,
         currency: 'USD',
         status: 'FAILED',
-        timestamp: Date.now(),
+        timestamp: existingTx?.timestamp || Date.now(),
         reference: failRef,
+        payheroReference: params.payheroReference || existingTx?.payheroReference || failRef,
+        checkoutRequestId: params.checkoutRequestId || existingTx?.checkoutRequestId,
+        mpesaReceiptNumber: undefined,
+        externalReference: params.externalReference || existingTx?.externalReference,
         accountNumber: params.targetAccount,
         details:
           params.details ||
           (amountUsd < 16
             ? 'Deposit below $16.00 minimum threshold'
-            : `Deposit failed or cancelled (${params.targetAccount})`),
+            : 'Failed'),
       };
 
       const nextTransactions =
@@ -4040,7 +4081,12 @@ export default function App() {
           amountUsd,
           method: params.method,
           reference: failRef,
+          payheroReference: failedTx.payheroReference,
+          checkoutId: failedTx.checkoutRequestId,
+          checkoutRequestId: failedTx.checkoutRequestId,
+          externalReference: failedTx.externalReference,
           status: 'FAILED',
+          details: failedTx.details,
         });
         supabaseService.syncTransactions(currentUser, nextTransactions);
       }
@@ -4061,21 +4107,33 @@ export default function App() {
     }
 
     if (txStatus === 'PENDING') {
-      const existingIdx = transactionsRef.current.findIndex(
-        (t) =>
-          t.type === 'DEPOSIT' &&
-          ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
-      );
+      const existingIdx = findMatchingDepositIndex();
+      const existingTx = existingIdx >= 0 ? transactionsRef.current[existingIdx] : null;
+      // Never downgrade an already COMPLETED transaction back to PENDING
+      if (existingTx && existingTx.status === 'COMPLETED') {
+        return;
+      }
+
+      const resolvedPrimaryRef =
+        params.payheroReference ||
+        existingTx?.payheroReference ||
+        params.reference ||
+        existingTx?.reference ||
+        primaryRef;
 
       const pendingTx: Transaction = {
-        id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
+        id: existingTx ? existingTx.id : txId,
         type: 'DEPOSIT',
         method: params.method,
         amount: amountUsd,
         currency: 'USD',
         status: 'PENDING',
-        timestamp: Date.now(),
-        reference: ref,
+        timestamp: existingTx?.timestamp || Date.now(),
+        reference: resolvedPrimaryRef,
+        payheroReference: params.payheroReference || existingTx?.payheroReference || resolvedPrimaryRef,
+        checkoutRequestId: params.checkoutRequestId || existingTx?.checkoutRequestId,
+        mpesaReceiptNumber: undefined,
+        externalReference: params.externalReference || existingTx?.externalReference,
         accountNumber: params.targetAccount,
         details: params.details || `Awaiting confirmation -> ${params.targetAccount}`,
       };
@@ -4101,7 +4159,11 @@ export default function App() {
           targetAccount: params.targetAccount,
           amountUsd,
           method: params.method,
-          reference: ref,
+          reference: resolvedPrimaryRef,
+          payheroReference: pendingTx.payheroReference,
+          checkoutId: pendingTx.checkoutRequestId,
+          checkoutRequestId: pendingTx.checkoutRequestId,
+          externalReference: pendingTx.externalReference,
           status: 'PENDING',
         });
         supabaseService.syncTransactions(currentUser, nextTransactions);
@@ -4109,16 +4171,41 @@ export default function App() {
       return;
     }
 
-    const existingIdx = transactionsRef.current.findIndex(
-      (t) =>
-        t.type === 'DEPOSIT' &&
-        ((params.id && t.id === params.id) || (params.reference && t.reference === params.reference))
-    );
+    const existingIdx = findMatchingDepositIndex();
+    const existingTx = existingIdx >= 0 ? transactionsRef.current[existingIdx] : null;
 
-    // Prevent double-crediting if already COMPLETED
-    if (existingIdx >= 0 && transactionsRef.current[existingIdx].status === 'COMPLETED') {
+    // Requirement 8: Prevent duplicate wallet credits by ensuring each confirmed transaction is credited only once
+    const lockKeys = [
+      existingTx?.id || txId,
+      params.payheroReference,
+      existingTx?.payheroReference,
+      params.reference,
+      existingTx?.reference,
+      params.checkoutRequestId,
+      existingTx?.checkoutRequestId,
+      params.mpesaReceiptNumber,
+      existingTx?.mpesaReceiptNumber,
+      params.externalReference,
+      existingTx?.externalReference,
+    ];
+
+    if (
+      (existingTx && existingTx.status === 'COMPLETED') ||
+      isDepositAlreadyCredited(lockKeys) ||
+      !acquireDepositCreditLock(lockKeys)
+    ) {
       return;
     }
+
+    const resolvedPrimaryRef =
+      params.payheroReference ||
+      existingTx?.payheroReference ||
+      params.reference ||
+      existingTx?.reference ||
+      primaryRef;
+    const resolvedCheckoutRequestId = params.checkoutRequestId || existingTx?.checkoutRequestId;
+    const resolvedMpesaReceipt = params.mpesaReceiptNumber || existingTx?.mpesaReceiptNumber;
+    const resolvedExternalRef = params.externalReference || existingTx?.externalReference;
 
     const isWalletDepositTarget =
       params.targetAccount === 'HF Wallet' ||
@@ -4130,14 +4217,18 @@ export default function App() {
       : walletBalanceRef.current;
 
     const newTx: Transaction = {
-      id: existingIdx >= 0 ? transactionsRef.current[existingIdx].id : txId,
+      id: existingTx ? existingTx.id : txId,
       type: 'DEPOSIT',
       method: params.method,
       amount: amountUsd,
       currency: 'USD',
       status: 'COMPLETED',
-      timestamp: Date.now(),
-      reference: ref,
+      timestamp: existingTx?.timestamp || Date.now(),
+      reference: resolvedPrimaryRef,
+      payheroReference: resolvedPrimaryRef,
+      checkoutRequestId: resolvedCheckoutRequestId,
+      mpesaReceiptNumber: resolvedMpesaReceipt,
+      externalReference: resolvedExternalRef,
       accountNumber: params.targetAccount,
       details:
         params.details ||
@@ -4202,21 +4293,34 @@ export default function App() {
 
     addNotification(`Deposit of $${amountUsd.toFixed(2)} received successfully!`);
 
-    // Save deposit to Supabase cloud database
+    // Save deposit to Supabase cloud database with consistent primary PayHero reference
     if (currentUser) {
       supabaseService.saveDeposit(currentUser, {
         id: newTx.id,
         targetAccount: params.targetAccount,
         amountUsd,
         method: params.method,
-        reference: ref,
+        reference: resolvedPrimaryRef,
+        payheroReference: resolvedPrimaryRef,
+        checkoutId: resolvedCheckoutRequestId,
+        checkoutRequestId: resolvedCheckoutRequestId,
+        mpesaReceiptNumber: resolvedMpesaReceipt,
+        externalReference: resolvedExternalRef,
         status: 'COMPLETED',
       });
       supabaseService.syncTransactions(currentUser, nextTransactions);
       supabaseService.syncActivity(currentUser, {
         type: 'DEPOSIT',
         description: `Funded $${amountUsd.toFixed(2)} to ${params.targetAccount} via ${params.method}`,
-        metadata: { amount: amountUsd, targetAccount: params.targetAccount, reference: ref },
+        metadata: {
+          amount: amountUsd,
+          targetAccount: params.targetAccount,
+          reference: resolvedPrimaryRef,
+          payheroReference: resolvedPrimaryRef,
+          checkoutRequestId: resolvedCheckoutRequestId,
+          mpesaReceiptNumber: resolvedMpesaReceipt,
+          externalReference: resolvedExternalRef,
+        },
       });
 
       // Credit referral commission if user joined via a referral link and deposit is >= $16
@@ -4229,25 +4333,30 @@ export default function App() {
           email: currentUser.email,
           name: currentUser.name || 'Referred Trader',
           accountNumber: params.targetAccount,
-          reference: ref,
+          reference: resolvedPrimaryRef,
         });
       }
 
-      // Record double-entry credit in immutable financial ledger
+      // Record double-entry credit in immutable financial ledger with deterministic ID for database-level uniqueness
       if (currentUser.email) {
         const savedLedger = appendLedgerEntry({
+          id: `ledg-dep-${resolvedPrimaryRef}`,
           userEmail: currentUser.email,
           accountNumber: params.targetAccount,
           type: 'DEPOSIT',
           amount: amountUsd,
           previousBalance: Math.max(0, Number(((walletBalanceRef.current || 0) - amountUsd).toFixed(2))),
           newBalance: walletBalanceRef.current,
-          referenceId: ref,
+          referenceId: resolvedPrimaryRef,
           reason: `Deposit via ${params.method}`,
           metadata: {
             method: params.method,
             targetAccount: params.targetAccount,
-            reference: ref,
+            reference: resolvedPrimaryRef,
+            payheroReference: resolvedPrimaryRef,
+            checkoutRequestId: resolvedCheckoutRequestId,
+            mpesaReceiptNumber: resolvedMpesaReceipt,
+            externalReference: resolvedExternalRef,
           },
         });
         supabaseService.syncLedgerEntry(currentUser, savedLedger).catch(() => {});
@@ -4257,11 +4366,11 @@ export default function App() {
     triggerActionPopup({
       type: 'DEPOSIT_SUCCESS',
       title: `Deposit of $${amountUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })} Successful!`,
-      subtitle: `Instant payment received via ${params.method} and credited to ${params.targetAccount}. Ref: ${ref}`,
+      subtitle: `Instant payment received via ${params.method} and credited to ${params.targetAccount}. Ref: ${resolvedPrimaryRef}`,
       details: {
         amount: amountUsd,
         method: params.method,
-        reference: ref,
+        reference: resolvedPrimaryRef,
         accountNumber: params.targetAccount,
       },
     });
@@ -4547,6 +4656,7 @@ export default function App() {
         method: existingTx.method,
         reference: existingTx.reference,
         status: 'COMPLETED',
+        skipOneAppSync: Boolean(isMpesaTx && isMarketerOrAdmin),
       });
       supabaseService.syncActivity(activeUser, {
         type: 'WITHDRAWAL_COMPLETED',

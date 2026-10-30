@@ -50,6 +50,10 @@ interface MpesaDepositModalProps {
     method: string;
     targetAccount: string;
     reference: string;
+    payheroReference?: string;
+    checkoutRequestId?: string;
+    mpesaReceiptNumber?: string;
+    externalReference?: string;
     phone: string;
     status?: 'COMPLETED' | 'PENDING' | 'FAILED';
     details?: string;
@@ -143,6 +147,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const isPollingRef = useRef(false);
   const activeDepositTxIdRef = useRef<string>('');
   const activeDepositReferenceRef = useRef<string>('');
+  const activePayheroReferenceRef = useRef<string>('');
+  const activeCheckoutRequestIdRef = useRef<string>('');
   const activeDepositResolvedRef = useRef<boolean>(false);
 
   // Sync PayHero configuration (merchantName) whenever modal opens; keep rate fixed at 129.56
@@ -246,62 +252,96 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
   // Automated status polling listener: receives feedback directly from PayHero
   useEffect(() => {
-    if (payheroPopupStep !== 'WAITING' || !stkResult?.checkoutId) return;
+    const primaryQueryRef =
+      stkResult?.payheroReference ||
+      stkResult?.reference ||
+      activePayheroReferenceRef.current ||
+      stkResult?.checkoutId;
+    if (payheroPopupStep !== 'WAITING' || !primaryQueryRef) return;
 
-    const checkoutId = stkResult.checkoutId;
     isPollingRef.current = true;
     let pollTimer: any;
 
     const pollPayHero = async () => {
-      if (!isPollingRef.current) return;
+      if (!isPollingRef.current || activeDepositResolvedRef.current) return;
 
       try {
-        const res = await payheroService.queryTransactionStatus(checkoutId, {
-          reference: stkResult?.reference || activeDepositReferenceRef.current,
-          payheroReference: stkResult?.payheroReference,
+        const res = await payheroService.queryTransactionStatus(primaryQueryRef, {
+          reference: stkResult?.payheroReference || stkResult?.reference || activePayheroReferenceRef.current,
+          payheroReference: stkResult?.payheroReference || activePayheroReferenceRef.current,
+          checkoutRequestId: stkResult?.checkoutRequestId || stkResult?.checkoutId || activeCheckoutRequestIdRef.current,
+          externalReference: stkResult?.externalReference || activeDepositReferenceRef.current,
           startedAt: waitingStartTimeRef.current,
         });
-        if (!isPollingRef.current) return;
+        if (!isPollingRef.current || activeDepositResolvedRef.current) return;
 
-        // 1. Success confirmation from PayHero
+        // 1. Success confirmation from PayHero (validated actual payment result)
         if (res.confirmed) {
           isPollingRef.current = false;
           activeDepositResolvedRef.current = true;
           clearInterval(pollTimer);
 
           const latest = latestDepositStateRef.current;
-          const receipt =
+
+          // Requirement 1: Store PayHero's `reference` as the primary payment transaction reference
+          const primaryPayheroRef =
+            res.payheroReference ||
+            res.reference ||
+            stkResult?.payheroReference ||
+            stkResult?.reference ||
+            activePayheroReferenceRef.current ||
+            activeDepositReferenceRef.current;
+
+          // Requirement 2: Store `CheckoutRequestID` separately
+          const checkoutRequestId =
+            res.checkoutRequestId ||
+            stkResult?.checkoutRequestId ||
+            activeCheckoutRequestIdRef.current ||
+            '';
+
+          // Requirement 3: Store `MpesaReceiptNumber` separately as the actual M-PESA receipt number
+          const mpesaReceipt =
             res.mpesaReceiptNumber ||
             res.data?.MpesaReceiptNumber ||
+            res.data?.mpesa_receipt_number ||
             res.data?.receipt ||
-            `UK${Math.floor(100000 + Math.random() * 900000)}TGY`;
+            '';
 
-          const reference =
-            res.data?.reference ||
-            checkoutId ||
-            `REF${Math.floor(10000000 + Math.random() * 90000000)}`;
+          const externalRef =
+            res.externalReference ||
+            stkResult?.externalReference ||
+            activeDepositReferenceRef.current ||
+            primaryPayheroRef;
 
-          setConfirmedReceipt(receipt);
-          setConfirmedReference(reference);
+          setConfirmedReceipt(mpesaReceipt || primaryPayheroRef);
+          setConfirmedReference(primaryPayheroRef);
 
           // Automatically credit the user's account and update transaction status to COMPLETED
+          // Requirement 6 & 7: NEVER replace `reference` with `MpesaReceiptNumber` or `CheckoutRequestID`
           latest.onDepositComplete({
             id: activeDepositTxIdRef.current || undefined,
             amountUsd: latest.numUsd,
             amountKes: latest.numKes,
             method: 'M-PESA',
             targetAccount: latest.targetAccount,
-            reference: receipt,
+            reference: primaryPayheroRef,
+            payheroReference: primaryPayheroRef,
+            checkoutRequestId: checkoutRequestId || undefined,
+            mpesaReceiptNumber: mpesaReceipt || undefined,
+            externalReference: externalRef,
             phone: latest.phoneDisplay || latest.phoneInput,
             status: 'COMPLETED',
             details: `Funded to ${latest.settlementDestinationLabel}`,
           });
 
-          // Save audit log with raw callback response
+          // Save audit log with raw callback response and distinct identifiers
           payheroService.postAuditLog({
             id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
-            reference,
-            checkoutId,
+            reference: primaryPayheroRef,
+            payheroReference: primaryPayheroRef,
+            checkoutId: checkoutRequestId,
+            checkoutRequestId: checkoutRequestId || undefined,
+            externalReference: externalRef,
             amountKes: latest.numKes,
             amountUsd: latest.numUsd,
             phone: latest.phoneDisplay || latest.phoneInput,
@@ -311,13 +351,13 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             status: 'COMPLETED',
             resultCode: res.resultCode || '0',
             resultDesc: res.resultDesc || 'Payment confirmed by M-PESA.',
-            mpesaReceiptNumber: receipt,
+            mpesaReceiptNumber: mpesaReceipt || null,
             timestamp: Date.now(),
             callbackReceivedAt: Date.now(),
             rawCallbackResponse: res.raw || res.data || res,
           });
 
-          // Save deposit to Supabase cloud database
+          // Save deposit to Supabase cloud database with consistent primary PayHero reference
           supabaseService.saveDeposit(latest.currentUser, {
             id: activeDepositTxIdRef.current || undefined,
             targetAccount: latest.targetAccount,
@@ -325,14 +365,27 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             amountKes: latest.numKes,
             method: 'M-PESA',
             phone: latest.phoneFormatted || latest.phoneInput,
-            reference: receipt,
-            checkoutId,
+            reference: primaryPayheroRef,
+            payheroReference: primaryPayheroRef,
+            checkoutId: checkoutRequestId || undefined,
+            checkoutRequestId: checkoutRequestId || undefined,
+            mpesaReceiptNumber: mpesaReceipt || undefined,
+            externalReference: externalRef,
             status: 'COMPLETED',
           });
           supabaseService.syncActivity(latest.currentUser, {
             type: 'DEPOSIT_CONFIRMED',
-            description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Receipt: ${receipt}`,
-            metadata: { receipt, checkoutId, amountUsd: latest.numUsd, amountKes: latest.numKes, targetAccount: latest.targetAccount },
+            description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Ref: ${primaryPayheroRef}${mpesaReceipt ? ` | Receipt: ${mpesaReceipt}` : ''}`,
+            metadata: {
+              reference: primaryPayheroRef,
+              payheroReference: primaryPayheroRef,
+              checkoutRequestId,
+              mpesaReceiptNumber: mpesaReceipt,
+              externalReference: externalRef,
+              amountUsd: latest.numUsd,
+              amountKes: latest.numKes,
+              targetAccount: latest.targetAccount,
+            },
           });
 
           setPayheroPopupStep('SUCCESS');
@@ -353,13 +406,34 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           if (!activeDepositResolvedRef.current) {
             activeDepositResolvedRef.current = true;
             const latest = latestDepositStateRef.current;
+            const primaryPayheroRef =
+              res.payheroReference ||
+              res.reference ||
+              stkResult?.payheroReference ||
+              stkResult?.reference ||
+              activePayheroReferenceRef.current ||
+              activeDepositReferenceRef.current;
+            const checkoutRequestId =
+              res.checkoutRequestId ||
+              stkResult?.checkoutRequestId ||
+              activeCheckoutRequestIdRef.current ||
+              '';
+            const externalRef =
+              res.externalReference ||
+              stkResult?.externalReference ||
+              activeDepositReferenceRef.current ||
+              primaryPayheroRef;
+
             latest.onDepositComplete({
               id: activeDepositTxIdRef.current || undefined,
               amountUsd: latest.numUsd,
               amountKes: latest.numKes,
               method: 'M-PESA',
               targetAccount: latest.targetAccount,
-              reference: checkoutId,
+              reference: primaryPayheroRef,
+              payheroReference: primaryPayheroRef,
+              checkoutRequestId: checkoutRequestId || undefined,
+              externalReference: externalRef,
               phone: latest.phoneDisplay || latest.phoneInput,
               status: 'FAILED',
               details: failureDesc,
@@ -368,8 +442,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             // Save audit log with raw failure response
             payheroService.postAuditLog({
               id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
-              reference: checkoutId,
-              checkoutId,
+              reference: primaryPayheroRef,
+              payheroReference: primaryPayheroRef,
+              checkoutId: checkoutRequestId,
+              checkoutRequestId: checkoutRequestId || undefined,
+              externalReference: externalRef,
               amountKes: latest.numKes,
               amountUsd: latest.numUsd,
               phone: latest.phoneDisplay || latest.phoneInput,
@@ -403,7 +480,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       clearTimeout(delay);
       clearInterval(pollTimer);
     };
-  }, [payheroPopupStep, stkResult?.checkoutId, stkResult?.payheroReference]);
+  }, [payheroPopupStep, stkResult?.payheroReference, stkResult?.reference, stkResult?.checkoutId]);
 
   if (!isOpen) return null;
 
@@ -428,6 +505,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     const txId = `tx-dep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     activeDepositTxIdRef.current = txId;
     activeDepositReferenceRef.current = accountReference;
+    activePayheroReferenceRef.current = accountReference;
+    activeCheckoutRequestIdRef.current = '';
     activeDepositResolvedRef.current = false;
     setIsProcessingStk(true);
     waitingStartTimeRef.current = Date.now();
@@ -441,6 +520,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       method: 'M-PESA',
       targetAccount,
       reference: accountReference,
+      payheroReference: accountReference,
+      externalReference: accountReference,
       phone: phoneCheck.display || phoneInput,
       status: 'PENDING',
       details: 'Awaiting M-Pesa PIN',
@@ -451,8 +532,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     setStkResult({
       success: true,
       message: 'Dispatching M-Pesa STK prompt to your phone...',
-      checkoutId: accountReference,
       reference: accountReference,
+      payheroReference: accountReference,
+      externalReference: accountReference,
       amountKes: numKes,
       amountUsd: numUsd,
       formattedPhone: phoneCheck.display,
@@ -470,12 +552,19 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
       });
 
       if (res.success) {
-        const finalCheckoutId = res.checkoutId || accountReference;
+        // Requirement 1 & 2: Store PayHero's `reference` as primary reference, and `CheckoutRequestID` separately
+        const primaryPayheroRef = res.payheroReference || res.reference || accountReference;
+        const checkoutRequestId = res.checkoutRequestId || (res.checkoutId !== primaryPayheroRef ? res.checkoutId : '') || '';
+        activePayheroReferenceRef.current = primaryPayheroRef;
+        activeCheckoutRequestIdRef.current = checkoutRequestId;
+
         setStkResult({
           ...res,
-          checkoutId: finalCheckoutId,
-          reference: accountReference,
-          payheroReference: res.payheroReference || finalCheckoutId,
+          reference: primaryPayheroRef,
+          payheroReference: primaryPayheroRef,
+          checkoutRequestId: checkoutRequestId || undefined,
+          checkoutId: checkoutRequestId || primaryPayheroRef,
+          externalReference: accountReference,
         });
 
         // Transition to waiting state now that prompt has been dispatched to phone
@@ -483,24 +572,30 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         waitingStartTimeRef.current = Date.now();
         setCancelledAt(null);
 
-        // Record PENDING deposit immediately in transaction history
+        // Update the PENDING deposit with PayHero's primary `reference` and separate `checkoutRequestId`
         onDepositComplete({
           id: txId,
           amountUsd: numUsd,
           amountKes: numKes,
           method: 'M-PESA',
           targetAccount,
-          reference: finalCheckoutId,
+          reference: primaryPayheroRef,
+          payheroReference: primaryPayheroRef,
+          checkoutRequestId: checkoutRequestId || undefined,
+          externalReference: accountReference,
           phone: phoneCheck.display || phoneInput,
           status: 'PENDING',
           details: 'Awaiting M-Pesa PIN',
         });
 
-        // Record initial PENDING audit log
+        // Record initial PENDING audit log with PayHero's primary `reference` and separate `checkoutId`
         payheroService.postAuditLog({
           id: txId,
-          reference: accountReference,
-          checkoutId: finalCheckoutId,
+          reference: primaryPayheroRef,
+          payheroReference: primaryPayheroRef,
+          checkoutId: checkoutRequestId,
+          checkoutRequestId: checkoutRequestId || undefined,
+          externalReference: accountReference,
           amountKes: numKes,
           amountUsd: numUsd,
           phone: phoneCheck.display || phoneInput,
@@ -526,6 +621,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           method: 'M-PESA',
           targetAccount,
           reference: accountReference,
+          payheroReference: accountReference,
+          externalReference: accountReference,
           phone: phoneCheck.display || phoneInput,
           status: 'FAILED',
           details: dispatchErrorMsg,
@@ -533,7 +630,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         payheroService.postAuditLog({
           id: txId,
           reference: accountReference,
-          checkoutId: accountReference,
+          payheroReference: accountReference,
+          checkoutId: '',
+          externalReference: accountReference,
           amountKes: numKes,
           amountUsd: numUsd,
           phone: phoneCheck.display || phoneInput,
@@ -562,6 +661,8 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         method: 'M-PESA',
         targetAccount,
         reference: accountReference,
+        payheroReference: accountReference,
+        externalReference: accountReference,
         phone: phoneCheck.display || phoneInput,
         status: 'FAILED',
         details: connErrorMsg,
@@ -580,9 +681,24 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
     const failureDesc = 'User cancelled';
     setFailureReason(failureDesc);
 
-    const checkoutId = stkResult?.checkoutId || activeDepositReferenceRef.current;
-    if (checkoutId) {
-      payheroService.cancelDepositStatus(checkoutId, activeDepositReferenceRef.current).catch(() => {});
+    const primaryPayheroRef =
+      stkResult?.payheroReference ||
+      stkResult?.reference ||
+      activePayheroReferenceRef.current ||
+      activeDepositReferenceRef.current;
+    const checkoutRequestId =
+      stkResult?.checkoutRequestId ||
+      activeCheckoutRequestIdRef.current ||
+      '';
+    const externalRef =
+      stkResult?.externalReference ||
+      activeDepositReferenceRef.current ||
+      primaryPayheroRef;
+
+    if (primaryPayheroRef || checkoutRequestId) {
+      payheroService
+        .cancelDepositStatus(checkoutRequestId || primaryPayheroRef, externalRef, primaryPayheroRef)
+        .catch(() => {});
     }
 
     if (!activeDepositResolvedRef.current) {
@@ -594,7 +710,10 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
         amountKes: latest.numKes,
         method: 'M-PESA',
         targetAccount: latest.targetAccount,
-        reference: checkoutId || activeDepositReferenceRef.current,
+        reference: primaryPayheroRef,
+        payheroReference: primaryPayheroRef,
+        checkoutRequestId: checkoutRequestId || undefined,
+        externalReference: externalRef,
         phone: latest.phoneDisplay || latest.phoneInput,
         status: 'FAILED',
         details: failureDesc,
@@ -602,8 +721,11 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
 
       payheroService.postAuditLog({
         id: activeDepositTxIdRef.current || `ph-${Date.now()}`,
-        reference: checkoutId || activeDepositReferenceRef.current,
-        checkoutId: checkoutId || activeDepositReferenceRef.current,
+        reference: primaryPayheroRef,
+        payheroReference: primaryPayheroRef,
+        checkoutId: checkoutRequestId,
+        checkoutRequestId: checkoutRequestId || undefined,
+        externalReference: externalRef,
         amountKes: latest.numKes,
         amountUsd: latest.numUsd,
         phone: latest.phoneDisplay || latest.phoneInput,

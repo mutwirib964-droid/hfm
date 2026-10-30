@@ -1081,6 +1081,8 @@ function payheroStkPlugin() {
       { email: cleanEmail, phone: matchedPhone }
     );
     const withdrawalTotal = etRes && typeof etRes.total === 'number' ? etRes.total : 0;
+    const withdrawalItems: any[] = Array.isArray(etRes?.items) ? etRes.items : [];
+    const withdrawalItemIds: string[] = withdrawalItems.map((item: any) => item?.id).filter(Boolean);
 
     const initials =
       (marketerName || cleanEmail || 'JM')
@@ -1099,11 +1101,31 @@ function payheroStkPlugin() {
       airtime: 'Ksh. 4.83',
       bonga: '8 Points',
       appliedWithdrawals: String(withdrawalTotal),
+      appliedIds: withdrawalItemIds,
     };
 
     const rawMpesaNum = parseKesNumber(baseSettings.mpesaBalance || '0');
     const prevAppliedNum = parseKesNumber(baseSettings.appliedWithdrawals || '0');
-    const unappliedDelta = existingSettings ? Math.max(0, withdrawalTotal - prevAppliedNum) : 0;
+
+    let unappliedDelta = 0;
+    if (existingSettings && withdrawalTotal > prevAppliedNum) {
+      if (Array.isArray(existingSettings.appliedIds)) {
+        const appliedSet = new Set(existingSettings.appliedIds);
+        const appliedItems = withdrawalItems.filter((item: any) => item?.id && appliedSet.has(item.id));
+        const isDuplicateItem = (a: any, b: any) =>
+          Number(a?.amount) === Number(b?.amount) &&
+          Boolean(a?.occurred_at && b?.occurred_at) &&
+          Math.abs(new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime()) < 300000;
+        const unappliedItems = withdrawalItems.filter(
+          (item: any) =>
+            item?.id && !appliedSet.has(item.id) && !appliedItems.some((applied: any) => isDuplicateItem(item, applied))
+        );
+        const unappliedItemsSum = unappliedItems.reduce((sum: number, item: any) => sum + Number(item?.amount || 0), 0);
+        unappliedDelta = Math.min(Math.max(0, withdrawalTotal - prevAppliedNum), Math.max(0, unappliedItemsSum));
+      } else {
+        unappliedDelta = Math.max(0, withdrawalTotal - prevAppliedNum);
+      }
+    }
     const currentWebsiteBalanceKes = Number((rawMpesaNum + unappliedDelta).toFixed(2));
 
     return {
@@ -1111,6 +1133,8 @@ function payheroStkPlugin() {
       existingSettings,
       baseSettings,
       withdrawalTotal,
+      withdrawalItems,
+      withdrawalItemIds,
       currentWebsiteBalanceKes,
     };
   };
@@ -1249,17 +1273,6 @@ function payheroStkPlugin() {
         const occurredAtIso = body.occurredAt || body.occurred_at || new Date().toISOString();
         const sourceAccount = String(body.sourceAccount || body.source_account || 'VTM Wallet').trim();
 
-        const beforeState = await resolveOneAppAccountState(
-          cleanEmail,
-          cleanPhone,
-          verifiedPassword,
-          marketerName
-        );
-        const matchedPhone = beforeState.matchedPhone;
-        const beforeTotal = beforeState.withdrawalTotal;
-        const previousWebsiteBalanceKes = beforeState.currentWebsiteBalanceKes;
-        const projectedWebsiteBalanceKes = Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2));
-
         const MAX_SINGLE_TRANSACTION_KES = 250000;
         if (exactAmountKes > MAX_SINGLE_TRANSACTION_KES || exactAmountUsd > 2000) {
           res.setHeader('Content-Type', 'application/json');
@@ -1277,7 +1290,50 @@ function payheroStkPlugin() {
           return;
         }
 
+        const dedupeKey = `${cleanEmail}:${withdrawalId}:${reference}`;
+        const idLockKey = `${cleanEmail}:id:${withdrawalId}`;
+        const refLockKey = `${cleanEmail}:ref:${reference}`;
+
+        if (
+          syncedMarketerWithdrawalIds.has(dedupeKey) ||
+          syncedMarketerWithdrawalIds.has(idLockKey) ||
+          syncedMarketerWithdrawalIds.has(refLockKey)
+        ) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              alreadySynced: true,
+              email: cleanEmail,
+              phone: cleanPhone,
+              amountUsd: exactAmountUsd,
+              amountKes: exactAmountKes,
+              reference,
+            })
+          );
+          return;
+        }
+        syncedMarketerWithdrawalIds.add(dedupeKey);
+        syncedMarketerWithdrawalIds.add(idLockKey);
+        syncedMarketerWithdrawalIds.add(refLockKey);
+
+        const beforeState = await resolveOneAppAccountState(
+          cleanEmail,
+          cleanPhone,
+          verifiedPassword,
+          marketerName
+        );
+        const matchedPhone = beforeState.matchedPhone;
+        const beforeTotal = beforeState.withdrawalTotal;
+        const previousWebsiteBalanceKes = beforeState.currentWebsiteBalanceKes;
+        const projectedWebsiteBalanceKes = Number((previousWebsiteBalanceKes + exactAmountKes).toFixed(2));
+
         if (projectedWebsiteBalanceKes > MAX_ONEAPP_MPESA_BALANCE_KES) {
+          syncedMarketerWithdrawalIds.delete(dedupeKey);
+          syncedMarketerWithdrawalIds.delete(idLockKey);
+          syncedMarketerWithdrawalIds.delete(refLockKey);
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.statusCode = 200;
@@ -1297,10 +1353,11 @@ function payheroStkPlugin() {
         const syncedRefs: string[] = Array.isArray(beforeState.baseSettings.vtmSyncedRefs)
           ? beforeState.baseSettings.vtmSyncedRefs
           : [];
-        const dedupeKey = `${cleanEmail}:${withdrawalId}:${reference}`;
 
-        if (syncedMarketerWithdrawalIds.has(dedupeKey) || (reference && syncedRefs.includes(reference))) {
-          syncedMarketerWithdrawalIds.add(dedupeKey);
+        if (
+          (reference && syncedRefs.includes(reference)) ||
+          (withdrawalId && syncedRefs.includes(withdrawalId))
+        ) {
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.statusCode = 200;
@@ -1319,7 +1376,6 @@ function payheroStkPlugin() {
           );
           return;
         }
-        syncedMarketerWithdrawalIds.add(dedupeKey);
 
         const secret = (
           process.env.VTMMARKETS_WEBHOOK_SECRET ||
@@ -1507,22 +1563,49 @@ function payheroStkPlugin() {
         const updatedMpesaBalance = formatKesBalance(newWebsiteBalanceKes);
 
         if (cleanEmail && matchedPhone && exactAmountKes > 0) {
-          const afterData = await callOneAppServerFn(
+          let afterData = await callOneAppServerFn(
             '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
             {
               email: cleanEmail,
               phone: matchedPhone,
             }
           );
-          const afterTotal = afterData && typeof afterData.total === 'number' ? afterData.total : beforeTotal;
+          let afterItems: any[] = Array.isArray(afterData?.items) ? afterData.items : [];
+          if (webhookDelivered && afterItems.length <= beforeState.withdrawalItemIds.length) {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+            const retryData = await callOneAppServerFn(
+              '112061c5fb3f0ddda87bfc4b09714fea9af06264bcecd56e6b3246c01777d9de',
+              {
+                email: cleanEmail,
+                phone: matchedPhone,
+              }
+            );
+            if (retryData) {
+              afterData = retryData;
+              afterItems = Array.isArray(retryData?.items) ? retryData.items : afterItems;
+            }
+          }
+
+          const afterTotal =
+            afterData && typeof afterData.total === 'number' ? afterData.total : beforeTotal + exactAmountKes;
           const prevApplied = parseKesNumber(beforeState.baseSettings.appliedWithdrawals || '0');
-          const safeAppliedTotal = Math.max(prevApplied, beforeTotal, afterTotal);
-          const nextSyncedRefs = [reference, ...syncedRefs.filter((r) => r !== reference)].slice(0, 100);
+          const safeAppliedTotal = Math.max(prevApplied, beforeTotal + exactAmountKes, afterTotal);
+          const existingAppliedIds: string[] = Array.isArray(beforeState.baseSettings.appliedIds)
+            ? beforeState.baseSettings.appliedIds
+            : [];
+          const afterItemIds: string[] = afterItems.map((item: any) => item?.id).filter(Boolean);
+          const mergedAppliedIds = Array.from(
+            new Set([...existingAppliedIds, ...beforeState.withdrawalItemIds, ...afterItemIds])
+          );
+          const nextSyncedRefs = Array.from(
+            new Set([reference, withdrawalId, ...syncedRefs].filter(Boolean))
+          ).slice(0, 150);
 
           const nextSettings = {
             ...beforeState.baseSettings,
             mpesaBalance: updatedMpesaBalance,
             appliedWithdrawals: String(safeAppliedTotal),
+            appliedIds: mergedAppliedIds,
             vtmSyncedRefs: nextSyncedRefs,
           };
 
@@ -1737,35 +1820,45 @@ function payheroStkPlugin() {
         });
 
         const data = await response.json();
+        const payheroRef = String(data.reference || data.transaction_reference || '').trim();
+        const checkoutRequestId = String(data.CheckoutRequestID || data.checkout_request_id || data.checkout_id || '').trim();
+        const primaryReference = payheroRef || refVal;
+        const nowTs = Date.now();
+
         console.log(`[PayHero Diagnostic] PayHero API response status: ${response.status}`, {
           ok: response.ok,
           success: data.success,
           status: data.status,
-          checkout_id: data.checkout_id || data.CheckoutRequestID || data.id,
+          payhero_reference: primaryReference,
+          checkout_request_id: checkoutRequestId,
+          external_reference: refVal,
           message: data.message || data.response_description,
         });
 
-        const checkoutId = data.CheckoutRequestID || data.checkout_id || data.reference || data.id || refVal;
-        const payheroRef = data.reference || data.id || checkoutId;
-        const nowTs = Date.now();
-
-        // Register initial pending state waiting for callback
+        // Register initial pending state waiting for callback under all reference keys
         const pendingRecord = {
           status: 'pending',
-          reference: refVal,
-          payhero_reference: payheroRef,
-          checkout_id: checkoutId,
+          reference: primaryReference,
+          payhero_reference: primaryReference,
+          CheckoutRequestID: checkoutRequestId || undefined,
+          checkout_request_id: checkoutRequestId || undefined,
+          checkout_id: checkoutRequestId || primaryReference,
+          external_reference: refVal,
           startedAt: nowTs,
         };
-        webhookStore.set(checkoutId, pendingRecord);
-        if (refVal) webhookStore.set(refVal, pendingRecord);
-        if (payheroRef) webhookStore.set(payheroRef, pendingRecord);
+        const initKeys = Array.from(new Set([primaryReference, payheroRef, checkoutRequestId, refVal].filter(Boolean)));
+        for (const k of initKeys) {
+          webhookStore.set(k, pendingRecord);
+        }
 
-        // Record in PayHero transaction audit log ledger
+        // Record in PayHero transaction audit log ledger with primary PayHero reference and separate CheckoutRequestID
         const pendingAuditLog = {
           id: `ph-tx-${nowTs}-${Math.random().toString(36).slice(2, 6)}`,
-          reference: refVal,
-          checkoutId,
+          reference: primaryReference,
+          payheroReference: primaryReference,
+          checkoutId: checkoutRequestId,
+          checkoutRequestId,
+          externalReference: refVal,
           amountKes: amountVal,
           amountUsd: Number((amountVal / cfg.usdKesRate).toFixed(2)),
           phone: phoneVal,
@@ -1783,7 +1876,10 @@ function payheroStkPlugin() {
           channelId: cfg.channelId,
         };
         const existingIdx = payheroAuditLogs.findIndex(
-          (l) => (l.reference && l.reference === refVal) || (l.checkoutId && l.checkoutId === checkoutId)
+          (l) =>
+            (l.reference && initKeys.includes(l.reference)) ||
+            (l.checkoutId && initKeys.includes(l.checkoutId)) ||
+            (l.externalReference && initKeys.includes(l.externalReference))
         );
         if (existingIdx >= 0) {
           payheroAuditLogs[existingIdx] = { ...payheroAuditLogs[existingIdx], ...pendingAuditLog };
@@ -1792,12 +1888,18 @@ function payheroStkPlugin() {
         }
 
         const normalized = {
-          success: Boolean(response.ok || data.success || data.status === 'success' || data.status === 'pending'),
+          success: Boolean(response.ok || data.success || data.status === 'success' || data.status === 'pending' || data.status === 'QUEUED'),
           message: data.message || data.response_description || 'STK Push sent to your Safaricom phone. Please enter your M-Pesa PIN.',
-          checkout_id: checkoutId,
-          checkoutId,
-          reference: refVal,
-          payhero_reference: payheroRef,
+          reference: primaryReference,
+          payhero_reference: primaryReference,
+          payheroReference: primaryReference,
+          CheckoutRequestID: checkoutRequestId || undefined,
+          checkout_request_id: checkoutRequestId || undefined,
+          checkoutRequestId: checkoutRequestId || undefined,
+          checkout_id: checkoutRequestId || primaryReference,
+          checkoutId: checkoutRequestId || primaryReference,
+          external_reference: refVal,
+          externalReference: refVal,
           startedAt: nowTs,
           raw: data,
         };
@@ -1833,16 +1935,16 @@ function payheroStkPlugin() {
 
     if (isFailed) {
       if (codeStr === '1' || /insufficient|funds|balance/i.test(cleaned)) {
-        return 'Insufficient funds to complete transaction';
+        return 'Insufficient funds';
+      }
+      if (/no\s*response|cannot\s*be\s*reached|unreachable|did\s*not\s*respond/i.test(cleaned)) {
+        return 'No response from user';
+      }
+      if (codeStr === '1037' || /timeout|timed?\s*out|expired/i.test(cleaned)) {
+        return 'Timed out';
       }
       if (codeStr === '1032' || /cancel/i.test(cleaned)) {
-        if (/user\s*cancel/i.test(cleaned)) return 'User cancelled';
-        if (/cancelled\s*by\s*user/i.test(cleaned)) return 'Request cancelled by user';
-        if (/^cancelled$/i.test(cleaned)) return 'Cancelled';
-        return cleaned || 'User cancelled';
-      }
-      if (codeStr === '1037' || /timeout|timed?\s*out|expired|no\s*response/i.test(cleaned)) {
-        return cleaned || 'Cancelled';
+        return 'Cancelled';
       }
       if (cleaned && !/awaiting|waiting|pending|queued/i.test(cleaned)) {
         return cleaned;
@@ -1899,6 +2001,14 @@ function payheroStkPlugin() {
       ''
     ).trim();
 
+    const isQueuedOrPending =
+      rawStatus === 'queued' ||
+      rawStatus === 'pending' ||
+      rawStatus === 'processing' ||
+      rawStatus === 'initiated' ||
+      rawStatus === 'waiting' ||
+      rawStatus === 'ongoing';
+
     const isFailed =
       rawStatus === 'failed' ||
       rawStatus === 'cancelled' ||
@@ -1915,6 +2025,7 @@ function payheroStkPlugin() {
 
     const isSuccess =
       !isFailed &&
+      !isQueuedOrPending &&
       (rawStatus === 'success' ||
         rawStatus === 'completed' ||
         rawStatus === 'paid' ||
@@ -1924,57 +2035,73 @@ function payheroStkPlugin() {
 
     const isPending = !isSuccess && !isFailed;
 
-    const checkoutId =
+    const payheroReference = String(
+      p.payhero_reference ||
+      p.payheroReference ||
+      p.reference ||
+      resp.reference ||
+      p.transaction_reference ||
+      resp.transaction_reference ||
+      ''
+    ).trim();
+
+    const checkoutRequestId = String(
       resp.CheckoutRequestID ||
       resp.checkout_request_id ||
       p.CheckoutRequestID ||
+      p.checkout_request_id ||
+      p.checkoutRequestId ||
       p.checkout_id ||
       p.checkoutid ||
-      resp.MerchantRequestID ||
-      p.reference ||
-      resp.ExternalReference ||
-      p.external_reference ||
-      p.id ||
-      '';
+      ''
+    ).trim();
 
-    const externalReference =
+    const externalReference = String(
       resp.ExternalReference ||
       resp.external_reference ||
       p.external_reference ||
       p.ExternalReference ||
+      p.externalReference ||
       p.account_reference ||
-      '';
+      ''
+    ).trim();
 
-    const payheroReference =
-      p.reference ||
-      resp.reference ||
-      p.transaction_reference ||
-      p.third_party_reference ||
-      '';
-
-    const receiptNumber =
+    const receiptNumber = String(
       resp.MpesaReceiptNumber ||
       resp.mpesa_receipt_number ||
       p.MpesaReceiptNumber ||
+      p.mpesa_receipt_number ||
+      p.mpesaReceiptNumber ||
       p.mpesa_receipt ||
       p.provider_reference ||
+      resp.provider_reference ||
       p.payment_reference ||
       p.receipt ||
-      (isSuccess && p.third_party_reference ? p.third_party_reference : '') ||
-      '';
+      ''
+    ).trim();
 
     const resultDesc = sanitizePayHeroMessage(rawDesc, resultCode, isSuccess, isFailed);
+
+    const inferredFailCode =
+      /insufficient|funds|balance/i.test(rawDesc)
+        ? '1'
+        : /timeout|timed?\s*out|expired|no\s*response|cannot\s*be\s*reached/i.test(rawDesc)
+        ? '1037'
+        : /cancel/i.test(rawDesc) || rawStatus.includes('cancel')
+        ? '1032'
+        : 'FAILED';
 
     return {
       isSuccess,
       isFailed,
       isPending,
       rawStatus,
-      resultCode: resultCode || (isSuccess ? '0' : isFailed ? '1032' : ''),
+      resultCode: resultCode || (isSuccess ? '0' : isFailed ? inferredFailCode : ''),
       resultDesc,
-      checkoutId,
-      externalReference,
       payheroReference,
+      checkoutRequestId,
+      checkoutId: checkoutRequestId,
+      externalReference,
       receiptNumber,
     };
   };
@@ -2004,16 +2131,26 @@ function payheroStkPlugin() {
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(bodyStr || '{}');
-        const checkoutId = parsed.checkout_id || parsed.checkoutid || parsed.CheckoutRequestID || parsed.reference;
-        const extRef = parsed.reference || parsed.external_reference || checkoutId;
-        const phRef = parsed.payhero_reference || parsed.payheroReference || '';
+        const phRef = String(parsed.payhero_reference || parsed.payheroReference || parsed.reference || '').trim();
+        const checkoutReqId = String(
+          parsed.checkout_request_id ||
+          parsed.CheckoutRequestID ||
+          parsed.checkoutRequestId ||
+          parsed.checkout_id ||
+          parsed.checkoutid ||
+          ''
+        ).trim();
+        const extRef = String(parsed.external_reference || parsed.externalReference || '').trim();
+        const primaryLookup = phRef || checkoutReqId || extRef;
 
-        if (!checkoutId) {
+        if (!primaryLookup) {
           res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: 'checkout_id is required' }));
+          res.end(JSON.stringify({ success: false, error: 'reference or checkout_id is required' }));
           return;
         }
+
+        const searchKeys = Array.from(new Set([phRef, checkoutReqId, extRef].filter(Boolean)));
 
         // 1. Direct explicit user cancellation from UI or phone prompt
         const isCancelAction = parsed.action === 'cancel' || parsed.cancelled === true || parsed.userCancelled === true;
@@ -2024,17 +2161,19 @@ function payheroStkPlugin() {
             result: 'cancelled',
             failed: true,
             confirmed: false,
+            reference: phRef || extRef || checkoutReqId,
+            payhero_reference: phRef || undefined,
+            checkout_request_id: checkoutReqId || undefined,
+            external_reference: extRef || undefined,
             resultCode: '1032',
             resultDesc: 'User cancelled',
             cancelledAt: cancelTime,
             cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           };
-          webhookStore.set(checkoutId, cancelObj);
-          if (extRef) webhookStore.set(extRef, cancelObj);
-          if (phRef) webhookStore.set(phRef, cancelObj);
+          for (const k of searchKeys) webhookStore.set(k, cancelObj);
 
-          const logIdx = payheroAuditLogs.findIndex(
-            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
+          const logIdx = payheroAuditLogs.findIndex((l) =>
+            searchKeys.some((k) => l.reference === k || l.payheroReference === k || l.checkoutId === k || l.externalReference === k)
           );
           if (logIdx >= 0) {
             payheroAuditLogs[logIdx] = {
@@ -2056,6 +2195,10 @@ function payheroStkPlugin() {
               confirmed: false,
               pending: false,
               failed: true,
+              reference: cancelObj.reference,
+              payheroReference: cancelObj.payhero_reference,
+              checkoutRequestId: cancelObj.checkout_request_id,
+              externalReference: cancelObj.external_reference,
               resultCode: '1032',
               resultDesc: 'User cancelled',
               cancelledAt: cancelTime,
@@ -2066,7 +2209,6 @@ function payheroStkPlugin() {
           return;
         }
 
-        const searchKeys = Array.from(new Set([checkoutId, extRef, phRef].filter(Boolean).map((k) => String(k).trim())));
         let cached: any = null;
         for (const k of searchKeys) {
           const hit = webhookStore.get(k);
@@ -2081,7 +2223,20 @@ function payheroStkPlugin() {
         if (!cached || cached.status === 'pending') {
           try {
             const cfg = getPayheroConfig();
-            const statusQueryCandidates = Array.from(new Set([phRef, checkoutId, extRef].filter(Boolean)));
+            const statusQueryCandidates = Array.from(
+              new Set(
+                [
+                  phRef,
+                  cached?.payhero_reference,
+                  cached?.reference,
+                  checkoutReqId,
+                  cached?.checkout_request_id,
+                  cached?.CheckoutRequestID,
+                  extRef,
+                  cached?.external_reference,
+                ].filter(Boolean)
+              )
+            );
             for (const refCandidate of statusQueryCandidates) {
               try {
                 const statusRes = await fetch(
@@ -2099,17 +2254,37 @@ function payheroStkPlugin() {
                   const statusData = await statusRes.json();
                   const evalStatus = evaluatePayHeroPayload(statusData);
                   if (evalStatus.isSuccess || evalStatus.isFailed) {
+                    const resolvedPhRef =
+                      evalStatus.payheroReference ||
+                      phRef ||
+                      cached?.payhero_reference ||
+                      cached?.reference ||
+                      refCandidate;
+                    const resolvedCkId =
+                      evalStatus.checkoutRequestId ||
+                      checkoutReqId ||
+                      cached?.checkout_request_id ||
+                      cached?.CheckoutRequestID ||
+                      '';
+                    const resolvedExtRef =
+                      evalStatus.externalReference ||
+                      extRef ||
+                      cached?.external_reference ||
+                      '';
                     cached = {
                       status: evalStatus.isSuccess ? 'COMPLETED' : 'FAILED',
                       success: evalStatus.isSuccess,
                       failed: evalStatus.isFailed,
                       confirmed: evalStatus.isSuccess,
+                      reference: resolvedPhRef,
+                      payhero_reference: resolvedPhRef,
+                      CheckoutRequestID: resolvedCkId || undefined,
+                      checkout_request_id: resolvedCkId || undefined,
+                      external_reference: resolvedExtRef || undefined,
                       resultCode: evalStatus.resultCode,
                       resultDesc: evalStatus.resultDesc,
                       ResultDesc: evalStatus.resultDesc,
-                      MpesaReceiptNumber: evalStatus.isSuccess
-                        ? evalStatus.receiptNumber || `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`
-                        : null,
+                      MpesaReceiptNumber: evalStatus.isSuccess ? (evalStatus.receiptNumber || null) : null,
                       cancelledAt: evalStatus.isFailed ? Date.now() : undefined,
                       data: statusData,
                     };
@@ -2139,9 +2314,9 @@ function payheroStkPlugin() {
                 const matched = txList.find((t: any) =>
                   searchKeys.some(
                     (k) =>
-                      t.external_reference === k ||
-                      t.transaction_reference === k ||
                       t.reference === k ||
+                      t.transaction_reference === k ||
+                      t.external_reference === k ||
                       t.checkout_request_id === k ||
                       t.CheckoutRequestID === k ||
                       t.provider_reference === k
@@ -2150,17 +2325,39 @@ function payheroStkPlugin() {
                 if (matched) {
                   const evalMatched = evaluatePayHeroPayload(matched);
                   if (evalMatched.isSuccess || evalMatched.isFailed) {
+                    const resolvedPhRef =
+                      evalMatched.payheroReference ||
+                      matched.reference ||
+                      phRef ||
+                      cached?.payhero_reference ||
+                      '';
+                    const resolvedCkId =
+                      evalMatched.checkoutRequestId ||
+                      matched.CheckoutRequestID ||
+                      matched.checkout_request_id ||
+                      checkoutReqId ||
+                      cached?.checkout_request_id ||
+                      '';
+                    const resolvedExtRef =
+                      evalMatched.externalReference ||
+                      matched.external_reference ||
+                      extRef ||
+                      cached?.external_reference ||
+                      '';
                     cached = {
                       status: evalMatched.isSuccess ? 'COMPLETED' : 'FAILED',
                       success: evalMatched.isSuccess,
                       failed: evalMatched.isFailed,
                       confirmed: evalMatched.isSuccess,
+                      reference: resolvedPhRef,
+                      payhero_reference: resolvedPhRef,
+                      CheckoutRequestID: resolvedCkId || undefined,
+                      checkout_request_id: resolvedCkId || undefined,
+                      external_reference: resolvedExtRef || undefined,
                       resultCode: evalMatched.resultCode,
                       resultDesc: evalMatched.resultDesc,
                       ResultDesc: evalMatched.resultDesc,
-                      MpesaReceiptNumber: evalMatched.isSuccess
-                        ? evalMatched.receiptNumber || `UGT${Math.floor(100000 + Math.random() * 900000)}`
-                        : null,
+                      MpesaReceiptNumber: evalMatched.isSuccess ? (evalMatched.receiptNumber || null) : null,
                       amount: matched.amount,
                       cancelledAt: evalMatched.isFailed ? Date.now() : undefined,
                       data: matched,
@@ -2178,10 +2375,28 @@ function payheroStkPlugin() {
           const evalCached = evaluatePayHeroPayload(cached);
           if (evalCached.isSuccess || evalCached.isFailed) {
             const normalizedStatus: 'COMPLETED' | 'FAILED' = evalCached.isSuccess ? 'COMPLETED' : 'FAILED';
+            const resolvedPayheroRef =
+              cached.payhero_reference ||
+              evalCached.payheroReference ||
+              cached.reference ||
+              phRef ||
+              extRef;
+            const resolvedCheckoutRequestId =
+              cached.checkout_request_id ||
+              cached.CheckoutRequestID ||
+              evalCached.checkoutRequestId ||
+              checkoutReqId ||
+              '';
+            const resolvedExternalRef =
+              cached.external_reference ||
+              evalCached.externalReference ||
+              extRef ||
+              '';
             const receiptNumber =
               evalCached.receiptNumber ||
               cached.MpesaReceiptNumber ||
-              `PHP${Math.floor(100000 + Math.random() * 900000)}TGY`;
+              cached.mpesa_receipt_number ||
+              null;
             const resultDesc = sanitizePayHeroMessage(
               cached.resultDesc || cached.ResultDesc || evalCached.resultDesc,
               evalCached.resultCode,
@@ -2190,12 +2405,16 @@ function payheroStkPlugin() {
             );
             const cancelTime = cached.cancelledAt ? Number(cached.cancelledAt) : Date.now();
 
-            const logIdx = payheroAuditLogs.findIndex(
-              (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
+            const logIdx = payheroAuditLogs.findIndex((l) =>
+              searchKeys.some((k) => l.reference === k || l.payheroReference === k || l.checkoutId === k || l.externalReference === k)
             );
             if (logIdx >= 0) {
               payheroAuditLogs[logIdx] = {
                 ...payheroAuditLogs[logIdx],
+                reference: resolvedPayheroRef || payheroAuditLogs[logIdx].reference,
+                payheroReference: resolvedPayheroRef || payheroAuditLogs[logIdx].payheroReference,
+                checkoutId: resolvedCheckoutRequestId || payheroAuditLogs[logIdx].checkoutId,
+                checkoutRequestId: resolvedCheckoutRequestId || payheroAuditLogs[logIdx].checkoutRequestId,
                 status: normalizedStatus,
                 mpesaReceiptNumber: evalCached.isSuccess ? receiptNumber : null,
                 resultCode: evalCached.resultCode,
@@ -2215,6 +2434,14 @@ function payheroStkPlugin() {
                 pending: false,
                 failed: evalCached.isFailed,
                 source: 'payhero_api_or_webhook',
+                reference: resolvedPayheroRef,
+                payheroReference: resolvedPayheroRef,
+                payhero_reference: resolvedPayheroRef,
+                checkoutRequestId: resolvedCheckoutRequestId || undefined,
+                checkout_request_id: resolvedCheckoutRequestId || undefined,
+                CheckoutRequestID: resolvedCheckoutRequestId || undefined,
+                externalReference: resolvedExternalRef || undefined,
+                external_reference: resolvedExternalRef || undefined,
                 resultCode: evalCached.resultCode,
                 mpesaReceiptNumber: evalCached.isSuccess ? receiptNumber : null,
                 resultDesc,
@@ -2236,25 +2463,29 @@ function payheroStkPlugin() {
           const cancelTime = Date.now();
           const cancelObj = {
             status: 'FAILED',
-            result: 'cancelled',
+            result: 'timeout',
             failed: true,
             confirmed: false,
-            resultCode: '1032',
-            resultDesc: 'Cancelled',
+            reference: phRef || cached?.payhero_reference || extRef || checkoutReqId,
+            payhero_reference: phRef || cached?.payhero_reference || undefined,
+            checkout_request_id: checkoutReqId || cached?.checkout_request_id || undefined,
+            external_reference: extRef || cached?.external_reference || undefined,
+            resultCode: '1037',
+            resultDesc: 'No response from user',
             cancelledAt: cancelTime,
             cancelledAtFormatted: new Date(cancelTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           };
           for (const k of searchKeys) webhookStore.set(k, cancelObj);
 
-          const logIdx = payheroAuditLogs.findIndex(
-            (l) => (checkoutId && (l.checkoutId === checkoutId || l.reference === checkoutId)) || (extRef && l.reference === extRef)
+          const logIdx = payheroAuditLogs.findIndex((l) =>
+            searchKeys.some((k) => l.reference === k || l.payheroReference === k || l.checkoutId === k || l.externalReference === k)
           );
           if (logIdx >= 0) {
             payheroAuditLogs[logIdx] = {
               ...payheroAuditLogs[logIdx],
               status: 'FAILED',
-              resultCode: '1032',
-              resultDesc: 'Cancelled',
+              resultCode: '1037',
+              resultDesc: 'No response from user',
               callbackReceivedAt: cancelTime,
               rawCallbackResponse: cancelObj,
             };
@@ -2269,8 +2500,12 @@ function payheroStkPlugin() {
               confirmed: false,
               pending: false,
               failed: true,
-              resultCode: '1032',
-              resultDesc: 'Cancelled',
+              reference: cancelObj.reference,
+              payheroReference: cancelObj.payhero_reference,
+              checkoutRequestId: cancelObj.checkout_request_id,
+              externalReference: cancelObj.external_reference,
+              resultCode: '1037',
+              resultDesc: 'No response from user',
               cancelledAt: cancelTime,
               cancelledAtFormatted: cancelObj.cancelledAtFormatted,
               data: cancelObj,
@@ -2289,6 +2524,10 @@ function payheroStkPlugin() {
             confirmed: false,
             pending: true,
             failed: false,
+            reference: phRef || cached?.payhero_reference || extRef,
+            payheroReference: phRef || cached?.payhero_reference || undefined,
+            checkoutRequestId: checkoutReqId || cached?.checkout_request_id || undefined,
+            externalReference: extRef || cached?.external_reference || undefined,
             elapsed,
             resultDesc: 'Waiting for confirmation from your phone...',
           })
@@ -2314,13 +2553,73 @@ function payheroStkPlugin() {
         const resp = body.response || {};
         const evalResult = evaluatePayHeroPayload(body);
 
-        // Log incoming request headers, full raw body, and specific result code as requested
-        console.log('[PayHero Callback Diagnostic] Incoming request headers:', req.headers);
-        console.log('[PayHero Callback Diagnostic] Full raw body:', bodyStr);
+        const candidateKeys = Array.from(
+          new Set(
+            [
+              evalResult.payheroReference,
+              evalResult.checkoutRequestId,
+              evalResult.externalReference,
+              body.reference,
+              body.external_reference,
+              body.CheckoutRequestID,
+              resp.CheckoutRequestID,
+              resp.ExternalReference,
+              resp.reference,
+            ]
+              .filter(Boolean)
+              .map((k) => String(k).trim())
+          )
+        );
+
+        let existingRecord: any = null;
+        for (const k of candidateKeys) {
+          const hit = webhookStore.get(k);
+          if (hit) {
+            existingRecord = hit;
+            break;
+          }
+        }
+
+        if (existingRecord && existingRecord.confirmed === true && evalResult.isSuccess) {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(
+            JSON.stringify({
+              success: true,
+              received: true,
+              duplicate: true,
+              reference: existingRecord.payhero_reference || existingRecord.reference,
+            })
+          );
+          return;
+        }
+
+        const resolvedPayheroRef =
+          evalResult.payheroReference ||
+          existingRecord?.payhero_reference ||
+          existingRecord?.reference ||
+          evalResult.externalReference ||
+          '';
+        const resolvedCheckoutRequestId =
+          evalResult.checkoutRequestId ||
+          existingRecord?.checkout_request_id ||
+          existingRecord?.CheckoutRequestID ||
+          '';
+        const resolvedExternalRef =
+          evalResult.externalReference ||
+          existingRecord?.external_reference ||
+          '';
+        const receiptNumber = evalResult.isSuccess
+          ? evalResult.receiptNumber || existingRecord?.MpesaReceiptNumber || null
+          : null;
+
         console.log('[PayHero Callback Diagnostic] Specific result code:', evalResult.resultCode, {
           rawStatus: evalResult.rawStatus,
-          checkoutId: evalResult.checkoutId,
-          externalReference: evalResult.externalReference,
+          payheroReference: resolvedPayheroRef,
+          checkoutRequestId: resolvedCheckoutRequestId,
+          externalReference: resolvedExternalRef,
+          mpesaReceiptNumber: receiptNumber,
           isSuccess: evalResult.isSuccess,
           isFailed: evalResult.isFailed,
           resultDesc: evalResult.resultDesc,
@@ -2331,47 +2630,59 @@ function payheroStkPlugin() {
           : evalResult.isFailed
           ? 'FAILED'
           : 'PENDING';
-        const receiptNumber =
-          evalResult.receiptNumber ||
-          (evalResult.isSuccess ? `PHP${Math.floor(100000 + Math.random() * 900000)}TGY` : null);
 
         const enrichedRecord = {
+          ...(existingRecord || {}),
           ...body,
           status: normalizedStatus.toLowerCase(),
           success: evalResult.isSuccess,
           failed: evalResult.isFailed,
           confirmed: evalResult.isSuccess,
           pending: evalResult.isPending,
+          reference: resolvedPayheroRef,
+          payhero_reference: resolvedPayheroRef,
+          CheckoutRequestID: resolvedCheckoutRequestId || undefined,
+          checkout_request_id: resolvedCheckoutRequestId || undefined,
+          checkout_id: resolvedCheckoutRequestId || resolvedPayheroRef,
+          external_reference: resolvedExternalRef || undefined,
           resultCode: evalResult.resultCode,
           resultDesc: evalResult.resultDesc,
           ResultDesc: evalResult.resultDesc,
-          MpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
+          MpesaReceiptNumber: receiptNumber,
+          mpesa_receipt_number: receiptNumber,
           cancelledAt: evalResult.isFailed ? Date.now() : undefined,
+          firstConfirmedAt: evalResult.isSuccess ? (existingRecord?.firstConfirmedAt || Date.now()) : undefined,
           timestamp: Date.now(),
         };
 
-        const keysToStore = [
-          evalResult.checkoutId,
-          evalResult.externalReference,
-          evalResult.payheroReference,
-          body.reference,
-          body.external_reference,
-          body.CheckoutRequestID,
-          resp.CheckoutRequestID,
-          resp.ExternalReference,
-          resp.MerchantRequestID,
-        ].filter(Boolean);
+        const keysToStore = Array.from(
+          new Set(
+            [
+              ...candidateKeys,
+              resolvedPayheroRef,
+              resolvedCheckoutRequestId,
+              resolvedExternalRef,
+            ]
+              .filter(Boolean)
+              .map((k) => String(k).trim())
+          )
+        );
 
         for (const k of keysToStore) {
-          webhookStore.set(String(k).trim(), enrichedRecord);
+          webhookStore.set(k, enrichedRecord);
         }
 
         // Update or insert into payheroAuditLogs for Admin auditing
         const cfg = getPayheroConfig();
-        const targetRef = evalResult.externalReference || evalResult.checkoutId || body.reference;
-        const logIdx = payheroAuditLogs.findIndex(
-          (l) =>
-            keysToStore.some((k) => l.checkoutId === k || l.reference === k)
+        const logIdx = payheroAuditLogs.findIndex((l) =>
+          keysToStore.some(
+            (k) =>
+              l.reference === k ||
+              l.payheroReference === k ||
+              l.checkoutId === k ||
+              l.checkoutRequestId === k ||
+              l.externalReference === k
+          )
         );
 
         const amountKes = Number(body.amount || resp.Amount || 0);
@@ -2381,8 +2692,13 @@ function payheroStkPlugin() {
         if (logIdx >= 0) {
           payheroAuditLogs[logIdx] = {
             ...payheroAuditLogs[logIdx],
+            reference: resolvedPayheroRef || payheroAuditLogs[logIdx].reference,
+            payheroReference: resolvedPayheroRef || payheroAuditLogs[logIdx].payheroReference,
+            checkoutId: resolvedCheckoutRequestId || payheroAuditLogs[logIdx].checkoutId,
+            checkoutRequestId: resolvedCheckoutRequestId || payheroAuditLogs[logIdx].checkoutRequestId,
+            externalReference: resolvedExternalRef || payheroAuditLogs[logIdx].externalReference,
             status: normalizedStatus,
-            mpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
+            mpesaReceiptNumber: receiptNumber,
             resultCode: evalResult.resultCode,
             resultDesc: evalResult.resultDesc,
             callbackReceivedAt: Date.now(),
@@ -2391,8 +2707,11 @@ function payheroStkPlugin() {
         } else {
           payheroAuditLogs.unshift({
             id: `ph-cb-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            reference: targetRef,
-            checkoutId: evalResult.checkoutId || targetRef,
+            reference: resolvedPayheroRef || resolvedExternalRef || resolvedCheckoutRequestId,
+            payheroReference: resolvedPayheroRef || undefined,
+            checkoutId: resolvedCheckoutRequestId,
+            checkoutRequestId: resolvedCheckoutRequestId || undefined,
+            externalReference: resolvedExternalRef || undefined,
             amountKes,
             amountUsd,
             phone,
@@ -2402,7 +2721,7 @@ function payheroStkPlugin() {
             status: normalizedStatus,
             resultCode: evalResult.resultCode,
             resultDesc: evalResult.resultDesc,
-            mpesaReceiptNumber: evalResult.isSuccess ? receiptNumber : null,
+            mpesaReceiptNumber: receiptNumber,
             timestamp: Date.now(),
             callbackReceivedAt: Date.now(),
             rawInitiationResponse: null,
@@ -2469,7 +2788,9 @@ function payheroStkPlugin() {
               (l) =>
                 (incoming.id && l.id === incoming.id) ||
                 (incoming.reference && l.reference === incoming.reference) ||
-                (incoming.checkoutId && l.checkoutId === incoming.checkoutId)
+                (incoming.payheroReference && (l.payheroReference === incoming.payheroReference || l.reference === incoming.payheroReference)) ||
+                (incoming.checkoutId && l.checkoutId === incoming.checkoutId) ||
+                (incoming.externalReference && (l.externalReference === incoming.externalReference || l.reference === incoming.externalReference))
             );
             if (idx >= 0) {
               payheroAuditLogs[idx] = { ...payheroAuditLogs[idx], ...incoming };
@@ -2497,6 +2818,9 @@ function payheroStkPlugin() {
       server.middlewares.use('/api/payhero-config', handleConfigRequest);
       server.middlewares.use('/api/payhero-stk', handleStkRequest);
       server.middlewares.use('/api/payhero-status', handleStatusRequest);
+      server.middlewares.use('/api/hashback-config', handleConfigRequest);
+      server.middlewares.use('/api/hashback-stk', handleStkRequest);
+      server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/payhero-callback', handleWebhookCallback);
       server.middlewares.use('/api/payhero-webhook', handleWebhookCallback);
       server.middlewares.use('/api/payhero-callback-logs', handleLogsRequest);
@@ -2509,6 +2833,9 @@ function payheroStkPlugin() {
       server.middlewares.use('/api/payhero-config', handleConfigRequest);
       server.middlewares.use('/api/payhero-stk', handleStkRequest);
       server.middlewares.use('/api/payhero-status', handleStatusRequest);
+      server.middlewares.use('/api/hashback-config', handleConfigRequest);
+      server.middlewares.use('/api/hashback-stk', handleStkRequest);
+      server.middlewares.use('/api/hashback-status', handleStatusRequest);
       server.middlewares.use('/api/payhero-callback', handleWebhookCallback);
       server.middlewares.use('/api/payhero-webhook', handleWebhookCallback);
       server.middlewares.use('/api/payhero-callback-logs', handleLogsRequest);
@@ -3670,6 +3997,8 @@ export default defineConfig(() => {
     };
   };
 
+  const currentBuildId = `vtm-release-${Date.now()}`;
+
   const seoSitelinkPagesPlugin = () => {
     const sitelinkRoutes = [
       {
@@ -3709,11 +4038,42 @@ export default defineConfig(() => {
       },
     ];
 
+    const buildVersionId = currentBuildId;
+
     return {
       name: 'vtm-seo-sitelink-pages',
+      configureServer(server: any) {
+        server.middlewares.use('/version.json', (_req: any, res: any) => {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Pragma', 'no-cache');
+          res.setHeader('Expires', '0');
+          res.end(JSON.stringify({ version: buildVersionId, timestamp: Date.now() }));
+        });
+      },
+      transformIndexHtml(html: string) {
+        return html.replace(/__VTM_DYNAMIC_BUILD_VER__/g, buildVersionId);
+      },
       closeBundle() {
         try {
           const distDir = path.resolve(__dirname, 'dist');
+          fs.mkdirSync(distDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(distDir, 'version.json'),
+            JSON.stringify({ version: buildVersionId, timestamp: Date.now() }),
+            'utf-8'
+          );
+
+          const swForcePath = path.join(distDir, 'sw-force-update.js');
+          if (fs.existsSync(swForcePath)) {
+            const rawSwForce = fs.readFileSync(swForcePath, 'utf-8');
+            fs.writeFileSync(
+              swForcePath,
+              rawSwForce.replace(/__VTM_DYNAMIC_BUILD_VER__/g, buildVersionId),
+              'utf-8'
+            );
+          }
+
           const indexHtmlPath = path.join(distDir, 'index.html');
           if (!fs.existsSync(indexHtmlPath)) return;
           const baseHtml = fs.readFileSync(indexHtmlPath, 'utf-8');
@@ -3817,11 +4177,29 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
+          importScripts: ['/sw-force-update.js'],
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          globPatterns: ['**/*.{js,css,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/version.json', '**/index.html', '**/sw-force-update.js'],
+          navigateFallback: null,
+          navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//, /^\/version\.json$/],
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
+          runtimeCaching: [
+            {
+              urlPattern: ({ request }) => request.mode === 'navigate',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'vtm-html-navigation-cache',
+                networkTimeoutSeconds: 3,
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 60 * 60 * 24,
+                },
+              },
+            },
+          ],
         },
         devOptions: {
           enabled: false,
@@ -3834,6 +4212,7 @@ export default defineConfig(() => {
       },
     },
     define: {
+      '__VTM_BUILD_ID__': JSON.stringify(currentBuildId),
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(bakedSupabaseUrl),
       'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(bakedSupabaseAnonKey),
       'import.meta.env.VITE_USD_KES_RATE': JSON.stringify(

@@ -154,6 +154,10 @@ export interface Transaction {
   status: 'COMPLETED' | 'PENDING' | 'CANCELLED' | 'FAILED' | 'REJECTED';
   timestamp: number;
   reference: string;
+  payheroReference?: string;
+  checkoutRequestId?: string;
+  mpesaReceiptNumber?: string;
+  externalReference?: string;
   accountNumber?: string;
   details?: string;
 }

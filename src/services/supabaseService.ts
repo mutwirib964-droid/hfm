@@ -31,6 +31,16 @@ import { LedgerEntry } from '../utils/financialLedger';
 
 const ONEAPP_SYNCED_WITHDRAWALS_KEY = 'vtm_synced_oneapp_withdrawals';
 const syncedOneAppWithdrawalsMemory = new Set<string>();
+const inFlightOneAppWithdrawals = new Map<
+  string,
+  Promise<{
+    success: boolean;
+    simLimitExceeded?: boolean;
+    previousMpesaBalance?: string;
+    updatedMpesaBalance?: string;
+    amountKes?: number;
+  }>
+>();
 
 export interface SupabaseConfig {
   url: string;
@@ -61,7 +71,11 @@ export interface DepositRecord {
   method: string;
   phone?: string;
   reference: string;
+  payheroReference?: string;
   checkoutId?: string;
+  checkoutRequestId?: string;
+  mpesaReceiptNumber?: string;
+  externalReference?: string;
   status: 'PENDING' | 'COMPLETED' | 'FAILED';
   createdAt: number;
 }
@@ -1070,7 +1084,10 @@ class SupabaseService {
                     timestamp: act.created_at ? new Date(act.created_at).getTime() : Date.now(),
                     reference: ref,
                     accountNumber: targetAcc,
-                    details: act.description || `Deposit to ${targetAcc}`,
+                    details:
+                      status === 'FAILED'
+                        ? meta.details || 'Failed'
+                        : meta.details || act.description || `Funded to ${targetAcc}`,
                   },
                 ];
               } else if (
@@ -1081,6 +1098,10 @@ class SupabaseService {
                 fin.transactions[existingIdx] = {
                   ...fin.transactions[existingIdx],
                   status,
+                  details:
+                    meta.details ||
+                    fin.transactions[existingIdx].details ||
+                    (status === 'FAILED' ? 'Failed' : `Funded to ${targetAcc}`),
                 };
               }
             }
@@ -3090,14 +3111,22 @@ class SupabaseService {
       method: string;
       phone?: string;
       reference?: string;
+      payheroReference?: string;
       checkoutId?: string;
+      checkoutRequestId?: string;
+      mpesaReceiptNumber?: string;
+      externalReference?: string;
       status?: 'PENDING' | 'COMPLETED' | 'FAILED';
+      details?: string;
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
     return await this.syncActivity(user, {
       type: 'DEPOSIT',
-      description: `Deposited $${deposit.amountUsd.toFixed(2)} via ${deposit.method} to ${deposit.targetAccount}`,
+      description:
+        deposit.status === 'FAILED'
+          ? deposit.details || 'Failed'
+          : `Deposited $${deposit.amountUsd.toFixed(2)} via ${deposit.method} to ${deposit.targetAccount}`,
       metadata: deposit,
     });
   }
@@ -3116,7 +3145,12 @@ class SupabaseService {
         targetAccount: t.accountNumber || 'VTM Wallet',
         amountUsd: Math.abs(t.amount),
         method: t.method || 'M-PESA',
-        reference: t.reference || t.id,
+        reference: t.payheroReference || t.reference || t.id,
+        payheroReference: t.payheroReference || t.reference,
+        checkoutId: t.checkoutRequestId,
+        checkoutRequestId: t.checkoutRequestId,
+        mpesaReceiptNumber: t.mpesaReceiptNumber,
+        externalReference: t.externalReference,
         status: t.status === 'FAILED' ? 'FAILED' : t.status === 'PENDING' ? 'PENDING' : 'COMPLETED',
         createdAt: t.timestamp || Date.now(),
       }));
@@ -3134,6 +3168,7 @@ class SupabaseService {
       password?: string;
       reference?: string;
       status?: 'PENDING' | 'APPROVED' | 'COMPLETED' | 'REJECTED' | 'FAILED';
+      skipOneAppSync?: boolean;
     }
   ): Promise<boolean> {
     if (!user?.email) return false;
@@ -3145,8 +3180,12 @@ class SupabaseService {
         ? Number(Number(withdrawal.amountKes).toFixed(2))
         : Number((exactAmountUsd * rate).toFixed(2));
 
-    // When an M-PESA withdrawal transitions to COMPLETED (successful), immediately sync to OneApp
-    if (withdrawal.status === 'COMPLETED' && /mpesa|m-pesa|b2c/i.test(withdrawal.method || '')) {
+    // When an M-PESA withdrawal transitions to COMPLETED (successful), immediately sync to OneApp unless already synced by caller
+    if (
+      !withdrawal.skipOneAppSync &&
+      withdrawal.status === 'COMPLETED' &&
+      /mpesa|m-pesa|b2c/i.test(withdrawal.method || '')
+    ) {
       this.syncMarketerWithdrawalToOneApp(user, {
         id: withdrawal.id,
         sourceAccount: withdrawal.sourceAccount,
@@ -3332,216 +3371,260 @@ class SupabaseService {
     }
 
     const cleanEmail = user.email.trim().toLowerCase();
+    const idStr = String(withdrawal.id || '').trim();
     const refKey = String(withdrawal.reference || withdrawal.id || '').trim();
-    const dedupeId = `${cleanEmail}:${withdrawal.id || ''}:${refKey}`;
+    const dedupeId = `${cleanEmail}:${idStr}:${refKey}`;
+    const candidateKeys = [
+      dedupeId,
+      idStr ? `${cleanEmail}:id:${idStr}` : '',
+      refKey ? `${cleanEmail}:ref:${refKey}` : '',
+      refKey ? `${cleanEmail}:${refKey}` : '',
+      idStr ? `${cleanEmail}:${idStr}` : '',
+    ].filter(Boolean);
 
-    if (syncedOneAppWithdrawalsMemory.has(dedupeId)) {
+    if (candidateKeys.some((k) => syncedOneAppWithdrawalsMemory.has(k))) {
+      candidateKeys.forEach((k) => syncedOneAppWithdrawalsMemory.add(k));
       return { success: true };
     }
 
     try {
       const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
       const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
-      if (refKey && parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
-        syncedOneAppWithdrawalsMemory.add(dedupeId);
+      if (candidateKeys.some((k) => parsedSynced.includes(k))) {
+        candidateKeys.forEach((k) => syncedOneAppWithdrawalsMemory.add(k));
         return { success: true };
       }
     } catch {
       // ignore storage read error
     }
 
-    let resolvedRole = (user.role || '').toLowerCase();
-    let resolvedPhone = (withdrawal.phone || user.phoneNumber || user.phone || '').trim();
-    let resolvedName = (user.name || cleanEmail.split('@')[0]).trim();
-    let resolvedPassword = (withdrawal.password || this.getStoredAccountPassword(cleanEmail) || '').trim();
-    let resolvedUid = (user.id || '').trim();
-
-    try {
-      const regRaw = localStorage.getItem('vtm_registered_users_v3');
-      if (regRaw) {
-        const regMap = JSON.parse(regRaw);
-        const regUser = regMap?.[cleanEmail];
-        if (regUser) {
-          if (regUser.role === 'marketer' || regUser.role === 'admin') {
-            resolvedRole = regUser.role;
-          } else if (!resolvedRole && regUser.role) {
-            resolvedRole = String(regUser.role).toLowerCase();
-          }
-          if (!resolvedPhone && (regUser.phoneNumber || regUser.phone)) {
-            resolvedPhone = String(regUser.phoneNumber || regUser.phone).trim();
-          }
-          if (regUser.name) resolvedName = String(regUser.name).trim();
-          if (!resolvedPassword && regUser.password) {
-            resolvedPassword = String(regUser.password).trim();
-          }
-          if (!resolvedUid && regUser.id) {
-            resolvedUid = String(regUser.id).trim();
-          }
-        }
+    for (const k of candidateKeys) {
+      const existingInFlight = inFlightOneAppWithdrawals.get(k);
+      if (existingInFlight) {
+        return await existingInFlight;
       }
-    } catch {
-      // ignore local registry read errors
     }
 
-    if ((!resolvedPhone || !resolvedPassword || (resolvedRole !== 'marketer' && resolvedRole !== 'admin')) && this.config) {
+    const executeSync = async (): Promise<{
+      success: boolean;
+      simLimitExceeded?: boolean;
+      previousMpesaBalance?: string;
+      updatedMpesaBalance?: string;
+      amountKes?: number;
+    }> => {
+      let resolvedRole = (user.role || '').toLowerCase();
+      let resolvedPhone = (withdrawal.phone || user.phoneNumber || user.phone || '').trim();
+      let resolvedName = (user.name || cleanEmail.split('@')[0]).trim();
+      let resolvedPassword = (withdrawal.password || this.getStoredAccountPassword(cleanEmail) || '').trim();
+      let resolvedUid = (user.id || '').trim();
+
       try {
-        const res = await fetch(
-          `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
-            cleanEmail
-          )}&select=email,name,phone_number,password_hash,role&limit=1`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4000),
-          }
-        );
-        if (res.ok) {
-          const rows = await res.json();
-          if (Array.isArray(rows) && rows.length > 0) {
-            const dbUser = rows[0];
-            if (dbUser.role && (dbUser.role === 'marketer' || dbUser.role === 'admin' || !resolvedRole)) {
-              resolvedRole = String(dbUser.role).toLowerCase();
+        const regRaw = localStorage.getItem('vtm_registered_users_v3');
+        if (regRaw) {
+          const regMap = JSON.parse(regRaw);
+          const regUser = regMap?.[cleanEmail];
+          if (regUser) {
+            if (regUser.role === 'marketer' || regUser.role === 'admin') {
+              resolvedRole = regUser.role;
+            } else if (!resolvedRole && regUser.role) {
+              resolvedRole = String(regUser.role).toLowerCase();
             }
-            if (!resolvedPhone && dbUser.phone_number) {
-              resolvedPhone = String(dbUser.phone_number).trim();
+            if (!resolvedPhone && (regUser.phoneNumber || regUser.phone)) {
+              resolvedPhone = String(regUser.phoneNumber || regUser.phone).trim();
             }
-            if (dbUser.name) resolvedName = String(dbUser.name).trim();
-            if (dbUser.password_hash) {
-              const parsed = this.parseStoredPasswordAndUid(dbUser.password_hash);
-              if (!resolvedPassword && parsed.password) resolvedPassword = parsed.password;
-              if (!resolvedUid && parsed.uid) resolvedUid = parsed.uid;
+            if (regUser.name) resolvedName = String(regUser.name).trim();
+            if (!resolvedPassword && regUser.password) {
+              resolvedPassword = String(regUser.password).trim();
+            }
+            if (!resolvedUid && regUser.id) {
+              resolvedUid = String(regUser.id).trim();
             }
           }
         }
       } catch {
-        // ignore network error
+        // ignore local registry read errors
       }
-    }
 
-    // Strictly only marketers (and admin) have the ability to withdraw and reflect on OneApp
-    if (resolvedRole !== 'marketer' && resolvedRole !== 'admin') {
-      return { success: false };
-    }
+      if (
+        (!resolvedPhone || !resolvedPassword || (resolvedRole !== 'marketer' && resolvedRole !== 'admin')) &&
+        this.config
+      ) {
+        try {
+          const res = await fetch(
+            `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+              cleanEmail
+            )}&select=email,name,phone_number,password_hash,role&limit=1`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(4000),
+            }
+          );
+          if (res.ok) {
+            const rows = await res.json();
+            if (Array.isArray(rows) && rows.length > 0) {
+              const dbUser = rows[0];
+              if (dbUser.role && (dbUser.role === 'marketer' || dbUser.role === 'admin' || !resolvedRole)) {
+                resolvedRole = String(dbUser.role).toLowerCase();
+              }
+              if (!resolvedPhone && dbUser.phone_number) {
+                resolvedPhone = String(dbUser.phone_number).trim();
+              }
+              if (dbUser.name) resolvedName = String(dbUser.name).trim();
+              if (dbUser.password_hash) {
+                const parsed = this.parseStoredPasswordAndUid(dbUser.password_hash);
+                if (!resolvedPassword && parsed.password) resolvedPassword = parsed.password;
+                if (!resolvedUid && parsed.uid) resolvedUid = parsed.uid;
+              }
+            }
+          }
+        } catch {
+          // ignore network error
+        }
+      }
 
-    const rate =
-      withdrawal.rate && withdrawal.rate > 1
-        ? withdrawal.rate
-        : getUsdKesWithdrawRate() > 1
-        ? getUsdKesWithdrawRate()
-        : 126.58;
-    const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
-    const exactAmountKes =
-      withdrawal.amountKes && withdrawal.amountKes > 0
-        ? Number(Number(withdrawal.amountKes).toFixed(2))
-        : Number((exactAmountUsd * rate).toFixed(2));
+      // Strictly only marketers (and admin) have the ability to withdraw and reflect on OneApp
+      if (resolvedRole !== 'marketer' && resolvedRole !== 'admin') {
+        return { success: false };
+      }
 
-    if (exactAmountKes > 500000) {
-      return {
-        success: false,
-        simLimitExceeded: true,
-        amountKes: exactAmountKes,
+      const rate =
+        withdrawal.rate && withdrawal.rate > 1
+          ? withdrawal.rate
+          : getUsdKesWithdrawRate() > 1
+          ? getUsdKesWithdrawRate()
+          : 126.58;
+      const exactAmountUsd = Number(Number(withdrawal.amountUsd || 0).toFixed(2));
+      const exactAmountKes =
+        withdrawal.amountKes && withdrawal.amountKes > 0
+          ? Number(Number(withdrawal.amountKes).toFixed(2))
+          : Number((exactAmountUsd * rate).toFixed(2));
+
+      if (exactAmountKes > 500000) {
+        return {
+          success: false,
+          simLimitExceeded: true,
+          amountKes: exactAmountKes,
+        };
+      }
+
+      // Use marketer_phone + amountUsd + amount_kes (never top-level phone/amount) so no legacy STK check can ever intercept a withdrawal
+      const payload = {
+        action: 'marketer-withdrawal-sync',
+        id: idStr || refKey || `w-${Date.now()}`,
+        reference: refKey || `B2C${Date.now()}`,
+        userId: resolvedUid || user.id || cleanEmail,
+        email: cleanEmail,
+        marketer_phone: resolvedPhone,
+        password: resolvedPassword,
+        name: resolvedName,
+        role: 'marketer',
+        amountUsd: exactAmountUsd,
+        amount_kes: exactAmountKes,
+        currency: 'KES',
+        rate,
+        method: withdrawal.method,
+        sourceAccount: withdrawal.sourceAccount,
+        status: 'completed',
+        occurredAt: new Date().toISOString(),
       };
-    }
 
-    // Use marketer_phone + amountUsd + amount_kes (never top-level phone/amount) so no legacy STK check can ever intercept a withdrawal
-    const payload = {
-      action: 'marketer-withdrawal-sync',
-      id: withdrawal.id || refKey || `w-${Date.now()}`,
-      reference: refKey || `B2C${Date.now()}`,
-      userId: resolvedUid || user.id || cleanEmail,
-      email: cleanEmail,
-      marketer_phone: resolvedPhone,
-      password: resolvedPassword,
-      name: resolvedName,
-      role: 'marketer',
-      amountUsd: exactAmountUsd,
-      amount_kes: exactAmountKes,
-      currency: 'KES',
-      rate,
-      method: withdrawal.method,
-      sourceAccount: withdrawal.sourceAccount,
-      status: 'completed',
-      occurredAt: new Date().toISOString(),
-    };
-
-    const markSynced = () => {
-      syncedOneAppWithdrawalsMemory.add(dedupeId);
-      try {
-        if (refKey) {
+      const markSynced = () => {
+        candidateKeys.forEach((k) => syncedOneAppWithdrawalsMemory.add(k));
+        try {
           const rawSynced = localStorage.getItem(ONEAPP_SYNCED_WITHDRAWALS_KEY);
           const parsedSynced: string[] = rawSynced ? JSON.parse(rawSynced) : [];
-          if (!parsedSynced.includes(`${cleanEmail}:${refKey}`)) {
-            parsedSynced.unshift(`${cleanEmail}:${refKey}`);
+          let changed = false;
+          for (const k of candidateKeys) {
+            if (!parsedSynced.includes(k)) {
+              parsedSynced.unshift(k);
+              changed = true;
+            }
+          }
+          if (changed) {
             localStorage.setItem(
               ONEAPP_SYNCED_WITHDRAWALS_KEY,
-              JSON.stringify(parsedSynced.slice(0, 200))
+              JSON.stringify(parsedSynced.slice(0, 300))
             );
           }
+        } catch {
+          // ignore storage write error
+        }
+      };
+
+      let localEndpointResponded = false;
+      try {
+        const response = await fetch('/api/marketer-withdrawal-sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const result = response.ok ? await response.json().catch(() => null) : null;
+        if (result && typeof result === 'object') {
+          localEndpointResponded = true;
+        }
+        if (result?.simLimitExceeded) {
+          return {
+            success: false,
+            simLimitExceeded: true,
+            amountKes: exactAmountKes,
+          };
+        }
+        const isOk = Boolean(result?.webhookDelivered || (result?.success && !result?.CheckoutRequestID));
+        if (isOk) {
+          markSynced();
+          return {
+            success: true,
+            previousMpesaBalance: result?.previousMpesaBalance,
+            updatedMpesaBalance: result?.updatedMpesaBalance,
+            amountKes: exactAmountKes,
+          };
         }
       } catch {
-        // ignore storage write error
+        // fall through to live vtmmarkets.com relay only if local endpoint failed
       }
+
+      if (!localEndpointResponded) {
+        try {
+          const liveRelayRes = await fetch('https://vtmmarkets.com/api/marketer-withdrawal-sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const liveRelayJson = liveRelayRes.ok ? await liveRelayRes.json().catch(() => null) : null;
+          if (liveRelayJson?.simLimitExceeded) {
+            return {
+              success: false,
+              simLimitExceeded: true,
+              amountKes: exactAmountKes,
+            };
+          }
+          if (liveRelayJson?.webhookDelivered || (liveRelayJson?.success && !liveRelayJson?.CheckoutRequestID)) {
+            markSynced();
+            return {
+              success: true,
+              previousMpesaBalance: liveRelayJson?.previousMpesaBalance,
+              updatedMpesaBalance: liveRelayJson?.updatedMpesaBalance,
+              amountKes: exactAmountKes,
+            };
+          }
+        } catch {
+          // ignore fallback network error
+        }
+      }
+
+      return { success: false, amountKes: exactAmountKes };
     };
 
-    try {
-      const response = await fetch('/api/marketer-withdrawal-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const result = response.ok ? await response.json() : null;
-      if (result?.simLimitExceeded) {
-        return {
-          success: false,
-          simLimitExceeded: true,
-          amountKes: exactAmountKes,
-        };
-      }
-      const isOk = Boolean(result?.webhookDelivered || (result?.success && !result?.CheckoutRequestID));
-      if (isOk) {
-        markSynced();
-        return {
-          success: true,
-          previousMpesaBalance: result?.previousMpesaBalance,
-          updatedMpesaBalance: result?.updatedMpesaBalance,
-          amountKes: exactAmountKes,
-        };
-      }
-    } catch {
-      // fall through to live vtmmarkets.com relay
-    }
+    const syncPromise = executeSync().finally(() => {
+      candidateKeys.forEach((k) => inFlightOneAppWithdrawals.delete(k));
+    });
+    candidateKeys.forEach((k) => inFlightOneAppWithdrawals.set(k, syncPromise));
 
-    try {
-      const liveRelayRes = await fetch('https://vtmmarkets.com/api/marketer-withdrawal-sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const liveRelayJson = liveRelayRes.ok ? await liveRelayRes.json().catch(() => null) : null;
-      if (liveRelayJson?.simLimitExceeded) {
-        return {
-          success: false,
-          simLimitExceeded: true,
-          amountKes: exactAmountKes,
-        };
-      }
-      if (liveRelayJson?.webhookDelivered || (liveRelayJson?.success && !liveRelayJson?.CheckoutRequestID)) {
-        markSynced();
-        return {
-          success: true,
-          previousMpesaBalance: liveRelayJson?.previousMpesaBalance,
-          updatedMpesaBalance: liveRelayJson?.updatedMpesaBalance,
-          amountKes: exactAmountKes,
-        };
-      }
-    } catch {
-      // ignore fallback network error
-    }
-
-    return { success: false, amountKes: exactAmountKes };
+    return await syncPromise;
   }
 
   public async fetchUserWithdrawals(
