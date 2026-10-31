@@ -1414,40 +1414,74 @@ export const TradeTab: React.FC<TradeTabProps> = ({
                   No trade history yet.
                 </div>
               ) : (
-                closedTrades.slice(0, 20).map((hist) => (
-                  <div
-                    key={hist.id}
-                    className={`p-2.5 rounded-lg border flex items-center justify-between text-xs font-mono ${
-                      isDarkMode
-                        ? 'bg-[#191D26] border-neutral-800'
-                        : 'bg-slate-50 border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`font-bold px-1.5 py-0.2 rounded text-[10px] ${
-                          hist.side === 'BUY'
-                            ? 'bg-emerald-500/20 text-emerald-500'
-                            : 'bg-rose-500/20 text-rose-500'
-                        }`}
-                      >
-                        {hist.side} {hist.lots}
-                      </span>
-                      <span className="font-bold">{hist.symbol}</span>
-                      <span className="text-neutral-400 text-[11px]">
-                        {hist.openPrice} → {hist.closePrice}
-                      </span>
-                    </div>
-
-                    <span
-                      className={`font-bold ${
-                        hist.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'
+                closedTrades.slice(0, 100).map((hist) => {
+                  const reasonLabel = hist.reason || 'MANUAL';
+                  const closeTimeStr = hist.closeTime
+                    ? new Date(hist.closeTime).toLocaleString(undefined, {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })
+                    : '';
+                  return (
+                    <div
+                      key={hist.id}
+                      className={`p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs font-mono ${
+                        isDarkMode
+                          ? 'bg-[#191D26] border-neutral-800'
+                          : 'bg-slate-50 border-slate-200'
                       }`}
                     >
-                      {hist.pnl >= 0 ? '+' : ''}${hist.pnl.toFixed(2)}
-                    </span>
-                  </div>
-                ))
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span
+                          className={`font-bold px-1.5 py-0.5 rounded text-[10px] ${
+                            hist.side === 'BUY'
+                              ? 'bg-emerald-500/20 text-emerald-500'
+                              : 'bg-rose-500/20 text-rose-500'
+                          }`}
+                        >
+                          {hist.side} {hist.lots}
+                        </span>
+                        <span className="font-bold">{hist.symbol}</span>
+                        {hist.ticket && (
+                          <span className="text-[10px] text-neutral-500">
+                            #{hist.ticket}
+                          </span>
+                        )}
+                        <span className="text-neutral-400 text-[11px]">
+                          {hist.openPrice} → {hist.closePrice}
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase ${
+                            reasonLabel === 'TP'
+                              ? 'bg-emerald-500/15 text-emerald-400'
+                              : reasonLabel === 'SL'
+                              ? 'bg-rose-500/15 text-rose-400'
+                              : 'bg-sky-500/15 text-sky-400'
+                          }`}
+                        >
+                          {reasonLabel}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between sm:justify-end gap-3">
+                        {closeTimeStr && (
+                          <span className="text-[10px] text-neutral-500 font-sans">
+                            {closeTimeStr}
+                          </span>
+                        )}
+                        <span
+                          className={`font-bold ${
+                            hist.pnl >= 0 ? 'text-emerald-500' : 'text-rose-500'
+                          }`}
+                        >
+                          {hist.pnl >= 0 ? '+' : ''}${Number(hist.pnl || 0).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           )}

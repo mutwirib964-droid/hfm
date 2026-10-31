@@ -694,7 +694,7 @@ export default function App() {
               if (closingPositionIdsRef.current.has(p.id)) return false;
               // If user opened trade within the last 20s, NEVER drop it
               if (isRecentTradeAction && Date.now() - (p.openTime || 0) < 20000) return true;
-              if (closedIdSet.has(p.id)) return false;
+              if (closedIdSet.has(p.id) || (p.ticket && closedTicketSet.has(String(p.ticket)))) return false;
               if (currentUserRef.current?.email && isTradeSettled(currentUserRef.current.email, p.id)) return false;
               return true;
             });
@@ -707,7 +707,7 @@ export default function App() {
             if (Array.isArray(remoteTrades.positions)) {
               for (const rp of remoteTrades.positions) {
                 if (!rp || !rp.id) continue;
-                if (closedIdSet.has(rp.id)) continue;
+                if (closedIdSet.has(rp.id) || (rp.ticket && closedTicketSet.has(String(rp.ticket)))) continue;
                 if (closingPositionIdsRef.current.has(rp.id)) continue;
                 if (currentUserRef.current?.email && isTradeSettled(currentUserRef.current.email, rp.id)) continue;
 
@@ -717,10 +717,10 @@ export default function App() {
                   const existing = mergedMap.get(rp.id)!;
                   mergedMap.set(rp.id, {
                     ...existing,
-                    sl: rp.sl ?? existing.sl,
-                    tp: rp.tp ?? existing.tp,
-                    slUsd: rp.slUsd ?? existing.slUsd,
-                    tpUsd: rp.tpUsd ?? existing.tpUsd,
+                    sl: isRecentTradeAction ? existing.sl : (rp.sl ?? existing.sl),
+                    tp: isRecentTradeAction ? existing.tp : (rp.tp ?? existing.tp),
+                    slUsd: isRecentTradeAction ? existing.slUsd : (rp.slUsd ?? existing.slUsd),
+                    tpUsd: isRecentTradeAction ? existing.tpUsd : (rp.tpUsd ?? existing.tpUsd),
                   });
                 }
               }
@@ -736,6 +736,14 @@ export default function App() {
 
             if (isDiff) {
               positionsRef.current = nextPositions;
+              try {
+                localStorage.setItem(
+                  `vtm_open_positions_${remote.profile.email.trim().toLowerCase()}`,
+                  JSON.stringify(nextPositions)
+                );
+              } catch {
+                // ignore
+              }
               return nextPositions;
             }
             return prevPos;
@@ -766,24 +774,58 @@ export default function App() {
             const cloudClosed = remoteTrades.closedTrades
               .filter((t) => t && t.symbol)
               .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
-              .slice(0, 500);
+              .slice(0, 1000);
 
             setClosedTrades((prevClosed) => {
-              if (
-                prevClosed.length === cloudClosed.length &&
-                (cloudClosed.length === 0 || prevClosed[0]?.id === cloudClosed[0]?.id)
-              ) {
+              const byKey = new Map<string, ClosedTrade>();
+              // Put local closed trades first so a newly closed local trade is NEVER lost
+              for (const lc of prevClosed) {
+                if (!lc || !lc.symbol) continue;
+                const key = String(lc.id || lc.ticket);
+                if (key) byKey.set(key, lc);
+              }
+              for (const cc of cloudClosed) {
+                if (!cc || !cc.symbol) continue;
+                const key = String(cc.id || cc.ticket);
+                const ticketMatchKey = cc.ticket
+                  ? Array.from(byKey.keys()).find((k) => byKey.get(k)?.ticket === cc.ticket)
+                  : undefined;
+                const targetKey = ticketMatchKey || key;
+                if (!byKey.has(targetKey)) {
+                  byKey.set(targetKey, cc);
+                } else {
+                  const existing = byKey.get(targetKey)!;
+                  byKey.set(targetKey, {
+                    ...cc,
+                    ...existing,
+                    accountId: existing.accountId || cc.accountId,
+                    accountNumber: existing.accountNumber || cc.accountNumber,
+                    sl: existing.sl ?? cc.sl ?? null,
+                    tp: existing.tp ?? cc.tp ?? null,
+                  });
+                }
+              }
+              const mergedClosed = Array.from(byKey.values())
+                .sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0))
+                .slice(0, 1000);
+
+              const hasChanged =
+                prevClosed.length !== mergedClosed.length ||
+                mergedClosed.some((mc, idx) => prevClosed[idx]?.id !== mc.id || prevClosed[idx]?.pnl !== mc.pnl);
+
+              if (!hasChanged) {
                 return prevClosed;
               }
+              closedTradesRef.current = mergedClosed;
               try {
                 localStorage.setItem(
                   `vtm_closed_trades_${remote.profile.email.trim().toLowerCase()}`,
-                  JSON.stringify(cloudClosed)
+                  JSON.stringify(mergedClosed)
                 );
               } catch {
                 // ignore
               }
-              return cloudClosed;
+              return mergedClosed;
             });
           }
         }
@@ -2224,6 +2266,10 @@ export default function App() {
     };
   }, []);
 
+  const closePositionByIdRef = useRef<
+    (id: string, reason?: 'MANUAL' | 'TP' | 'SL', customClosePrice?: number, fallbackPos?: Position) => void
+  >(() => {});
+
   // Helper to evaluate open manual positions' realistic floating P&L and trigger SL / TP closures synchronously
   const evaluateManualPositionsAndTpSl = useCallback(
     (currentInstList: Instrument[]) => {
@@ -2231,8 +2277,7 @@ export default function App() {
       if (!currentPositions || currentPositions.length === 0) return;
 
       const currentInstMap = new Map<string, Instrument>(currentInstList.map((i) => [i.symbol, i]));
-      const triggeredClosures: Array<{ id: string; reason: 'TP' | 'SL'; price: number }> = [];
-      const triggeredIds = new Set<string>();
+      const triggeredClosures: Array<{ id: string; reason: 'TP' | 'SL'; price: number; pos: Position }> = [];
       let changed = false;
 
       const updatedPositions = currentPositions.map((pos) => {
@@ -2240,16 +2285,18 @@ export default function App() {
         const inst = currentInstMap.get(pos.symbol);
         if (!inst) return pos;
 
-        const rawMarketPrice = pos.side === 'BUY' ? inst.bid : inst.ask;
-        if (!(rawMarketPrice > 0) || !(pos.openPrice > 0)) return pos;
-
-        // Guard against stale static seed prices before the live market feed has hydrated this symbol
-        if (
-          !realTVQuotesRef.current.has(pos.symbol) &&
-          Math.abs(rawMarketPrice - pos.openPrice) / pos.openPrice > 0.12
-        ) {
+        // Strict guard: NEVER evaluate floating PnL or trigger TP / SL using static seed prices
+        // before the live TradingView price feed has hydrated this symbol AND synchronized inst.bid!
+        const liveQuote = realTVQuotesRef.current.get(pos.symbol);
+        if (!liveQuote || !(liveQuote.bid > 0) || !(liveQuote.ask > 0)) {
           return pos;
         }
+        if (Math.abs(inst.bid - liveQuote.bid) / liveQuote.bid > 0.005) {
+          return pos;
+        }
+
+        const rawMarketPrice = pos.side === 'BUY' ? inst.bid : inst.ask;
+        if (!(rawMarketPrice > 0) || !(pos.openPrice > 0)) return pos;
 
         // Pure market P&L calculation: driven strictly by actual entry price, executable bid/ask price, position volume, and contract specifications
         const currentPrice = Number(rawMarketPrice.toFixed(inst.decimals));
@@ -2260,9 +2307,10 @@ export default function App() {
         }
         const pnl = rawPnl;
 
-        // Authoritative SL / TP check: Trigger when market price hits SL/TP price, or fallback to USD target if no price set
+        // Authoritative SL / TP check: Trigger ONLY when pos.tp or pos.sl is explicitly set (> 0) and reached by live market price
         const hitTpByPrice =
           pos.tp !== null &&
+          pos.tp !== undefined &&
           pos.tp > 0 &&
           ((pos.side === 'BUY' && currentPrice >= pos.tp) ||
             (pos.side === 'SELL' && currentPrice <= pos.tp));
@@ -2274,6 +2322,7 @@ export default function App() {
 
         const hitSlByPrice =
           pos.sl !== null &&
+          pos.sl !== undefined &&
           pos.sl > 0 &&
           ((pos.side === 'BUY' && currentPrice <= pos.sl) ||
             (pos.side === 'SELL' && currentPrice >= pos.sl));
@@ -2285,16 +2334,16 @@ export default function App() {
 
         if (hitTpByPrice || hitTpByUsd) {
           const exitPrice = pos.tp && pos.tp > 0 ? pos.tp : currentPrice;
-          triggeredIds.add(pos.id);
-          triggeredClosures.push({ id: pos.id, reason: 'TP', price: exitPrice });
-          return pos;
+          const updatedPos = { ...pos, currentPrice: exitPrice, pnl };
+          triggeredClosures.push({ id: pos.id, reason: 'TP', price: exitPrice, pos: updatedPos });
+          return updatedPos;
         }
 
         if (hitSlByPrice || hitSlByUsd) {
           const exitPrice = pos.sl && pos.sl > 0 ? pos.sl : currentPrice;
-          triggeredIds.add(pos.id);
-          triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice });
-          return pos;
+          const updatedPos = { ...pos, currentPrice: exitPrice, pnl };
+          triggeredClosures.push({ id: pos.id, reason: 'SL', price: exitPrice, pos: updatedPos });
+          return updatedPos;
         }
 
         const prevPrice = Number.isFinite(pos.currentPrice) ? pos.currentPrice : 0;
@@ -2311,17 +2360,14 @@ export default function App() {
       });
 
       if (changed) {
-        const remaining =
-          triggeredIds.size > 0
-            ? updatedPositions.filter((p) => !triggeredIds.has(p.id))
-            : updatedPositions;
-        positionsRef.current = remaining;
-        setPositions(() => [...remaining]);
+        // Keep triggered positions inside positionsRef.current until closePositionById settles and records them in closedTrades!
+        positionsRef.current = updatedPositions;
+        setPositions(() => [...updatedPositions]);
       }
 
       if (triggeredClosures.length > 0) {
         triggeredClosures.forEach((tc) => {
-          closePositionById(tc.id, tc.reason, tc.price);
+          closePositionByIdRef.current(tc.id, tc.reason, tc.price, tc.pos);
         });
       }
     },
@@ -2402,8 +2448,9 @@ export default function App() {
       }
     }
 
-    // Check pending orders for trigger
+    // Check pending orders for trigger (only after live quote is hydrated)
     pendingOrders.forEach((ord) => {
+      if (!realTVQuotesRef.current.has(ord.symbol)) return;
       const inst = currentInstMap.get(ord.symbol);
       if (!inst) return;
 
@@ -2431,11 +2478,12 @@ export default function App() {
       }
     });
 
-    // Check target price alerts for live trigger
+    // Check target price alerts for live trigger (only after live quote is hydrated)
     if (priceAlertsRef.current.length > 0) {
       let anyAlertTriggered = false;
       const updatedAlerts = priceAlertsRef.current.map((alert) => {
         if (alert.status !== 'ACTIVE') return alert;
+        if (!realTVQuotesRef.current.has(alert.symbol)) return alert;
         const inst = currentInstMap.get(alert.symbol);
         if (!inst) return alert;
 
@@ -3009,10 +3057,17 @@ export default function App() {
       const val = Number(rawTp);
       const relDiff = Math.abs(val - openPrice) / Math.max(0.0001, openPrice);
       if (relDiff < 0.6) {
-        // Entered as an exact Target Price
-        tp = Number(val.toFixed(decimals));
-        const dist = Math.abs(tp - openPrice);
-        tpUsd = Math.max(0.01, Number((dist * unitVal).toFixed(2)));
+        // Entered as an exact Target Price — ensure TP is strictly on the profit side of openPrice
+        const dist = Math.max(minStep * 2, Math.abs(val - openPrice));
+        tp =
+          side === 'BUY'
+            ? val > openPrice
+              ? Number(val.toFixed(decimals))
+              : Number((openPrice + dist).toFixed(decimals))
+            : val < openPrice
+            ? Number(val.toFixed(decimals))
+            : Number((openPrice - dist).toFixed(decimals));
+        tpUsd = Math.max(0.01, Number((Math.abs(tp - openPrice) * unitVal).toFixed(2)));
       } else {
         // Entered as a USD Profit Target (e.g. 5, 10, 20 dollars)
         tpUsd = Math.max(0.05, Number(Math.abs(val).toFixed(2)));
@@ -3030,10 +3085,17 @@ export default function App() {
       const val = Number(rawSl);
       const relDiff = Math.abs(val - openPrice) / Math.max(0.0001, openPrice);
       if (relDiff < 0.6) {
-        // Entered as an exact Target Price
-        sl = Number(val.toFixed(decimals));
-        const dist = Math.abs(openPrice - sl);
-        slUsd = Math.max(0.01, Number((dist * unitVal).toFixed(2)));
+        // Entered as an exact Target Price — ensure SL is strictly on the loss side of openPrice
+        const dist = Math.max(minStep * 2, Math.abs(openPrice - val));
+        sl =
+          side === 'BUY'
+            ? val < openPrice
+              ? Number(val.toFixed(decimals))
+              : Number((openPrice - dist).toFixed(decimals))
+            : val > openPrice
+            ? Number(val.toFixed(decimals))
+            : Number((openPrice + dist).toFixed(decimals));
+        slUsd = Math.max(0.01, Number((Math.abs(openPrice - sl) * unitVal).toFixed(2)));
       } else {
         // Entered as a USD Stop Loss Target (e.g. 5, 10, 20 dollars)
         slUsd = Math.max(0.05, Number(Math.abs(val).toFixed(2)));
@@ -3486,236 +3548,267 @@ export default function App() {
   const closePositionById = (
     id: string,
     reason: 'MANUAL' | 'TP' | 'SL' = 'MANUAL',
-    customClosePrice?: number
+    customClosePrice?: number,
+    fallbackPos?: Position
   ) => {
     lastLocalTradeActionRef.current = Date.now();
     if (closingPositionIdsRef.current.has(id)) return;
-    const pos = positionsRef.current.find((p) => p.id === id) || positions.find((p) => p.id === id);
+    const pos =
+      positionsRef.current.find((p) => p.id === id) ||
+      positions.find((p) => p.id === id) ||
+      fallbackPos;
     if (!pos) return;
 
-    if (currentUserRef.current?.email && isTradeSettled(currentUserRef.current.email, id)) {
-      // If already settled in local storage but still in state, just remove from state
+    const alreadySettled =
+      Boolean(currentUserRef.current?.email) && isTradeSettled(currentUserRef.current!.email, id);
+    const alreadyInClosedHistory = closedTradesRef.current.some(
+      (ct) => ct.id === id || (pos.ticket && ct.ticket === pos.ticket)
+    );
+    if (alreadySettled && alreadyInClosedHistory) {
+      // Already settled and recorded in closedTrades history — just ensure it's removed from open positions
       setPositions((prev) => prev.filter((p) => p.id !== id));
       positionsRef.current = positionsRef.current.filter((p) => p.id !== id);
       return;
     }
 
     closingPositionIdsRef.current.add(id);
-    
+
     try {
       if (currentUserRef.current?.email) {
         markTradeSettled(currentUserRef.current.email, id);
       }
 
-    const inst = instrumentsRef.current.find((i) => i.symbol === pos.symbol);
-    const decimals = inst?.decimals ?? 5;
-    const contractSize = getContractSize(pos.symbol);
+      const inst = instrumentsRef.current.find((i) => i.symbol === pos.symbol);
+      const decimals = inst?.decimals ?? 5;
+      const contractSize = getContractSize(pos.symbol);
 
-    const liveExecPrice =
-      pos.side === 'BUY'
-        ? inst?.bid ?? pos.currentPrice ?? pos.openPrice
-        : inst?.ask ?? pos.currentPrice ?? pos.openPrice;
-
-    let finalClosePrice = Number(
-      (reason === 'TP' && pos.tp && pos.tp > 0
-        ? pos.tp
-        : reason === 'SL' && pos.sl && pos.sl > 0
-        ? pos.sl
-        : customClosePrice ?? liveExecPrice
-      ).toFixed(decimals)
-    );
-
-    let calculatedPnl = Number(
-      (
-        calculateUnifiedPnL(pos.symbol, pos.side, pos.openPrice, finalClosePrice, pos.lots) +
-        (pos.swap || 0) +
-        (pos.commission || 0)
-      ).toFixed(2)
-    );
-
-    if (reason === 'TP' && (!pos.tp || pos.tp <= 0) && typeof pos.tpUsd === 'number' && pos.tpUsd > 0) {
-      calculatedPnl = Number(pos.tpUsd.toFixed(2));
-      const exactOffset = calculatedPnl / Math.max(0.0001, pos.lots * contractSize);
-      finalClosePrice =
+      const liveExecPrice =
         pos.side === 'BUY'
-          ? Number((pos.openPrice + exactOffset).toFixed(decimals))
-          : Number((pos.openPrice - exactOffset).toFixed(decimals));
-    } else if (reason === 'SL' && (!pos.sl || pos.sl <= 0) && typeof pos.slUsd === 'number' && pos.slUsd > 0) {
-      calculatedPnl = -Number(Math.abs(pos.slUsd).toFixed(2));
-      const exactOffset = Math.abs(calculatedPnl) / Math.max(0.0001, pos.lots * contractSize);
-      finalClosePrice =
-        pos.side === 'BUY'
-          ? Number((pos.openPrice - exactOffset).toFixed(decimals))
-          : Number((pos.openPrice + exactOffset).toFixed(decimals));
-    }
+          ? inst?.bid ?? pos.currentPrice ?? pos.openPrice
+          : inst?.ask ?? pos.currentPrice ?? pos.openPrice;
 
-    // Identify the exact account that owns this position (never apply a Demo trade's P/L to a Live account or vice versa)
-    const owningAccForPos =
-      accountsRef.current.find(
-        (a) =>
-          (pos.accountId && a.id === pos.accountId) ||
-          (pos.accountNumber && a.accountNumber === pos.accountNumber)
-      ) ||
-      (!pos.accountId && !pos.accountNumber
-        ? accountsRef.current.find((a) => a.type === 'Demo') || selectedAccountRef.current
-        : selectedAccountRef.current);
+      let finalClosePrice = Number(
+        (reason === 'TP' && pos.tp && pos.tp > 0
+          ? pos.tp
+          : reason === 'SL' && pos.sl && pos.sl > 0
+          ? pos.sl
+          : customClosePrice ?? liveExecPrice
+        ).toFixed(decimals)
+      );
 
-    // Negative-balance protection: a closed trade cannot reduce account balance below $0.00
-    const currentAccForClamp = owningAccForPos;
-    const currentBalForClamp = Number(currentAccForClamp?.balance ?? 0);
-    if (calculatedPnl < 0 && Math.abs(calculatedPnl) > currentBalForClamp && currentBalForClamp >= 0) {
-      calculatedPnl = -Number(currentBalForClamp.toFixed(2));
-    }
+      let calculatedPnl = Number(
+        (
+          calculateUnifiedPnL(pos.symbol, pos.side, pos.openPrice, finalClosePrice, pos.lots) +
+          (pos.swap || 0) +
+          (pos.commission || 0)
+        ).toFixed(2)
+      );
 
-    const finalPnl = calculatedPnl;
-
-    const closed: ClosedTrade = {
-      id: pos.id || `cl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      ticket: pos.ticket,
-      symbol: pos.symbol,
-      side: pos.side,
-      lots: pos.lots,
-      openPrice: pos.openPrice,
-      closePrice: finalClosePrice,
-      pnl: finalPnl,
-      openTime: pos.openTime,
-      closeTime: Date.now(),
-      reason,
-      accountId: owningAccForPos?.id || pos.accountId,
-      accountNumber: owningAccForPos?.accountNumber || pos.accountNumber,
-    };
-
-    const nextPositions = positionsRef.current.filter((p) => p.id !== id);
-    positionsRef.current = nextPositions;
-    setPositions((prev) => prev.filter((p) => p.id !== id));
-    setClosedTrades((prev) => {
-      const deduped = prev.filter((ct) => ct.id !== closed.id && ct.ticket !== closed.ticket);
-      const updated = [closed, ...deduped];
-      if (currentUserRef.current?.email) {
-        try {
-          localStorage.setItem(
-            `vtm_closed_trades_${currentUserRef.current.email.trim().toLowerCase()}`,
-            JSON.stringify(updated)
-          );
-          localStorage.setItem(
-            `vtm_open_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
-            JSON.stringify(nextPositions)
-          );
-          localStorage.setItem(
-            `vtm_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
-            JSON.stringify(nextPositions)
-          );
-        } catch {
-          // ignore
-        }
+      if (reason === 'TP' && (!pos.tp || pos.tp <= 0) && typeof pos.tpUsd === 'number' && pos.tpUsd > 0) {
+        calculatedPnl = Number(pos.tpUsd.toFixed(2));
+        const exactOffset = calculatedPnl / Math.max(0.0001, pos.lots * contractSize);
+        finalClosePrice =
+          pos.side === 'BUY'
+            ? Number((pos.openPrice + exactOffset).toFixed(decimals))
+            : Number((pos.openPrice - exactOffset).toFixed(decimals));
+      } else if (reason === 'SL' && (!pos.sl || pos.sl <= 0) && typeof pos.slUsd === 'number' && pos.slUsd > 0) {
+        calculatedPnl = -Number(Math.abs(pos.slUsd).toFixed(2));
+        const exactOffset = Math.abs(calculatedPnl) / Math.max(0.0001, pos.lots * contractSize);
+        finalClosePrice =
+          pos.side === 'BUY'
+            ? Number((pos.openPrice - exactOffset).toFixed(decimals))
+            : Number((pos.openPrice + exactOffset).toFixed(decimals));
       }
-      return updated;
-    });
 
-    // Immediately update account balance strictly on the position's owning account and persist to localStorage, ledger & Supabase!
-    const targetAccKey = owningAccForPos?.id || pos.accountId || pos.accountNumber || selectedAccountRef.current?.id;
-    const updatedAcc = commitAccountBalanceChange(finalPnl, targetAccKey, {
-      type: 'REALIZED_TRADE_PNL',
-      referenceId: closed.id,
-      reason: `Manual ${reason} #${closed.ticket} ${closed.side} ${closed.lots} ${closed.symbol}`,
-      metadata: {
-        ticket: closed.ticket,
-        symbol: closed.symbol,
-        side: closed.side,
-        lots: closed.lots,
-        openPrice: closed.openPrice,
-        closePrice: finalClosePrice,
-        pnl: finalPnl,
-        reason,
-      },
-    });
-    if (updatedAcc && updatedAcc.balance <= 0 && updatedAcc.id === selectedAccountRef.current?.id) {
-      setTimeout(handleZeroBalanceStopOut, 0);
-    }
+      // Identify the exact account that owns this position (never apply a Demo trade's P/L to a Live account or vice versa)
+      const owningAccForPos =
+        accountsRef.current.find(
+          (a) =>
+            (pos.accountId && a.id === pos.accountId) ||
+            (pos.accountNumber && a.accountNumber === pos.accountNumber)
+        ) ||
+        (!pos.accountId && !pos.accountNumber
+          ? accountsRef.current.find((a) => a.type === 'Demo') || selectedAccountRef.current
+          : selectedAccountRef.current);
 
-    // Save closed trade & sync cloud trade state
-    const activeUser = currentUserRef.current || currentUser;
-    if (activeUser) {
-      supabaseService.saveTrade(activeUser, {
-        id: closed.id,
-        ticket: closed.ticket,
-        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
-        symbol: closed.symbol,
-        side: closed.side,
-        orderType: 'MARKET',
-        lots: closed.lots,
-        openPrice: closed.openPrice,
-        currentPrice: finalClosePrice,
-        closePrice: finalClosePrice,
-        sl: pos.sl ?? null,
-        tp: pos.tp ?? null,
-        pnl: closed.pnl,
-        status: 'CLOSED',
-        openTime: closed.openTime,
-        closeTime: closed.closeTime,
-        closeReason: closed.reason,
-      });
-      supabaseService.syncActivity(activeUser, {
-        type: 'TRADE_CLOSED',
-        description: `${reason === 'TP' ? 'Take Profit Hit' : reason === 'SL' ? 'Stop Loss Hit' : 'Closed'} #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)}) • New Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`,
-        metadata: {
-          id: closed.id,
-          ticket: closed.ticket,
-          symbol: closed.symbol,
-          side: closed.side,
-          lots: closed.lots,
-          openPrice: closed.openPrice,
-          closePrice: finalClosePrice,
-          pnl: closed.pnl,
-          reason,
-          closeReason: reason,
-          openTime: closed.openTime,
-          closeTime: closed.closeTime,
-          newBalance: updatedAcc?.balance ?? 0,
-        },
-      });
-      supabaseService.syncTrades(activeUser, {
-        positions: nextPositions,
-        pendingOrders: pendingOrdersRef.current,
-        closedTrades: [closed, ...closedTradesRef.current.filter((c) => c.id !== closed.id)],
-        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
-      });
-    }
+      // Negative-balance protection: a closed trade cannot reduce account balance below $0.00
+      const currentAccForClamp = owningAccForPos;
+      const currentBalForClamp = Number(currentAccForClamp?.balance ?? 0);
+      if (calculatedPnl < 0 && Math.abs(calculatedPnl) > currentBalForClamp && currentBalForClamp >= 0) {
+        calculatedPnl = -Number(currentBalForClamp.toFixed(2));
+      }
 
-    const reasonLabel =
-      reason === 'TP' ? 'Take Profit Hit' : reason === 'SL' ? 'Stop Loss Hit' : 'Closed';
+      const finalPnl = calculatedPnl;
 
-    playOrderSound(finalPnl >= 0);
-    addNotification(
-      `${reasonLabel}: #${pos.ticket} ${pos.symbol} (${finalPnl >= 0 ? '+' : ''}$${finalPnl.toFixed(2)}) • Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`
-    );
-
-    triggerActionPopup({
-      type: 'TRADE_CLOSED',
-      title:
-        reason === 'TP'
-          ? `Take Profit Hit: ${pos.symbol}`
-          : reason === 'SL'
-          ? `Stop Loss Hit: ${pos.symbol}`
-          : `Trade of ${pos.symbol} is closed`,
-      details: {
+      const closed: ClosedTrade = {
+        id: pos.id || `cl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        ticket: pos.ticket,
         symbol: pos.symbol,
         side: pos.side,
         lots: pos.lots,
-        ticket: pos.ticket,
-        price: finalClosePrice,
+        openPrice: pos.openPrice,
+        closePrice: finalClosePrice,
+        sl: pos.sl ?? null,
+        tp: pos.tp ?? null,
+        swap: pos.swap || 0,
+        commission: pos.commission || 0,
+        orderType: 'MARKET',
         pnl: finalPnl,
-        accountNumber: updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
-      },
-    });
+        openTime: pos.openTime,
+        closeTime: Date.now(),
+        reason,
+        accountId: owningAccForPos?.id || pos.accountId,
+        accountNumber: owningAccForPos?.accountNumber || pos.accountNumber,
+      };
 
-    closingPositionIdsRef.current.delete(id);
+      const nextPositions = positionsRef.current.filter((p) => p.id !== id);
+      positionsRef.current = nextPositions;
+      setPositions((prev) => prev.filter((p) => p.id !== id));
+
+      // Synchronously update closedTradesRef.current so batch closures in the same tick never drop earlier closed trades!
+      const dedupedClosed = closedTradesRef.current.filter(
+        (ct) => ct.id !== closed.id && ct.ticket !== closed.ticket
+      );
+      const nextClosedTrades = [closed, ...dedupedClosed];
+      closedTradesRef.current = nextClosedTrades;
+
+      setClosedTrades((prev) => {
+        const deduped = prev.filter((ct) => ct.id !== closed.id && ct.ticket !== closed.ticket);
+        const updated = [closed, ...deduped];
+        closedTradesRef.current = updated;
+        if (currentUserRef.current?.email) {
+          try {
+            localStorage.setItem(
+              `vtm_closed_trades_${currentUserRef.current.email.trim().toLowerCase()}`,
+              JSON.stringify(updated)
+            );
+            localStorage.setItem(
+              `vtm_open_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
+              JSON.stringify(nextPositions)
+            );
+            localStorage.setItem(
+              `vtm_positions_${currentUserRef.current.email.trim().toLowerCase()}`,
+              JSON.stringify(nextPositions)
+            );
+          } catch {
+            // ignore
+          }
+        }
+        return updated;
+      });
+
+      // Immediately update account balance strictly on the position's owning account (if not already settled) and persist to localStorage, ledger & Supabase!
+      const targetAccKey = owningAccForPos?.id || pos.accountId || pos.accountNumber || selectedAccountRef.current?.id;
+      const updatedAcc = alreadySettled
+        ? owningAccForPos || selectedAccountRef.current
+        : commitAccountBalanceChange(finalPnl, targetAccKey, {
+            type: 'REALIZED_TRADE_PNL',
+            referenceId: closed.id,
+            reason: `Manual ${reason} #${closed.ticket} ${closed.side} ${closed.lots} ${closed.symbol}`,
+            metadata: {
+              ticket: closed.ticket,
+              symbol: closed.symbol,
+              side: closed.side,
+              lots: closed.lots,
+              openPrice: closed.openPrice,
+              closePrice: finalClosePrice,
+              pnl: finalPnl,
+              reason,
+            },
+          });
+      if (updatedAcc && updatedAcc.balance <= 0 && updatedAcc.id === selectedAccountRef.current?.id) {
+        setTimeout(handleZeroBalanceStopOut, 0);
+      }
+
+      // Save closed trade & sync cloud trade state
+      const activeUser = currentUserRef.current || currentUser;
+      if (activeUser) {
+        supabaseService.saveTrade(activeUser, {
+          id: closed.id,
+          ticket: closed.ticket,
+          accountNumber: closed.accountNumber || updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+          symbol: closed.symbol,
+          side: closed.side,
+          orderType: 'MARKET',
+          lots: closed.lots,
+          openPrice: closed.openPrice,
+          currentPrice: finalClosePrice,
+          closePrice: finalClosePrice,
+          sl: pos.sl ?? null,
+          tp: pos.tp ?? null,
+          pnl: closed.pnl,
+          status: 'CLOSED',
+          openTime: closed.openTime,
+          closeTime: closed.closeTime,
+          closeReason: closed.reason,
+        });
+        supabaseService.syncActivity(activeUser, {
+          type: 'TRADE_CLOSED',
+          description: `${reason === 'TP' ? 'Take Profit Hit' : reason === 'SL' ? 'Stop Loss Hit' : 'Closed'} #${closed.ticket} ${closed.symbol} (${closed.pnl >= 0 ? '+' : ''}$${closed.pnl.toFixed(2)}) • New Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`,
+          metadata: {
+            id: closed.id,
+            ticket: closed.ticket,
+            symbol: closed.symbol,
+            side: closed.side,
+            lots: closed.lots,
+            openPrice: closed.openPrice,
+            closePrice: finalClosePrice,
+            sl: pos.sl ?? null,
+            tp: pos.tp ?? null,
+            orderType: 'MARKET',
+            pnl: closed.pnl,
+            reason,
+            closeReason: reason,
+            openTime: closed.openTime,
+            closeTime: closed.closeTime,
+            accountId: closed.accountId,
+            accountNumber: closed.accountNumber || updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+            newBalance: updatedAcc?.balance ?? 0,
+          },
+        });
+        supabaseService.syncTrades(activeUser, {
+          positions: nextPositions,
+          pendingOrders: pendingOrdersRef.current,
+          closedTrades: nextClosedTrades,
+          accountNumber: closed.accountNumber || updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+        });
+      }
+
+      const reasonLabel =
+        reason === 'TP' ? 'Take Profit Hit' : reason === 'SL' ? 'Stop Loss Hit' : 'Closed';
+
+      playOrderSound(finalPnl >= 0);
+      addNotification(
+        `${reasonLabel}: #${pos.ticket} ${pos.symbol} (${finalPnl >= 0 ? '+' : ''}$${finalPnl.toFixed(2)}) • Balance: $${(updatedAcc?.balance ?? 0).toFixed(2)}`
+      );
+
+      triggerActionPopup({
+        type: 'TRADE_CLOSED',
+        title:
+          reason === 'TP'
+            ? `Take Profit Hit: ${pos.symbol}`
+            : reason === 'SL'
+            ? `Stop Loss Hit: ${pos.symbol}`
+            : `Trade of ${pos.symbol} is closed`,
+        details: {
+          symbol: pos.symbol,
+          side: pos.side,
+          lots: pos.lots,
+          ticket: pos.ticket,
+          price: finalClosePrice,
+          pnl: finalPnl,
+          accountNumber: closed.accountNumber || updatedAcc?.accountNumber || selectedAccountRef.current?.accountNumber,
+        },
+      });
+
+      closingPositionIdsRef.current.delete(id);
     } catch (err) {
       console.error('[Trade Terminal] Critical failure during position closure:', err);
       closingPositionIdsRef.current.delete(id);
       addNotification(`Error closing trade #${pos?.ticket || 'unknown'}. Please retry.`);
     }
   };
+  closePositionByIdRef.current = closePositionById;
 
   const profitablePositionsCount = useMemo(() => {
     const activeAcc = selectedAccountRef.current || selectedAccount;
@@ -7308,7 +7401,7 @@ export default function App() {
     .join('|');
   useEffect(() => {
     if (!currentUser || !currentUser.email) return;
-    if (!isCloudTradesLoadedRef.current && closedTrades.length === 0 && positions.length === 0) return;
+    if (!isCloudTradesLoadedRef.current) return;
     const timer = setTimeout(() => {
       supabaseService.syncTrades(currentUser, {
         positions,
@@ -7541,7 +7634,9 @@ export default function App() {
             account={selectedAccount}
             positions={positions.filter((p) => belongsToAccount(p, selectedAccount))}
             pendingOrders={pendingOrders.filter((o) => belongsToAccount(o, selectedAccount))}
-            closedTrades={closedTrades.filter((c) => belongsToAccount(c, selectedAccount))}
+            closedTrades={closedTrades.filter(
+              (c) => belongsToAccount(c, selectedAccount) && !String(c.id || '').startsWith('cl-bot-')
+            )}
             onExecuteMarketOrder={handleExecuteMarketOrder}
             onPlacePendingOrder={handlePlacePendingOrder}
             onClosePosition={(id) => closePositionById(id, 'MANUAL')}

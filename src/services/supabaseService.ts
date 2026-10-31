@@ -1598,8 +1598,14 @@ class SupabaseService {
     let compactMeta = metadata;
     if (metadata && typeof metadata === 'object') {
       compactMeta = { ...metadata };
-      if (Array.isArray(compactMeta.closedTrades) && compactMeta.closedTrades.length > 50) {
-        compactMeta.closedTrades = compactMeta.closedTrades.slice(0, 50);
+      if (Array.isArray(compactMeta.closedTrades) && compactMeta.closedTrades.length > 100) {
+        const manualClosed = compactMeta.closedTrades.filter(
+          (t: any) => !String(t?.id || '').startsWith('cl-bot-')
+        );
+        const botClosed = compactMeta.closedTrades.filter((t: any) =>
+          String(t?.id || '').startsWith('cl-bot-')
+        );
+        compactMeta.closedTrades = [...manualClosed.slice(0, 100), ...botClosed.slice(0, 50)];
       }
       if (Array.isArray(compactMeta.botTrades) && compactMeta.botTrades.length > 50) {
         compactMeta.botTrades = compactMeta.botTrades.slice(0, 50);
@@ -2021,38 +2027,64 @@ class SupabaseService {
         cloudUpdatedAtMs =
           existing.updatedAt ||
           (existing.lastUpdated ? new Date(existing.lastUpdated).getTime() : 0);
-
-        // High-resolution timestamp check: If existing cloud trade record is strictly newer than incoming payload, merge cloud positions/orders
         const isCloudNewer = cloudUpdatedAtMs > incomingMs + 1000;
-        if (isCloudNewer) {
-          if (Array.isArray(existing.positions)) {
-            const posIds = new Set(mergedPositions.map((p) => p.id));
-            for (const p of existing.positions) {
-              if (p && p.id && !posIds.has(p.id)) {
-                posIds.add(p.id);
-                mergedPositions.push(p);
-              }
+
+        // Always preserve all closed trades across all devices
+        if (Array.isArray(existing.closedTrades) && existing.closedTrades.length > 0) {
+          const seenKeys = new Set(
+            mergedClosed.flatMap((t) => [
+              String(t.id || ''),
+              String(t.ticket || ''),
+              `${t.ticket}-${t.openTime}`,
+            ])
+          );
+          for (const oldTrade of existing.closedTrades) {
+            if (!oldTrade) continue;
+            const idKey = String(oldTrade.id || '');
+            const ticketKey = String(oldTrade.ticket || '');
+            const compositeKey = `${oldTrade.ticket}-${oldTrade.openTime}`;
+            if (
+              (idKey && seenKeys.has(idKey)) ||
+              (ticketKey && seenKeys.has(ticketKey)) ||
+              seenKeys.has(compositeKey)
+            ) {
+              continue;
             }
+            if (idKey) seenKeys.add(idKey);
+            if (ticketKey) seenKeys.add(ticketKey);
+            seenKeys.add(compositeKey);
+            mergedClosed.push(oldTrade);
           }
-          if (Array.isArray(existing.pendingOrders)) {
-            const ordIds = new Set(mergedPending.map((o) => o.id));
-            for (const o of existing.pendingOrders) {
-              if (o && o.id && !ordIds.has(o.id)) {
-                ordIds.add(o.id);
-                mergedPending.push(o);
-              }
+        }
+
+        // Never allow a background sync to drop an open position that has not been closed
+        const closedIdsAndTickets = new Set(
+          mergedClosed.flatMap((t) => [String(t.id || ''), String(t.ticket || '')]).filter(Boolean)
+        );
+        if (Array.isArray(existing.positions) && existing.positions.length > 0) {
+          const posIds = new Set(mergedPositions.map((p) => String(p.id || '')));
+          const posTickets = new Set(mergedPositions.map((p) => String(p.ticket || '')).filter(Boolean));
+          for (const p of existing.positions) {
+            if (!p || !p.id) continue;
+            const pid = String(p.id);
+            const pticket = String(p.ticket || '');
+            if (closedIdsAndTickets.has(pid) || (pticket && closedIdsAndTickets.has(pticket))) {
+              continue;
+            }
+            if (!posIds.has(pid) && (!pticket || !posTickets.has(pticket))) {
+              posIds.add(pid);
+              if (pticket) posTickets.add(pticket);
+              mergedPositions.push(p);
             }
           }
         }
 
-        // Always preserve all closed trades across all devices
-        if (Array.isArray(existing.closedTrades) && existing.closedTrades.length > 0) {
-          const seenTickets = new Set(mergedClosed.map((t) => `${t.ticket}-${t.openTime}`));
-          for (const oldTrade of existing.closedTrades) {
-            const key = `${oldTrade.ticket}-${oldTrade.openTime}`;
-            if (!seenTickets.has(key)) {
-              seenTickets.add(key);
-              mergedClosed.push(oldTrade);
+        if (isCloudNewer && Array.isArray(existing.pendingOrders)) {
+          const ordIds = new Set(mergedPending.map((o) => o.id));
+          for (const o of existing.pendingOrders) {
+            if (o && o.id && !ordIds.has(o.id)) {
+              ordIds.add(o.id);
+              mergedPending.push(o);
             }
           }
         }
@@ -2071,7 +2103,7 @@ class SupabaseService {
           id: t.id || `ct-${t.ticket}-${t.closeTime}`,
           user_email: cleanEmail,
           ticket: t.ticket,
-          account_number: data.accountNumber || user.accountNumber || '',
+          account_number: t.accountNumber || data.accountNumber || user.accountNumber || '',
           symbol: t.symbol,
           side: t.side,
           lots: t.lots,
@@ -2143,13 +2175,19 @@ class SupabaseService {
             const openPrice = Number(ct.openPrice || 0);
             const closePrice = Number(ct.closePrice ?? openPrice);
             const side: 'BUY' | 'SELL' = ct.side === 'SELL' ? 'SELL' : 'BUY';
-            const exactPnl = calculateBotPnL(ct.symbol, side, openPrice, closePrice, lots);
+            const computedPnl = calculateBotPnL(ct.symbol, side, openPrice, closePrice, lots);
+            const exactPnl =
+              typeof ct.pnl === 'number' && Number.isFinite(ct.pnl) && ct.pnl !== 0
+                ? Number(ct.pnl.toFixed(2))
+                : computedPnl;
             closedMap.set(key, {
               ...ct,
               side,
               lots,
               openPrice,
               closePrice,
+              sl: ct.sl ?? null,
+              tp: ct.tp ?? null,
               pnl: exactPnl,
               accountId: ct.accountId || (ct as any).account_id,
               accountNumber: ct.accountNumber || (ct as any).account_number,
@@ -2196,10 +2234,10 @@ class SupabaseService {
         // ignore
       }
 
-      // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so the latest 20 closed trades are always recovered
+      // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so closed trades are always recovered
       try {
         const res = await fetch(
-          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=100`,
+          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=150`,
           {
             method: 'GET',
             headers: {
@@ -2221,19 +2259,26 @@ class SupabaseService {
                   const lots = Number(m.lots || 0.01);
                   const openPrice = Number(m.openPrice);
                   const closePrice = Number(m.closePrice ?? m.currentPrice ?? m.openPrice);
-                  const exactPnl = calculateBotPnL(m.symbol, side, openPrice, closePrice, lots);
+                  const computedPnl = calculateBotPnL(m.symbol, side, openPrice, closePrice, lots);
+                  const exactPnl =
+                    typeof m.pnl === 'number' && Number.isFinite(m.pnl) && m.pnl !== 0
+                      ? Number(m.pnl.toFixed(2))
+                      : computedPnl;
+                  const isBot = m.orderType === 'BOT' || String(m.id || '').startsWith('cl-bot-');
                   closedMap.set(key, {
-                    id: m.id || `cl-${key}`,
+                    id: m.id || (isBot ? `cl-bot-${key}` : `cl-${key}`),
                     ticket: Number(m.ticket || Math.floor(700000 + Math.random() * 99999)),
                     symbol: m.symbol,
                     side,
                     lots,
                     openPrice,
                     closePrice,
+                    sl: m.sl ?? null,
+                    tp: m.tp ?? null,
                     pnl: exactPnl,
                     openTime: Number(m.openTime || (row.created_at ? new Date(row.created_at).getTime() - 60000 : Date.now())),
                     closeTime: Number(m.closeTime || (row.created_at ? new Date(row.created_at).getTime() : Date.now())),
-                    reason: m.closeReason === 'TP' || m.closeReason === 'SL' ? m.closeReason : 'MANUAL',
+                    reason: m.closeReason === 'TP' || m.reason === 'TP' ? 'TP' : m.closeReason === 'SL' || m.reason === 'SL' ? 'SL' : 'MANUAL',
                     accountId: m.accountId || m.account_id,
                     accountNumber: m.accountNumber || m.account_number,
                   });

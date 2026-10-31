@@ -216,6 +216,12 @@ export const TradesTab: React.FC<TradesTabProps> = ({
     setTimeout(() => setClosingId(null), 1200);
   };
 
+  // Manual closed trades (bot trades are displayed in their own dedicated Bots & EAs history section)
+  const manualClosedTrades = useMemo(
+    () => closedTrades.filter((ct) => !String(ct.id || '').startsWith('cl-bot-')),
+    [closedTrades]
+  );
+
   // Filter closed trades history based on selected date filter
   const filteredClosedTrades = useMemo(() => {
     const now = new Date();
@@ -236,7 +242,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
       }
     }
 
-    return closedTrades
+    return manualClosedTrades
       .filter((ct) => {
         const ctTime = ct.closeTime || ct.openTime || Date.now();
         if (historyFilter === 'today') {
@@ -258,7 +264,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
         const timeB = b.closeTime || b.openTime || 0;
         return timeB - timeA; // Latest trades at the top
       });
-  }, [closedTrades, historyFilter, customStartDate, customEndDate]);
+  }, [manualClosedTrades, historyFilter, customStartDate, customEndDate]);
 
   // Comprehensive summary statistics for the selected period
   const historyStats = useMemo(() => {
@@ -420,7 +426,7 @@ export const TradesTab: React.FC<TradesTabProps> = ({
           >
             <span>Trade History</span>
             <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${activeSubTab === 'closed' ? 'bg-black/30 text-white' : 'bg-slate-200 dark:bg-neutral-800 text-slate-700 dark:text-neutral-300'}`}>
-              {closedTrades.length}
+              {manualClosedTrades.length}
             </span>
           </button>
 

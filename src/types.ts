@@ -84,6 +84,11 @@ export interface ClosedTrade {
   lots: number;
   openPrice: number;
   closePrice: number;
+  sl?: number | null;
+  tp?: number | null;
+  swap?: number;
+  commission?: number;
+  orderType?: string;
   pnl: number;
   openTime: number;
   closeTime: number;
