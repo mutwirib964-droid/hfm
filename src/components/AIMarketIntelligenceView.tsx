@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Instrument } from '../types';
 import { AIMarketSignal, aiMarketService } from '../services/aiMarketService';
+import { checkInstrumentMarketHours } from '../utils/marketHours';
 import { QuickOrderSheet } from './QuickOrderSheet';
 
 interface AIMarketIntelligenceViewProps {
@@ -315,6 +316,7 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                 const isBuy = opp.action.includes('BUY');
                 const instRef = instruments.find((i) => i.symbol === opp.symbol);
                 const dec = instRef?.decimals ?? (opp.currentPrice > 500 ? 2 : 5);
+                const mStatus = checkInstrumentMarketHours(opp.symbol, instRef?.category || opp.category);
                 return (
                   <div
                     key={opp.symbol}
@@ -329,6 +331,11 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                       <div className="flex items-center justify-between gap-1 mb-1.5">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="font-black text-xs sm:text-sm">{opp.symbol}</span>
+                          {!mStatus.isOpen && (
+                            <span className="px-1 py-0.2 rounded text-[8px] font-black bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                              🔒 Closed
+                            </span>
+                          )}
                           <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
                             {opp.currentPrice.toFixed(dec)}
                           </span>
@@ -619,6 +626,7 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                 const isBuy = signal.action.includes('BUY');
                 const instRef = instruments.find((i) => i.symbol === signal.symbol);
                 const dec = instRef?.decimals ?? (signal.currentPrice > 500 ? 2 : 5);
+                const mStatus = checkInstrumentMarketHours(signal.symbol, instRef?.category || signal.category);
                 return (
                   <div
                     key={signal.symbol}
@@ -633,6 +641,11 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                       <div className="flex items-center justify-between gap-1 mb-1.5">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <span className="font-black text-xs sm:text-sm">{signal.symbol}</span>
+                          {!mStatus.isOpen && (
+                            <span className="px-1 py-0.2 rounded text-[8px] font-black bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+                              🔒 Closed
+                            </span>
+                          )}
                           <span className="font-mono text-xs font-bold text-slate-900 dark:text-white">
                             {signal.currentPrice.toFixed(dec)}
                           </span>
