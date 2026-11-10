@@ -175,7 +175,33 @@ export const checkInstrumentMarketHours = (
   const utcMinute = now.getUTCMinutes();
   const timeVal = utcHour + utcMinute / 60;
 
-  const isStock = upperCat.includes('STOCK') || upperCat.includes('EQUITY');
+  const isStock =
+    upperCat.includes('STOCK') ||
+    upperCat.includes('EQUITY') ||
+    upperCat.includes('AMERICA') ||
+    [
+      'AAPL',
+      'NVDA',
+      'TSLA',
+      'MSFT',
+      'AMZN',
+      'GOOGL',
+      'META',
+      'AMD',
+      'NFLX',
+      'COIN',
+      'PLTR',
+      'BABA',
+      'MSTR',
+      'DIS',
+      'UBER',
+      'INTC',
+      'JPM',
+      'V',
+      'WMT',
+      'SPY',
+      'XLE',
+    ].some((s) => upperSym.includes(s));
 
   // ==========================================
   // A. US STOCKS SPECIFIC TRADING HOURS (NYSE/NASDAQ)
@@ -310,6 +336,32 @@ export const checkInstrumentMarketHours = (
         nextSession: 'Reopens Sun 22:00 UTC',
         sessionText: 'Weekend Settlement Close',
         nextOpenText: 'Reopens Sun 22:00 UTC',
+      };
+    }
+  }
+
+  // Weekdays (Monday through Thursday): Daily CME/NYMEX Settlement Break (21:00 - 22:00 UTC)
+  if (utcDay >= 1 && utcDay <= 4) {
+    const isFuturesOrCommodity =
+      upperCat.includes('METAL') ||
+      upperCat.includes('COMMODIT') ||
+      upperCat.includes('INDEX') ||
+      upperSym.includes('XAU') ||
+      upperSym.includes('XAG') ||
+      upperSym.includes('OIL') ||
+      upperSym.includes('500') ||
+      upperSym.includes('100') ||
+      upperSym.includes('30');
+
+    if (isFuturesOrCommodity && timeVal >= 21.0 && timeVal < 22.0) {
+      return {
+        isOpen: false,
+        status: 'CLOSED',
+        reason: 'Daily CME/NYMEX Settlement & Clearing Break (21:00-22:00 UTC)',
+        category: (category || 'Commodities') as any,
+        nextOpenTime: '22:00 UTC',
+        sessionText: 'Daily Clearing Break',
+        nextOpenText: 'Resumes at 22:00 UTC',
       };
     }
   }
