@@ -2117,8 +2117,16 @@ export default function App() {
           anyItemChanged = true;
 
           if (!mStatus.isOpen) {
-            // Market is CLOSED! Keep prices and spreads strictly frozen at closing levels
-            return inst;
+            // Market is CLOSED! Sync to TradingView's official closing price once, then stay strictly frozen
+            return {
+              ...inst,
+              bid: newBid,
+              ask: newAsk,
+              spread: nextSpread,
+              change24h: quote.change24h,
+              high24h: quote.high24h,
+              low24h: quote.low24h,
+            };
           }
 
           // Keep sparkline anchored smoothly around live newBid with natural multi-wave curvature so it never flattens

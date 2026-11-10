@@ -431,9 +431,6 @@ export class TradingViewPriceService {
 
       this.lastExternalPriceAt.set(symbol, now);
       const mStatus = checkInstrumentMarketHours(symbol);
-      if (!mStatus.isOpen && this.lastQuotes.has(symbol)) {
-        return;
-      }
       const serverSpread =
         typeof data.spread === 'number' && data.spread >= 0.15 && data.spread <= 1.2
           ? Number(data.spread.toFixed(2))
