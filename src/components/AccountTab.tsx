@@ -176,7 +176,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
   const projectedPnlCalc = (calcExit - calcEntry) * 100000 * calcLots;
 
   return (
-    <div id="hfm-account-tab" className="flex flex-col w-full pb-20 space-y-4 px-2 sm:px-4 pt-2">
+    <div id="vtm-account-tab" className="flex flex-col w-full pb-20 space-y-4 px-2 sm:px-4 pt-2">
       {/* User KYC Profile Header */}
       <div
         className={`border rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${

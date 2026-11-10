@@ -3,6 +3,7 @@ import {
   Bell,
   BellRing,
   X,
+  ArrowLeft,
   TrendingUp,
   TrendingDown,
   PlusCircle,
@@ -32,6 +33,7 @@ interface PriceAlertModalProps {
   onReArmAlert: (id: string) => void;
   onTestTriggerAlert?: (alert: PriceAlert) => void;
   isDarkMode: boolean;
+  isPage?: boolean;
 }
 
 export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
@@ -46,6 +48,7 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
   onReArmAlert,
   onTestTriggerAlert,
   isDarkMode,
+  isPage = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'create' | 'active' | 'history'>('create');
   const [symbol, setSymbol] = useState<string>(selectedSymbol);
@@ -161,9 +164,17 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
     : instruments;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+    <div
+      className={
+        isPage
+          ? 'w-full min-h-[calc(100vh-80px)] flex flex-col py-2 animate-in fade-in duration-200'
+          : `fixed inset-0 z-50 w-full h-screen flex flex-col overflow-y-auto animate-in fade-in duration-200 ${
+              isDarkMode ? 'bg-[#0B0C0E] text-white' : 'bg-[#F4F6F9] text-slate-900'
+            }`
+      }
+    >
       <div
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl transition-all flex flex-col max-h-[92vh] overflow-hidden ${
+        className={`w-full flex-1 rounded-none sm:rounded-2xl border-0 sm:border transition-all flex flex-col overflow-hidden ${
           isDarkMode
             ? 'bg-[#12151D] border-neutral-800 text-white'
             : 'bg-white border-slate-200 text-slate-900'
@@ -171,16 +182,27 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
       >
         {/* Header */}
         <div
-          className={`px-5 py-4 border-b flex items-center justify-between shrink-0 ${
+          className={`px-4 sm:px-6 py-4 border-b flex items-center justify-between shrink-0 ${
             isDarkMode ? 'bg-[#161A24] border-neutral-800' : 'bg-slate-50 border-slate-200'
           }`}
         >
           <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
             <div className="w-9 h-9 rounded-xl bg-[#E51937]/15 border border-[#E51937]/30 text-[#E51937] flex items-center justify-center">
               <BellRing className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-black text-base sm:text-lg tracking-tight">Price Alerts &amp; Targets</h3>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500 border border-emerald-500/20">
                   Live Engine
@@ -206,7 +228,7 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
 
         {/* Tab Navigation */}
         <div
-          className={`px-5 pt-3 pb-0 border-b flex items-center gap-2 shrink-0 ${
+          className={`px-4 sm:px-6 pt-3 pb-0 border-b flex items-center gap-2 shrink-0 ${
             isDarkMode ? 'border-neutral-800 bg-[#12151D]' : 'border-slate-200 bg-white'
           }`}
         >
@@ -258,7 +280,7 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
         </div>
 
         {/* Tab Content */}
-        <div className="flex-1 overflow-y-auto p-5 no-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 no-scrollbar">
           {/* TAB 1: CREATE ALERT */}
           {activeTab === 'create' && (
             <form onSubmit={handleCreateSubmit} className="space-y-4">

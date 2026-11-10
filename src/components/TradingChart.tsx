@@ -763,7 +763,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
       <div
         ref={containerRef}
-        id="hfm-trading-chart-container"
+        id="vtm-trading-chart-container"
         className={`relative flex flex-col border rounded-xl overflow-hidden shadow-lg select-none transition-colors duration-200 ${
           isDarkMode
             ? 'bg-[#121418] border-neutral-800/80 text-white'
@@ -869,7 +869,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
               {showIndicatorMenu && (
                 <div
-                  className={`absolute right-0 top-full mt-2 w-52 border rounded-xl p-2.5 shadow-2xl z-30 space-y-2 text-xs backdrop-blur-md ${
+                  className={`absolute right-0 top-full mt-2 w-52 border rounded-xl p-2.5 shadow-2xl z-50 space-y-2 text-xs backdrop-blur-md ${
                     isDarkMode ? 'bg-[#1C2029] border-neutral-700 text-white' : 'bg-white border-slate-300 text-slate-900 shadow-xl'
                   }`}
                 >

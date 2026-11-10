@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Minus, Plus, ShieldAlert, Check, Lock } from 'lucide-react';
 import { Instrument } from '../types';
 import { formatPipPrice } from '../utils/pipFormatter';
@@ -10,6 +10,9 @@ interface QuickOrderSheetProps {
   onClose: () => void;
   instrument: Instrument;
   side: 'BUY' | 'SELL';
+  initialSl?: number | null;
+  initialTp?: number | null;
+  initialLots?: number;
   onExecute: (params: {
     symbol: string;
     side: 'BUY' | 'SELL';
@@ -25,15 +28,43 @@ export const QuickOrderSheet: React.FC<QuickOrderSheetProps> = ({
   onClose,
   instrument,
   side: initialSide,
+  initialSl,
+  initialTp,
+  initialLots = 0.01,
   onExecute,
   isDarkMode = false,
 }) => {
   const [side, setSide] = useState<'BUY' | 'SELL'>(initialSide);
-  const [lots, setLots] = useState<number>(0.01);
-  const [hasSL, setHasSL] = useState<boolean>(false);
-  const [hasTP, setHasTP] = useState<boolean>(false);
-  const [slPrice, setSlPrice] = useState<string>('');
-  const [tpPrice, setTpPrice] = useState<string>('');
+  const [lots, setLots] = useState<number>(initialLots);
+  const [hasSL, setHasSL] = useState<boolean>(Boolean(initialSl));
+  const [hasTP, setHasTP] = useState<boolean>(Boolean(initialTp));
+  const [slPrice, setSlPrice] = useState<string>(
+    initialSl !== undefined && initialSl !== null && initialSl > 0 ? initialSl.toString() : ''
+  );
+  const [tpPrice, setTpPrice] = useState<string>(
+    initialTp !== undefined && initialTp !== null && initialTp > 0 ? initialTp.toString() : ''
+  );
+
+  useEffect(() => {
+    if (isOpen) {
+      setSide(initialSide);
+      setLots(initialLots || 0.01);
+      if (initialSl !== undefined && initialSl !== null && initialSl > 0) {
+        setHasSL(true);
+        setSlPrice(initialSl.toString());
+      } else {
+        setHasSL(false);
+        setSlPrice('');
+      }
+      if (initialTp !== undefined && initialTp !== null && initialTp > 0) {
+        setHasTP(true);
+        setTpPrice(initialTp.toString());
+      } else {
+        setHasTP(false);
+        setTpPrice('');
+      }
+    }
+  }, [isOpen, initialSide, initialSl, initialTp, initialLots]);
 
   if (!isOpen) return null;
 

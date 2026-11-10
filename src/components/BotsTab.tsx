@@ -330,8 +330,9 @@ export const BotsTab: React.FC<BotsTabProps> = ({
       return timeB - timeA; // Latest bot trades at the top
     });
 
+  const visibleClosedTrades = adjustedClosedTrades.slice(0, 200);
   const totalOpenProfit = liveOpenTrades.reduce((acc, t) => acc + t.profitUsd, 0);
-  const totalClosedProfit = adjustedClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
+  const totalClosedProfit = visibleClosedTrades.reduce((acc, t) => acc + (t.profitUsd || 0), 0);
 
   // Compute each bot run's exact performance metrics, realized profits, floating P/L, and verified win rate
   const runMetrics = useMemo(() => {
@@ -1155,12 +1156,14 @@ export const BotsTab: React.FC<BotsTabProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm sm:text-base font-bold">Closed Trade History & Performance</h3>
-                  <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">({closedTrades.length} Trades Completed)</span>
+                  <span className="text-xs text-neutral-500 dark:text-neutral-400 font-mono">
+                    ({adjustedClosedTrades.length >= 200 ? 'Latest 200 Trades Completed' : `Latest ${adjustedClosedTrades.length} Trades Completed`})
+                  </span>
                 </div>
 
-                {closedTrades.length > 0 && (
+                {visibleClosedTrades.length > 0 && (
                   <div className="text-xs font-mono font-bold">
-                    Realized PnL:{' '}
+                    Realized PnL (Latest 200):{' '}
                     <span className={totalClosedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
                       {totalClosedProfit >= 0 ? '+' : ''}${fmt(totalClosedProfit, 2)}
                     </span>
@@ -1168,7 +1171,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                 )}
               </div>
 
-              {closedTrades.length === 0 ? (
+              {visibleClosedTrades.length === 0 ? (
                 <div
                   className={`p-6 rounded-2xl border text-center text-neutral-500 dark:text-neutral-400 text-xs ${
                     isDarkMode ? 'bg-[#161920] border-neutral-800' : 'bg-white border-slate-200'
@@ -1202,7 +1205,7 @@ export const BotsTab: React.FC<BotsTabProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-800/60 font-mono">
-                      {adjustedClosedTrades.map((t, idx) => {
+                      {visibleClosedTrades.map((t, idx) => {
                         const isProfit = (t.profitUsd || 0) >= 0;
                         const dateStr = (() => {
                           const rawVal =

@@ -35,6 +35,8 @@ import { TradesTab } from './components/TradesTab';
 import { NewsTab } from './components/NewsTab';
 import { MoreTab } from './components/MoreTab';
 import { InstrumentDetailView } from './components/InstrumentDetailView';
+import { AIMarketIntelligenceView } from './components/AIMarketIntelligenceView';
+import { FloatingAIButton } from './components/FloatingAIButton';
 import { MenuDrawer } from './components/MenuDrawer';
 import { CopyTradingTab } from './components/CopyTradingTab';
 import { WalletTab } from './components/WalletTab';
@@ -49,6 +51,10 @@ import { ActionPopupManager } from './components/popups/ActionPopupManager';
 import { ActionToastBanner } from './components/popups/ActionToastBanner';
 import { ActionPopup, PriceAlert } from './types';
 import { PriceAlertModal } from './components/PriceAlertModal';
+import { RiskPipCalculatorModal } from './components/RiskPipCalculatorModal';
+import { TradersRewardsModal } from './components/TradersRewardsModal';
+import { DedicatedTraderSupportModal } from './components/DedicatedTraderSupportModal';
+import { ReferralModal } from './components/ReferralModal';
 import {
   loadPriceAlerts,
   savePriceAlerts,
@@ -71,6 +77,7 @@ import {
   sanitizeAndFilterBotRuns,
   filterTradesForValidBotRuns,
   reconcilePrivilegedBotTradesAndRuns,
+  capBotTrades,
   evaluateTargetWinOrLoss,
   determineBotTradeDirection,
   calculateBotPnL,
@@ -163,6 +170,16 @@ function playOrderSound(isSuccess: boolean = true) {
 export default function App() {
   // App Navigation & View Modes
   const [activeTab, setActiveTab] = useState<ActiveTab>('markets');
+  const [previousTab, setPreviousTab] = useState<ActiveTab>('markets');
+
+  const handleToggleAiIntelligence = useCallback(() => {
+    if (activeTab === 'ai-analysis') {
+      setActiveTab(previousTab || 'markets');
+    } else {
+      setPreviousTab(activeTab);
+      setActiveTab('ai-analysis');
+    }
+  }, [activeTab, previousTab]);
   const [isMobileFrame, setIsMobileFrame] = useState<boolean>(false);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     try {
@@ -970,8 +987,9 @@ export default function App() {
               userRoleRef.current === 'marketer' ||
               userRoleRef.current === 'admin' ||
               (selectedAccountRef.current?.type || 'Demo') === 'Demo';
-            const { runs: finalRuns, trades: cleanedTrades } =
+            const { runs: finalRuns, trades: rawCleanedTrades } =
               reconcilePrivilegedBotTradesAndRuns(sanitizedMergedRuns, validTrades, isPriv);
+            const cleanedTrades = capBotTrades(rawCleanedTrades, 200);
 
             setBotRuns((prevRuns) => {
               if (
@@ -1325,7 +1343,8 @@ export default function App() {
   const handleOpenPriceAlertModal = (sym?: string) => {
     if (sym) setPriceAlertSymbol(sym);
     else setPriceAlertSymbol(selectedSymbol);
-    setIsPriceAlertModalOpen(true);
+    setIsPriceAlertModalOpen(false);
+    setActiveTab('alerts');
   };
 
   const handleCreatePriceAlert = (alertData: Omit<PriceAlert, 'id' | 'createdAt' | 'status'>) => {
@@ -2981,11 +3000,11 @@ export default function App() {
 
     const isDemo = String(activeAcc.type).toLowerCase() === 'demo';
 
-    if (!isDemo && (balance <= 1.0 || equity <= 1.0 || freeMargin <= 0.1)) {
+    if (balance <= 0.1 || equity <= 0.1 || freeMargin <= 0.05) {
       return {
         allowed: false,
-        title: 'Minimum Tradable Capital Reached',
-        message: `Trade blocked to protect your account from reaching zero (Equity: $${Math.max(0, equity).toFixed(2)}, Free Margin: $${Math.max(0, freeMargin).toFixed(2)}). Please deposit funds to continue trading.`,
+        title: 'Insufficient Free Margin / Equity',
+        message: `Trade blocked due to zero or negative free margin (Equity: $${Math.max(0, equity).toFixed(2)}, Free Margin: $${Math.max(0, freeMargin).toFixed(2)}). Please deposit funds or adjust lot size.`,
       };
     }
 
@@ -3008,11 +3027,11 @@ export default function App() {
     const orderMargin = Number((cleanLots * 40).toFixed(2));
     const requiredCapital = cleanLots <= 0.01 ? Math.min(balance, orderMargin) : orderMargin;
 
-    if (!isDemo && (balance < requiredCapital || freeMargin < orderMargin)) {
+    if (balance < requiredCapital || freeMargin < orderMargin || equity < orderMargin) {
       return {
         allowed: false,
-        title: `Lot Size (${cleanLots}) Exceeds Account Capital / Free Margin`,
-        message: `${cleanLots} lots on ${symbol} requires at least $${requiredCapital.toFixed(2)} margin (Balance: $${balance.toFixed(2)}, Free Margin: $${freeMargin.toFixed(2)}).`,
+        title: `Lot Size (${cleanLots}) Exceeds Available Margin`,
+        message: `${cleanLots} lots on ${symbol} requires $${orderMargin.toFixed(2)} margin (Balance: $${balance.toFixed(2)}, Free Margin: $${freeMargin.toFixed(2)}, Equity: $${equity.toFixed(2)}). Please reduce lot size or deposit funds.`,
       };
     }
 
@@ -3198,7 +3217,7 @@ export default function App() {
 
     // Evaluate target outcome for manual trading:
     // - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (identical high win rate)
-    // - Retail trader on Real/Live account: strictly below 15% win rate
+    // - Retail trader on Real/Live account: maximum 5% win rate
     const activeAccForManual = selectedAccountRef.current || selectedAccount;
     const isDemoManual = (activeAccForManual?.type || selectedAccount?.type) === 'Demo';
     const manualClosedHistory = closedTrades.filter((ct) => !String(ct.id).startsWith('cl-bot-'));
@@ -5372,9 +5391,9 @@ export default function App() {
   const handleTabSelect = (tab: ActiveTab) => {
     if (tab === 'menu') {
       setIsMenuDrawerOpen(true);
-    } else {
-      setActiveTab(tab);
+      return;
     }
+    setActiveTab(tab);
   };
 
   // Bot Action Handlers
@@ -6637,11 +6656,11 @@ export default function App() {
 
         // Respect the assigned targetOutcome from evaluateTargetWinOrLoss:
         // - Marketers & Demo: win-loss-win-win-win-loss-win-win-win-loss-win-win
-        // - Retail Live Traders: loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss
+        // - Retail Live Traders: maximum 5% winrate (1 WIN in 20 trades)
         const isDesignatedWin =
           activeTrade.targetOutcome === 'WIN' ||
           (activeTrade.targetOutcome !== 'LOSS' &&
-            evaluateTargetWinOrLoss(currentRole, parentRun?.botType, tradeOwningAcc.type === 'Demo', undefined, 0, activeTrade.ticket % 12));
+            evaluateTargetWinOrLoss(currentRole, parentRun?.botType, tradeOwningAcc.type === 'Demo', undefined, 0, activeTrade.ticket % 20));
 
         const contractSize = getContractSize(activeTrade.symbol);
         const tpDist = Math.max(pipSize * 5, Math.abs(activeTrade.tp - activeTrade.openPrice));
@@ -7260,8 +7279,10 @@ export default function App() {
       });
 
       if (tradesChanged) {
-        setBotTrades(() => [...nextTrades]);
-        saveStoredBotTrades(nextTrades, currentUserRef.current?.email);
+        const cappedTrades = capBotTrades(nextTrades, 200);
+        botTradesRef.current = cappedTrades;
+        setBotTrades(() => [...cappedTrades]);
+        saveStoredBotTrades(cappedTrades, currentUserRef.current?.email);
       }
 
       if (runsChanged) {
@@ -7518,6 +7539,7 @@ export default function App() {
             priceAlerts={priceAlerts}
             onOpenPriceAlert={handleOpenPriceAlertModal}
             onExecuteMarketOrder={handleExecuteMarketOrder}
+            onNavigateToAi={() => setActiveTab('ai-analysis')}
           />
         );
       case 'instrument-detail':
@@ -7699,6 +7721,74 @@ export default function App() {
             currentUser={currentUser}
             onOpenAdminManager={() => setIsAdminManagerOpen(true)}
             onSignOut={handleUserSignOut}
+          />
+        );
+      case 'calculator':
+        return (
+          <RiskPipCalculatorModal
+            isOpen={true}
+            isPage={true}
+            onClose={() => setActiveTab('markets')}
+            isDarkMode={isDarkMode}
+            defaultBalance={selectedAccount?.balance || 10000}
+          />
+        );
+      case 'rewards':
+        return (
+          <TradersRewardsModal
+            isOpen={true}
+            isPage={true}
+            onClose={() => setActiveTab('markets')}
+            isDarkMode={isDarkMode}
+          />
+        );
+      case 'referral':
+        return (
+          <ReferralModal
+            isOpen={true}
+            isPage={true}
+            onClose={() => setActiveTab('markets')}
+            isDarkMode={isDarkMode}
+            currentUser={currentUser}
+            onClaimCommissionToWallet={(amount) => {
+              handleClaimReferralCommission(amount);
+            }}
+          />
+        );
+      case 'support':
+        return (
+          <DedicatedTraderSupportModal
+            isOpen={true}
+            isPage={true}
+            onClose={() => setActiveTab('markets')}
+            isDarkMode={isDarkMode}
+            currentUser={currentUser}
+          />
+        );
+      case 'alerts':
+        return (
+          <PriceAlertModal
+            isOpen={true}
+            isPage={true}
+            onClose={() => setActiveTab('markets')}
+            instruments={instruments}
+            selectedSymbol={priceAlertSymbol}
+            alerts={priceAlerts}
+            onCreateAlert={handleCreatePriceAlert}
+            onDeleteAlert={handleDeletePriceAlert}
+            onClearTriggeredAlerts={handleClearTriggeredAlerts}
+            onReArmAlert={handleReArmAlert}
+            onTestTriggerAlert={handleTestTriggerAlert}
+            isDarkMode={isDarkMode}
+          />
+        );
+      case 'ai-analysis':
+        return (
+          <AIMarketIntelligenceView
+            instruments={instruments}
+            isDarkMode={isDarkMode}
+            onSelectInstrument={handleSelectInstrumentToTrade}
+            onExecuteTrade={handleExecuteMarketOrder}
           />
         );
       default:
@@ -7893,6 +7983,12 @@ export default function App() {
           onReArmAlert={handleReArmAlert}
           onTestTriggerAlert={handleTestTriggerAlert}
           isDarkMode={isDarkMode}
+        />
+
+        {/* Floating AI Market Intelligence Button on left screen - visible on all platform pages */}
+        <FloatingAIButton
+          isActive={activeTab === 'ai-analysis'}
+          onClick={handleToggleAiIntelligence}
         />
       </div>
     </div>

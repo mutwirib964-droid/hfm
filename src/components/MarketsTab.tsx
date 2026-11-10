@@ -15,12 +15,15 @@ import {
   ExternalLink,
   Globe,
   BellRing,
+  Sparkles,
+  ArrowRight,
 } from 'lucide-react';
 import { formatPipPrice } from '../utils/pipFormatter';
 import { checkInstrumentMarketHours } from '../utils/marketHours';
 import { EditInstrumentsModal } from './EditInstrumentsModal';
 import { QuickOrderSheet } from './QuickOrderSheet';
 import { TradingViewWidget } from './TradingViewWidget';
+import { AIMarketSignalModal } from './AIMarketSignalModal';
 
 interface MarketsTabProps {
   instruments: Instrument[];
@@ -39,6 +42,7 @@ interface MarketsTabProps {
     sl: number | null;
     tp: number | null;
   }) => void;
+  onNavigateToAi?: () => void;
 }
 
 export const MarketsTab: React.FC<MarketsTabProps> = ({
@@ -52,6 +56,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   priceAlerts = [],
   onOpenPriceAlert,
   onExecuteMarketOrder,
+  onNavigateToAi,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<MarketCategory>('Forex');
   const [selectedCurrency, setSelectedCurrency] = useState<string | null>(null);
@@ -63,6 +68,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
   const [previewLotSize, setPreviewLotSize] = useState<number>(0.1);
   const [showEditModal, setShowEditModal] = useState(false);
   const [closedNotice, setClosedNotice] = useState<string | null>(null);
+  const [aiModalInstrument, setAiModalInstrument] = useState<Instrument | null>(null);
   const [orderModalParams, setOrderModalParams] = useState<{
     instrument: Instrument;
     side: 'BUY' | 'SELL';
@@ -303,6 +309,7 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start px-2 sm:px-3">
         {/* Main Watchlist Column (12 cols on mobile, 7-8 cols on desktop) */}
         <div className="lg:col-span-7 xl:col-span-8 flex flex-col min-w-0 w-full space-y-2.5">
+
           {/* Search Bar & Quick Filter Badges */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             {/* Rounded Search Input */}
@@ -756,25 +763,6 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
               </div>
             </div>
 
-            {/* Timeframe selector */}
-            <div className="flex items-center gap-1 mb-2">
-              {(['1M', '5M', '15M', '1H', '4H', '1D'] as Timeframe[]).map((tf) => (
-                <button
-                  key={tf}
-                  onClick={() => setPreviewTimeframe(tf)}
-                  className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors ${
-                    previewTimeframe === tf
-                      ? 'bg-[#E51937] text-white'
-                      : isDarkMode
-                      ? 'bg-neutral-800/80 text-neutral-500 dark:text-neutral-400 hover:text-white'
-                      : 'bg-neutral-100 text-neutral-600 hover:text-black'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-
             {/* Official TradingView Live Chart Preview */}
             <div className="h-64 w-full rounded-xl overflow-hidden border border-neutral-800/80 mb-3 bg-black/40">
               <TradingViewWidget
@@ -981,6 +969,16 @@ export const MarketsTab: React.FC<MarketsTabProps> = ({
             setOrderModalParams(null);
           }}
           isDarkMode={isDarkMode}
+        />
+      )}
+
+      {aiModalInstrument && (
+        <AIMarketSignalModal
+          isOpen={Boolean(aiModalInstrument)}
+          onClose={() => setAiModalInstrument(null)}
+          instrument={aiModalInstrument}
+          isDarkMode={isDarkMode}
+          onExecuteTrade={onExecuteMarketOrder}
         />
       )}
     </div>

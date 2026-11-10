@@ -23,6 +23,7 @@ import {
   Maximize2,
   Minimize2,
   Trash2,
+  Sparkles,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types/botTypes';
 
@@ -109,7 +110,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
-      id="hfm-main-header"
+      id="vtm-main-header"
       className={`pwa-safe-top sticky top-0 z-40 w-full border-b px-2 sm:px-4 pb-1.5 sm:pb-2 flex items-center justify-between shadow-xs transition-colors duration-200 ${
         isDarkMode
           ? 'bg-[#111317] border-neutral-800 text-white'
@@ -155,7 +156,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               key={t.id}
               onClick={() => setActiveTab(t.id as ActiveTab)}
-              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                 activeTab === t.id
                   ? 'bg-[#E51937] text-white shadow-xs'
                   : isDarkMode
@@ -371,6 +372,7 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="text-[11px]">{isInstalled ? 'App Ready' : 'Install App'}</span>
           </button>
         )}
+
 
         {/* 1-Click Trading Toggle */}
         <button

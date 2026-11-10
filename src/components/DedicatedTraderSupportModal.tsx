@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   X,
+  ArrowLeft,
   Send,
   Headphones,
   Bot,
@@ -22,6 +23,7 @@ interface DedicatedTraderSupportModalProps {
   onClose: () => void;
   isDarkMode?: boolean;
   currentUser?: any;
+  isPage?: boolean;
 }
 
 const QUICK_PROMPTS = [
@@ -84,6 +86,7 @@ export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalPr
   onClose,
   isDarkMode = true,
   currentUser,
+  isPage = false,
 }) => {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -162,12 +165,16 @@ export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalPr
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-3 bg-black/75 backdrop-blur-xs"
-      onClick={onClose}
+      className={
+        isPage
+          ? 'w-full min-h-[calc(100vh-80px)] flex flex-col py-2'
+          : `fixed inset-0 z-[100] w-full h-screen flex flex-col ${
+              isDarkMode ? 'bg-[#0B0C0E] text-neutral-100' : 'bg-[#F4F6F9] text-slate-900'
+            }`
+      }
     >
       <div
-        onClick={(e) => e.stopPropagation()}
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col h-[88vh] max-h-[700px] ${
+        className={`w-full flex-1 rounded-none sm:rounded-2xl border-0 sm:border overflow-hidden flex flex-col ${
           isDarkMode
             ? 'bg-[#0E1117] border-neutral-800 text-neutral-100'
             : 'bg-white border-slate-200 text-slate-900'
@@ -175,13 +182,25 @@ export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalPr
       >
         {/* Header */}
         <div
-          className={`flex items-center justify-between px-5 py-3.5 border-b shrink-0 ${
+          className={`flex items-center justify-between px-4 sm:px-6 py-4 border-b shrink-0 ${
             isDarkMode
               ? 'border-neutral-800 bg-[#141822]'
               : 'border-slate-200 bg-slate-50'
           }`}
         >
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
             <div className="relative">
               <div
                 className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
@@ -196,7 +215,7 @@ export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalPr
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h2 className={`text-base font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                <h2 className={`text-base sm:text-lg font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                   Dedicated Trader Support
                 </h2>
                 <span
@@ -231,7 +250,7 @@ export const DedicatedTraderSupportModal: React.FC<DedicatedTraderSupportModalPr
         {/* Message Stream */}
         <div
           ref={messagesContainerRef}
-          className={`flex-1 p-4 overflow-y-auto space-y-3.5 ${
+          className={`flex-1 p-4 sm:p-6 overflow-y-auto space-y-3.5 ${
             isDarkMode ? 'bg-[#0E1117]' : 'bg-slate-50/70'
           }`}
         >

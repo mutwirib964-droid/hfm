@@ -1598,17 +1598,16 @@ class SupabaseService {
     let compactMeta = metadata;
     if (metadata && typeof metadata === 'object') {
       compactMeta = { ...metadata };
-      if (Array.isArray(compactMeta.closedTrades) && compactMeta.closedTrades.length > 100) {
-        const manualClosed = compactMeta.closedTrades.filter(
-          (t: any) => !String(t?.id || '').startsWith('cl-bot-')
-        );
-        const botClosed = compactMeta.closedTrades.filter((t: any) =>
-          String(t?.id || '').startsWith('cl-bot-')
-        );
-        compactMeta.closedTrades = [...manualClosed.slice(0, 100), ...botClosed.slice(0, 50)];
+      if (Array.isArray(compactMeta.closedTrades) && compactMeta.closedTrades.length > 200) {
+        compactMeta.closedTrades = compactMeta.closedTrades.slice(0, 200);
       }
-      if (Array.isArray(compactMeta.botTrades) && compactMeta.botTrades.length > 50) {
-        compactMeta.botTrades = compactMeta.botTrades.slice(0, 50);
+      if (Array.isArray(compactMeta.botTrades)) {
+        const openT = compactMeta.botTrades.filter((t: any) => t.status === 'OPEN');
+        const closedT = compactMeta.botTrades
+          .filter((t: any) => t.status === 'CLOSED')
+          .sort((a: any, b: any) => (b.closeTime || b.openTime || 0) - (a.closeTime || a.openTime || 0))
+          .slice(0, 200);
+        compactMeta.botTrades = [...openT, ...closedT];
       }
       if (Array.isArray(compactMeta.notifications) && compactMeta.notifications.length > 30) {
         compactMeta.notifications = compactMeta.notifications.slice(0, 30);
@@ -2094,12 +2093,12 @@ class SupabaseService {
     }
 
     mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
-    const latestClosed = mergedClosed.slice(0, 1000);
+    const latestClosed = mergedClosed.slice(0, 200);
 
     // Atomic UPSERT into public.closed_trades using on_conflict=id and Prefer: resolution=merge-duplicates
     try {
       if (latestClosed.length > 0) {
-        const rows = latestClosed.slice(0, 1000).map((t) => ({
+        const rows = latestClosed.slice(0, 50).map((t) => ({
           id: t.id || `ct-${t.ticket}-${t.closeTime}`,
           user_email: cleanEmail,
           ticket: t.ticket,
@@ -2768,18 +2767,24 @@ class SupabaseService {
       Array.from(dedupTradesMap.values()),
       cleanedRuns
     );
+    const openTrades = cleanedTrades.filter((t: any) => t.status === 'OPEN');
+    const closedTrades = cleanedTrades
+      .filter((t: any) => t.status === 'CLOSED')
+      .sort((a: any, b: any) => (b.closeTime || b.openTime || 0) - (a.closeTime || a.openTime || 0))
+      .slice(0, 200);
+    const cappedBotTrades = [...openTrades, ...closedTrades];
 
     return await this.saveCloudStateRecord(
       user.email,
       'STATE_BOTS',
-      `Synchronized ${cleanedRuns.length} bot runs and ${cleanedTrades.length} bot trades`,
+      `Synchronized ${cleanedRuns.length} bot runs and ${cappedBotTrades.length} bot trades`,
       {
         importedBots:
           Array.isArray(botState.importedBots) && botState.importedBots.length > 0
             ? botState.importedBots
             : this.cachedImportedBots,
         botRuns: cleanedRuns,
-        botTrades: cleanedTrades.slice(0, 1000),
+        botTrades: cappedBotTrades,
         deletedBotIds,
         deletedBotMap: mergedDeletedMap,
         updatedAt: Date.now(),

@@ -532,7 +532,7 @@ export const TradeTab: React.FC<TradeTabProps> = ({
           />
         </div>
 
-        {/* Right: HFM Signature Order Execution Pad */}
+        {/* Right: VTM Signature Order Execution Pad */}
         <div
           className={`border rounded-xl p-3.5 shadow-xl space-y-3.5 transition-colors ${
             isDarkMode

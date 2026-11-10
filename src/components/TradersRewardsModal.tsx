@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   X,
+  ArrowLeft,
   Award,
   DollarSign,
   CheckCircle2,
@@ -18,6 +19,7 @@ interface TradersRewardsModalProps {
   onClose: () => void;
   isDarkMode: boolean;
   currentLotsTraded?: number;
+  isPage?: boolean;
 }
 
 export const TradersRewardsModal: React.FC<TradersRewardsModalProps> = ({
@@ -25,6 +27,7 @@ export const TradersRewardsModal: React.FC<TradersRewardsModalProps> = ({
   onClose,
   isDarkMode = true,
   currentLotsTraded = 42.8,
+  isPage = false,
 }) => {
   const [sliderLots, setSliderLots] = useState<number>(100);
 
@@ -47,28 +50,47 @@ export const TradersRewardsModal: React.FC<TradersRewardsModalProps> = ({
   const weeklyEstimated = estimatedCashback / 4;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+    <div
+      className={
+        isPage
+          ? 'w-full min-h-[calc(100vh-80px)] flex flex-col py-2 animate-in fade-in duration-200'
+          : `fixed inset-0 z-50 w-full h-screen flex flex-col overflow-y-auto animate-in fade-in duration-200 ${
+              isDarkMode ? 'bg-[#0B0C0E] text-neutral-100' : 'bg-[#F4F6F9] text-slate-900'
+            }`
+      }
+    >
       <div
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] ${
+        className={`w-full flex-1 rounded-none sm:rounded-2xl border-0 sm:border overflow-hidden flex flex-col ${
           isDarkMode
-            ? 'bg-[#0E1117] border-neutral-800 text-neutral-100 shadow-[0_20px_50px_rgba(0,0,0,0.8)]'
-            : 'bg-white border-slate-300 text-slate-900 shadow-xl'
+            ? 'bg-[#0E1117] border-neutral-800 text-neutral-100'
+            : 'bg-white border-slate-300 text-slate-900'
         }`}
       >
         {/* Header - Sleek Institutional Branding */}
         <div
-          className={`flex items-center justify-between px-5 py-4 border-b ${
+          className={`flex items-center justify-between px-4 sm:px-6 py-4 border-b ${
             isDarkMode
               ? 'border-neutral-800 bg-gradient-to-r from-[#141822] via-[#10131A] to-[#141822]'
               : 'border-slate-200 bg-slate-50'
           }`}
         >
           <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500/20 via-emerald-500/15 to-transparent border border-amber-500/30 flex items-center justify-center text-amber-500 shadow-inner">
               <Award className="w-5 h-5 stroke-[2.2]" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h2 className={`text-base sm:text-lg font-black tracking-tight font-sans ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                   Trader Rewards &amp; Cashbacks
                 </h2>
@@ -94,8 +116,8 @@ export const TradersRewardsModal: React.FC<TradersRewardsModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-5 overflow-y-auto space-y-4 no-scrollbar">
+        {/* Page Body */}
+        <div className="p-4 sm:p-6 lg:p-8 flex-1 overflow-y-auto space-y-5 no-scrollbar">
           {/* Key Program Qualification Banner */}
           <div
             className={`p-4 rounded-xl border text-xs space-y-2 ${

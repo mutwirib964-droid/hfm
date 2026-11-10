@@ -202,7 +202,13 @@ export type ActiveTab =
   | 'hfcopy'
   | 'wallet'
   | 'account'
-  | 'instrument-detail';
+  | 'instrument-detail'
+  | 'calculator'
+  | 'rewards'
+  | 'referral'
+  | 'support'
+  | 'alerts'
+  | 'ai-analysis';
 
 export interface ActionPopup {
   id: string;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   X,
+  ArrowLeft,
   Share2,
   Copy,
   Check,
@@ -27,6 +28,7 @@ interface ReferralModalProps {
   isDarkMode?: boolean;
   currentUser?: UserAuthProfile | null;
   onClaimCommissionToWallet: (amount: number) => void;
+  isPage?: boolean;
 }
 
 export const ReferralModal: React.FC<ReferralModalProps> = ({
@@ -35,6 +37,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
   isDarkMode = true,
   currentUser,
   onClaimCommissionToWallet,
+  isPage = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'overview' | 'referrals'>('overview');
   const [copiedLink, setCopiedLink] = useState(false);
@@ -144,23 +147,42 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
   const remainingUsd = Math.max(0, Number((MIN_CLAIM_AMOUNT_USD - state.availableCommissionUsd).toFixed(2)));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/80 backdrop-blur-xs animate-in fade-in duration-200">
+    <div
+      className={
+        isPage
+          ? 'w-full min-h-[calc(100vh-80px)] flex flex-col py-2 animate-in fade-in duration-200'
+          : `fixed inset-0 z-50 w-full h-screen flex flex-col overflow-y-auto animate-in fade-in duration-200 ${
+              isDarkMode ? 'bg-[#0B0C0E] text-neutral-100' : 'bg-[#F4F6F9] text-slate-900'
+            }`
+      }
+    >
       <div
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[92vh] min-w-0 ${
+        className={`w-full flex-1 rounded-none sm:rounded-2xl border-0 sm:border overflow-hidden flex flex-col min-w-0 ${
           isDarkMode
-            ? 'bg-[#0E1117] border-neutral-800 text-neutral-100 shadow-[0_20px_50px_rgba(0,0,0,0.8)]'
-            : 'bg-white border-slate-300 text-slate-900 shadow-xl'
+            ? 'bg-[#0E1117] border-neutral-800 text-neutral-100'
+            : 'bg-white border-slate-300 text-slate-900'
         }`}
       >
         {/* Header */}
         <div
-          className={`flex items-center justify-between gap-2 px-3.5 sm:px-5 py-3.5 sm:py-4 border-b ${
+          className={`flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-b ${
             isDarkMode
               ? 'border-neutral-800 bg-gradient-to-r from-[#141822] via-[#10131A] to-[#141822]'
               : 'border-slate-200 bg-slate-50'
           }`}
         >
-          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <button
+              onClick={onClose}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
             <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-br from-emerald-500/25 via-blue-500/15 to-transparent border border-emerald-500/30 flex items-center justify-center text-emerald-500 shadow-inner shrink-0">
               <Gift className="w-4 h-4 sm:w-5 sm:h-5 stroke-[2.2]" />
             </div>
@@ -196,7 +218,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
 
         {/* Tab Switcher */}
         <div
-          className={`flex items-center gap-1 px-3.5 sm:px-5 pt-2.5 border-b text-xs font-bold overflow-x-auto no-scrollbar ${
+          className={`flex items-center gap-1 px-4 sm:px-6 pt-2.5 border-b text-xs font-bold overflow-x-auto no-scrollbar ${
             isDarkMode ? 'border-neutral-800 bg-[#12151D]' : 'border-slate-200 bg-slate-100/60'
           }`}
         >
@@ -230,7 +252,7 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-3.5 sm:p-5 overflow-y-auto overflow-x-hidden space-y-3.5 sm:space-y-4 no-scrollbar min-w-0">
+        <div className="p-4 sm:p-6 lg:p-8 flex-1 overflow-y-auto overflow-x-hidden space-y-4 sm:space-y-6 no-scrollbar min-w-0">
           {/* Notifications */}
           {claimSuccessMsg && (
             <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs flex items-center gap-2.5 animate-fadeIn">

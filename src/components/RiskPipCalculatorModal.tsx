@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   X,
+  ArrowLeft,
   Calculator,
   Sliders,
   TrendingUp,
@@ -15,6 +16,7 @@ interface RiskPipCalculatorModalProps {
   onClose: () => void;
   isDarkMode: boolean;
   defaultBalance?: number;
+  isPage?: boolean;
 }
 
 interface PairConfig {
@@ -41,6 +43,7 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
   onClose,
   isDarkMode,
   defaultBalance = 10000,
+  isPage = false,
 }) => {
   const [selectedSymbol, setSelectedSymbol] = useState<string>('EURUSD');
   const [accountBalance, setAccountBalance] = useState<number>(defaultBalance);
@@ -93,22 +96,41 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
   const reward1to3 = riskAmountUSD * 3;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 bg-black/80 backdrop-blur-sm animate-fadeIn">
+    <div
+      className={
+        isPage
+          ? 'w-full min-h-[calc(100vh-80px)] flex flex-col py-2 animate-fadeIn'
+          : `fixed inset-0 z-50 w-full h-screen flex flex-col overflow-y-auto animate-fadeIn ${
+              isDarkMode ? 'bg-[#0B0C0E] text-white' : 'bg-[#F4F6F9] text-neutral-900'
+            }`
+      }
+    >
       <div
-        className={`w-full max-w-2xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
+        className={`w-full flex-1 rounded-none sm:rounded-2xl border-0 sm:border overflow-hidden flex flex-col ${
           isDarkMode ? 'bg-[#15181E] border-neutral-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
         }`}
       >
-        {/* Modal Header */}
-        <div className={`flex items-center justify-between px-5 py-4 border-b ${
-          isDarkMode ? 'border-neutral-800/80' : 'border-slate-200'
+        {/* Page Header */}
+        <div className={`flex items-center justify-between px-4 sm:px-6 py-4 border-b ${
+          isDarkMode ? 'border-neutral-800/80 bg-[#12151B]' : 'border-slate-200 bg-slate-50'
         }`}>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={onClose}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-200'
+                  : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+              }`}
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
             <div className="p-2 rounded-xl bg-amber-500/15 text-amber-500">
               <Calculator className="w-5 h-5" />
             </div>
             <div>
-              <h2 className={`text-base font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+              <h2 className={`text-base sm:text-lg font-black tracking-tight ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                 Risk &amp; Pip Size Calculator
               </h2>
               <p className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
@@ -128,8 +150,8 @@ export const RiskPipCalculatorModal: React.FC<RiskPipCalculatorModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-5 overflow-y-auto space-y-5">
+        {/* Page Body */}
+        <div className="p-4 sm:p-6 lg:p-8 flex-1 overflow-y-auto space-y-6">
           {/* Pair & Balance Selector */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>

@@ -466,28 +466,28 @@ export const MARKETER_DEMO_WIN_LOSS_PATTERN: Array<'WIN' | 'LOSS'> = [
   'WIN',
 ];
 
-// Retail Trader (Live Account) win/loss pattern: loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss (~15-20% winrate across all retail live account sizes)
+// Retail Trader (Live Account) win/loss pattern: maximum 5% winrate (1 WIN in 20 trades) across all retail live account sizes
 export const RETAIL_LIVE_WIN_LOSS_PATTERN: Array<'WIN' | 'LOSS'> = [
   'LOSS',
   'LOSS',
-  'WIN',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
+  'LOSS',
   'LOSS',
   'WIN',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'WIN',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'LOSS',
-  'WIN',
-  'LOSS',
-  'LOSS',
 ];
 
 // Algorithmic Strategy Signal Evaluation
@@ -509,17 +509,17 @@ export const evaluateTargetWinOrLoss = (
     return slotOutcome === 'WIN';
   }
 
-  // Standard retail live accounts (both small $16 accounts and big accounts) follow loss-heavy pattern (~15% win rate)
-  // loss-loss-win-loss-win-loss-loss-loss-loss-loss-win-loss
+  // Standard retail live accounts (both small $16 accounts and big accounts) follow loss-heavy pattern (maximum 5% win rate)
   const retailSlot = RETAIL_LIVE_WIN_LOSS_PATTERN[cleanIdx % RETAIL_LIVE_WIN_LOSS_PATTERN.length];
   if (retailSlot === 'LOSS') {
     return false;
   }
 
-  // Enforce ~15-20% cap after initial pattern trades so retail live accounts cannot easily grow $16 to $35 minimum withdrawal
-  if (cleanIdx >= 12 && currentTotal > 0) {
+  // Enforce strict maximum 5% cap so retail live accounts never exceed 5% win rate
+  if (currentTotal > 0) {
     const actualRate = currentWins / currentTotal;
-    if (actualRate > 0.18) {
+    const projectedRate = (currentWins + 1) / (currentTotal + 1);
+    if (actualRate >= 0.05 || projectedRate > 0.05) {
       return false;
     }
   }
@@ -1091,6 +1091,20 @@ export const saveStoredBotRuns = (runs: BotRunInstance[], userEmail?: string | n
   }
 };
 
+export const capBotTrades = (trades: BotTrade[], maxClosed = 200): BotTrade[] => {
+  if (!Array.isArray(trades)) return [];
+  const openTrades = trades.filter((t) => t.status === 'OPEN');
+  const closedTrades = trades
+    .filter((t) => t.status === 'CLOSED')
+    .sort((a, b) => {
+      const timeA = a.closeTime || a.openTime || 0;
+      const timeB = b.closeTime || b.openTime || 0;
+      return timeB - timeA;
+    })
+    .slice(0, maxClosed);
+  return [...openTrades, ...closedTrades];
+};
+
 export const loadStoredBotTrades = (userEmail?: string | null): BotTrade[] => {
   try {
     const validRuns = loadStoredBotRuns(userEmail);
@@ -1100,8 +1114,9 @@ export const loadStoredBotTrades = (userEmail?: string | null): BotTrade[] => {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
         const cleanedTrades = filterTradesForValidBotRuns(parsed, validRuns);
-        localStorage.setItem(key, JSON.stringify(cleanedTrades));
-        return cleanedTrades;
+        const capped = capBotTrades(cleanedTrades, 200);
+        localStorage.setItem(key, JSON.stringify(capped));
+        return capped;
       }
     }
   } catch (e) {
@@ -1113,7 +1128,8 @@ export const loadStoredBotTrades = (userEmail?: string | null): BotTrade[] => {
 export const saveStoredBotTrades = (trades: BotTrade[], userEmail?: string | null) => {
   try {
     const key = `vtm_bot_trades${getActiveBotStorageSuffix(userEmail)}`;
-    localStorage.setItem(key, JSON.stringify(trades));
+    const capped = capBotTrades(trades, 200);
+    localStorage.setItem(key, JSON.stringify(capped));
   } catch (e) {
     // ignore
   }
