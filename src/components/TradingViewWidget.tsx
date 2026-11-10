@@ -10,6 +10,14 @@ import {
   PenTool,
 } from 'lucide-react';
 
+declare global {
+  interface Window {
+    TradingView?: {
+      widget: new (options: Record<string, unknown>) => void;
+    };
+  }
+}
+
 interface TradingViewWidgetProps {
   symbol: string;
   timeframe: Timeframe;
@@ -72,19 +80,15 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
 
   const toggleDrawingToolbar = useCallback(() => {
     const next = !showDrawingToolbar;
-    try {
-      localStorage.setItem(DRAW_TOOLBAR_KEY, next ? 'true' : 'false');
-      window.dispatchEvent(new CustomEvent('vtm_chart_draw_toolbar_changed', { detail: next }));
-    } catch {}
-
     if (onToggleExternalDrawingToolbar) {
       onToggleExternalDrawingToolbar();
     } else {
       setInternalShowDrawingToolbar(next);
+      try {
+        localStorage.setItem(DRAW_TOOLBAR_KEY, next ? 'true' : 'false');
+        window.dispatchEvent(new CustomEvent('vtm_chart_draw_toolbar_changed', { detail: next }));
+      } catch {}
     }
-    // Force immediate iframe reload with updated hidesidetoolbar parameter
-    setIsLoading(true);
-    setIframeKey((prev) => prev + 1);
   }, [showDrawingToolbar, onToggleExternalDrawingToolbar]);
 
   // Synchronize drawing toolbar across all mounted chart instances
@@ -93,8 +97,6 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
       const customEvent = e as CustomEvent<boolean>;
       if (typeof customEvent.detail === 'boolean') {
         setInternalShowDrawingToolbar(customEvent.detail);
-        setIsLoading(true);
-        setIframeKey((prev) => prev + 1);
       }
     };
     window.addEventListener('vtm_chart_draw_toolbar_changed', handleSync);
@@ -102,7 +104,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   }, []);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const tvWidgetContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Live real-time tick detection for top badges (disabled when market is closed)
   const prevBidRef = React.useRef(bid);
@@ -166,30 +168,71 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
     return TradingViewPriceService.getTVSymbolForEmbed(symbol);
   }, [symbol]);
 
-  // Official TradingView Widget URL with native Drawing Toolbar (hidesidetoolbar=0) and native Indicators button (next to +)
-  // Native drawings are anchored to exact candlestick timestamps and prices, so drawing on 15m properly scales to 15 candles on 1m
-  const widgetUrl = useMemo(() => {
-    const params = new URLSearchParams({
-      frameElementId: `tv_widget_${symbol.replace(/[^A-Za-z0-9]/g, '')}`,
-      symbol: tvSymbol,
-      interval: tvInterval,
-      hidesidetoolbar: showDrawingToolbar ? '0' : '1',
-      hide_side_toolbar: showDrawingToolbar ? '0' : '1',
-      symboledit: '0',
-      saveimage: '0',
-      toolbarbg: isDarkMode ? '181B20' : 'F8FAFC',
-      studies: JSON.stringify([]),
-      theme: isDarkMode ? 'dark' : 'light',
-      style: '1', // Candlesticks
-      timezone: 'Etc/UTC',
-      withdateranges: '1',
-      showintervals: '1',
-      enablepublishing: 'false',
-      locale: 'en',
-    });
+  // Initialize official TradingView Advanced Chart Widget using s3.tradingview.com/tv.js SDK
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
 
-    return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
-  }, [tvSymbol, tvInterval, isDarkMode, symbol, showDrawingToolbar]);
+    const scriptId = 'tradingview-tv-js-script';
+    let script = document.getElementById(scriptId) as HTMLScriptElement | null;
+
+    const initWidget = () => {
+      if (!isMounted || !tvWidgetContainerRef.current || !window.TradingView) return;
+
+      tvWidgetContainerRef.current.innerHTML = '';
+      const chartDiv = document.createElement('div');
+      const uniqueId = `tv_chart_${symbol.replace(/[^A-Za-z0-9]/g, '')}_${Math.random().toString(36).substring(2, 7)}`;
+      chartDiv.id = uniqueId;
+      chartDiv.style.width = '100%';
+      chartDiv.style.height = '100%';
+      tvWidgetContainerRef.current.appendChild(chartDiv);
+
+      try {
+        new window.TradingView.widget({
+          autosize: true,
+          symbol: tvSymbol,
+          interval: tvInterval,
+          timezone: 'Etc/UTC',
+          theme: isDarkMode ? 'dark' : 'light',
+          style: '1', // Candlesticks
+          locale: 'en',
+          toolbar_bg: isDarkMode ? '#181B20' : '#F8FAFC',
+          enable_publishing: false,
+          hide_side_toolbar: !showDrawingToolbar, // false = SHOW left drawing toolbar; true = HIDE
+          allow_symbol_change: false,
+          container_id: uniqueId,
+          withdateranges: true,
+          hide_legend: false,
+          save_image: false,
+        });
+      } catch (err) {
+        console.warn('Failed to initialize TradingView tv.js widget:', err);
+      }
+
+      setTimeout(() => {
+        if (isMounted) setIsLoading(false);
+      }, 500);
+    };
+
+    if (!script) {
+      script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://s3.tradingview.com/tv.js';
+      script.async = true;
+      script.onload = () => {
+        if (isMounted) initWidget();
+      };
+      document.head.appendChild(script);
+    } else if (window.TradingView) {
+      initWidget();
+    } else {
+      script.addEventListener('load', initWidget);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [tvSymbol, tvInterval, isDarkMode, showDrawingToolbar, iframeKey, symbol]);
 
   const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
@@ -372,22 +415,10 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
       )}
 
       {/* Main Chart: Real Native TradingView Chart with Native Drawing Toolbar & Native Indicators */}
-      <div className="relative flex-1 w-full h-full flex flex-col overflow-hidden">
-        <iframe
-          ref={iframeRef}
-          key={`tv_iframe_${symbol}_${isDarkMode ? 'dark' : 'light'}_${showDrawingToolbar ? 'draw_on' : 'draw_off'}_${iframeKey}`}
-          src={widgetUrl}
-          onLoad={() => {
-            setIsLoading(false);
-          }}
-          className="w-full h-full flex-1 border-0"
-          style={{ minHeight: '300px', display: 'block' }}
-          title={`TradingView Chart - ${symbol}`}
-          allow="fullscreen; cross-origin-isolated"
-          referrerPolicy="no-referrer"
-          sandbox="allow-scripts allow-same-origin allow-forms"
-        />
-      </div>
+      <div
+        ref={tvWidgetContainerRef}
+        className="relative flex-1 w-full h-full overflow-hidden min-h-[300px]"
+      />
     </div>
   );
 };

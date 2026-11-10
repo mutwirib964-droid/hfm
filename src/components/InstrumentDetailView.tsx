@@ -67,15 +67,13 @@ export const InstrumentDetailView: React.FC<InstrumentDetailViewProps> = ({
   }, []);
 
   const handleToggleDrawingToolbar = useCallback(() => {
-    setShowDrawingToolbar((prev) => {
-      const next = !prev;
-      try {
-        localStorage.setItem('vtm_chart_draw_toolbar', next ? 'true' : 'false');
-        window.dispatchEvent(new CustomEvent('vtm_chart_draw_toolbar_changed', { detail: next }));
-      } catch {}
-      return next;
-    });
-  }, []);
+    const next = !showDrawingToolbar;
+    setShowDrawingToolbar(next);
+    try {
+      localStorage.setItem('vtm_chart_draw_toolbar', next ? 'true' : 'false');
+      window.dispatchEvent(new CustomEvent('vtm_chart_draw_toolbar_changed', { detail: next }));
+    } catch {}
+  }, [showDrawingToolbar]);
 
   const [showPriceAlertModal, setShowPriceAlertModal] = useState(false);
   const [quickOrderSide, setQuickOrderSide] = useState<'BUY' | 'SELL' | null>(null);

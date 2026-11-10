@@ -314,39 +314,6 @@ export const checkInstrumentMarketHours = (
     }
   }
 
-  // Weekdays (Monday through Thursday): Check daily maintenance / rollover breaks
-  if (utcDay >= 1 && utcDay <= 4) {
-    // Metals & Commodities: Daily break from 21:00 to 22:00 UTC
-    if (upperCat.includes('METAL') || upperCat.includes('COMMODIT')) {
-      if (timeVal >= 21.0 && timeVal < 22.0) {
-        return {
-          isOpen: false,
-          status: 'CLOSED',
-          reason: 'Daily Commodity Clearing & Rollover Break (21:00-22:00 UTC)',
-          category: (category || 'Commodities') as any,
-          nextOpenTime: '22:00 UTC',
-          sessionText: 'Daily Clearing Break',
-          nextOpenText: 'Resumes at 22:00 UTC',
-        };
-      }
-    }
-
-    // Forex: Brief daily rollover break 21:59 to 22:05 UTC
-    if (upperCat.includes('FOREX')) {
-      if (utcHour === 21 && utcMinute >= 59) {
-        return {
-          isOpen: false,
-          status: 'CLOSED',
-          reason: 'Daily Bank Settlement Rollover (21:59 - 22:05 UTC)',
-          category: 'Forex',
-          nextOpenTime: '22:05 UTC',
-          sessionText: 'Bank Settlement Rollover',
-          nextOpenText: 'Resumes at 22:05 UTC',
-        };
-      }
-    }
-  }
-
   return {
     isOpen: true,
     status: 'OPEN',

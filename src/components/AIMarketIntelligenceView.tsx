@@ -410,7 +410,7 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                       {/* Short 1-Line Reason */}
                       <p className="text-[10px] text-slate-600 dark:text-neutral-300 truncate font-sans">
                         <span className="font-semibold text-slate-800 dark:text-neutral-200">Reason: </span>
-                        {isBuy ? 'Order-flow expansion above liquidity floor' : 'Rejection under structural resistance'}
+                        {opp.technicalRationale || (isBuy ? 'Bullish order-flow expansion above liquidity floor' : 'Bearish structural rejection under resistance')}
                       </p>
                     </div>
                   </div>
@@ -717,7 +717,7 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                       {/* Minimized 1-Line Reason */}
                       <p className="text-[10px] text-slate-600 dark:text-neutral-300 truncate font-sans">
                         <span className="font-semibold text-slate-800 dark:text-neutral-200">Reason: </span>
-                        {isBuy ? 'Order-flow expansion above liquidity floor' : 'Rejection under structural resistance'}
+                        {signal.technicalRationale || (isBuy ? 'Bullish order-flow expansion above liquidity floor' : 'Bearish structural rejection under resistance')}
                       </p>
                     </div>
                   </div>
@@ -782,7 +782,7 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
                           {sig.takeProfit1}
                         </td>
                         <td className="py-1.5 px-3 font-sans text-[10px] text-slate-600 dark:text-neutral-300 max-w-xs truncate">
-                          {isBuy ? 'Order-flow expansion above liquidity floor' : 'Rejection under structural resistance'}
+                          {sig.technicalRationale || (isBuy ? 'Bullish order-flow expansion above liquidity floor' : 'Bearish structural rejection under resistance')}
                         </td>
                         <td className="py-1.5 px-2 text-right">
                           <div className="flex items-center justify-end gap-1 font-sans">

@@ -2117,15 +2117,8 @@ export default function App() {
           anyItemChanged = true;
 
           if (!mStatus.isOpen) {
-            return {
-              ...inst,
-              bid: newBid,
-              ask: newAsk,
-              spread: nextSpread,
-              change24h: quote.change24h,
-              high24h: quote.high24h,
-              low24h: quote.low24h,
-            };
+            // Market is CLOSED! Keep prices and spreads strictly frozen at closing levels
+            return inst;
           }
 
           // Keep sparkline anchored smoothly around live newBid with natural multi-wave curvature so it never flattens
@@ -2199,6 +2192,12 @@ export default function App() {
       setInstruments((prevInsts) => {
         let hasAnyChanged = false;
         const nextInsts = prevInsts.map((item) => {
+          const mStatus = checkInstrumentMarketHours(item.symbol, item.category);
+          if (!mStatus.isOpen) {
+            // Market is CLOSED! Keep prices and spreads strictly frozen at closing levels
+            return item;
+          }
+
           const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
           const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
           const lockedSpread = Number(

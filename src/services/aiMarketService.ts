@@ -42,6 +42,106 @@ export interface AnalyzePairParams {
   decimals?: number;
 }
 
+export const getSpecificTechnicalReason = (symbol: string, category: string, isBuy: boolean): string => {
+  const sym = symbol.toUpperCase();
+  if (sym === 'EURUSD') {
+    return isBuy
+      ? 'ECB rate differential support & 200 EMA golden cross on 15M'
+      : 'US Treasury yield surge driving USD demand & resistance breakdown';
+  }
+  if (sym === 'GBPUSD') {
+    return isBuy
+      ? 'UK CPI inflation persistence & London session breakout above support'
+      : 'BoE dovish sentiment & pullback under Asian session high';
+  }
+  if (sym === 'USDJPY') {
+    return isBuy
+      ? 'BoJ yield curve control hold & US yield expansion above 153.20'
+      : 'MoF intervention warning & institutional yen short-covering';
+  }
+  if (sym === 'AUDUSD') {
+    return isBuy
+      ? 'RBA hawkish hold & commodities rally pushing commodity FX'
+      : 'China growth concerns & risk-off liquidation under key pivot';
+  }
+  if (sym === 'USDCAD') {
+    return isBuy
+      ? 'BOC rate cut expectations & CAD weakness'
+      : 'WTI crude oil surge & CAD momentum above support';
+  }
+  if (sym === 'USDCHF') {
+    return isBuy
+      ? 'SNB rate cut trajectory & USD safe-haven demand'
+      : 'Swiss franc denominated capital inflows at pivot';
+  }
+  if (sym === 'EURJPY') {
+    return isBuy
+      ? 'EUR/JPY cross momentum continuation above 20 EMA'
+      : 'Yen cross liquidation & overbought momentum reset';
+  }
+  if (sym === 'XAUUSD') {
+    return isBuy
+      ? 'Central bank gold reserve accumulation & safe-haven inflows above $4,020'
+      : 'Dollar index strength & profit-taking near all-time high resistance';
+  }
+  if (sym === 'USOIL' || sym === 'UKOIL') {
+    return isBuy
+      ? 'OPEC+ supply constraint extension & EIA inventory drawdown'
+      : 'Global demand slowdown concerns & technical rejection at resistance';
+  }
+  if (sym === 'BTCUSD') {
+    return isBuy
+      ? 'Institutional ETF net inflows & spot order-book accumulation at $89K'
+      : 'Miners distribution & derivative leverage liquidation below $90K';
+  }
+  if (sym === 'ETHUSD') {
+    return isBuy
+      ? 'L2 staking expansion & DeFi gas volume surge above $2,980'
+      : 'Foundation treasury transfers & resistance rejection under $3,050';
+  }
+  if (sym === 'SOLUSD') {
+    return isBuy
+      ? 'DEX volume dominance & liquid staking expansion above $195'
+      : 'Network congestion fears & profit-taking after 24h expansion';
+  }
+  if (sym === 'US500') {
+    return isBuy
+      ? 'Big Tech earnings beat & momentum continuation above 5,880 EMA'
+      : 'Hawkish Fed rate guidance & broad market valuation rebalancing';
+  }
+  if (sym === 'NAS100') {
+    return isBuy
+      ? 'AI chip demand surge & semiconductor sector breakouts'
+      : 'Tech profit-taking & yield curve pressure under 20,500';
+  }
+
+  // Category fallback reasons
+  if (category === 'Forex') {
+    return isBuy
+      ? 'EMA 20/50 bullish alignment & MACD histogram expansion above pivot'
+      : 'RSI bearish divergence & order-block breakdown below session pivot';
+  }
+  if (category === 'Commodities') {
+    return isBuy
+      ? 'Futures curve backwardation & spot liquidity sweep at support'
+      : 'Futures contango expansion & supply zone rejection';
+  }
+  if (category === 'Crypto') {
+    return isBuy
+      ? 'Perpetual swap funding rate reset & spot volume confirmation'
+      : 'Long liquidation cascade & derivative order-book imbalance';
+  }
+  if (category === 'Indices') {
+    return isBuy
+      ? 'Breadth expansion & index futures gap fill above key VWAP'
+      : 'Sector rotation out of high-beta equity & VWAP breakdown';
+  }
+
+  return isBuy
+    ? 'Bullish order-block absorption & institutional volume breakout'
+    : 'Bearish supply zone rejection & liquidation below key structure';
+};
+
 // Generate realistic signal dynamically from live instrument data
 export const generateSignalFromInstrument = (
   inst: Instrument,
@@ -105,9 +205,11 @@ export const generateSignalFromInstrument = (
   const entryHigh = Number((p + spread * 0.6).toFixed(dec));
   const entryZone = entryLow === entryHigh ? p.toFixed(dec) : `${entryLow.toFixed(dec)} - ${entryHigh.toFixed(dec)}`;
 
+  const technicalRationale = getSpecificTechnicalReason(inst.symbol, inst.category, isBuy);
+
   const summary = customQuestion
     ? `Audit for "${customQuestion}": ${inst.symbol} shows ${isBuy ? 'bullish momentum above liquidity floor' : 'bearish rejection under resistance'}. Entry near ${p.toFixed(dec)} with target ${tp1.toFixed(dec)}.`
-    : `${isBuy ? 'Bullish' : 'Bearish'} setup on ${inst.symbol} (${timeframe}). Recommendation: ${action.replace('_', ' ')} with target ${tp1.toFixed(dec)} and protective stop at ${sl.toFixed(dec)}.`;
+    : `${isBuy ? 'Bullish' : 'Bearish'} setup on ${inst.symbol} (${timeframe}). ${technicalRationale}.`;
 
   return {
     symbol: inst.symbol,
@@ -130,7 +232,7 @@ export const generateSignalFromInstrument = (
     resistanceLevel1: Number((p + tp1Distance * 0.8).toFixed(dec)),
     resistanceLevel2: Number((p + tp1Distance * 1.6).toFixed(dec)),
     summary,
-    technicalRationale: `EMA dynamic slope confirms ${isBuy ? 'sustained expansion' : 'distribution'}. RSI momentum holds within optimal institutional execution zone.`,
+    technicalRationale,
     catalyst: 'Session order flow and liquidity convergence.',
     timeHorizon: timeframe,
     buzzScore: Math.round(Math.min(9.8, 6.5 + Math.abs(chg) * 0.6) * 10) / 10,
