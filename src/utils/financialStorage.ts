@@ -718,10 +718,13 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
       // ignore
     }
 
-    // 2. Ensure core seeded accounts exist
+    // 2. Ensure core seeded accounts exist and enforce authoritative seeded roles
     Object.entries(SEEDED_PLATFORM_USERS).forEach(([em, seedProfile]) => {
       if (!registry[em] || !isValidUserUid(registry[em].id)) {
         registry[em] = { ...seedProfile, ...(registry[em] || {}), id: seedProfile.id };
+        changed = true;
+      } else if (seedProfile.role && registry[em].role !== seedProfile.role) {
+        registry[em] = { ...registry[em], role: seedProfile.role };
         changed = true;
       }
     });
