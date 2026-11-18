@@ -383,14 +383,7 @@ export default function App() {
           if (currentUserRef.current?.email) saveStoredBotTrades(updated, currentUserRef.current.email);
           return updated;
         });
-        setPositions((prevPositions) => {
-          if (prevPositions.length === 0 || prevPositions.every((p) => p.targetOutcome === 'WIN')) {
-            return prevPositions;
-          }
-          const updated = prevPositions.map((p) => ({ ...p, targetOutcome: 'WIN' as const }));
-          positionsRef.current = updated;
-          return updated;
-        });
+        /* Manual trading is 100% market-driven and independent of user role */
       } else {
         // When set back to Retail Trader ('normal'), pause any Marketer-exclusive bots (Wizard / Vortex)
         setBotRuns((prevRuns) => {
@@ -3222,22 +3215,7 @@ export default function App() {
       decimals: inst.decimals,
     });
 
-    // Evaluate target outcome for manual trading:
-    // - All Demo accounts (all users) & Marketers on Real/Live accounts: >95% win rate (identical high win rate)
-    // - Retail trader on Real/Live account: maximum 5% win rate
     const activeAccForManual = selectedAccountRef.current || selectedAccount;
-    const isDemoManual = (activeAccForManual?.type || selectedAccount?.type) === 'Demo';
-    const manualClosedHistory = closedTrades.filter((ct) => !String(ct.id).startsWith('cl-bot-'));
-    const manualWinsCount = manualClosedHistory.filter((ct) => (ct.pnl || 0) > 0).length;
-    const isManualTargetWin = evaluateTargetWinOrLoss(
-      userRoleRef.current,
-      undefined,
-      isDemoManual,
-      '90.0%',
-      manualWinsCount,
-      manualClosedHistory.length
-    );
-
     const ownerAccountId = params.accountId || activeAccForManual?.id;
     const ownerAccountNumber = params.accountNumber || activeAccForManual?.accountNumber;
 
@@ -3257,7 +3235,6 @@ export default function App() {
       swap: 0,
       commission: 0,
       openTime: Date.now(),
-      targetOutcome: isManualTargetWin ? 'WIN' : 'LOSS',
       accountId: ownerAccountId,
       accountNumber: ownerAccountNumber,
     };
