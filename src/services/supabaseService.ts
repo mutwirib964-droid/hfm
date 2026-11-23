@@ -12,6 +12,8 @@ import {
   loadUserFinancials,
   findRegisteredUser,
   getAllRegisteredUsers,
+  AdminUserOpenTradeCounts,
+  extractOpenTradeCountsFromCloudPayloads,
 } from '../utils/financialStorage';
 import { TradingAccount, Transaction, Position, PendingOrder, ClosedTrade } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -793,6 +795,7 @@ class SupabaseService {
   public async fetchAllPlatformUsersAndFinances(): Promise<{
     users: UserAuthProfile[];
     financesByEmail: Record<string, UserFinancialState>;
+    openTradesByEmail?: Record<string, AdminUserOpenTradeCounts>;
   } | null> {
     if (!this.config) return null;
 
@@ -800,9 +803,11 @@ class SupabaseService {
       let usersRows: any[] = [];
       let finRows: any[] = [];
       let actRows: any[] = [];
+      let cloudStateRows: any[] = [];
+      let cloudStatesFetchedOk = false;
 
       if (!this.isQuotaRestricted()) {
-        const [usersRes, finRes, actRes] = await Promise.all([
+        const [usersRes, finRes, actRes, cloudStatesRes] = await Promise.all([
           fetch(
             `${this.config.url}/rest/v1/vtm_registered_users?select=*&order=created_at.desc&limit=5000`,
             {
@@ -836,15 +841,29 @@ class SupabaseService {
               signal: AbortSignal.timeout(6000),
             }
           ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_cloud_states?state_key=in.(STATE_TRADES,STATE_BOTS)&select=user_email,state_key,data&limit=5000`,
+            {
+              method: 'GET',
+              headers: {
+                apikey: this.config.anonKey,
+                Authorization: `Bearer ${this.config.anonKey}`,
+              },
+              signal: AbortSignal.timeout(6000),
+            }
+          ).catch(() => null),
         ]);
 
         this.checkResponseQuota(usersRes);
         this.checkResponseQuota(finRes);
         this.checkResponseQuota(actRes);
+        this.checkResponseQuota(cloudStatesRes);
 
         usersRows = usersRes && usersRes.ok ? await usersRes.json() : [];
         finRows = finRes && finRes.ok ? await finRes.json() : [];
         actRows = actRes && actRes.ok ? await actRes.json() : [];
+        cloudStatesFetchedOk = Boolean(cloudStatesRes && cloudStatesRes.ok);
+        cloudStateRows = cloudStatesFetchedOk ? await cloudStatesRes!.json() : [];
 
         if (Array.isArray(usersRows) && usersRows.length > 0) {
           fetch('/api/platform-db', {
@@ -1333,9 +1352,74 @@ class SupabaseService {
         return (Number.isFinite(tsB) ? tsB : 0) - (Number.isFinite(tsA) ? tsA : 0);
       });
 
+      let openTradesByEmail: Record<string, AdminUserOpenTradeCounts> | undefined;
+      if (cloudStatesFetchedOk && Array.isArray(cloudStateRows)) {
+        const groupedByEmail: Record<string, { tradesData?: any; botsData?: any }> = {};
+        cloudStateRows.forEach((row: any) => {
+          if (!row || !row.user_email || !row.data) return;
+          const rawEmail = String(row.user_email).trim().toLowerCase();
+          const canonicalEmail = this.isMasterAdminEmail(rawEmail)
+            ? 'mutwirib964@gmail.com'
+            : rawEmail;
+          if (!groupedByEmail[canonicalEmail]) {
+            groupedByEmail[canonicalEmail] = {};
+          }
+          if (row.state_key === 'STATE_TRADES') {
+            const prev = groupedByEmail[canonicalEmail].tradesData;
+            if (!prev) {
+              groupedByEmail[canonicalEmail].tradesData = row.data;
+            } else {
+              groupedByEmail[canonicalEmail].tradesData = {
+                ...prev,
+                positions: [
+                  ...(Array.isArray(prev.positions) ? prev.positions : []),
+                  ...(Array.isArray(row.data.positions) ? row.data.positions : []),
+                ],
+                closedTrades: [
+                  ...(Array.isArray(prev.closedTrades) ? prev.closedTrades : []),
+                  ...(Array.isArray(row.data.closedTrades) ? row.data.closedTrades : []),
+                ],
+              };
+            }
+          } else if (row.state_key === 'STATE_BOTS') {
+            const prev = groupedByEmail[canonicalEmail].botsData;
+            if (!prev) {
+              groupedByEmail[canonicalEmail].botsData = row.data;
+            } else {
+              groupedByEmail[canonicalEmail].botsData = {
+                ...prev,
+                botTrades: [
+                  ...(Array.isArray(prev.botTrades) ? prev.botTrades : []),
+                  ...(Array.isArray(row.data.botTrades) ? row.data.botTrades : []),
+                ],
+                deletedBotIds: Array.from(
+                  new Set([
+                    ...(Array.isArray(prev.deletedBotIds) ? prev.deletedBotIds : []),
+                    ...(Array.isArray(row.data.deletedBotIds) ? row.data.deletedBotIds : []),
+                  ])
+                ),
+                deletedBotMap: {
+                  ...(prev.deletedBotMap || {}),
+                  ...(row.data.deletedBotMap || {}),
+                },
+              };
+            }
+          }
+        });
+
+        openTradesByEmail = {};
+        Object.entries(groupedByEmail).forEach(([em, entry]) => {
+          openTradesByEmail![em] = extractOpenTradeCountsFromCloudPayloads(
+            entry.tradesData,
+            entry.botsData
+          );
+        });
+      }
+
       return {
         users: sortedUsers,
         financesByEmail,
+        openTradesByEmail,
       };
     } catch (e) {
       console.warn('Failed to fetch all platform users and finances from Supabase', e);

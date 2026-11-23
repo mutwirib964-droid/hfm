@@ -1258,9 +1258,142 @@ export function registerNewUser(
  * Merges incoming cloud/server users with the local user registry without deleting
  * existing valid users when Supabase is quota-restricted or offline.
  */
+const ADMIN_OPEN_TRADES_CACHE_KEY = 'vtm_admin_open_trades_map';
+
+export interface AdminUserOpenTradeCounts {
+  manual: number;
+  bot: number;
+  total: number;
+}
+
+export function extractOpenTradeCountsFromCloudPayloads(
+  tradesData: any,
+  botsData: any
+): AdminUserOpenTradeCounts {
+  // 1. Count open manual positions excluding any already in closedTrades
+  const closedKeys = new Set<string>();
+  if (tradesData && Array.isArray(tradesData.closedTrades)) {
+    for (const ct of tradesData.closedTrades) {
+      if (!ct) continue;
+      if (ct.id) closedKeys.add(String(ct.id));
+      if (ct.ticket) closedKeys.add(String(ct.ticket));
+    }
+  }
+
+  const seenManual = new Set<string>();
+  if (tradesData && Array.isArray(tradesData.positions)) {
+    for (const p of tradesData.positions) {
+      if (!p) continue;
+      const pid = p.id ? String(p.id) : '';
+      const pticket = p.ticket ? String(p.ticket) : '';
+      if ((pid && closedKeys.has(pid)) || (pticket && closedKeys.has(pticket))) {
+        continue;
+      }
+      const dedupKey = pid || pticket;
+      if (dedupKey) seenManual.add(dedupKey);
+    }
+  }
+
+  // 2. Count open bot trades excluding deleted bots
+  const deletedMap: Record<string, number> =
+    botsData && botsData.deletedBotMap && typeof botsData.deletedBotMap === 'object'
+      ? botsData.deletedBotMap
+      : {};
+  const deletedIds = new Set<string>(
+    botsData && Array.isArray(botsData.deletedBotIds)
+      ? botsData.deletedBotIds.map((x: any) => String(x || '').trim()).filter(Boolean)
+      : []
+  );
+
+  const seenBot = new Set<string>();
+  if (botsData && Array.isArray(botsData.botTrades)) {
+    for (const t of botsData.botTrades) {
+      if (!t || t.status !== 'OPEN') continue;
+      const openTime = Number(t.openTime || 0);
+      const keys = [t.botRunId, t.botId, t.botName]
+        .map((k) => (typeof k === 'string' ? k.trim() : ''))
+        .filter(Boolean);
+
+      let isDeleted = false;
+      for (const k of keys) {
+        const tombstoneTs = Number(deletedMap[k] || 0);
+        if (tombstoneTs > 0 && tombstoneTs >= openTime) {
+          isDeleted = true;
+          break;
+        }
+        if (deletedIds.has(k) && tombstoneTs === 0) {
+          isDeleted = true;
+          break;
+        }
+      }
+      if (isDeleted) continue;
+
+      const dedupKey = String(t.id || t.ticket || '');
+      if (dedupKey) seenBot.add(dedupKey);
+    }
+  }
+
+  const manual = seenManual.size;
+  const bot = seenBot.size;
+  return { manual, bot, total: manual + bot };
+}
+
+export function saveAdminOpenTradesMap(
+  map: Record<string, AdminUserOpenTradeCounts>
+): void {
+  try {
+    localStorage.setItem(ADMIN_OPEN_TRADES_CACHE_KEY, JSON.stringify(map || {}));
+  } catch {
+    // ignore
+  }
+}
+
+export function getAdminOpenTradesForUser(email?: string | null): AdminUserOpenTradeCounts {
+  if (!email) return { manual: 0, bot: 0, total: 0 };
+  const cleanEmail = isMasterAdminEmail(email)
+    ? MASTER_ADMIN_EMAIL
+    : email.trim().toLowerCase();
+
+  try {
+    const rawCache = localStorage.getItem(ADMIN_OPEN_TRADES_CACHE_KEY);
+    if (rawCache) {
+      const parsedCache = JSON.parse(rawCache);
+      if (parsedCache && typeof parsedCache === 'object') {
+        if (parsedCache[cleanEmail]) {
+          const entry = parsedCache[cleanEmail];
+          const manual = Math.max(0, Number(entry.manual || 0));
+          const bot = Math.max(0, Number(entry.bot || 0));
+          return { manual, bot, total: manual + bot };
+        }
+        // Authoritative cloud map was saved and this user has 0 open trades
+        return { manual: 0, bot: 0, total: 0 };
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // Fallback when cloud cache has not yet been populated: inspect local user state keys
+  try {
+    const rawTrades = localStorage.getItem(`vtm_cloud_state_${cleanEmail}_STATE_TRADES`);
+    const rawBots = localStorage.getItem(`vtm_cloud_state_${cleanEmail}_STATE_BOTS`);
+    const rawOpenPos = localStorage.getItem(`vtm_open_positions_${cleanEmail}`);
+    const tradesData = rawTrades
+      ? JSON.parse(rawTrades)
+      : rawOpenPos
+      ? { positions: JSON.parse(rawOpenPos), closedTrades: [] }
+      : null;
+    const botsData = rawBots ? JSON.parse(rawBots) : null;
+    return extractOpenTradeCountsFromCloudPayloads(tradesData, botsData);
+  } catch {
+    return { manual: 0, bot: 0, total: 0 };
+  }
+}
+
 export function replaceLocalRegistryWithSupabase(
   cloudUsers: UserAuthProfile[],
-  financesByEmail: Record<string, UserFinancialState>
+  financesByEmail: Record<string, UserFinancialState>,
+  openTradesByEmail?: Record<string, AdminUserOpenTradeCounts>
 ): void {
   try {
     const existingRegistry = ensureDefaultPlatformRegistry();
@@ -1342,6 +1475,10 @@ export function replaceLocalRegistryWithSupabase(
     }
 
     localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(newRegistry));
+
+    if (openTradesByEmail && typeof openTradesByEmail === 'object') {
+      saveAdminOpenTradesMap(openTradesByEmail);
+    }
   } catch (e) {
     console.warn('Failed to merge local registry with Supabase users:', e);
   }
@@ -1525,6 +1662,10 @@ export interface PlatformUserMetric {
   walletBalance: number;
   accountsBalance: number;
   accountsCount: number;
+  demoAccountsCount: number;
+  openManualTradesCount: number;
+  openBotTradesCount: number;
+  openTradesCount: number;
   totalDepositedUsd: number;
   depositsCount: number;
   lastActive?: number;
@@ -1971,6 +2112,10 @@ export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
     const walletBalance = finances?.walletBalance ?? 0;
     const allAccounts = finances?.accounts ?? [];
     const liveAccounts = allAccounts.filter((a) => a.type === 'Live');
+    const demoAccounts = allAccounts.filter(
+      (a) => String(a.type || '').toLowerCase() === 'demo'
+    );
+    const openTrades = getAdminOpenTradesForUser(u.email);
     const accountsBalance = liveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
     const txs = sanitizeRealTransactions(finances?.transactions);
 
@@ -1985,6 +2130,10 @@ export function getAllPlatformUsersWithMetrics(): PlatformUserMetric[] {
       walletBalance: Number(walletBalance.toFixed(2)),
       accountsBalance: Number(accountsBalance.toFixed(2)),
       accountsCount: liveAccounts.length,
+      demoAccountsCount: demoAccounts.length,
+      openManualTradesCount: openTrades.manual,
+      openBotTradesCount: openTrades.bot,
+      openTradesCount: openTrades.total,
       totalDepositedUsd: Number(totalDepositedUsd.toFixed(2)),
       depositsCount: completedDeposits.length,
       lastActive: finances?.lastUpdated || u.createdAt,
@@ -2055,6 +2204,10 @@ export function resolveSearchedUserMetric(rawQuery: string): PlatformUserMetric 
   const walletBalance = finances?.walletBalance ?? 0;
   const allAccounts = finances?.accounts ?? [];
   const liveAccounts = allAccounts.filter((a) => a.type === 'Live');
+  const demoAccounts = allAccounts.filter(
+    (a) => String(a.type || '').toLowerCase() === 'demo'
+  );
+  const openTrades = getAdminOpenTradesForUser(profile.email);
   const accountsBalance = liveAccounts.reduce((sum, a) => sum + (a.balance || 0), 0);
   const txs = sanitizeRealTransactions(finances?.transactions);
   const completedDeposits = txs.filter(
@@ -2070,6 +2223,10 @@ export function resolveSearchedUserMetric(rawQuery: string): PlatformUserMetric 
     walletBalance: Number(walletBalance.toFixed(2)),
     accountsBalance: Number(accountsBalance.toFixed(2)),
     accountsCount: liveAccounts.length,
+    demoAccountsCount: demoAccounts.length,
+    openManualTradesCount: openTrades.manual,
+    openBotTradesCount: openTrades.bot,
+    openTradesCount: openTrades.total,
     totalDepositedUsd: Number(totalDepositedUsd.toFixed(2)),
     depositsCount: completedDeposits.length,
     lastActive: finances?.lastUpdated || profile.createdAt,

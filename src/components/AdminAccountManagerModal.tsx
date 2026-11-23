@@ -26,6 +26,8 @@ import {
   Copy,
   Check,
   XCircle,
+  Activity,
+  Layers,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -185,7 +187,11 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       }
       const cloudData = await supabaseService.fetchAllPlatformUsersAndFinances();
       if (cloudData) {
-        replaceLocalRegistryWithSupabase(cloudData.users, cloudData.financesByEmail);
+        replaceLocalRegistryWithSupabase(
+          cloudData.users,
+          cloudData.financesByEmail,
+          cloudData.openTradesByEmail
+        );
       }
     } catch (e) {
       console.warn('Admin cloud sync notice:', e);
@@ -673,18 +679,34 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     }
   };
 
-  // Platform Aggregate Totals (Live Trading Accounts strictly in terms of numbers/count)
+  // Platform Aggregate Totals (Live Accounts, Active Demo Accounts & Open Trades strictly in terms of numbers/count)
   const platformStats = useMemo(() => {
     const totalUsers = userMetrics.length;
     const marketersCount = userMetrics.filter((m) => m.user.role === 'marketer').length;
     const tradersCount = userMetrics.filter((m) => m.user.role === 'normal').length;
     const totalLiveAccountsCount = userMetrics.reduce((s, m) => s + (m.accountsCount || 0), 0);
+    const totalDemoAccountsCount = userMetrics.reduce((s, m) => s + (m.demoAccountsCount || 0), 0);
+    const usersWithDemoCount = userMetrics.filter((m) => (m.demoAccountsCount || 0) > 0).length;
+    const totalOpenManualTradesCount = userMetrics.reduce(
+      (s, m) => s + (m.openManualTradesCount || 0),
+      0
+    );
+    const totalOpenBotTradesCount = userMetrics.reduce(
+      (s, m) => s + (m.openBotTradesCount || 0),
+      0
+    );
+    const totalOpenTradesCount = userMetrics.reduce((s, m) => s + (m.openTradesCount || 0), 0);
 
     return {
       totalUsers,
       marketersCount,
       tradersCount,
       totalLiveAccountsCount,
+      totalDemoAccountsCount,
+      usersWithDemoCount,
+      totalOpenManualTradesCount,
+      totalOpenBotTradesCount,
+      totalOpenTradesCount,
     };
   }, [userMetrics]);
 
@@ -960,8 +982,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
       {/* MAIN CONTAINER */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* EXECUTIVE KPI SUMMARY ROW (4 CARDS: USERS, MONEY DEPOSITED, LIVE ACCOUNTS, MARKETER REFERRALS) */}
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        {/* EXECUTIVE KPI SUMMARY ROW (6 CARDS: USERS, MONEY DEPOSITED, MARKETER REFERRALS, LIVE ACCOUNTS, ACTIVE DEMO ACCOUNTS, OPEN TRADES) */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
           {/* KPI 1: Number of Users in the Website */}
           <div
             onClick={() => setActiveTab('users')}
@@ -1008,26 +1030,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
             </div>
           </div>
 
-          {/* KPI 3: Live Trading Accounts (Strictly in terms of numbers / count, NOT dollar amount) */}
-          <div
-            onClick={() => setActiveTab('balances')}
-            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
-          >
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs font-medium ${mutedText}`}>
-                Live Trading Accounts
-              </span>
-              <Hash className="w-4 h-4 text-sky-500" />
-            </div>
-            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
-              {platformStats.totalLiveAccountsCount}
-            </div>
-            <div className={`mt-2 flex items-center gap-2 text-xs ${mutedText}`}>
-              <span>Active live accounts opened</span>
-            </div>
-          </div>
-
-          {/* KPI 4: Marketers Referrals & Deposits (Strictly Marketers Only) */}
+          {/* KPI 3: Marketers Referrals & Deposits (Strictly Marketers Only) */}
           <div
             onClick={() => setActiveTab('referrals')}
             className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
@@ -1047,6 +1050,65 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               </span>
               <span aria-hidden="true">·</span>
               <span className="font-sans">{marketersReferralsData.allMarketersCount} Marketers</span>
+            </div>
+          </div>
+
+          {/* KPI 4: Live Trading Accounts (Strictly in terms of numbers / count, NOT dollar amount) */}
+          <div
+            onClick={() => setActiveTab('balances')}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className={`text-xs font-medium ${mutedText}`}>
+                Live Trading Accounts
+              </span>
+              <Hash className="w-4 h-4 text-sky-500" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
+              {platformStats.totalLiveAccountsCount}
+            </div>
+            <div className={`mt-2 flex items-center gap-2 text-xs ${mutedText}`}>
+              <span>Active live accounts opened</span>
+            </div>
+          </div>
+
+          {/* KPI 5: Active Demo Accounts (Strictly in terms of numbers / count, NOT dollar amount) */}
+          <div
+            onClick={() => setActiveTab('users')}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className={`text-xs font-medium ${mutedText}`}>
+                Active Demo Accounts
+              </span>
+              <Layers className="w-4 h-4 text-purple-500" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
+              {platformStats.totalDemoAccountsCount}
+            </div>
+            <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs ${mutedText}`}>
+              <span>{platformStats.usersWithDemoCount} users with active demo</span>
+            </div>
+          </div>
+
+          {/* KPI 6: Open Trades (Strictly in terms of numbers / count, NOT dollar amount) */}
+          <div
+            onClick={() => setActiveTab('users')}
+            className={`p-4 sm:p-5 rounded-xl border cursor-pointer transition-colors ${cardBg}`}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className={`text-xs font-medium ${mutedText}`}>
+                Open Trades
+              </span>
+              <Activity className="w-4 h-4 text-[#E51937]" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-semibold font-mono tabular-nums tracking-tight">
+              {platformStats.totalOpenTradesCount}
+            </div>
+            <div className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs font-mono tabular-nums ${mutedText}`}>
+              <span>{platformStats.totalOpenManualTradesCount} manual</span>
+              <span aria-hidden="true">·</span>
+              <span>{platformStats.totalOpenBotTradesCount} bot</span>
             </div>
           </div>
         </section>
@@ -1240,7 +1302,9 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                     <th className="py-3.5 px-4">Name &amp; Email</th>
                     <th className="py-3.5 px-4">Account Created</th>
                     <th className="py-3.5 px-4">Money Deposited</th>
-                    <th className="py-3.5 px-4">Live Trading Accounts</th>
+                    <th className="py-3.5 px-4">Live Accounts</th>
+                    <th className="py-3.5 px-4">Demo Accounts</th>
+                    <th className="py-3.5 px-4">Open Trades</th>
                     <th className="py-3.5 px-4">Assigned Role</th>
                     <th className="py-3.5 px-4 text-right">Manage</th>
                   </tr>
@@ -1252,7 +1316,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 >
                   {filteredUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className={`py-10 text-center ${mutedText}`}>
+                      <td colSpan={8} className={`py-10 text-center ${mutedText}`}>
                         No user found
                       </td>
                     </tr>
@@ -1297,14 +1361,30 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                             )}
                           </td>
 
-                          {/* 4. Live Trading Account in terms of numbers (count, NOT dollar amount) */}
+                          {/* 4. Live Trading Accounts (strictly numeric count) */}
                           <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
                             <span className="font-semibold text-sm">
                               {m.accountsCount}
                             </span>
-                            <span className={`text-xs font-sans ml-1.5 ${mutedText}`}>
-                              {m.accountsCount === 1 ? 'Live Account' : 'Live Accounts'}
+                          </td>
+
+                          {/* 5. Active Demo Accounts (strictly numeric count) */}
+                          <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
+                            <span className="font-semibold text-sm">
+                              {m.demoAccountsCount}
                             </span>
+                          </td>
+
+                          {/* 6. Open Trades (strictly numeric count) */}
+                          <td className="py-3.5 px-4 whitespace-nowrap font-mono tabular-nums">
+                            <span className="font-semibold text-sm">
+                              {m.openTradesCount}
+                            </span>
+                            {m.openTradesCount > 0 && (
+                              <span className={`text-[11px] ml-1.5 ${mutedText}`}>
+                                ({m.openManualTradesCount}M / {m.openBotTradesCount}B)
+                              </span>
+                            )}
                           </td>
 
                           {/* 5. Assigning Roles */}
