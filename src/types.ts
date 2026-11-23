@@ -117,7 +117,9 @@ export interface TradingAccount {
   createdAt?: number;
   lastDepositAt?: number;
   lastTradeAt?: number;
+  lastWithdrawalAt?: number;
   lastActivityAt?: number;
+  appliedDebitTxIds?: string[];
 }
 
 export interface StrategyProvider {

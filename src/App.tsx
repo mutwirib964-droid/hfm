@@ -85,6 +85,9 @@ import {
   getAccountMaxOpenTrades,
   getTargetConcurrentBotTrades,
   isMarketerExclusiveWeekendBot,
+  getLocalBotExecutorDeviceId,
+  claimLocalTabBotLock,
+  isThisSessionBotExecutor,
 } from './services/botTradingService';
 import { Wifi, Battery, Signal, Zap, Radio } from 'lucide-react';
 import { AdminAccountManagerModal } from './components/AdminAccountManagerModal';
@@ -307,6 +310,14 @@ export default function App() {
   const userRoleRef = useRef<UserRole>('normal');
   const userLedgerLengthRef = useRef<number>(0);
   const lastLocalFinancialUpdateRef = useRef<number>(0);
+  const lastUserCashActionRef = useRef<number>(0);
+  const lastKnownCloudWatermarksRef = useRef<{ bots: number; fin: number; trades: number }>({
+    bots: 0,
+    fin: 0,
+    trades: 0,
+  });
+  const isCloudSyncInFlightRef = useRef<boolean>(false);
+  const lastRemoteBotSyncKeyRef = useRef<string>('');
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
   const isCloudFinancialsLoadedRef = useRef<boolean>(false);
   const isCloudTradesLoadedRef = useRef<boolean>(false);
@@ -441,14 +452,13 @@ export default function App() {
         return prevUser;
       });
 
-      // Immediately apply any Live Account or Wallet edits made by Admin or another device in Supabase
-      // (while protecting any local trade/withdrawal/deposit made within the last 8 seconds from stale poll overwrites
-      // and merging accounts so no Live account ever vanishes)
+      // Immediately apply any Live Account, Withdrawal, or Wallet updates made by Admin or another device in Supabase
+      // (while protecting an explicit local Deposit/Withdrawal/Transfer made within the last 4 seconds from stale poll overwrites)
       const remoteFin = await supabaseService.fetchUserFinancials(remote.profile);
       isCloudFinancialsLoadedRef.current = true;
       if (remoteFin) {
         const localFin = loadUserFinancials(remote.profile);
-        const isRecentLocalWrite = Date.now() - lastLocalFinancialUpdateRef.current < 10000;
+        const isRecentLocalWrite = Date.now() - lastUserCashActionRef.current < 4000;
         const remoteIsNewer =
           !isRecentLocalWrite &&
           (isInitialMount || (remoteFin.lastUpdated || 0) > (localFin?.lastUpdated || 0) + 1000);
@@ -459,7 +469,7 @@ export default function App() {
           remote.profile.email
         );
 
-        // Preserve any local PENDING withdrawal that is still in its 3-second window
+        // Preserve any local PENDING withdrawal that is still in its 5-second window
         const localPendingWithdrawals = (transactionsRef.current || []).filter(
           (t) => t.type === 'WITHDRAWAL' && t.status === 'PENDING' && Date.now() - t.timestamp < 5000
         );
@@ -474,13 +484,35 @@ export default function App() {
             : mergedFin.transactions || transactionsRef.current;
 
         const safeWallet = isRecentLocalWrite
-          ? reconcileWalletBalanceWithTransactions(walletBalanceRef.current, transactionsRef.current)
-          : reconcileWalletBalanceWithTransactions(mergedFin.walletBalance || 0, mergedTransactions);
+          ? reconcileWalletBalanceWithTransactions(walletBalanceRef.current, transactionsRef.current, accountsRef.current)
+          : reconcileWalletBalanceWithTransactions(mergedFin.walletBalance || 0, mergedTransactions, mergedFin.accounts);
+
+        const prevAccs = accountsRef.current || [];
+        const mergedAccountsDiffer =
+          mergedFin.accounts.length !== prevAccs.length ||
+          mergedFin.accounts.some((ma) => {
+            const pa = prevAccs.find(
+              (x) => (ma.accountNumber && x.accountNumber === ma.accountNumber) || x.id === ma.id
+            );
+            return (
+              !pa ||
+              Number(pa.balance || 0) !== Number(ma.balance || 0) ||
+              Number(pa.lastWithdrawalAt || 0) !== Number(ma.lastWithdrawalAt || 0) ||
+              (pa.appliedDebitTxIds?.length || 0) !== (ma.appliedDebitTxIds?.length || 0)
+            );
+          });
+        const mergedTxsDiffer =
+          mergedTransactions.length !== (transactionsRef.current?.length || 0) ||
+          mergedTransactions.some((mt, i) => {
+            const pt = transactionsRef.current?.[i];
+            return !pt || pt.id !== mt.id || pt.status !== mt.status || pt.details !== mt.details;
+          });
 
         if (
           remoteIsNewer ||
           safeWallet !== walletBalanceRef.current ||
-          mergedFin.accounts.length > (localFin?.accounts?.length || 0)
+          mergedAccountsDiffer ||
+          mergedTxsDiffer
         ) {
           const stateToApply = {
             ...mergedFin,
@@ -488,9 +520,17 @@ export default function App() {
             transactions: mergedTransactions,
           };
 
+          const mergedAccDiffersFromRemote =
+            stateToApply.accounts.length !== (remoteFin.accounts?.length || 0) ||
+            stateToApply.accounts.some((ma) => {
+              const ra = (remoteFin.accounts || []).find(
+                (x) => (ma.accountNumber && x.accountNumber === ma.accountNumber) || x.id === ma.id
+              );
+              return !ra || Number(ra.balance || 0) !== Number(ma.balance || 0);
+            });
           const shouldSyncMergedBackToCloud =
-            stateToApply.accounts.length > (remoteFin.accounts?.length || 0) ||
-            safeWallet !== (remoteFin.walletBalance || 0);
+            mergedAccDiffersFromRemote ||
+            safeWallet !== Number((remoteFin.walletBalance || 0).toFixed(2));
 
           saveUserFinancials(remote.profile, stateToApply, shouldSyncMergedBackToCloud);
           if (walletBalanceRef.current !== stateToApply.walletBalance) {
@@ -499,12 +539,17 @@ export default function App() {
           }
 
           if (stateToApply.accounts) {
-            const prevAccs = accountsRef.current;
             const accsChanged =
               prevAccs.length !== stateToApply.accounts.length ||
               stateToApply.accounts.some((a, i) => {
                 const pa = prevAccs[i];
-                return !pa || pa.id !== a.id || pa.accountNumber !== a.accountNumber || pa.balance !== a.balance;
+                return (
+                  !pa ||
+                  pa.id !== a.id ||
+                  pa.accountNumber !== a.accountNumber ||
+                  pa.balance !== a.balance ||
+                  pa.lastWithdrawalAt !== a.lastWithdrawalAt
+                );
               });
 
             if (accsChanged) {
@@ -549,7 +594,7 @@ export default function App() {
             const prevTx = transactionsRef.current;
             if (
               prevTx.length !== mergedTransactions.length ||
-              mergedTransactions.some((mt, i) => !prevTx[i] || prevTx[i].id !== mt.id || prevTx[i].status !== mt.status)
+              mergedTransactions.some((mt, i) => !prevTx[i] || prevTx[i].id !== mt.id || prevTx[i].status !== mt.status || prevTx[i].details !== mt.details)
             ) {
               transactionsRef.current = mergedTransactions;
               setTransactions(mergedTransactions);
@@ -858,7 +903,7 @@ export default function App() {
       supabaseService.fetchBotState(remote.profile).then((remoteBots) => {
         const isRecentLocalBotAction =
           lastLocalBotsUpdateRef.current >= botFetchStartedAt ||
-          Date.now() - lastLocalBotsUpdateRef.current < 12000;
+          Date.now() - lastLocalBotsUpdateRef.current < 3500;
         if (remoteBots && !isRecentLocalBotAction) {
           if (Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0) {
             setImportedBots((prevBots) => {
@@ -915,7 +960,8 @@ export default function App() {
                       localMatch.customSymbolSelected !== r.customSymbolSelected ||
                       localMatch.lotSize !== r.lotSize ||
                       localMatch.tpPips !== r.tpPips ||
-                      localMatch.slPips !== r.slPips
+                      localMatch.slPips !== r.slPips ||
+                      localMatch.executorDeviceId !== r.executorDeviceId
                     ) {
                       localStatusIsNewer = true;
                     }
@@ -935,6 +981,8 @@ export default function App() {
                           : r.stoppedAt,
                       lastSignal: localMatch.lastSignal || r.lastSignal,
                       lastSignalTime: localMatch.lastSignalTime || r.lastSignalTime,
+                      executorDeviceId: localMatch.executorDeviceId ?? r.executorDeviceId,
+                      executorHeartbeatAt: localMatch.executorHeartbeatAt ?? r.executorHeartbeatAt,
                     });
                     continue;
                   }
@@ -984,6 +1032,18 @@ export default function App() {
               reconcilePrivilegedBotTradesAndRuns(sanitizedMergedRuns, validTrades, isPriv);
             const cleanedTrades = capBotTrades(rawCleanedTrades, 200);
 
+            const remoteAppliedKey = `${(Array.isArray(remoteBots.importedBots) && remoteBots.importedBots.length > 0 ? remoteBots.importedBots.length : importedBots.length)}::${finalRuns
+              .map(
+                (r) =>
+                  `${r.id}:${r.status}:${r.statusUpdatedAt || 0}:${r.symbol}:${r.lotSize}:${r.tpPips}:${r.slPips}:${r.totalTrades || 0}:${r.totalProfitUsd || 0}`
+              )
+              .join('|')}::${cleanedTrades
+              .map((t) => `${t.id}:${t.status}:${t.tp || 0}:${t.sl || 0}`)
+              .join('|')}`;
+            if (!(finalRuns.length !== cleanedRemoteRuns.length || localStatusIsNewer)) {
+              lastRemoteBotSyncKeyRef.current = remoteAppliedKey;
+            }
+
             setBotRuns((prevRuns) => {
               if (
                 prevRuns.length === finalRuns.length &&
@@ -998,6 +1058,7 @@ export default function App() {
                     pr.tpPips === r.tpPips &&
                     pr.slPips === r.slPips &&
                     pr.statusUpdatedAt === r.statusUpdatedAt &&
+                    pr.executorDeviceId === r.executorDeviceId &&
                     pr.totalProfitUsd === r.totalProfitUsd &&
                     pr.totalTrades === r.totalTrades
                   );
@@ -1051,16 +1112,47 @@ export default function App() {
       }
     };
 
-    syncUserWithSupabase(true);
+    const runGuardedCloudSync = async (isInitialMount: boolean) => {
+      if (isCloudSyncInFlightRef.current) return;
+      isCloudSyncInFlightRef.current = true;
+      try {
+        await syncUserWithSupabase(isInitialMount);
+      } finally {
+        isCloudSyncInFlightRef.current = false;
+      }
+    };
 
-    // Poll cloud updates without exhausting Supabase egress bandwidth (supports 2,000+ concurrent users)
+    runGuardedCloudSync(true);
+
+    // Lightweight 3-second cloud watermark listener for rapid cross-device pause/stop/withdrawal sync (~150B check)
+    const watermarkInterval = setInterval(async () => {
+      if ((typeof document !== 'undefined' && document.hidden) || !supabaseService.isConfigured()) {
+        return;
+      }
+      if (isCloudSyncInFlightRef.current) return;
+      const wm = await supabaseService.fetchCloudSyncWatermarks(currentUser);
+      if (!wm) return;
+      const prevWm = lastKnownCloudWatermarksRef.current;
+      const hasNewerCloudState =
+        wm.botsUpdatedAt > prevWm.bots ||
+        wm.finUpdatedAt > prevWm.fin ||
+        wm.tradesUpdatedAt > prevWm.trades;
+      lastKnownCloudWatermarksRef.current = {
+        bots: Math.max(prevWm.bots, wm.botsUpdatedAt),
+        fin: Math.max(prevWm.fin, wm.finUpdatedAt),
+        trades: Math.max(prevWm.trades, wm.tradesUpdatedAt),
+      };
+      if (hasNewerCloudState) {
+        runGuardedCloudSync(false);
+      }
+    }, 3000);
+
+    // Full safety reconciliation every 60 seconds
     const pollInterval = setInterval(() => {
       if (typeof document === 'undefined' || !document.hidden) {
-        syncUserWithSupabase(false);
+        runGuardedCloudSync(false);
       }
     }, 60000);
-
-
 
     // Also listen for localStorage updates in case Admin is open in another tab on the same browser
     const handleStorageEvent = (e: StorageEvent) => {
@@ -1115,12 +1207,44 @@ export default function App() {
     try {
       channel = new BroadcastChannel('vtm_global_sync');
       channel.onmessage = (msg) => {
-        if (
-          msg.data?.type === 'ROLE_CHANGED' &&
-          msg.data.email?.toLowerCase() === currentUser.email.toLowerCase()
-        ) {
+        if (!msg.data?.email || msg.data.email?.toLowerCase() !== currentUser.email.toLowerCase()) {
+          return;
+        }
+        if (msg.data?.type === 'ROLE_CHANGED') {
           const nextRole: UserRole = msg.data.role === 'marketer' ? 'marketer' : 'normal';
           applyRoleUpdateToUser(nextRole);
+        } else if (msg.data?.type === 'BOT_STATE_UPDATED') {
+          const storedRuns = loadStoredBotRuns(currentUser.email);
+          botRunsRef.current = storedRuns;
+          setBotRuns(storedRuns);
+          const storedTrades = loadStoredBotTrades(currentUser.email);
+          botTradesRef.current = storedTrades;
+          setBotTrades(storedTrades);
+        } else if (msg.data?.type === 'FINANCES_UPDATED') {
+          const localFin = loadUserFinancials(currentUser);
+          if (localFin) {
+            walletBalanceRef.current = localFin.walletBalance;
+            accountsRef.current = localFin.accounts;
+            setWalletBalance(localFin.walletBalance);
+            setAccounts(localFin.accounts);
+            if (Array.isArray(localFin.transactions)) {
+              transactionsRef.current = localFin.transactions;
+              setTransactions(localFin.transactions);
+            }
+            setSelectedAccount((curr) => {
+              if (localFin.accounts.length === 0) {
+                selectedAccountRef.current = null;
+                return null;
+              }
+              const activeCurr = curr || selectedAccountRef.current;
+              const nextSel = activeCurr
+                ? localFin.accounts.find((a) => a.id === activeCurr.id || a.accountNumber === activeCurr.accountNumber) ||
+                  localFin.accounts[0]
+                : localFin.accounts[0];
+              selectedAccountRef.current = nextSel;
+              return nextSel;
+            });
+          }
         }
       };
     } catch {
@@ -1129,12 +1253,13 @@ export default function App() {
 
     // Refresh immediately when window gains focus or tab becomes visible
     const handleFocusOrVisible = () => {
-      syncUserWithSupabase(false);
+      runGuardedCloudSync(false);
     };
     window.addEventListener('focus', handleFocusOrVisible);
     document.addEventListener('visibilitychange', handleFocusOrVisible);
 
     return () => {
+      clearInterval(watermarkInterval);
       clearInterval(pollInterval);
       window.removeEventListener('storage', handleStorageEvent);
       window.removeEventListener('vtm_role_changed', handleRoleChangedEvent);
@@ -2012,13 +2137,6 @@ export default function App() {
           selectedAccountId: selectedAccountRef.current?.id || updatedTarget.id,
           transactions: transactionsRef.current,
         });
-        supabaseService
-          .syncTradingAccounts(
-            currentUserRef.current,
-            nextAccounts,
-            selectedAccountRef.current?.id || updatedTarget.id
-          )
-          .catch(() => {});
       }
 
       return updatedTarget;
@@ -4340,6 +4458,7 @@ export default function App() {
     transactionsRef.current = nextTransactions;
     setTransactions(nextTransactions);
     lastLocalFinancialUpdateRef.current = Date.now();
+    lastUserCashActionRef.current = Date.now();
 
     if (isWalletDepositTarget) {
       walletBalanceRef.current = nextWalletForDeposit;
@@ -4499,6 +4618,7 @@ export default function App() {
     walletBalanceRef.current = nextWallet;
     setWalletBalance(nextWallet);
     lastLocalFinancialUpdateRef.current = Date.now();
+    lastUserCashActionRef.current = Date.now();
 
     if (currentUser) {
       saveUserFinancials(currentUser, {
@@ -4627,6 +4747,7 @@ export default function App() {
           ? Number((walletBalanceRef.current + amountUsd).toFixed(2))
           : walletBalanceRef.current;
         const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
+        const refundTs = Date.now();
         const intactAccounts = isWalletSource
           ? [...accountsRef.current]
           : accountsRef.current.map((acc) =>
@@ -4639,6 +4760,8 @@ export default function App() {
                     balance: Number((acc.balance + amountUsd).toFixed(2)),
                     equity: Number((acc.equity + amountUsd).toFixed(2)),
                     freeMargin: Number((acc.freeMargin + amountUsd).toFixed(2)),
+                    lastActivityAt: refundTs,
+                    appliedDebitTxIds: (acc.appliedDebitTxIds || []).filter((id) => id !== existingTx.id),
                   }
                 : acc
             );
@@ -4666,13 +4789,15 @@ export default function App() {
 
         transactionsRef.current = failedTransactions;
         setTransactions(failedTransactions);
-        lastLocalFinancialUpdateRef.current = Date.now();
+        lastLocalFinancialUpdateRef.current = refundTs;
+        lastUserCashActionRef.current = refundTs;
 
         saveUserFinancials(activeUser, {
           walletBalance: intactWallet,
           accounts: intactAccounts,
           selectedAccountId: selectedAccountRef.current?.id,
           transactions: failedTransactions,
+          lastUpdated: refundTs,
         });
         supabaseService.saveWithdrawal(activeUser, {
           id: existingTx.id,
@@ -4733,9 +4858,11 @@ export default function App() {
         : t
     );
 
+    const finalizeTs = Date.now();
     transactionsRef.current = updatedTransactions;
     setTransactions(updatedTransactions);
-    lastLocalFinancialUpdateRef.current = Date.now();
+    lastLocalFinancialUpdateRef.current = finalizeTs;
+    lastUserCashActionRef.current = finalizeTs;
 
     if (activeUser) {
       saveUserFinancials(activeUser, {
@@ -4743,7 +4870,13 @@ export default function App() {
         accounts: nextAccounts,
         selectedAccountId: selectedAccountRef.current?.id,
         transactions: updatedTransactions,
+        lastUpdated: finalizeTs,
       });
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'FINANCES_UPDATED', email: activeUser.email, ts: finalizeTs });
+        ch.close();
+      } catch {}
       supabaseService.saveWithdrawal(activeUser, {
         id: existingTx.id,
         sourceAccount: sourceAcc,
@@ -4980,8 +5113,9 @@ export default function App() {
       return;
     }
 
+    const withdrawTs = Date.now();
     const ref = params.reference || `B2C${Math.floor(100000000 + Math.random() * 900000000)}`;
-    const txId = `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const txId = `tx-${withdrawTs}-${Math.random().toString(36).slice(2, 6)}`;
 
     // Instantly deduct amount from source account/wallet immediately upon initiating withdrawal so balance updates right away even if navigating away or offline
     let nextWallet = walletBalanceRef.current;
@@ -5011,6 +5145,9 @@ export default function App() {
             balance: newBal,
             equity: newEq,
             freeMargin: newFree,
+            lastWithdrawalAt: withdrawTs,
+            lastActivityAt: withdrawTs,
+            appliedDebitTxIds: [...(acc.appliedDebitTxIds || []), txId].slice(-50),
           };
         }
         return acc;
@@ -5033,7 +5170,7 @@ export default function App() {
       amount: amountUsd,
       currency: 'USD',
       status: 'PENDING',
-      timestamp: Date.now(),
+      timestamp: withdrawTs,
       reference: ref,
       accountNumber: sourceAcc,
       details: `Withdrawal from ${sourceAcc} (New Bal: $${resultingBalance.toFixed(2)})`,
@@ -5042,7 +5179,8 @@ export default function App() {
     const nextTransactions = [newTx, ...transactionsRef.current];
     transactionsRef.current = nextTransactions;
     setTransactions(nextTransactions);
-    lastLocalFinancialUpdateRef.current = Date.now();
+    lastLocalFinancialUpdateRef.current = withdrawTs;
+    lastUserCashActionRef.current = withdrawTs;
 
     if (currentUser) {
       saveUserFinancials(currentUser, {
@@ -5050,7 +5188,13 @@ export default function App() {
         accounts: accountsRef.current,
         selectedAccountId: selectedAccountRef.current?.id,
         transactions: nextTransactions,
+        lastUpdated: withdrawTs,
       });
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'FINANCES_UPDATED', email: currentUser.email, ts: withdrawTs });
+        ch.close();
+      } catch {}
       supabaseService.saveWithdrawal(currentUser, {
         id: newTx.id,
         sourceAccount: params.sourceAccount,
@@ -5108,6 +5252,14 @@ export default function App() {
     setTransactions(result.newTransactions);
     transactionsRef.current = result.newTransactions;
     lastLocalFinancialUpdateRef.current = Date.now();
+    lastUserCashActionRef.current = Date.now();
+    if (currentUser) {
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'FINANCES_UPDATED', email: currentUser.email, ts: Date.now() });
+        ch.close();
+      } catch {}
+    }
 
     if (selectedAccount) {
       const refreshed = result.newAccounts.find(
@@ -5183,7 +5335,8 @@ export default function App() {
     const nextAccounts = [...accountsRef.current, newAcc];
     accountsRef.current = nextAccounts;
     selectedAccountRef.current = newAcc;
-    lastLocalFinancialUpdateRef.current = Date.now();
+    lastLocalFinancialUpdateRef.current = nowTs;
+    lastUserCashActionRef.current = nowTs;
     setAccounts(nextAccounts);
     setSelectedAccount(newAcc);
     if (currentUser) {
@@ -5323,6 +5476,7 @@ export default function App() {
       selectedAccountRef.current = nextSelected;
       transactionsRef.current = nextTransactions;
       lastLocalFinancialUpdateRef.current = Date.now();
+      lastUserCashActionRef.current = Date.now();
 
       setWalletBalance(nextWallet);
       setAccounts(nextAccounts);
@@ -5540,11 +5694,16 @@ export default function App() {
             }
           : r
       );
-      lastLocalBotsUpdateRef.current = deployTs + 15000;
+      lastLocalBotsUpdateRef.current = deployTs;
       isCloudBotsLoadedRef.current = true;
       botRunsRef.current = reboundRuns;
       setBotRuns(reboundRuns);
       saveStoredBotRuns(reboundRuns, currentUserRef.current?.email);
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: deployTs });
+        ch.close();
+      } catch {}
       if (currentUser && currentUser.email) {
         supabaseService
           .syncBotState(
@@ -5615,7 +5774,7 @@ export default function App() {
     };
 
     const updatedRuns = [newRun, ...botRunsRef.current];
-    lastLocalBotsUpdateRef.current = deployTs + 15000;
+    lastLocalBotsUpdateRef.current = deployTs;
     isCloudBotsLoadedRef.current = true;
     supabaseService.recordBotStatusIntent([runIdStr], 'PAUSED', deployTs, {
       symbol: preferredSymbol,
@@ -5627,6 +5786,11 @@ export default function App() {
     botRunsRef.current = updatedRuns;
     setBotRuns(updatedRuns);
     saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+    try {
+      const ch = new BroadcastChannel('vtm_global_sync');
+      ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: deployTs });
+      ch.close();
+    } catch {}
 
     if (currentUser && currentUser.email) {
       supabaseService
@@ -5822,6 +5986,10 @@ export default function App() {
 
       const activeAccForRun = selectedAccountRef.current || selectedAccount;
       const nowTs = Date.now();
+      const executorDeviceId = getLocalBotExecutorDeviceId();
+      const runKeyToLock = target.id || target.runId || runId;
+      claimLocalTabBotLock(runKeyToLock);
+
       const preservedSym =
         target.customSymbolSelected && target.symbol && target.symbol !== 'ALL'
           ? target.symbol
@@ -5847,6 +6015,8 @@ export default function App() {
             lastSignalTime: nowTs,
             accountId: activeAccForRun?.id || r.accountId,
             accountNumber: activeAccForRun?.accountNumber || r.accountNumber,
+            executorDeviceId,
+            executorHeartbeatAt: nowTs,
           };
         }
         return r;
@@ -5863,11 +6033,18 @@ export default function App() {
           symbol: preservedSym,
           customSymbolSelected: preservedCustomFlag,
           lotSize: effectiveLots,
+          executorDeviceId,
+          executorHeartbeatAt: nowTs,
         }
       );
       botRunsRef.current = updatedRuns;
       setBotRuns(updatedRuns);
       saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: nowTs });
+        ch.close();
+      } catch {}
       if (currentUserRef.current?.email) {
         supabaseService
           .syncBotState(
@@ -5917,6 +6094,11 @@ export default function App() {
       botRunsRef.current = updatedRuns;
       setBotRuns(updatedRuns);
       saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+      try {
+        const ch = new BroadcastChannel('vtm_global_sync');
+        ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: nowTs });
+        ch.close();
+      } catch {}
       if (currentUserRef.current?.email) {
         supabaseService
           .syncBotState(
@@ -5969,6 +6151,11 @@ export default function App() {
     botRunsRef.current = updatedRuns;
     setBotRuns(updatedRuns);
     saveStoredBotRuns(updatedRuns, currentUserRef.current?.email);
+    try {
+      const ch = new BroadcastChannel('vtm_global_sync');
+      ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: nowTs });
+      ch.close();
+    } catch {}
     if (currentUserRef.current?.email) {
       supabaseService
         .syncBotState(
@@ -6118,6 +6305,12 @@ export default function App() {
     const symDisplayLabel = isSpecificSymSelected ? cleanSymbol : 'All Bot Currencies (Auto)';
     const settingsSignal = `Settings Updated: ${symDisplayLabel} • ${cleanNewLots} Lots, TP ${cleanNewTp}p, SL ${cleanNewSl}p`;
 
+    const ownerDeviceId =
+      resolvedStatus === 'RUNNING' && !wasRunning ? getLocalBotExecutorDeviceId() : target?.executorDeviceId;
+    if (resolvedStatus === 'RUNNING' && !wasRunning) {
+      claimLocalTabBotLock(target?.id || target?.runId || runId);
+    }
+
     const updated = botRunsRef.current.map((r) => {
       if (r.id === runId || r.runId === runId || r.botId === runId || r.botName === runId) {
         return {
@@ -6134,11 +6327,13 @@ export default function App() {
           userStartedVersion: 2,
           lastSignal: settingsSignal,
           lastSignalTime: nowTs,
+          executorDeviceId: ownerDeviceId,
+          executorHeartbeatAt: resolvedStatus === 'RUNNING' ? nowTs : r.executorHeartbeatAt,
         };
       }
       return r;
     });
-    lastLocalBotsUpdateRef.current = nowTs + 15000;
+    lastLocalBotsUpdateRef.current = nowTs;
     isCloudBotsLoadedRef.current = true;
     supabaseService.recordBotStatusIntent(
       [target?.id, target?.runId, runId],
@@ -6152,11 +6347,18 @@ export default function App() {
         lotSize: cleanNewLots,
         tpPips: cleanNewTp,
         slPips: cleanNewSl,
+        executorDeviceId: ownerDeviceId,
+        executorHeartbeatAt: resolvedStatus === 'RUNNING' ? nowTs : undefined,
       }
     );
     botRunsRef.current = updated;
     setBotRuns(updated);
     saveStoredBotRuns(updated, currentUserRef.current?.email);
+    try {
+      const ch = new BroadcastChannel('vtm_global_sync');
+      ch.postMessage({ type: 'BOT_STATE_UPDATED', email: currentUserRef.current?.email, ts: nowTs });
+      ch.close();
+    } catch {}
     if (currentUserRef.current?.email && !(nextStatus === 'RUNNING' && !wasRunning && target)) {
       supabaseService
         .syncBotState(
@@ -6596,6 +6798,11 @@ export default function App() {
             r.botId === activeTrade.botId
         );
 
+        // Single-device execution lock: ONLY the device/tab that owns this bot executes and settles its trades!
+        if (!isThisSessionBotExecutor(activeTrade, parentRun)) {
+          return;
+        }
+
         const targetAccIdOrNum =
           activeTrade.accountId ||
           parentRun?.accountId ||
@@ -6988,8 +7195,11 @@ export default function App() {
         }
       });
 
-      // 2. Autonomous Multi-Trade Opening: ONLY open new trades for RUNNING bots on their OWNING account
+      // 2. Autonomous Multi-Trade Opening: ONLY open new trades for RUNNING bots on their OWNING account & OWNING device/tab
       runningBots.forEach((run) => {
+        if (!isThisSessionBotExecutor(run)) {
+          return;
+        }
         const runTargetAccKey = run.accountId || run.accountNumber;
         const activeAcc =
           accountsRef.current.find((a) => belongsToAccount(run, a)) ||
@@ -7435,6 +7645,7 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser || !currentUser.email || !isCloudBotsLoadedRef.current) return;
+    if (botStateSyncKey && botStateSyncKey === lastRemoteBotSyncKeyRef.current) return;
     const timer = setTimeout(() => {
       supabaseService.syncBotState(
         currentUser,
@@ -7472,7 +7683,6 @@ export default function App() {
           transactions,
           lastUpdated: Date.now(),
         }),
-        supabaseService.syncTradingAccounts(currentUser, accounts),
         supabaseService.syncTrades(currentUser, {
           positions,
           pendingOrders,

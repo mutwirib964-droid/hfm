@@ -92,7 +92,13 @@ export function extractAccountCreatedAt(acc: TradingAccount, fallbackTime?: numb
 export function isSkeletonZeroAccount(acc: TradingAccount): boolean {
   if (!acc) return true;
   const bal = Number(acc.balance || 0);
-  const hasActivity = Boolean(acc.lastActivityAt || acc.lastTradeAt || acc.lastDepositAt);
+  const hasActivity = Boolean(
+    acc.lastActivityAt ||
+      acc.lastTradeAt ||
+      acc.lastDepositAt ||
+      acc.lastWithdrawalAt ||
+      (Array.isArray(acc.appliedDebitTxIds) && acc.appliedDebitTxIds.length > 0)
+  );
   const isRecoveredId = Boolean(acc.accountNumber && acc.id === `acc-${acc.accountNumber}`);
   return bal <= 0 && !hasActivity && isRecoveredId;
 }
@@ -100,6 +106,7 @@ export function isSkeletonZeroAccount(acc: TradingAccount): boolean {
 export function getAccountLatestTimestamp(acc: TradingAccount): number {
   if (!acc) return 0;
   return Math.max(
+    Number(acc.lastWithdrawalAt || 0),
     Number(acc.lastActivityAt || 0),
     Number(acc.lastTradeAt || 0),
     Number(acc.lastDepositAt || 0),
@@ -126,17 +133,58 @@ export function pickAuthoritativeAccount(
     return incoming;
   }
 
+  // Strictly protect completed withdrawals / debits recorded on an account so a stale device
+  // with newer local bot trade timestamps cannot resurrect pre-withdrawal balances.
+  const existingDebits = new Set((existing.appliedDebitTxIds || []).filter(Boolean));
+  const incomingDebits = new Set((incoming.appliedDebitTxIds || []).filter(Boolean));
+  const mergedDebitIds = Array.from(new Set([...existingDebits, ...incomingDebits])).slice(-50);
+
+  if (existingDebits.size > 0 || incomingDebits.size > 0) {
+    const incomingHasAllExisting = Array.from(existingDebits).every((id) => incomingDebits.has(id));
+    const existingHasAllIncoming = Array.from(incomingDebits).every((id) => existingDebits.has(id));
+
+    if (incomingHasAllExisting && incomingDebits.size > existingDebits.size) {
+      return mergedDebitIds.length > 0
+        ? { ...incoming, appliedDebitTxIds: mergedDebitIds }
+        : incoming;
+    }
+    if (existingHasAllIncoming && existingDebits.size > incomingDebits.size) {
+      return mergedDebitIds.length > 0
+        ? { ...existing, appliedDebitTxIds: mergedDebitIds }
+        : existing;
+    }
+
+    // If both snapshots have disjoint debit sets, prefer the one with the latest withdrawal timestamp
+    if (!incomingHasAllExisting && !existingHasAllIncoming) {
+      const exWithdrawTs = Number(existing.lastWithdrawalAt || 0);
+      const inWithdrawTs = Number(incoming.lastWithdrawalAt || 0);
+      if (inWithdrawTs > exWithdrawTs) {
+        return { ...incoming, appliedDebitTxIds: mergedDebitIds };
+      }
+      if (exWithdrawTs > inWithdrawTs) {
+        return { ...existing, appliedDebitTxIds: mergedDebitIds };
+      }
+    }
+  }
+
   const existingTs = getAccountLatestTimestamp(existing);
   const incomingTs = getAccountLatestTimestamp(incoming);
 
   if (incomingTs > existingTs) {
-    return incoming;
+    return mergedDebitIds.length > 0
+      ? { ...incoming, appliedDebitTxIds: mergedDebitIds }
+      : incoming;
   }
   if (existingTs > incomingTs) {
-    return existing;
+    return mergedDebitIds.length > 0
+      ? { ...existing, appliedDebitTxIds: mergedDebitIds }
+      : existing;
   }
 
-  return incomingIsPrimary ? incoming : existing;
+  const chosen = incomingIsPrimary ? incoming : existing;
+  return mergedDebitIds.length > 0
+    ? { ...chosen, appliedDebitTxIds: mergedDebitIds }
+    : chosen;
 }
 
 /**
@@ -262,43 +310,12 @@ export function calculateNetWalletFromLedger(
   return reconcileWalletBalanceWithTransactions(0, transactions, accounts);
 }
 
-/**
- * Merges two UserFinancialState objects (e.g. remote cloud state and local device state)
- * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user,
- * and wallet withdrawals/deposits/transfers reflect the exact balance after the latest action.
- */
-export function mergeUserFinancialStates(
-  primary: UserFinancialState,
-  secondary: UserFinancialState | null | undefined,
-  userEmail?: string | null
-): UserFinancialState {
-  if (!secondary) return primary;
-  const deletedSet = getDeletedAccountNumbers(userEmail);
-
-  const accountMap = new Map<string, TradingAccount>();
-  // Put secondary accounts first, then merge primary accounts using authoritative timestamp/skeleton protection
-  for (const acc of secondary.accounts || []) {
-    if (!acc) continue;
-    const accNum = String(acc.accountNumber || '');
-    if (accNum && deletedSet.has(accNum)) continue;
-    const key = accNum || acc.id;
-    if (key) accountMap.set(key, acc);
-  }
-  for (const acc of primary.accounts || []) {
-    if (!acc) continue;
-    const accNum = String(acc.accountNumber || '');
-    if (accNum && deletedSet.has(accNum)) continue;
-    const key = accNum || acc.id;
-    if (key) {
-      const prev = accountMap.get(key);
-      accountMap.set(key, prev ? pickAuthoritativeAccount(prev, acc, true) : acc);
-    }
-  }
-
-  const mergedAccounts = Array.from(accountMap.values());
-
+export function mergeTransactionLists(
+  primaryTxs?: Transaction[],
+  secondaryTxs?: Transaction[]
+): Transaction[] {
   const mergedTransactionsRaw: Transaction[] = [];
-  for (const tx of [...(primary.transactions || []), ...(secondary.transactions || [])]) {
+  for (const tx of [...(primaryTxs || []), ...(secondaryTxs || [])]) {
     if (!tx) continue;
     const txKeys = [
       tx.id,
@@ -398,7 +415,89 @@ export function mergeUserFinancialStates(
     }
   }
 
-  const mergedTransactions = sanitizeRealTransactions(mergedTransactionsRaw);
+  return sanitizeRealTransactions(mergedTransactionsRaw);
+}
+
+/**
+ * Merges two UserFinancialState objects (e.g. remote cloud state and local device state)
+ * so that no Live or Demo account opened by the user ever vanishes unless explicitly deleted by the user,
+ * and wallet withdrawals/deposits/transfers reflect the exact balance after the latest action.
+ */
+export function mergeUserFinancialStates(
+  primary: UserFinancialState,
+  secondary: UserFinancialState | null | undefined,
+  userEmail?: string | null
+): UserFinancialState {
+  if (!secondary) return primary;
+  const deletedSet = getDeletedAccountNumbers(userEmail);
+
+  const accountMap = new Map<string, TradingAccount>();
+  // Put secondary accounts first, then merge primary accounts using authoritative timestamp/debit/skeleton protection
+  for (const acc of secondary.accounts || []) {
+    if (!acc) continue;
+    const accNum = String(acc.accountNumber || '');
+    if (accNum && deletedSet.has(accNum)) continue;
+    const key = accNum || acc.id;
+    if (key) accountMap.set(key, acc);
+  }
+  for (const acc of primary.accounts || []) {
+    if (!acc) continue;
+    const accNum = String(acc.accountNumber || '');
+    if (accNum && deletedSet.has(accNum)) continue;
+    const key = accNum || acc.id;
+    if (key) {
+      const prev = accountMap.get(key);
+      accountMap.set(key, prev ? pickAuthoritativeAccount(prev, acc, true) : acc);
+    }
+  }
+
+  const mergedTransactions = mergeTransactionLists(primary.transactions, secondary.transactions);
+
+  // Secondary safety pass: if a non-failed withdrawal transaction targeting a trading account
+  // recorded an explicit New Bal and is newer than the account's latest recorded timestamp
+  // (and wasn't already recorded in appliedDebitTxIds), enforce that post-withdrawal balance.
+  const mergedAccounts = Array.from(accountMap.values()).map((acc) => {
+    if (!acc?.accountNumber) return acc;
+    const applied = new Set((acc.appliedDebitTxIds || []).filter(Boolean));
+    const accLatestTs = getAccountLatestTimestamp(acc);
+    const matchingWithdrawals = mergedTransactions
+      .filter((t) => {
+        if (!t || t.type !== 'WITHDRAWAL') return false;
+        const st = String(t.status || 'COMPLETED').toUpperCase();
+        const details = String(t.details || '');
+        if (st === 'FAILED' || st === 'CANCELLED' || st === 'REJECTED') return false;
+        if (/capacity exceeded|unsuccessful|failed|bounced back/i.test(details)) return false;
+        const tAcc = String(t.accountNumber || '').replace(/^Account\s*#/i, '').trim();
+        return tAcc === acc.accountNumber && !/wallet/i.test(tAcc);
+      })
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const latestW = matchingWithdrawals[0];
+    if (
+      latestW &&
+      !applied.has(latestW.id) &&
+      Number(latestW.timestamp || 0) > accLatestTs
+    ) {
+      const m = String(latestW.details || '').match(/New Bal:\s*\$([0-9,]+(?:\.[0-9]+)?)/i);
+      if (m && m[1]) {
+        const parsedBal = Number(m[1].replace(/,/g, ''));
+        if (Number.isFinite(parsedBal)) {
+          const safeBal = Math.max(0, Number(parsedBal.toFixed(2)));
+          return {
+            ...acc,
+            balance: safeBal,
+            equity: safeBal,
+            freeMargin: Math.max(0, Number((safeBal - (acc.margin || 0)).toFixed(2))),
+            lastWithdrawalAt: Number(latestW.timestamp || Date.now()),
+            lastActivityAt: Number(latestW.timestamp || Date.now()),
+            appliedDebitTxIds: [...Array.from(applied), latestW.id].slice(-50),
+          };
+        }
+      }
+    }
+    return acc;
+  });
+
   const selectedId =
     primary.selectedAccountId && mergedAccounts.some((a) => a.id === primary.selectedAccountId)
       ? primary.selectedAccountId
@@ -2126,13 +2225,28 @@ export function saveUserFinancials(
       const k = accNum || acc.id;
       if (k) {
         const prev = accountMap.get(k);
-        // When explicitly saving state (syncToCloud = true), incoming state is authoritative unless incoming is a $0 skeleton
-        accountMap.set(key ? k : acc.id, prev && !syncToCloud ? pickAuthoritativeAccount(prev, acc, true) : (prev && isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev) ? prev : acc));
+        if (prev) {
+          const prevDebits = (prev.appliedDebitTxIds || []).filter(Boolean);
+          const accDebits = new Set((acc.appliedDebitTxIds || []).filter(Boolean));
+          const prevHasUnappliedDebit = prevDebits.some((id) => !accDebits.has(id));
+          if (!syncToCloud || prevHasUnappliedDebit) {
+            accountMap.set(key ? k : acc.id, pickAuthoritativeAccount(prev, acc, true));
+          } else if (isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev)) {
+            accountMap.set(key ? k : acc.id, prev);
+          } else {
+            accountMap.set(key ? k : acc.id, acc);
+          }
+        } else {
+          accountMap.set(key ? k : acc.id, acc);
+        }
       }
     }
 
     const safeAccounts = Array.from(accountMap.values());
-    const cleanTxs = sanitizeRealTransactions(state.transactions);
+    const cleanTxs =
+      existingLocal && Array.isArray(existingLocal.transactions) && existingLocal.transactions.length > 0
+        ? mergeTransactionLists(state.transactions, existingLocal.transactions)
+        : sanitizeRealTransactions(state.transactions);
     const safeWallet = reconcileWalletBalanceWithTransactions(
       state.walletBalance,
       cleanTxs,
@@ -2144,7 +2258,7 @@ export function saveUserFinancials(
       accounts: safeAccounts,
       selectedAccountId: state.selectedAccountId ?? safeAccounts[0]?.id ?? null,
       transactions: cleanTxs,
-      lastUpdated: syncToCloud ? Date.now() : (state.lastUpdated || existingLocal?.lastUpdated || 0),
+      lastUpdated: syncToCloud ? Math.max(Date.now(), Number(state.lastUpdated || 0)) : (state.lastUpdated || existingLocal?.lastUpdated || 0),
     };
 
     localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(payload));
@@ -2201,6 +2315,8 @@ export function executeInternalTransfer(
     };
   }
 
+  const nowTs = Date.now();
+  const txId = `tx-${nowTs}-${Math.random().toString(36).slice(2, 7)}`;
   const cleanAmount = Number(amount.toFixed(2));
   let updatedWallet = Number(currentState.walletBalance.toFixed(2));
   let updatedAccounts = currentState.accounts.map((acc) => ({ ...acc }));
@@ -2249,8 +2365,8 @@ export function executeInternalTransfer(
       balance: newBal,
       equity: newEq,
       freeMargin: newFree,
-      lastDepositAt: Date.now(),
-      lastActivityAt: Date.now(),
+      lastDepositAt: nowTs,
+      lastActivityAt: nowTs,
     };
   } else if (!isFromWallet && isToWallet) {
     // Trading Account -> Wallet
@@ -2287,7 +2403,7 @@ export function executeInternalTransfer(
       };
     }
 
-    // Deduct exact amount from trading account
+    // Deduct exact amount from trading account and stamp withdrawal/debit guard
     const newBal = Number((sourceAcc.balance - cleanAmount).toFixed(2));
     const newEq = Number((sourceAcc.equity - cleanAmount).toFixed(2));
     const newFree = Number(Math.max(0, sourceAcc.freeMargin - cleanAmount).toFixed(2));
@@ -2296,7 +2412,9 @@ export function executeInternalTransfer(
       balance: newBal,
       equity: newEq,
       freeMargin: newFree,
-      lastActivityAt: Date.now(),
+      lastWithdrawalAt: nowTs,
+      lastActivityAt: nowTs,
+      appliedDebitTxIds: [...(sourceAcc.appliedDebitTxIds || []), txId].slice(-50),
     };
 
     // Add exact amount to wallet
@@ -2353,13 +2471,15 @@ export function executeInternalTransfer(
       };
     }
 
-    // Deduct from source
+    // Deduct from source and stamp withdrawal/debit guard
     updatedAccounts[sourceIdx] = {
       ...sourceAcc,
       balance: Number((sourceAcc.balance - cleanAmount).toFixed(2)),
       equity: Number((sourceAcc.equity - cleanAmount).toFixed(2)),
       freeMargin: Number(Math.max(0, sourceAcc.freeMargin - cleanAmount).toFixed(2)),
-      lastActivityAt: Date.now(),
+      lastWithdrawalAt: nowTs,
+      lastActivityAt: nowTs,
+      appliedDebitTxIds: [...(sourceAcc.appliedDebitTxIds || []), txId].slice(-50),
     };
 
     // Add to target
@@ -2369,8 +2489,8 @@ export function executeInternalTransfer(
       balance: Number((targetAcc.balance + cleanAmount).toFixed(2)),
       equity: Number((targetAcc.equity + cleanAmount).toFixed(2)),
       freeMargin: Number((targetAcc.freeMargin + cleanAmount).toFixed(2)),
-      lastDepositAt: Date.now(),
-      lastActivityAt: Date.now(),
+      lastDepositAt: nowTs,
+      lastActivityAt: nowTs,
     };
   }
 
@@ -2398,13 +2518,13 @@ export function executeInternalTransfer(
   const walletSuffix =
     isFromWallet || isToWallet ? ` (New Bal: $${updatedWallet.toFixed(2)})` : '';
   const newTx: Transaction = {
-    id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    id: txId,
     type: 'INTERNAL_TRANSFER',
     method: 'Internal Transfer',
     amount,
     currency: 'USD',
     status: 'COMPLETED',
-    timestamp: Date.now(),
+    timestamp: nowTs,
     reference: ref,
     accountNumber: isToWallet ? 'VTM Wallet' : isFromWallet ? 'VTM Wallet' : toAccount,
     details: `${fromAccount} ➔ ${toAccount}${walletSuffix}`,
@@ -2417,6 +2537,7 @@ export function executeInternalTransfer(
     walletBalance: updatedWallet,
     accounts: updatedAccounts,
     transactions: newTransactions,
+    lastUpdated: nowTs,
   });
 
   return {

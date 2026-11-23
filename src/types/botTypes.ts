@@ -54,6 +54,8 @@ export interface BotRunInstance {
   accountId?: string;
   accountNumber?: string;
   claimedWinRate?: string;
+  executorDeviceId?: string;
+  executorHeartbeatAt?: number;
 }
 
 export interface BotTrade {

@@ -1006,6 +1006,9 @@ export const sanitizeAndFilterBotRuns = (
       if (itemTs >= existingTs) {
         dedupedByBot.set(botKey, {
           ...item,
+          executorDeviceId: item.executorDeviceId || existing.executorDeviceId,
+          executorHeartbeatAt:
+            item.executorHeartbeatAt || existing.executorHeartbeatAt,
           totalTrades: Math.max(item.totalTrades || 0, existing.totalTrades || 0),
           totalTradesCount: Math.max(item.totalTradesCount || 0, existing.totalTradesCount || 0),
           winningTrades: Math.max(item.winningTrades || 0, existing.winningTrades || 0),
@@ -1152,5 +1155,105 @@ export const saveStoredImportedBots = (bots: BotStrategyConfig[]) => {
     // ignore
   }
 };
+
+let fallbackDeviceId = '';
+let fallbackTabId = '';
+
+export const getLocalBotExecutorDeviceId = (): string => {
+  try {
+    const existing = localStorage.getItem('vtm_device_id');
+    if (existing && existing.trim()) return existing.trim();
+    const gen = 'dev-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now().toString(36);
+    localStorage.setItem('vtm_device_id', gen);
+    return gen;
+  } catch {
+    if (!fallbackDeviceId) {
+      fallbackDeviceId = 'dev-' + Math.random().toString(36).substring(2, 10);
+    }
+    return fallbackDeviceId;
+  }
+};
+
+export const getSessionTabId = (): string => {
+  try {
+    const existing = sessionStorage.getItem('vtm_session_tab_id');
+    if (existing && existing.trim()) return existing.trim();
+    const gen = 'tab-' + Math.random().toString(36).substring(2, 10) + '-' + Date.now().toString(36);
+    sessionStorage.setItem('vtm_session_tab_id', gen);
+    return gen;
+  } catch {
+    if (!fallbackTabId) {
+      fallbackTabId = 'tab-' + Math.random().toString(36).substring(2, 10);
+    }
+    return fallbackTabId;
+  }
+};
+
+export const claimLocalTabBotLock = (runKey?: string | null): void => {
+  if (!runKey) return;
+  try {
+    localStorage.setItem(
+      `vtm_bot_tab_lock_${runKey}`,
+      JSON.stringify({ tabId: getSessionTabId(), ts: Date.now() })
+    );
+  } catch {
+    // ignore
+  }
+};
+
+export const isThisSessionBotExecutor = (
+  runOrTrade: {
+    id?: string;
+    runId?: string;
+    executorDeviceId?: string;
+    status?: string;
+  } | null | undefined,
+  parentRun?: {
+    id?: string;
+    runId?: string;
+    executorDeviceId?: string;
+    status?: string;
+  } | null
+): boolean => {
+  const effectiveRun = parentRun || runOrTrade;
+  if (!effectiveRun) return false;
+
+  const myDeviceId = getLocalBotExecutorDeviceId();
+  const ownerDeviceId = effectiveRun.executorDeviceId;
+
+  // Strictly block any OTHER physical device (e.g., laptop while phone owns the run) from executing/closing bot trades
+  if (ownerDeviceId && ownerDeviceId.trim() && ownerDeviceId.trim() !== myDeviceId) {
+    return false;
+  }
+
+  // Legacy run without executorDeviceId: only execute on an active foreground tab so background tabs stay passive
+  if (!ownerDeviceId && typeof document !== 'undefined' && document.hidden) {
+    return false;
+  }
+
+  // Also prevent two tabs in the SAME browser from double-executing the same run
+  const runKey = effectiveRun.id || effectiveRun.runId || runOrTrade?.runId || runOrTrade?.id;
+  if (runKey) {
+    try {
+      const myTabId = getSessionTabId();
+      const rawLock = localStorage.getItem(`vtm_bot_tab_lock_${runKey}`);
+      if (rawLock) {
+        const parsed = JSON.parse(rawLock);
+        if (parsed?.tabId && parsed.tabId !== myTabId && Date.now() - Number(parsed.ts || 0) < 6000) {
+          return false;
+        }
+      }
+      localStorage.setItem(
+        `vtm_bot_tab_lock_${runKey}`,
+        JSON.stringify({ tabId: myTabId, ts: Date.now() })
+      );
+    } catch {
+      // ignore storage failure
+    }
+  }
+
+  return true;
+};
+
 
 

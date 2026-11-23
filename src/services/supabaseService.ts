@@ -8,6 +8,7 @@ import {
   isSkeletonZeroAccount,
   calculateNetWalletFromLedger,
   reconcileWalletBalanceWithTransactions,
+  mergeTransactionLists,
   loadUserFinancials,
   findRegisteredUser,
   getAllRegisteredUsers,
@@ -2544,6 +2545,8 @@ class SupabaseService {
       lotSize?: number;
       tpPips?: number;
       slPips?: number;
+      executorDeviceId?: string;
+      executorHeartbeatAt?: number;
     }
   >();
 
@@ -2560,6 +2563,8 @@ class SupabaseService {
       lotSize?: number;
       tpPips?: number;
       slPips?: number;
+      executorDeviceId?: string;
+      executorHeartbeatAt?: number;
     }
   ): void {
     this.explicitBotSyncSeq += 1;
@@ -2577,6 +2582,8 @@ class SupabaseService {
           lotSize: extra?.lotSize ?? prev?.lotSize,
           tpPips: extra?.tpPips ?? prev?.tpPips,
           slPips: extra?.slPips ?? prev?.slPips,
+          executorDeviceId: extra?.executorDeviceId ?? prev?.executorDeviceId,
+          executorHeartbeatAt: extra?.executorHeartbeatAt ?? prev?.executorHeartbeatAt,
         });
       }
     }
@@ -2692,6 +2699,8 @@ class SupabaseService {
               lotSize: r.lotSize,
               tpPips: r.tpPips,
               slPips: r.slPips,
+              executorDeviceId: r.executorDeviceId,
+              executorHeartbeatAt: r.executorHeartbeatAt,
             });
           }
         }
@@ -2716,6 +2725,8 @@ class SupabaseService {
                 lotSize: rr.lotSize,
                 tpPips: rr.tpPips,
                 slPips: rr.slPips,
+                executorDeviceId: rr.executorDeviceId,
+                executorHeartbeatAt: rr.executorHeartbeatAt,
               });
             }
           }
@@ -2740,6 +2751,8 @@ class SupabaseService {
             stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
             lastSignal:
               intent.status !== r.status && intent.lastSignal ? intent.lastSignal : r.lastSignal,
+            executorDeviceId: intent.executorDeviceId ?? r.executorDeviceId,
+            executorHeartbeatAt: intent.executorHeartbeatAt ?? r.executorHeartbeatAt,
           };
         }
         return r;
@@ -2891,6 +2904,8 @@ class SupabaseService {
           stoppedAt: intent.status === 'PAUSED' ? (intent.stoppedAt ?? r.stoppedAt) : r.stoppedAt,
           lastSignal: intent.lastSignal || r.lastSignal,
           lastSignalTime: intent.lastSignalTime || r.lastSignalTime,
+          executorDeviceId: intent.executorDeviceId ?? r.executorDeviceId,
+          executorHeartbeatAt: intent.executorHeartbeatAt ?? r.executorHeartbeatAt,
         };
       }
 
@@ -2908,6 +2923,8 @@ class SupabaseService {
               lotSize: r.lotSize,
               tpPips: r.tpPips,
               slPips: r.slPips,
+              executorDeviceId: r.executorDeviceId,
+              executorHeartbeatAt: r.executorHeartbeatAt,
             });
           }
         }
@@ -2933,6 +2950,90 @@ class SupabaseService {
       deletedBotIds: mergedDeleted,
       deletedBotMap: mergedDeletedMap,
     };
+  }
+
+  /**
+   * Lightweight (~150B) watermark check for rapid multi-device state propagation (bots, finances, trades)
+   */
+  public async fetchCloudSyncWatermarks(
+    user: UserAuthProfile | null | undefined
+  ): Promise<{ botsUpdatedAt: number; finUpdatedAt: number; tradesUpdatedAt: number } | null> {
+    if (!this.config || !user?.email || this.isQuotaRestricted()) return null;
+    const isAdmin = this.isMasterAdminEmail(user.email);
+    const cleanEmail = isAdmin
+      ? 'mutwirib964@gmail.com'
+      : user.email.trim().toLowerCase();
+    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
+
+    try {
+      const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
+      if (cleanEmail) {
+        orClauses.push(`user_email.eq.${encodeURIComponent(cleanEmail)}`);
+      }
+      if (user.id && this.isValidUuid(user.id)) {
+        orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
+      }
+
+      const [statesRes, finRes] = await Promise.all([
+        fetch(
+          `${this.config.url}/rest/v1/vtm_cloud_states?user_email=ilike.${encodeURIComponent(
+            cleanEmail
+          )}&state_key=in.(STATE_BOTS,STATE_FINANCIALS,STATE_TRADES)&select=state_key,updated_at`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(3000),
+          }
+        ).catch(() => null),
+        fetch(
+          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=last_updated&order=last_updated.desc&limit=1`,
+          {
+            method: 'GET',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+            },
+            signal: AbortSignal.timeout(3000),
+          }
+        ).catch(() => null),
+      ]);
+
+      let botsUpdatedAt = 0;
+      let finUpdatedAt = 0;
+      let tradesUpdatedAt = 0;
+
+      if (statesRes && statesRes.ok) {
+        this.checkResponseQuota(statesRes);
+        const rows = await statesRes.json();
+        if (Array.isArray(rows)) {
+          for (const row of rows) {
+            const ts = row?.updated_at ? new Date(row.updated_at).getTime() : 0;
+            if (!Number.isFinite(ts) || ts <= 0) continue;
+            if (row.state_key === 'STATE_BOTS' && ts > botsUpdatedAt) botsUpdatedAt = ts;
+            if (row.state_key === 'STATE_FINANCIALS' && ts > finUpdatedAt) finUpdatedAt = ts;
+            if (row.state_key === 'STATE_TRADES' && ts > tradesUpdatedAt) tradesUpdatedAt = ts;
+          }
+        }
+      }
+
+      if (finRes && finRes.ok) {
+        this.checkResponseQuota(finRes);
+        const finRows = await finRes.json();
+        if (Array.isArray(finRows) && finRows[0]?.last_updated) {
+          const finTs = new Date(finRows[0].last_updated).getTime();
+          if (Number.isFinite(finTs) && finTs > finUpdatedAt) {
+            finUpdatedAt = finTs;
+          }
+        }
+      }
+
+      return { botsUpdatedAt, finUpdatedAt, tradesUpdatedAt };
+    } catch {
+      return null;
+    }
   }
 
   public async syncExtrasState(
@@ -3813,6 +3914,7 @@ class SupabaseService {
 
       let cloudLastUpdatedMs = 0;
       let cloudWalletBalance: number | undefined = undefined;
+      let cloudTransactions: Transaction[] = [];
 
       // Build OR query clauses
       const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
@@ -3823,10 +3925,10 @@ class SupabaseService {
         orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
       }
 
-      // Fetch current cloud accounts and high-resolution last_updated timestamp to prevent stale state drift
+      // Fetch current cloud accounts, transactions, and high-resolution last_updated timestamp to prevent stale state drift
       try {
         const existingRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts,wallet_balance,last_updated&order=last_updated.desc`,
+          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts,wallet_balance,transactions,last_updated&order=last_updated.desc`,
           {
             method: 'GET',
             headers: {
@@ -3853,6 +3955,9 @@ class SupabaseService {
                 ) {
                   cloudWalletBalance = row.wallet_balance;
                 }
+              }
+              if (Array.isArray(row?.transactions)) {
+                cloudTransactions = mergeTransactionLists(cloudTransactions, row.transactions);
               }
               if (Array.isArray(row?.accounts)) {
                 for (const acc of row.accounts) {
@@ -3891,7 +3996,7 @@ class SupabaseService {
               } else if (isCloudNewer && !isSkeletonZeroAccount(prev)) {
                 accountMap.set(k, pickAuthoritativeAccount(prev, acc, false));
               } else {
-                accountMap.set(k, pickAuthoritativeAccount(acc, prev, false));
+                accountMap.set(k, pickAuthoritativeAccount(prev, acc, true));
               }
             } else {
               accountMap.set(k, acc);
@@ -3901,16 +4006,25 @@ class SupabaseService {
       }
 
       const mergedAccounts = Array.from(accountMap.values());
+      const mergedTransactions = mergeTransactionLists(
+        isCloudNewer ? cloudTransactions : state.transactions,
+        isCloudNewer ? state.transactions : cloudTransactions
+      );
       const incomingWallet = Number((state.walletBalance || 0).toFixed(2));
+      const baseWallet =
+        isCloudNewer && typeof cloudWalletBalance === 'number' && !isNaN(cloudWalletBalance)
+          ? Number(cloudWalletBalance.toFixed(2))
+          : incomingWallet;
       const finalWalletBalance = reconcileWalletBalanceWithTransactions(
-        incomingWallet,
-        state.transactions,
+        baseWallet,
+        mergedTransactions,
         mergedAccounts
       );
 
       // Winning high-resolution ISO timestamp
       const winningMs = Math.max(nowMs, cloudLastUpdatedMs);
       const winningIso = new Date(winningMs).toISOString();
+      const cappedMergedTxs = mergedTransactions.slice(0, 100);
 
       const payload = {
         user_key: userKey,
@@ -3919,7 +4033,7 @@ class SupabaseService {
         wallet_balance: finalWalletBalance,
         accounts: mergedAccounts,
         selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
-        transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
+        transactions: cappedMergedTxs,
         last_updated: winningIso,
       };
 
@@ -3934,7 +4048,7 @@ class SupabaseService {
             walletBalance: finalWalletBalance,
             accounts: mergedAccounts,
             selectedAccountId: state.selectedAccountId || mergedAccounts[0]?.id || null,
-            transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
+            transactions: cappedMergedTxs,
             lastUpdated: winningMs,
           },
         }),
@@ -3974,7 +4088,7 @@ class SupabaseService {
               wallet_balance: finalWalletBalance,
               accounts: mergedAccounts,
               selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
-              transactions: Array.isArray(state.transactions) ? state.transactions.slice(0, 100) : [],
+              transactions: cappedMergedTxs,
               last_updated: winningIso,
             }),
             signal: AbortSignal.timeout(5000),
@@ -3991,7 +4105,7 @@ class SupabaseService {
           walletBalance: finalWalletBalance,
           accounts: mergedAccounts,
           selectedAccountId: state.selectedAccountId,
-          transactions: state.transactions,
+          transactions: mergedTransactions.slice(0, 150),
           lastUpdated: winningIso,
           updatedAt: winningMs,
         }
