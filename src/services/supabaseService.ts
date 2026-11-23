@@ -4238,14 +4238,13 @@ class SupabaseService {
 
           const filteredAccounts = Array.from(accountMap.values());
 
-          // Collect all transactions across all rows for this user
-          const allTxsAcrossRows: Transaction[] = [];
+          // Collect and deduplicate all transactions across all rows for this user
+          let cleanTxs: Transaction[] = [];
           for (const r of rows) {
             if (Array.isArray(r.transactions)) {
-              allTxsAcrossRows.push(...r.transactions);
+              cleanTxs = mergeTransactionLists(cleanTxs, r.transactions);
             }
           }
-          const cleanTxs = sanitizeRealTransactions(allTxsAcrossRows);
           const newestRowWallet = Number(row.wallet_balance || 0);
           const authoritativeWallet = reconcileWalletBalanceWithTransactions(
             newestRowWallet,

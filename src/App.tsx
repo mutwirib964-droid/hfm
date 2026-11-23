@@ -318,6 +318,7 @@ export default function App() {
   });
   const isCloudSyncInFlightRef = useRef<boolean>(false);
   const lastRemoteBotSyncKeyRef = useRef<string>('');
+  const lastSeenRemoteFinUpdatedRef = useRef<number>(0);
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
   const isCloudFinancialsLoadedRef = useRef<boolean>(false);
   const isCloudTradesLoadedRef = useRef<boolean>(false);
@@ -459,15 +460,47 @@ export default function App() {
       if (remoteFin) {
         const localFin = loadUserFinancials(remote.profile);
         const isRecentLocalWrite = Date.now() - lastUserCashActionRef.current < 4000;
+        const isRecentAnyLocalFin =
+          isRecentLocalWrite || Date.now() - lastLocalFinancialUpdateRef.current < 3500;
+        const serverFinAdvanced =
+          Number(remoteFin.lastUpdated || 0) > lastSeenRemoteFinUpdatedRef.current;
         const remoteIsNewer =
           !isRecentLocalWrite &&
-          (isInitialMount || (remoteFin.lastUpdated || 0) > (localFin?.lastUpdated || 0) + 1000);
+          (isInitialMount ||
+            (serverFinAdvanced && !isRecentAnyLocalFin) ||
+            (remoteFin.lastUpdated || 0) > (localFin?.lastUpdated || 0) + 1000);
 
-        const mergedFin = mergeUserFinancialStates(
+        if (Number(remoteFin.lastUpdated || 0) > lastSeenRemoteFinUpdatedRef.current) {
+          lastSeenRemoteFinUpdatedRef.current = Number(remoteFin.lastUpdated || 0);
+        }
+
+        const rawMergedFin = mergeUserFinancialStates(
           remoteIsNewer ? remoteFin : localFin || remoteFin,
           remoteIsNewer ? localFin : remoteFin,
           remote.profile.email
         );
+
+        // Clock-skew immunity: if the cloud server timestamp advanced while this device was passive,
+        // accept remoteFin's balance/equity unless localFin has an unapplied withdrawal/debit tx.
+        const mergedFin =
+          remoteIsNewer && serverFinAdvanced && !isRecentAnyLocalFin
+            ? {
+                ...rawMergedFin,
+                accounts: rawMergedFin.accounts.map((acc) => {
+                  const rAcc = (remoteFin.accounts || []).find(
+                    (ra) =>
+                      (acc.accountNumber && ra.accountNumber === acc.accountNumber) ||
+                      ra.id === acc.id
+                  );
+                  if (!rAcc) return acc;
+                  const rDebits = new Set((rAcc.appliedDebitTxIds || []).filter(Boolean));
+                  const localHasUnappliedDebit = (acc.appliedDebitTxIds || []).some(
+                    (id) => id && !rDebits.has(id)
+                  );
+                  return localHasUnappliedDebit ? acc : rAcc;
+                }),
+              }
+            : rawMergedFin;
 
         // Preserve any local PENDING withdrawal that is still in its 5-second window
         const localPendingWithdrawals = (transactionsRef.current || []).filter(
