@@ -629,11 +629,18 @@ class SupabaseService {
     }
 
     try {
+      const rawIncomingPhone = String(profile.phoneNumber || profile.phone || '').trim();
+      const incomingDigits = rawIncomingPhone.replace(/\D/g, '');
+      const isPlaceholderOrEmptyPhone =
+        !incomingDigits ||
+        incomingDigits === '254700000000' ||
+        incomingDigits === '0700000000' ||
+        incomingDigits === '700000000';
+
       // If no password was supplied (e.g. profile/session sync), try PATCH first so we never overwrite an existing password_hash
       if (password === undefined || password === '') {
         const patchBody: Record<string, any> = {
           name: isAdmin ? 'mutwiri' : profile.name,
-          phone_number: profile.phoneNumber || profile.phone || '',
           country_code: profile.countryCode || '+1',
           country_name: profile.countryName || 'United States',
           role: safeRole,
@@ -641,6 +648,9 @@ class SupabaseService {
           last_login_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
+        if (!isPlaceholderOrEmptyPhone) {
+          patchBody.phone_number = rawIncomingPhone;
+        }
         const patchExistingRes = await fetch(
           `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
           {
@@ -709,16 +719,18 @@ class SupabaseService {
         return true;
       }
 
-      // Fallback PATCH if row already exists (preserve existing account_number)
+      // Fallback PATCH if row already exists (preserve existing account_number & valid phone_number)
       const patchPayload: Record<string, any> = {
         name: isAdmin ? 'mutwiri' : profile.name,
-        phone_number: profile.phoneNumber || profile.phone || '',
         country_code: profile.countryCode || '+1',
         country_name: profile.countryName || 'United States',
         role: safeRole,
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
+      if (!isPlaceholderOrEmptyPhone) {
+        patchPayload.phone_number = rawIncomingPhone;
+      }
       if (encodedPasswordHash) {
         patchPayload.password_hash = encodedPasswordHash;
       }
@@ -1995,6 +2007,21 @@ class SupabaseService {
     } catch {}
 
     return null;
+  }
+
+  public async saveUserKycRecord(userEmail: string, kycRecord: any): Promise<boolean> {
+    if (!userEmail) return false;
+    return this.saveCloudStateRecord(
+      userEmail,
+      'STATE_KYC',
+      'User personal profile & KYC verification record',
+      kycRecord
+    );
+  }
+
+  public async fetchUserKycRecord<T = any>(userEmail: string): Promise<T | null> {
+    if (!userEmail) return null;
+    return this.fetchCloudStateRecord<T>(userEmail, 'STATE_KYC');
   }
 
   // =========================================================================

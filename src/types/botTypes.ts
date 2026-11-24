@@ -106,4 +106,6 @@ export interface UserAuthProfile {
   avatar?: string;
   createdAt: number;
   referredByCode?: string; // Optional referral code applied during account creation
+  dateOfBirth?: string; // User-supplied Date of Birth (YYYY-MM-DD)
+  residentialAddress?: string; // User-supplied Residential Street Address
 }

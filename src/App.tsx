@@ -449,11 +449,20 @@ export default function App() {
         if (!prevUser) return null;
         const nextAcc = remote.profile.accountNumber || prevUser.accountNumber;
         const nextRefBy = remote.profile.referredByCode || prevUser.referredByCode;
+        const remotePhone = String(remote.profile.phoneNumber || remote.profile.phone || '').trim();
+        const remoteDigits = remotePhone.replace(/\D/g, '');
+        const hasRealRemotePhone =
+          remoteDigits.length >= 6 &&
+          remoteDigits !== '254700000000' &&
+          remoteDigits !== '0700000000' &&
+          remoteDigits !== '700000000';
+        const nextPhone = hasRealRemotePhone ? remotePhone : prevUser.phoneNumber || prevUser.phone;
         if (
           prevUser.role !== remoteRole ||
           String(prevUser.id) !== String(remote.profile.id) ||
           prevUser.accountNumber !== nextAcc ||
-          prevUser.referredByCode !== nextRefBy
+          prevUser.referredByCode !== nextRefBy ||
+          (hasRealRemotePhone && prevUser.phoneNumber !== nextPhone)
         ) {
           const updated = {
             ...prevUser,
@@ -461,6 +470,7 @@ export default function App() {
             role: remoteRole,
             accountNumber: nextAcc,
             referredByCode: nextRefBy,
+            ...(nextPhone ? { phoneNumber: nextPhone, phone: nextPhone } : {}),
           };
           currentUserRef.current = updated;
           localStorage.setItem('vtm_auth_user', JSON.stringify(updated));

@@ -4,29 +4,19 @@ import {
   ShieldCheck,
   Upload,
   CheckCircle2,
-  Clock,
   FileText,
   FileCheck,
-  AlertCircle,
   Lock,
-  FastForward,
-  Sparkles,
-  Check,
-  Calendar,
-  MapPin,
-  Mail,
-  Phone,
-  CreditCard,
+  AlertCircle,
+  Save,
 } from 'lucide-react';
 import { UserAuthProfile } from '../types/botTypes';
 import {
-  COUNTRY_OPTIONS,
   getCountryByCode,
   getCountryByName,
-  formatLocalPhoneInput,
-  validatePhoneForCountry,
   maskPhoneNumber,
 } from '../utils/countryPhoneConfig';
+import { supabaseService } from '../services/supabaseService';
 
 interface ProfileVerificationSectionProps {
   isDarkMode: boolean;
@@ -44,98 +34,338 @@ interface KycRecord {
   residencyFileName?: string;
   idNumber: string;
   kraPin: string;
+  dateOfBirth?: string;
+  residentialAddress?: string;
+  profileUpdatedAt?: number;
 }
 
-const STORAGE_KEY = 'hfm_kyc_verification_record';
+function getKycStorageKey(email?: string | null): string {
+  const clean = String(email || '').trim().toLowerCase();
+  return clean ? `vtm_kyc_verification_${clean}` : 'vtm_kyc_verification_guest';
+}
+
+function createEmptyKycRecord(dob = '', address = ''): KycRecord {
+  return {
+    submitted: false,
+    submittedAt: 0,
+    isVerified: false,
+    idType: 'ID',
+    residencyType: 'UTILITY_BILL',
+    idNumber: '',
+    kraPin: '',
+    dateOfBirth: dob,
+    residentialAddress: address,
+  };
+}
+
+function loadLocalUserKycRecord(email?: string | null): KycRecord | null {
+  if (!email) return null;
+  try {
+    const saved = localStorage.getItem(getKycStorageKey(email));
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && typeof parsed === 'object') {
+        return {
+          ...createEmptyKycRecord(),
+          ...parsed,
+        };
+      }
+    }
+  } catch {
+    // ignore malformed storage
+  }
+  return null;
+}
+
+function saveLocalUserKycRecord(email: string | undefined | null, record: KycRecord): void {
+  if (!email) return;
+  try {
+    localStorage.setItem(getKycStorageKey(email), JSON.stringify(record));
+  } catch {
+    // ignore quota errors
+  }
+}
+
+function formatDobDisplay(rawDob?: string): string {
+  const trimmed = String(rawDob || '').trim();
+  if (!trimmed) return 'Not provided';
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const months = [
+      'January',
+      'February',
+      'March',
+      'April',
+      'May',
+      'June',
+      'July',
+      'August',
+      'September',
+      'October',
+      'November',
+      'December',
+    ];
+    if (monthIndex >= 0 && monthIndex < 12 && day >= 1 && day <= 31) {
+      return `${day} ${months[monthIndex]} ${year}`;
+    }
+  }
+  return trimmed;
+}
 
 export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProps> = ({
   isDarkMode,
   currentUser,
 }) => {
-  // Personal Details dynamically sourced from user account profile
-  const initialCountryCfg = getCountryByCode(currentUser?.countryCode) || getCountryByName(currentUser?.countryName);
+  // Remove legacy shared non-user-scoped key so one user's KYC never bleeds into another account
+  useEffect(() => {
+    try {
+      localStorage.removeItem('hfm_kyc_verification_record');
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const initialCountryCfg =
+    getCountryByCode(currentUser?.countryCode) || getCountryByName(currentUser?.countryName);
   const [selectedCountryCode, setSelectedCountryCode] = useState<string>(initialCountryCfg.code);
   const activeCountryCfg = getCountryByCode(selectedCountryCode);
 
   const [fullName, setFullName] = useState(() => currentUser?.name || 'Trader');
-  const [email] = useState(() => currentUser?.email || '');
+  const [email, setEmail] = useState(() => currentUser?.email || '');
   const [phone, setPhone] = useState(() => {
     const raw = currentUser?.phoneNumber || (currentUser as any)?.phone || '';
-    if (!raw) return '';
-    return raw;
+    return raw ? String(raw) : '';
   });
-  const [address, setAddress] = useState(() =>
-    currentUser?.countryName
-      ? `${initialCountryCfg.defaultCity}, ${currentUser.countryName}`
-      : `${initialCountryCfg.defaultCity}, ${initialCountryCfg.name}`
-  );
-  const [dob] = useState('14 August 1993');
 
-  useEffect(() => {
-    if (currentUser) {
-      if (currentUser.name) setFullName(currentUser.name);
-      if (currentUser.countryCode) {
-        setSelectedCountryCode(currentUser.countryCode);
-      } else if (currentUser.countryName) {
-        const cfg = getCountryByName(currentUser.countryName);
-        setSelectedCountryCode(cfg.code);
-      }
-      if (currentUser.phoneNumber || (currentUser as any)?.phone) {
-        setPhone(currentUser.phoneNumber || (currentUser as any)?.phone || '');
-      }
-    }
-  }, [currentUser?.email, currentUser?.name, currentUser?.countryCode, currentUser?.countryName, currentUser?.phoneNumber]);
+  const initialLocalKyc = loadLocalUserKycRecord(currentUser?.email);
+  const [dob, setDob] = useState<string>(
+    () => initialLocalKyc?.dateOfBirth || currentUser?.dateOfBirth || ''
+  );
+  const [address, setAddress] = useState<string>(
+    () => initialLocalKyc?.residentialAddress || currentUser?.residentialAddress || ''
+  );
+
+  const [profileNotice, setProfileNotice] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   // Document upload selections
-  const [idType, setIdType] = useState<'ID' | 'DRIVING_LICENCE'>('ID');
-  const [residencyType, setResidencyType] = useState<'KRA' | 'UTILITY_BILL'>('UTILITY_BILL');
-  const [idNumber, setIdNumber] = useState('');
-  const [kraPin, setKraPin] = useState('');
+  const [idType, setIdType] = useState<'ID' | 'DRIVING_LICENCE'>(
+    initialLocalKyc?.idType || 'ID'
+  );
+  const [residencyType, setResidencyType] = useState<'KRA' | 'UTILITY_BILL'>(
+    initialLocalKyc?.residencyType || 'UTILITY_BILL'
+  );
+  const [idNumber, setIdNumber] = useState(initialLocalKyc?.idNumber || '');
+  const [kraPin, setKraPin] = useState(initialLocalKyc?.kraPin || '');
 
   const [idFile, setIdFile] = useState<File | null>(null);
   const [residencyFile, setResidencyFile] = useState<File | null>(null);
 
-  // KYC state
-  const [kycRecord, setKycRecord] = useState<KycRecord>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // ignore
-      }
+  // Per-user KYC state
+  const [kycRecord, setKycRecord] = useState<KycRecord>(
+    () =>
+      initialLocalKyc ||
+      createEmptyKycRecord(currentUser?.dateOfBirth || '', currentUser?.residentialAddress || '')
+  );
+
+  // Max DOB for 18+ account holders
+  const maxAdultDob = (() => {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - 18);
+    return d.toISOString().split('T')[0];
+  })();
+
+  // Keep basic identity fields in sync with currentUser updates (e.g. after Supabase hydration)
+  useEffect(() => {
+    if (!currentUser) return;
+    if (currentUser.name) setFullName(currentUser.name);
+    if (currentUser.email) setEmail(currentUser.email);
+    if (currentUser.countryCode) {
+      setSelectedCountryCode(currentUser.countryCode);
+    } else if (currentUser.countryName) {
+      const cfg = getCountryByName(currentUser.countryName);
+      setSelectedCountryCode(cfg.code);
     }
-    return {
-      submitted: false,
-      submittedAt: 0,
-      isVerified: false,
-      idType: 'ID',
-      residencyType: 'UTILITY_BILL',
-      idNumber: '',
-      kraPin: '',
+    const nextPhone = currentUser.phoneNumber || (currentUser as any)?.phone || '';
+    if (nextPhone) {
+      setPhone(String(nextPhone));
+    }
+  }, [
+    currentUser?.email,
+    currentUser?.name,
+    currentUser?.countryCode,
+    currentUser?.countryName,
+    currentUser?.phoneNumber,
+    (currentUser as any)?.phone,
+  ]);
+
+  // Hydrate strictly per-user KYC record (DOB, residential street address, documents) when email changes
+  useEffect(() => {
+    const userEmail = currentUser?.email?.trim().toLowerCase();
+    if (!userEmail) return;
+
+    let cancelled = false;
+    const localRec = loadLocalUserKycRecord(userEmail);
+    if (localRec) {
+      setKycRecord(localRec);
+      setDob(localRec.dateOfBirth || currentUser?.dateOfBirth || '');
+      setAddress(localRec.residentialAddress || currentUser?.residentialAddress || '');
+      if (localRec.idType) setIdType(localRec.idType);
+      if (localRec.residencyType) setResidencyType(localRec.residencyType);
+      if (localRec.idNumber) setIdNumber(localRec.idNumber);
+      if (localRec.kraPin) setKraPin(localRec.kraPin);
+    } else {
+      const fresh = createEmptyKycRecord(
+        currentUser?.dateOfBirth || '',
+        currentUser?.residentialAddress || ''
+      );
+      setKycRecord(fresh);
+      setDob(currentUser?.dateOfBirth || '');
+      setAddress(currentUser?.residentialAddress || '');
+      setIdNumber('');
+      setKraPin('');
+    }
+    setProfileNotice(null);
+
+    if (supabaseService.isConfigured()) {
+      supabaseService
+        .fetchUserKycRecord<KycRecord>(userEmail)
+        .then((remoteRec) => {
+          if (cancelled || !remoteRec || typeof remoteRec !== 'object') return;
+          const localTime = localRec?.submittedAt || localRec?.profileUpdatedAt || 0;
+          const remoteTime = remoteRec.submittedAt || remoteRec.profileUpdatedAt || 0;
+          const useRemote =
+            !localRec ||
+            (remoteRec.submitted && !localRec.submitted) ||
+            remoteTime >= localTime;
+
+          const mergedRec: KycRecord = {
+            ...createEmptyKycRecord(),
+            ...(useRemote ? localRec : remoteRec),
+            ...(useRemote ? remoteRec : localRec),
+            dateOfBirth: useRemote
+              ? remoteRec.dateOfBirth || localRec?.dateOfBirth || ''
+              : localRec?.dateOfBirth || remoteRec.dateOfBirth || '',
+            residentialAddress: useRemote
+              ? remoteRec.residentialAddress || localRec?.residentialAddress || ''
+              : localRec?.residentialAddress || remoteRec.residentialAddress || '',
+          };
+
+          saveLocalUserKycRecord(userEmail, mergedRec);
+          setKycRecord(mergedRec);
+          if (mergedRec.dateOfBirth !== undefined) setDob(mergedRec.dateOfBirth);
+          if (mergedRec.residentialAddress !== undefined) setAddress(mergedRec.residentialAddress);
+          if (mergedRec.idType) setIdType(mergedRec.idType);
+          if (mergedRec.residencyType) setResidencyType(mergedRec.residencyType);
+          if (mergedRec.idNumber) setIdNumber(mergedRec.idNumber);
+          if (mergedRec.kraPin) setKraPin(mergedRec.kraPin);
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      cancelled = true;
     };
-  });
+  }, [currentUser?.email]);
+
+  const persistPersonalDetailsToStorage = (nextDob: string, nextAddress: string, updatedRecord: KycRecord) => {
+    const userEmail = currentUser?.email?.trim().toLowerCase();
+    if (!userEmail) return;
+    saveLocalUserKycRecord(userEmail, updatedRecord);
+    try {
+      const rawAuth = localStorage.getItem('vtm_auth_user');
+      if (rawAuth) {
+        const parsedAuth = JSON.parse(rawAuth);
+        if (parsedAuth && String(parsedAuth.email || '').trim().toLowerCase() === userEmail) {
+          parsedAuth.dateOfBirth = nextDob;
+          parsedAuth.residentialAddress = nextAddress;
+          localStorage.setItem('vtm_auth_user', JSON.stringify(parsedAuth));
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (supabaseService.isConfigured()) {
+      supabaseService.saveUserKycRecord(userEmail, updatedRecord).catch(() => {});
+    }
+  };
+
+  const handleSavePersonalDetails = () => {
+    if (kycRecord.submitted) return;
+    const cleanDob = dob.trim();
+    const cleanAddress = address.trim();
+
+    if (!cleanDob) {
+      setProfileNotice({ type: 'error', text: 'Please enter your Date of Birth.' });
+      return;
+    }
+    if (!cleanAddress || cleanAddress.length < 4) {
+      setProfileNotice({
+        type: 'error',
+        text: 'Please enter your full residential street address.',
+      });
+      return;
+    }
+
+    const updatedRecord: KycRecord = {
+      ...kycRecord,
+      dateOfBirth: cleanDob,
+      residentialAddress: cleanAddress,
+      profileUpdatedAt: Date.now(),
+    };
+    setKycRecord(updatedRecord);
+    persistPersonalDetailsToStorage(cleanDob, cleanAddress, updatedRecord);
+    setProfileNotice({
+      type: 'success',
+      text: 'Your personal Date of Birth and Residential Street Address have been saved.',
+    });
+  };
 
   const handleSubmitVerification = (e: React.FormEvent) => {
     e.preventDefault();
     if (kycRecord.submitted) return; // Can only occur once
 
+    const cleanDob = dob.trim();
+    const cleanAddress = address.trim();
+    if (!cleanDob || !cleanAddress || cleanAddress.length < 4) {
+      setProfileNotice({
+        type: 'error',
+        text: 'Please enter your own Date of Birth and Residential Street Address above before submitting KYC documents.',
+      });
+      return;
+    }
+
+    const now = Date.now();
     const newRecord: KycRecord = {
       submitted: true,
-      submittedAt: Date.now(),
+      submittedAt: now,
       isVerified: false,
       idType,
       residencyType,
-      idFileName: idFile ? idFile.name : `${idType === 'ID' ? 'National_ID' : 'Driving_Licence'}_Scan.pdf`,
+      idFileName: idFile
+        ? idFile.name
+        : `${idType === 'ID' ? 'National_ID' : 'Driving_Licence'}_Scan.pdf`,
       residencyFileName: residencyFile
         ? residencyFile.name
         : `${residencyType === 'KRA' ? 'KRA_PIN_Certificate' : 'Utility_Bill'}_Certified.pdf`,
-      idNumber,
-      kraPin,
+      idNumber: idNumber.trim(),
+      kraPin: kraPin.trim(),
+      dateOfBirth: cleanDob,
+      residentialAddress: cleanAddress,
+      profileUpdatedAt: now,
     };
 
     setKycRecord(newRecord);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newRecord));
+    persistPersonalDetailsToStorage(cleanDob, cleanAddress, newRecord);
+    setProfileNotice({
+      type: 'success',
+      text: 'Personal details and compliance verification documents submitted.',
+    });
   };
 
   return (
@@ -199,7 +429,7 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
                   ? 'Identity (ID/Passport/Licence) and Proof of Residence verified and locked. Unlimited trading & withdrawal limits active.'
                   : kycRecord.submitted
                   ? 'Your documents have been securely received and are currently being reviewed by the compliance desk.'
-                  : 'Upload your National ID, Passport, or Driving Licence and Proof of Residence to verify your institutional trading profile.'}
+                  : 'Enter your real Date of Birth and Residential Street Address, then upload your Government ID and Proof of Residence.'}
               </p>
             </div>
           </div>
@@ -301,10 +531,30 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+            <span className={`text-[10px] block mb-1 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
               Date of Birth
             </span>
-            <span className={`text-xs ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>{dob}</span>
+            {kycRecord.submitted ? (
+              <span className={`text-xs font-medium ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>
+                {formatDobDisplay(dob)}
+              </span>
+            ) : (
+              <input
+                type="date"
+                max={maxAdultDob}
+                value={dob}
+                onChange={(e) => {
+                  setDob(e.target.value);
+                  if (profileNotice) setProfileNotice(null);
+                }}
+                aria-label="Date of Birth"
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#E51937] ${
+                  isDarkMode
+                    ? 'bg-neutral-950 border-neutral-700 text-white'
+                    : 'bg-white border-slate-300 text-slate-900'
+                }`}
+              />
+            )}
           </div>
 
           <div
@@ -312,14 +562,69 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
               isDarkMode ? 'bg-neutral-900/80 border-neutral-800' : 'bg-slate-50 border-slate-200'
             }`}
           >
-            <span className={`text-[10px] block mb-0.5 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
+            <span className={`text-[10px] block mb-1 ${isDarkMode ? 'text-neutral-500' : 'text-slate-500'}`}>
               Residential Street Address
             </span>
-            <span className={`text-xs truncate block ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>
-              {address}
-            </span>
+            {kycRecord.submitted ? (
+              <span className={`text-xs truncate block font-medium ${isDarkMode ? 'text-neutral-200' : 'text-slate-800'}`}>
+                {address || 'Not provided'}
+              </span>
+            ) : (
+              <input
+                type="text"
+                value={address}
+                onChange={(e) => {
+                  setAddress(e.target.value);
+                  if (profileNotice) setProfileNotice(null);
+                }}
+                placeholder="Enter your street, estate/town & city"
+                aria-label="Residential Street Address"
+                className={`w-full border rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#E51937] ${
+                  isDarkMode
+                    ? 'bg-neutral-950 border-neutral-700 text-white placeholder:text-neutral-600'
+                    : 'bg-white border-slate-300 text-slate-900 placeholder:text-slate-400'
+                }`}
+              />
+            )}
           </div>
         </div>
+
+        {profileNotice && (
+          <div
+            className={`p-2.5 rounded-xl border flex items-center gap-2 text-[11px] font-medium ${
+              profileNotice.type === 'success'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'
+                : 'bg-red-500/10 border-red-500/30 text-red-500'
+            }`}
+          >
+            {profileNotice.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 shrink-0" />
+            )}
+            <span>{profileNotice.text}</span>
+          </div>
+        )}
+
+        {!kycRecord.submitted && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+            <span className={`text-[11px] ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
+              Your Date of Birth and Residential Street Address must match your government ID &amp; proof of residence.
+            </span>
+            <button
+              type="button"
+              onClick={handleSavePersonalDetails}
+              className={`px-3.5 py-2 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-colors shrink-0 ${
+                isDarkMode
+                  ? 'bg-neutral-800 hover:bg-neutral-700 text-white border border-neutral-700'
+                  : 'bg-slate-900 hover:bg-slate-800 text-white'
+              }`}
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Save Personal Details</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Document Upload & KYC Verification Form (Occurs ONLY ONCE) */}
@@ -628,3 +933,4 @@ export const ProfileVerificationSection: React.FC<ProfileVerificationSectionProp
     </div>
   );
 };
+

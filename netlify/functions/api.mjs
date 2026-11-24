@@ -2287,8 +2287,8 @@ export async function handler(event) {
           id: 'c2940f1a-8e33-411b-a910-763566710220',
           name: 'Joel Ndungu',
           email: 'joelndungu1022@gmail.com',
-          phoneNumber: '+254 700000000',
-          phone: '+254 700000000',
+          phoneNumber: '+254 741114162',
+          phone: '+254 741114162',
           countryCode: '+254',
           countryName: 'Kenya',
           accountNumber: '7635667',
@@ -2497,10 +2497,22 @@ export async function handler(event) {
           rawEmail === 'mutwirib@gmail.com';
         const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
         const existing = db.users[cleanEmail] || {};
+        const incomingPhone = String(body.user.phoneNumber || body.user.phone || body.user.phone_number || '').trim();
+        const incomingDigits = incomingPhone.replace(/\D/g, '');
+        const isPlaceholderPhone =
+          !incomingDigits ||
+          incomingDigits === '254700000000' ||
+          incomingDigits === '0700000000' ||
+          incomingDigits === '700000000';
+        const existingPhone = String(existing.phoneNumber || existing.phone || existing.phone_number || '').trim();
+        const resolvedPhone = isPlaceholderPhone && existingPhone ? existingPhone : (incomingPhone || existingPhone);
         db.users[cleanEmail] = {
           ...existing,
           ...body.user,
           email: cleanEmail,
+          phoneNumber: resolvedPhone,
+          phone: resolvedPhone,
+          phone_number: resolvedPhone,
           id: isAdmin
             ? '84a1e1db-f302-4dac-a077-291128ae0cea'
             : body.user.id || existing.id,
