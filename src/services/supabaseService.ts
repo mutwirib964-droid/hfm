@@ -116,6 +116,7 @@ class SupabaseService {
   private config: SupabaseConfig | null = null;
   private initPromise: Promise<SupabaseConfig | null> | null = null;
   private quotaRestrictedUntil = 0;
+  private closedTradesLegacyFkBlocked: boolean | null = null;
 
   constructor() {
     this.loadConfig();
@@ -264,6 +265,97 @@ class SupabaseService {
   private isValidUuid(val?: string | null): boolean {
     if (!val || typeof val !== 'string') return false;
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val.trim());
+  }
+
+  private deterministicUuidFromString(input: string): string {
+    const clean = String(input || '').trim();
+    let h1 = 0xdeadbeef ^ clean.length;
+    let h2 = 0x41c6ce57 ^ clean.length;
+    let h3 = 0x1b873593 ^ clean.length;
+    let h4 = 0x85ebca6b ^ clean.length;
+    for (let i = 0; i < clean.length; i++) {
+      const ch = clean.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+      h3 = Math.imul(h3 ^ ch, 2246822507);
+      h4 = Math.imul(h4 ^ ch, 3266489909);
+    }
+    const hex = (n: number) => (n >>> 0).toString(16).padStart(8, '0');
+    const full = hex(h1) + hex(h2) + hex(h3) + hex(h4);
+    return `${full.slice(0, 8)}-${full.slice(8, 12)}-4${full.slice(13, 16)}-a${full.slice(17, 20)}-${full.slice(20, 32)}`;
+  }
+
+  private toUuidForDb(rawId?: string | null, fallbackPrefix = 'row'): string {
+    const trimmed = typeof rawId === 'string' ? rawId.trim() : '';
+    if (this.isValidUuid(trimmed)) {
+      return trimmed.toLowerCase();
+    }
+    return this.deterministicUuidFromString(trimmed || `${fallbackPrefix}-${Date.now()}`);
+  }
+
+  private toIsoTimestamp(value?: number | string | null, fallbackMs = Date.now()): string {
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed && !/^\d+$/.test(trimmed)) {
+        const parsed = Date.parse(trimmed);
+        if (!Number.isNaN(parsed)) {
+          return new Date(parsed).toISOString();
+        }
+      }
+      if (/^\d+$/.test(trimmed)) {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) {
+          const ms = num > 0 && num < 1e11 ? num * 1000 : num;
+          return new Date(ms).toISOString();
+        }
+      }
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const ms = value > 0 && value < 1e11 ? value * 1000 : value;
+      return new Date(ms).toISOString();
+    }
+    return new Date(fallbackMs).toISOString();
+  }
+
+  private toEpochMs(value?: number | string | null, fallbackMs = Date.now()): number {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value > 0 && value < 1e11 ? value * 1000 : value;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^\d+$/.test(trimmed)) {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) {
+          return num > 0 && num < 1e11 ? num * 1000 : num;
+        }
+      }
+      const parsed = Date.parse(trimmed);
+      if (!Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+    return fallbackMs;
+  }
+
+  private toBigIntTicket(ticket: unknown, fallbackSeed = ''): number {
+    if (typeof ticket === 'number' && Number.isFinite(ticket) && ticket >= 0) {
+      return Math.trunc(ticket);
+    }
+    if (typeof ticket === 'string') {
+      const digits = ticket.replace(/\D/g, '');
+      if (digits.length > 0 && digits.length <= 15) {
+        const parsed = Number(digits);
+        if (Number.isSafeInteger(parsed) && parsed >= 0) {
+          return parsed;
+        }
+      }
+    }
+    const seed = String(ticket ?? fallbackSeed);
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) {
+      hash = (Math.imul(31, hash) + seed.charCodeAt(i)) >>> 0;
+    }
+    return 100000 + (hash % 89999999);
   }
 
   private parseStoredPasswordAndUid(rawHash?: string | null): { uid?: string; password?: string } {
@@ -2180,34 +2272,118 @@ class SupabaseService {
     mergedClosed.sort((a, b) => (b.closeTime || 0) - (a.closeTime || 0));
     const latestClosed = mergedClosed.slice(0, 200);
 
-    // Atomic UPSERT into public.closed_trades using on_conflict=id and Prefer: resolution=merge-duplicates
+    // Atomic UPSERT into public.closed_trades using on_conflict=id (skipping if legacy FK parent tables profiles/trading_accounts are unpopulated)
     try {
-      if (latestClosed.length > 0) {
-        const rows = latestClosed.slice(0, 50).map((t) => ({
-          id: t.id || `ct-${t.ticket}-${t.closeTime}`,
-          user_email: cleanEmail,
-          ticket: t.ticket,
-          account_number: t.accountNumber || data.accountNumber || user.accountNumber || '',
-          symbol: t.symbol,
-          side: t.side,
-          lots: t.lots,
-          open_price: t.openPrice,
-          close_price: t.closePrice,
-          pnl: t.pnl,
-          open_time: t.openTime,
-          close_time: t.closeTime,
-          reason: t.reason || 'MANUAL',
-        }));
-        await fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
-          method: 'POST',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-            'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates',
-          },
-          body: JSON.stringify(rows),
-        }).catch(() => {});
+      if (latestClosed.length > 0 && this.closedTradesLegacyFkBlocked !== true) {
+        let shouldWriteClosedTrades = this.closedTradesLegacyFkBlocked === false;
+        let legacyUserId: string | null = null;
+        let legacyAccountId: string | null = null;
+
+        if (this.closedTradesLegacyFkBlocked === null) {
+          try {
+            const schemaProbe = await fetch(
+              `${this.config.url}/rest/v1/closed_trades?select=user_id,trading_account_id&limit=0`,
+              {
+                method: 'GET',
+                headers: {
+                  apikey: this.config.anonKey,
+                  Authorization: `Bearer ${this.config.anonKey}`,
+                },
+                signal: AbortSignal.timeout(3000),
+              }
+            );
+            if (schemaProbe.status === 400) {
+              // Standalone schema without legacy user_id/trading_account_id FKs
+              this.closedTradesLegacyFkBlocked = false;
+              shouldWriteClosedTrades = true;
+            } else if (schemaProbe.ok) {
+              // Legacy relational schema: check if profiles & trading_accounts actually have matching parent rows
+              const [profRes, acctRes] = await Promise.all([
+                fetch(
+                  `${this.config.url}/rest/v1/profiles?select=id&limit=1`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      apikey: this.config.anonKey,
+                      Authorization: `Bearer ${this.config.anonKey}`,
+                    },
+                    signal: AbortSignal.timeout(3000),
+                  }
+                ),
+                fetch(
+                  `${this.config.url}/rest/v1/trading_accounts?select=id&limit=1`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      apikey: this.config.anonKey,
+                      Authorization: `Bearer ${this.config.anonKey}`,
+                    },
+                    signal: AbortSignal.timeout(3000),
+                  }
+                ),
+              ]);
+              const profRows = profRes.ok ? await profRes.json().catch(() => []) : [];
+              const acctRows = acctRes.ok ? await acctRes.json().catch(() => []) : [];
+              if (
+                Array.isArray(profRows) &&
+                profRows.length > 0 &&
+                profRows[0]?.id &&
+                Array.isArray(acctRows) &&
+                acctRows.length > 0 &&
+                acctRows[0]?.id
+              ) {
+                legacyUserId = String(profRows[0].id);
+                legacyAccountId = String(acctRows[0].id);
+                shouldWriteClosedTrades = true;
+              } else {
+                // Legacy FK parent tables are empty; trades are persisted in STATE_TRADES + user_activities
+                this.closedTradesLegacyFkBlocked = true;
+                shouldWriteClosedTrades = false;
+              }
+            }
+          } catch {
+            shouldWriteClosedTrades = false;
+          }
+        }
+
+        if (shouldWriteClosedTrades) {
+          const dedupedRows = new Map<string, any>();
+          for (const t of latestClosed.slice(0, 50)) {
+            const rawId = String(t.id || `ct-${t.ticket}-${t.closeTime || Date.now()}`);
+            const dbId = this.toUuidForDb(rawId, 'ct');
+            const rowObj: Record<string, any> = {
+              id: dbId,
+              user_email: cleanEmail,
+              ticket: this.toBigIntTicket(t.ticket, rawId),
+              account_number: t.accountNumber || data.accountNumber || user.accountNumber || '',
+              symbol: t.symbol,
+              side: t.side === 'SELL' ? 'SELL' : 'BUY',
+              lots: Number(t.lots || 0.01),
+              open_price: Number(t.openPrice || 0),
+              close_price: Number(t.closePrice ?? t.openPrice ?? 0),
+              pnl: Number(t.pnl || 0),
+              open_time: this.toIsoTimestamp(t.openTime),
+              close_time: this.toIsoTimestamp(t.closeTime),
+              reason: t.reason || 'MANUAL',
+            };
+            if (legacyUserId && legacyAccountId) {
+              rowObj.user_id = legacyUserId;
+              rowObj.trading_account_id = legacyAccountId;
+            }
+            dedupedRows.set(dbId, rowObj);
+          }
+          const rows = Array.from(dedupedRows.values());
+          await fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
+            method: 'POST',
+            headers: {
+              apikey: this.config.anonKey,
+              Authorization: `Bearer ${this.config.anonKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates,return=minimal',
+            },
+            body: JSON.stringify(rows),
+          }).catch(() => {});
+        }
       }
     } catch {
       // ignore
@@ -2403,8 +2579,8 @@ class SupabaseService {
                   openPrice: Number(row.open_price ?? row.openPrice),
                   closePrice: Number(row.close_price ?? row.closePrice),
                   pnl: Number(row.pnl),
-                  openTime: Number(row.open_time ?? row.openTime),
-                  closeTime: Number(row.close_time ?? row.closeTime),
+                  openTime: this.toEpochMs(row.open_time ?? row.openTime),
+                  closeTime: this.toEpochMs(row.close_time ?? row.closeTime),
                   reason: row.reason || 'MANUAL',
                   accountNumber: row.account_number ?? row.accountNumber,
                 });
@@ -2457,18 +2633,21 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
     try {
+      const rawId = String(entry.id || `ledg-${entry.timestamp || Date.now()}-${entry.referenceId || ''}`);
+      const dbId = this.toUuidForDb(rawId, 'ledg');
+      const baseMeta = entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {};
       const row = {
-        id: entry.id,
+        id: dbId,
         user_email: user.email.trim().toLowerCase(),
         account_number: entry.accountNumber,
         type: entry.type,
-        amount: entry.amount,
-        previous_balance: entry.previousBalance,
-        new_balance: entry.newBalance,
+        amount: Number.isFinite(Number(entry.amount)) ? Number(entry.amount) : 0,
+        previous_balance: Number.isFinite(Number(entry.previousBalance)) ? Number(entry.previousBalance) : 0,
+        new_balance: Number.isFinite(Number(entry.newBalance)) ? Number(entry.newBalance) : 0,
         reference_id: entry.referenceId,
         reason: entry.reason,
-        timestamp: entry.timestamp,
-        metadata: entry.metadata || null,
+        timestamp: Math.trunc(this.toEpochMs(entry.timestamp)),
+        metadata: this.isValidUuid(rawId) ? (entry.metadata || null) : { ...baseMeta, originalId: rawId },
       };
       const res = await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
         method: 'POST',
@@ -2476,7 +2655,7 @@ class SupabaseService {
           apikey: this.config.anonKey,
           Authorization: `Bearer ${this.config.anonKey}`,
           'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates',
+          Prefer: 'resolution=merge-duplicates,return=minimal',
         },
         body: JSON.stringify(row),
       });
@@ -2533,7 +2712,12 @@ class SupabaseService {
           const rows = await res.json();
           if (Array.isArray(rows)) {
             for (const r of rows) {
-              const entryId = r.id || `ledg-${r.timestamp}-${r.reference_id || ''}`;
+              const metaOriginalId =
+                r.metadata && typeof r.metadata === 'object' && typeof r.metadata.originalId === 'string'
+                  ? r.metadata.originalId
+                  : '';
+              const tsMs = this.toEpochMs(r.timestamp);
+              const entryId = metaOriginalId || r.id || `ledg-${tsMs}-${r.reference_id || ''}`;
               if (!ledgerMap.has(entryId)) {
                 ledgerMap.set(entryId, {
                   id: entryId,
@@ -2545,7 +2729,7 @@ class SupabaseService {
                   newBalance: Number(r.new_balance || 0),
                   referenceId: r.reference_id || '',
                   reason: r.reason || '',
-                  timestamp: Number(r.timestamp || Date.now()),
+                  timestamp: tsMs,
                   metadata: r.metadata,
                 });
               }
@@ -2582,19 +2766,26 @@ class SupabaseService {
     ).catch(() => {});
 
     try {
-      const rows = entries.slice(0, 500).map((e) => ({
-        id: e.id,
-        user_email: cleanEmail,
-        account_number: e.accountNumber,
-        type: e.type,
-        amount: e.amount,
-        previous_balance: e.previousBalance,
-        new_balance: e.newBalance,
-        reference_id: e.referenceId,
-        reason: e.reason,
-        timestamp: e.timestamp,
-        metadata: e.metadata || null,
-      }));
+      const dedupedRows = new Map<string, any>();
+      for (const e of entries.slice(0, 500)) {
+        const rawId = String(e.id || `ledg-${e.timestamp || Date.now()}-${e.referenceId || ''}`);
+        const dbId = this.toUuidForDb(rawId, 'ledg');
+        const baseMeta = e.metadata && typeof e.metadata === 'object' ? e.metadata : {};
+        dedupedRows.set(dbId, {
+          id: dbId,
+          user_email: cleanEmail,
+          account_number: e.accountNumber,
+          type: e.type,
+          amount: Number.isFinite(Number(e.amount)) ? Number(e.amount) : 0,
+          previous_balance: Number.isFinite(Number(e.previousBalance)) ? Number(e.previousBalance) : 0,
+          new_balance: Number.isFinite(Number(e.newBalance)) ? Number(e.newBalance) : 0,
+          reference_id: e.referenceId,
+          reason: e.reason,
+          timestamp: Math.trunc(this.toEpochMs(e.timestamp)),
+          metadata: this.isValidUuid(rawId) ? (e.metadata || null) : { ...baseMeta, originalId: rawId },
+        });
+      }
+      const rows = Array.from(dedupedRows.values());
       if (rows.length > 0) {
         await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
           method: 'POST',
@@ -2602,7 +2793,7 @@ class SupabaseService {
             apikey: this.config.anonKey,
             Authorization: `Bearer ${this.config.anonKey}`,
             'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
           },
           body: JSON.stringify(rows),
         });
@@ -4480,12 +4671,12 @@ class SupabaseService {
     if (!this.config || !user) return false;
     try {
       const payload = {
-        user_email: user.email || user.accountNumber || 'trader',
-        activity_type: activity.type,
-        description: activity.description,
+        user_email: String(user.email || user.accountNumber || 'trader').trim().toLowerCase(),
+        activity_type: String(activity?.type || 'EVENT'),
+        description: String(activity?.description || ''),
         device_id: typeof navigator !== 'undefined' ? `${navigator.platform || 'web'}` : 'web',
-        metadata: activity.metadata || {},
-        created_at: new Date(activity.timestamp || Date.now()).toISOString(),
+        metadata: activity?.metadata || {},
+        created_at: this.toIsoTimestamp(activity?.timestamp),
       };
 
       const res = await fetch(`${this.config.url}/rest/v1/user_activities`, {
@@ -4503,6 +4694,7 @@ class SupabaseService {
   public async syncDevice(user: UserAuthProfile | null | undefined): Promise<boolean> {
     if (!this.config || !user || !user.email) return false;
     try {
+      const cleanEmail = user.email.trim().toLowerCase();
       const deviceId =
         localStorage.getItem('vtm_device_id') ||
         (() => {
@@ -4512,7 +4704,7 @@ class SupabaseService {
         })();
 
       const payload = {
-        user_email: user.email,
+        user_email: cleanEmail,
         device_id: deviceId,
         device_type: window.innerWidth < 768 ? 'mobile' : 'desktop',
         browser: navigator.userAgent.slice(0, 50),
@@ -4520,12 +4712,18 @@ class SupabaseService {
         last_active_at: new Date().toISOString(),
       };
 
-      const res = await fetch(`${this.config.url}/rest/v1/user_devices`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
+      const res = await fetch(
+        `${this.config.url}/rest/v1/user_devices?on_conflict=user_email,device_id`,
+        {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(4000),
+        }
+      );
       return res.ok;
     } catch {
       return false;
