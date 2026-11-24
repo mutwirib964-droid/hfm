@@ -111,16 +111,28 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   const prevAskRef = React.useRef(ask);
   const [bidTick, setBidTick] = useState<'UP' | 'DOWN' | null>(null);
   const [askTick, setAskTick] = useState<'UP' | 'DOWN' | null>(null);
+  const bidTickRef = React.useRef<'UP' | 'DOWN' | null>(null);
+  const askTickRef = React.useRef<'UP' | 'DOWN' | null>(null);
+  const setBidTickSafe = (val: 'UP' | 'DOWN' | null) => {
+    if (bidTickRef.current === val) return;
+    bidTickRef.current = val;
+    setBidTick(val);
+  };
+  const setAskTickSafe = (val: 'UP' | 'DOWN' | null) => {
+    if (askTickRef.current === val) return;
+    askTickRef.current = val;
+    setAskTick(val);
+  };
 
   React.useEffect(() => {
     if (!marketStatus.isOpen) {
       prevBidRef.current = bid;
-      setBidTick(null);
+      setBidTickSafe(null);
       return;
     }
     if (bid !== undefined && prevBidRef.current !== undefined && bid !== prevBidRef.current) {
-      setBidTick(bid > prevBidRef.current ? 'UP' : 'DOWN');
-      const t = setTimeout(() => setBidTick(null), 650);
+      setBidTickSafe(bid > prevBidRef.current ? 'UP' : 'DOWN');
+      const t = setTimeout(() => setBidTickSafe(null), 650);
       prevBidRef.current = bid;
       return () => clearTimeout(t);
     }
@@ -130,12 +142,12 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
   React.useEffect(() => {
     if (!marketStatus.isOpen) {
       prevAskRef.current = ask;
-      setAskTick(null);
+      setAskTickSafe(null);
       return;
     }
     if (ask !== undefined && prevAskRef.current !== undefined && ask !== prevAskRef.current) {
-      setAskTick(ask > prevAskRef.current ? 'UP' : 'DOWN');
-      const t = setTimeout(() => setAskTick(null), 650);
+      setAskTickSafe(ask > prevAskRef.current ? 'UP' : 'DOWN');
+      const t = setTimeout(() => setAskTickSafe(null), 650);
       prevAskRef.current = ask;
       return () => clearTimeout(t);
     }

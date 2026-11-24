@@ -1032,6 +1032,17 @@ function payheroStkPlugin() {
     }
   };
 
+  const hasPopulatedOneAppSettings = (s: any): boolean =>
+    Boolean(
+      s &&
+        typeof s === 'object' &&
+        ('mpesaBalance' in s ||
+          'appliedWithdrawals' in s ||
+          'appliedIds' in s ||
+          'vtmSyncedRefs' in s ||
+          Object.keys(s).length > 0)
+    );
+
   const resolveOneAppAccountState = async (
     cleanEmail: string,
     rawPhone: string,
@@ -1051,7 +1062,7 @@ function payheroStkPlugin() {
         '9df9652da79c7ccc337ce62c64dcd11f1800a8eb6e0bd13747650358f67fe4e8',
         { email: cleanEmail, phone: candidate }
       );
-      if (res && res.settings) {
+      if (res && hasPopulatedOneAppSettings(res.settings)) {
         matchedPhone = candidate;
         existingSettings = res.settings;
         break;
@@ -1072,7 +1083,7 @@ function payheroStkPlugin() {
           password: effectivePassword,
         }
       );
-      if (keRes && keRes.settings) {
+      if (keRes && hasPopulatedOneAppSettings(keRes.settings)) {
         existingSettings = keRes.settings;
       }
     }
@@ -1106,10 +1117,17 @@ function payheroStkPlugin() {
     };
 
     const rawMpesaNum = parseKesNumber(baseSettings.mpesaBalance || '0');
-    const prevAppliedNum = parseKesNumber(baseSettings.appliedWithdrawals || '0');
+    const hasTrackedApplied =
+      existingSettings &&
+      existingSettings.appliedWithdrawals !== undefined &&
+      existingSettings.appliedWithdrawals !== null &&
+      String(existingSettings.appliedWithdrawals).trim() !== '';
+    const prevAppliedNum = hasTrackedApplied
+      ? parseKesNumber(baseSettings.appliedWithdrawals)
+      : withdrawalTotal;
 
     let unappliedDelta = 0;
-    if (existingSettings && withdrawalTotal > prevAppliedNum) {
+    if (existingSettings && hasTrackedApplied && withdrawalTotal > prevAppliedNum) {
       if (Array.isArray(existingSettings.appliedIds)) {
         const appliedSet = new Set(existingSettings.appliedIds);
         const appliedItems = withdrawalItems.filter((item: any) => item?.id && appliedSet.has(item.id));
@@ -1123,7 +1141,7 @@ function payheroStkPlugin() {
         );
         const unappliedItemsSum = unappliedItems.reduce((sum: number, item: any) => sum + Number(item?.amount || 0), 0);
         unappliedDelta = Math.min(Math.max(0, withdrawalTotal - prevAppliedNum), Math.max(0, unappliedItemsSum));
-      } else {
+      } else if (prevAppliedNum > 0) {
         unappliedDelta = Math.max(0, withdrawalTotal - prevAppliedNum);
       }
     }

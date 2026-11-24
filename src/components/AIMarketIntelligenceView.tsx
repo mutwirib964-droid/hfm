@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -68,11 +68,15 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
   // Trade Execution Feedback State
   const [executedSymbol, setExecutedSymbol] = useState<string | null>(null);
 
-  // Synchronize signals feed directly from real-time live instruments
+  const instrumentsRef = useRef<Instrument[]>(instruments);
+  instrumentsRef.current = instruments;
+
+  // Synchronize signals feed from latest live instruments on mount & 15s cadence (avoid tick-by-tick setState churn)
   const fetchFeed = useCallback(async () => {
-    if (!instruments || instruments.length === 0) return;
+    const currentInstruments = instrumentsRef.current;
+    if (!currentInstruments || currentInstruments.length === 0) return;
     try {
-      const res = await aiMarketService.getSignalsFeed(instruments);
+      const res = await aiMarketService.getSignalsFeed(currentInstruments);
       setSignals(res.signals);
       setTopOpportunities(res.topOpportunities);
       setMarketSentimentScore(res.marketSentimentScore);
@@ -80,10 +84,20 @@ export const AIMarketIntelligenceView: React.FC<AIMarketIntelligenceViewProps> =
     } catch (err) {
       console.warn('Feed sync error:', err);
     }
-  }, [instruments]);
+  }, []);
 
   useEffect(() => {
-    fetchFeed();
+    let active = true;
+    const run = async () => {
+      if (!active) return;
+      await fetchFeed();
+    };
+    run();
+    const interval = setInterval(run, 15000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [fetchFeed]);
 
   const handleRunCustomScan = async () => {

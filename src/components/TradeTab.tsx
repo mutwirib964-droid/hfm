@@ -141,14 +141,27 @@ export const TradeTab: React.FC<TradeTabProps> = ({
     currentInstrument.category
   );
 
+  const bidTickRef = React.useRef<'UP' | 'DOWN' | null>(null);
+  const askTickRef = React.useRef<'UP' | 'DOWN' | null>(null);
+  const setBidTickSafe = (val: 'UP' | 'DOWN' | null) => {
+    if (bidTickRef.current === val) return;
+    bidTickRef.current = val;
+    setBidTick(val);
+  };
+  const setAskTickSafe = (val: 'UP' | 'DOWN' | null) => {
+    if (askTickRef.current === val) return;
+    askTickRef.current = val;
+    setAskTick(val);
+  };
+
   // When symbol switches, synchronize refs immediately without triggering fake tick
   React.useEffect(() => {
     if (currentSymbolRef.current !== currentInstrument.symbol) {
       currentSymbolRef.current = currentInstrument.symbol;
       prevBidRef.current = currentInstrument.bid;
       prevAskRef.current = currentInstrument.ask;
-      setBidTick(null);
-      setAskTick(null);
+      setBidTickSafe(null);
+      setAskTickSafe(null);
       if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
       if (askTimerRef.current) clearTimeout(askTimerRef.current);
     }
@@ -158,15 +171,15 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   React.useEffect(() => {
     if (!curMarketStatus.isOpen) {
       prevBidRef.current = currentInstrument.bid;
-      setBidTick(null);
+      setBidTickSafe(null);
       return;
     }
     if (currentInstrument.bid !== prevBidRef.current) {
       const direction: 'UP' | 'DOWN' = currentInstrument.bid > prevBidRef.current ? 'UP' : 'DOWN';
       prevBidRef.current = currentInstrument.bid;
-      setBidTick(direction);
+      setBidTickSafe(direction);
       if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
-      bidTimerRef.current = setTimeout(() => setBidTick(null), 700);
+      bidTimerRef.current = setTimeout(() => setBidTickSafe(null), 700);
     }
   }, [currentInstrument.bid, curMarketStatus.isOpen]);
 
@@ -174,33 +187,33 @@ export const TradeTab: React.FC<TradeTabProps> = ({
   React.useEffect(() => {
     if (!curMarketStatus.isOpen) {
       prevAskRef.current = currentInstrument.ask;
-      setAskTick(null);
+      setAskTickSafe(null);
       return;
     }
     if (currentInstrument.ask !== prevAskRef.current) {
       const direction: 'UP' | 'DOWN' = currentInstrument.ask > prevAskRef.current ? 'UP' : 'DOWN';
       prevAskRef.current = currentInstrument.ask;
-      setAskTick(direction);
+      setAskTickSafe(direction);
       if (askTimerRef.current) clearTimeout(askTimerRef.current);
-      askTimerRef.current = setTimeout(() => setAskTick(null), 700);
+      askTimerRef.current = setTimeout(() => setAskTickSafe(null), 700);
     }
   }, [currentInstrument.ask, curMarketStatus.isOpen]);
 
   // Synchronize with external tickDirection if provided (only when market is open)
   React.useEffect(() => {
     if (!curMarketStatus.isOpen) {
-      setAskTick(null);
-      setBidTick(null);
+      setAskTickSafe(null);
+      setBidTickSafe(null);
       return;
     }
     if (tickDirection === 'UP' || tickDirection === 'DOWN') {
-      setAskTick(tickDirection);
-      setBidTick(tickDirection);
+      setAskTickSafe(tickDirection);
+      setBidTickSafe(tickDirection);
       if (bidTimerRef.current) clearTimeout(bidTimerRef.current);
       if (askTimerRef.current) clearTimeout(askTimerRef.current);
       const timer = setTimeout(() => {
-        setAskTick(null);
-        setBidTick(null);
+        setAskTickSafe(null);
+        setBidTickSafe(null);
       }, 700);
       bidTimerRef.current = timer;
       askTimerRef.current = timer;

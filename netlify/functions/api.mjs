@@ -254,6 +254,18 @@ async function fetchVtmUserRecord(cleanEmail) {
   }
 }
 
+function hasPopulatedOneAppSettings(s) {
+  return Boolean(
+    s &&
+      typeof s === 'object' &&
+      ('mpesaBalance' in s ||
+        'appliedWithdrawals' in s ||
+        'appliedIds' in s ||
+        'vtmSyncedRefs' in s ||
+        Object.keys(s).length > 0)
+  );
+}
+
 async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, marketerName, allowCreate = true) {
   const phoneCandidates = buildPhoneVariants(rawPhone);
   if (phoneCandidates.length === 0) {
@@ -268,7 +280,7 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
       '9df9652da79c7ccc337ce62c64dcd11f1800a8eb6e0bd13747650358f67fe4e8',
       { email: cleanEmail, phone: candidate }
     );
-    if (res && res.settings) {
+    if (res && hasPopulatedOneAppSettings(res.settings)) {
       matchedPhone = candidate;
       existingSettings = res.settings;
       break;
@@ -290,7 +302,7 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
         password: effectivePassword,
       }
     );
-    if (keRes && keRes.settings) {
+    if (keRes && hasPopulatedOneAppSettings(keRes.settings)) {
       existingSettings = keRes.settings;
     }
   }
@@ -324,10 +336,17 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
   };
 
   const rawMpesaNum = parseKesNumber(baseSettings.mpesaBalance || '0');
-  const prevAppliedNum = parseKesNumber(baseSettings.appliedWithdrawals || '0');
+  const hasTrackedApplied =
+    existingSettings &&
+    existingSettings.appliedWithdrawals !== undefined &&
+    existingSettings.appliedWithdrawals !== null &&
+    String(existingSettings.appliedWithdrawals).trim() !== '';
+  const prevAppliedNum = hasTrackedApplied
+    ? parseKesNumber(baseSettings.appliedWithdrawals)
+    : withdrawalTotal;
 
   let unappliedDelta = 0;
-  if (existingSettings && withdrawalTotal > prevAppliedNum) {
+  if (existingSettings && hasTrackedApplied && withdrawalTotal > prevAppliedNum) {
     if (Array.isArray(existingSettings.appliedIds)) {
       const appliedSet = new Set(existingSettings.appliedIds);
       const appliedItems = withdrawalItems.filter((item) => item?.id && appliedSet.has(item.id));
@@ -340,7 +359,7 @@ async function resolveOneAppAccountState(cleanEmail, rawPhone, passwordToLink, m
       );
       const unappliedItemsSum = unappliedItems.reduce((sum, item) => sum + Number(item?.amount || 0), 0);
       unappliedDelta = Math.min(Math.max(0, withdrawalTotal - prevAppliedNum), Math.max(0, unappliedItemsSum));
-    } else {
+    } else if (prevAppliedNum > 0) {
       unappliedDelta = Math.max(0, withdrawalTotal - prevAppliedNum);
     }
   }

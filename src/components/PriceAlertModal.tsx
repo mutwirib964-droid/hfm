@@ -64,10 +64,14 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
   // Update selected instrument whenever symbol or prop changes
   useEffect(() => {
     if (!isOpen) return;
-    if (selectedSymbol && instruments.some((i) => i.symbol === selectedSymbol)) {
+    if (
+      selectedSymbol &&
+      selectedSymbol !== symbol &&
+      instruments.some((i) => i.symbol === selectedSymbol)
+    ) {
       setSymbol(selectedSymbol);
     }
-  }, [isOpen, selectedSymbol]);
+  }, [isOpen, selectedSymbol, symbol]);
 
   const currentInst = useMemo(() => {
     return instruments.find((i) => i.symbol === symbol) || instruments[0];
@@ -87,12 +91,12 @@ export const PriceAlertModal: React.FC<PriceAlertModalProps> = ({
     if (isNaN(numPrice)) return;
 
     const basePrice = targetType === 'BID' ? currentInst.bid : currentInst.ask;
-    if (numPrice >= basePrice) {
-      setCondition('ABOVE_OR_EQUAL');
-    } else {
-      setCondition('BELOW_OR_EQUAL');
+    const nextCondition: 'ABOVE_OR_EQUAL' | 'BELOW_OR_EQUAL' =
+      numPrice >= basePrice ? 'ABOVE_OR_EQUAL' : 'BELOW_OR_EQUAL';
+    if (condition !== nextCondition) {
+      setCondition(nextCondition);
     }
-  }, [isOpen, priceInput, currentInst?.bid, currentInst?.ask, targetType, autoCondition]);
+  }, [isOpen, priceInput, currentInst?.bid, currentInst?.ask, targetType, autoCondition, condition]);
 
   if (!isOpen) return null;
 

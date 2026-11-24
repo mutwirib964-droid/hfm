@@ -135,9 +135,10 @@ export function pickAuthoritativeAccount(
 
   // Strictly protect completed withdrawals / debits recorded on an account so a stale device
   // with newer local bot trade timestamps cannot resurrect pre-withdrawal balances.
+  // Refunded failed withdrawals append `refund:<txId>` so the refunded snapshot always stays a strict superset.
   const existingDebits = new Set((existing.appliedDebitTxIds || []).filter(Boolean));
   const incomingDebits = new Set((incoming.appliedDebitTxIds || []).filter(Boolean));
-  const mergedDebitIds = Array.from(new Set([...existingDebits, ...incomingDebits])).slice(-50);
+  const mergedDebitIds = Array.from(new Set([...existingDebits, ...incomingDebits])).slice(-80);
 
   if (existingDebits.size > 0 || incomingDebits.size > 0) {
     const incomingHasAllExisting = Array.from(existingDebits).every((id) => incomingDebits.has(id));
@@ -154,7 +155,7 @@ export function pickAuthoritativeAccount(
         : existing;
     }
 
-    // If both snapshots have disjoint debit sets, prefer the one with the latest withdrawal timestamp
+    // If both snapshots have disjoint debit sets, prefer the one with the latest withdrawal/refund timestamp
     if (!incomingHasAllExisting && !existingHasAllIncoming) {
       const exWithdrawTs = Number(existing.lastWithdrawalAt || 0);
       const inWithdrawTs = Number(incoming.lastWithdrawalAt || 0);
@@ -185,6 +186,72 @@ export function pickAuthoritativeAccount(
   return mergedDebitIds.length > 0
     ? { ...chosen, appliedDebitTxIds: mergedDebitIds }
     : chosen;
+}
+
+/**
+ * Self-healing guard: if a WITHDRAWAL transaction is marked FAILED (e.g. capacity exceeded),
+ * yet its tx.id is still present in an account's appliedDebitTxIds WITHOUT a corresponding
+ * `refund:<tx.id>` marker, the deduction was never refunded (or was overwritten by a stale poll).
+ * Credits the exact USD amount back to that account once and stamps `refund:<tx.id>`.
+ */
+export function healUnrefundedFailedWithdrawals(
+  accounts: TradingAccount[],
+  transactions?: Transaction[]
+): { accounts: TradingAccount[]; healed: boolean } {
+  if (!Array.isArray(accounts) || !Array.isArray(transactions) || transactions.length === 0) {
+    return { accounts, healed: false };
+  }
+
+  const failedWithdrawals = transactions.filter((t) => {
+    if (!t || t.type !== 'WITHDRAWAL' || !t.id) return false;
+    const status = String(t.status || '').toUpperCase();
+    const details = String(t.details || '');
+    return status === 'FAILED' || /capacity exceeded|unsuccessful|failed|bounced back/i.test(details);
+  });
+
+  if (failedWithdrawals.length === 0) {
+    return { accounts, healed: false };
+  }
+
+  let anyHealed = false;
+  const nowTs = Date.now();
+  const nextAccounts = accounts.map((acc) => {
+    const appliedList = (acc.appliedDebitTxIds || []).filter(Boolean);
+    if (appliedList.length === 0) return acc;
+    const appliedSet = new Set(appliedList);
+
+    let extraCredit = 0;
+    const newMarkers: string[] = [];
+
+    for (const ftx of failedWithdrawals) {
+      const refundMarker = `refund:${ftx.id}`;
+      if (appliedSet.has(ftx.id) && !appliedSet.has(refundMarker)) {
+        const amt = Math.abs(Number(ftx.amount || 0));
+        if (amt > 0) {
+          extraCredit = Number((extraCredit + amt).toFixed(2));
+        }
+        newMarkers.push(refundMarker);
+      }
+    }
+
+    if (newMarkers.length === 0) return acc;
+
+    anyHealed = true;
+    const nextBal = Number(((acc.balance || 0) + extraCredit).toFixed(2));
+    const nextEq = Number(((acc.equity ?? acc.balance ?? 0) + extraCredit).toFixed(2));
+    const nextFree = Number(Math.max(0, (acc.freeMargin ?? nextEq) + extraCredit).toFixed(2));
+    return {
+      ...acc,
+      balance: nextBal,
+      equity: nextEq,
+      freeMargin: nextFree,
+      lastWithdrawalAt: Math.max(Number(acc.lastWithdrawalAt || 0), nowTs),
+      lastActivityAt: Math.max(Number(acc.lastActivityAt || 0), nowTs),
+      appliedDebitTxIds: [...appliedList, ...newMarkers].slice(-80),
+    };
+  });
+
+  return { accounts: nextAccounts, healed: anyHealed };
 }
 
 /**
@@ -498,12 +565,15 @@ export function mergeUserFinancialStates(
     return acc;
   });
 
+  const healedResult = healUnrefundedFailedWithdrawals(mergedAccounts, mergedTransactions);
+  const finalMergedAccounts = healedResult.accounts;
+
   const selectedId =
-    primary.selectedAccountId && mergedAccounts.some((a) => a.id === primary.selectedAccountId)
+    primary.selectedAccountId && finalMergedAccounts.some((a) => a.id === primary.selectedAccountId)
       ? primary.selectedAccountId
-      : secondary.selectedAccountId && mergedAccounts.some((a) => a.id === secondary.selectedAccountId)
+      : secondary.selectedAccountId && finalMergedAccounts.some((a) => a.id === secondary.selectedAccountId)
       ? secondary.selectedAccountId
-      : mergedAccounts[0]?.id || null;
+      : finalMergedAccounts[0]?.id || null;
 
   const primTs = Number(primary.lastUpdated || 0);
   const secTs = Number(secondary?.lastUpdated || 0);
@@ -522,12 +592,12 @@ export function mergeUserFinancialStates(
   const resolvedWallet = reconcileWalletBalanceWithTransactions(
     baseWallet,
     mergedTransactions,
-    mergedAccounts
+    finalMergedAccounts
   );
 
   return {
     walletBalance: Number(resolvedWallet.toFixed(2)),
-    accounts: mergedAccounts,
+    accounts: finalMergedAccounts,
     selectedAccountId: selectedId,
     transactions: mergedTransactions,
     lastUpdated: Math.max(primTs, secTs),
@@ -2278,15 +2348,16 @@ export function loadUserFinancials(user?: UserAuthProfile | null): UserFinancial
       const parsed: UserFinancialState = JSON.parse(raw);
       if (typeof parsed.walletBalance === 'number' && Array.isArray(parsed.accounts)) {
         const cleanTxs = sanitizeRealTransactions(parsed.transactions);
+        const healedAccs = healUnrefundedFailedWithdrawals(parsed.accounts, cleanTxs).accounts;
         const reconciledWallet = reconcileWalletBalanceWithTransactions(
           parsed.walletBalance,
           cleanTxs,
-          parsed.accounts
+          healedAccs
         );
         return {
           ...parsed,
           walletBalance: reconciledWallet,
-          accounts: parsed.accounts,
+          accounts: healedAccs,
           transactions: cleanTxs,
         };
       }
@@ -2375,6 +2446,11 @@ export function saveUserFinancials(
         if (k) accountMap.set(k, acc);
       }
     }
+    const cleanTxs =
+      existingLocal && Array.isArray(existingLocal.transactions) && existingLocal.transactions.length > 0
+        ? mergeTransactionLists(state.transactions, existingLocal.transactions)
+        : sanitizeRealTransactions(state.transactions);
+
     for (const acc of state.accounts || []) {
       if (!acc) continue;
       const accNum = String(acc.accountNumber || '');
@@ -2385,7 +2461,9 @@ export function saveUserFinancials(
         if (prev) {
           const prevDebits = (prev.appliedDebitTxIds || []).filter(Boolean);
           const accDebits = new Set((acc.appliedDebitTxIds || []).filter(Boolean));
-          const prevHasUnappliedDebit = prevDebits.some((id) => !accDebits.has(id));
+          const prevHasUnappliedDebit = prevDebits.some(
+            (id) => !accDebits.has(id) && !accDebits.has(`refund:${id}`)
+          );
           if (!syncToCloud || prevHasUnappliedDebit) {
             accountMap.set(key ? k : acc.id, pickAuthoritativeAccount(prev, acc, true));
           } else if (isSkeletonZeroAccount(acc) && !isSkeletonZeroAccount(prev)) {
@@ -2399,11 +2477,10 @@ export function saveUserFinancials(
       }
     }
 
-    const safeAccounts = Array.from(accountMap.values());
-    const cleanTxs =
-      existingLocal && Array.isArray(existingLocal.transactions) && existingLocal.transactions.length > 0
-        ? mergeTransactionLists(state.transactions, existingLocal.transactions)
-        : sanitizeRealTransactions(state.transactions);
+    const safeAccounts = healUnrefundedFailedWithdrawals(
+      Array.from(accountMap.values()),
+      cleanTxs
+    ).accounts;
     const safeWallet = reconcileWalletBalanceWithTransactions(
       state.walletBalance,
       cleanTxs,

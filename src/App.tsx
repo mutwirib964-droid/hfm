@@ -250,6 +250,9 @@ export default function App() {
   };
   const [chartType, setChartType] = useState<ChartType>('candles');
   const [candles, setCandles] = useState<Candle[]>([]);
+  const candlesRef = useRef<Candle[]>(candles);
+  candlesRef.current = candles;
+  const processQuoteEffectsRef = useRef<(instList: Instrument[]) => void>(() => {});
 
   // Real-time Tick States for Green / Red Highlights: Map of symbol -> 'UP' | 'DOWN' | 'NEUTRAL'
   const [tickStates, setTickStates] = useState<Record<string, 'UP' | 'DOWN' | 'NEUTRAL'>>({});
@@ -495,7 +498,7 @@ export default function App() {
                   if (!rAcc) return acc;
                   const rDebits = new Set((rAcc.appliedDebitTxIds || []).filter(Boolean));
                   const localHasUnappliedDebit = (acc.appliedDebitTxIds || []).some(
-                    (id) => id && !rDebits.has(id)
+                    (id) => id && !rDebits.has(id) && !rDebits.has(`refund:${id}`)
                   );
                   return localHasUnappliedDebit ? acc : rAcc;
                 }),
@@ -2200,8 +2203,9 @@ export default function App() {
 
   // Generate initial candles for selected symbol and timeframe
   useEffect(() => {
-    const inst = instruments.find((i) => i.symbol === selectedSymbol) || instruments[0];
+    const inst = instrumentsRef.current.find((i) => i.symbol === selectedSymbol) || instrumentsRef.current[0];
     const initial = generateCandles(inst.bid, timeframe, 75, inst.decimals);
+    candlesRef.current = initial;
     setCandles(initial);
   }, [selectedSymbol, timeframe]);
 
@@ -2216,7 +2220,7 @@ export default function App() {
     let isMounted = true;
     let highlightTimeout: any = null;
 
-    // Core quote applicator - updates instruments and tick highlights cleanly without nested setState inside functional updaters
+    // Core quote applicator - updates instruments, candles, pending orders, alerts & tick highlights cleanly outside React passive effects
     const applyQuotes = (quotes: Map<string, TVQuote>) => {
       if (!isMounted || quotes.size === 0) return;
 
@@ -2227,66 +2231,34 @@ export default function App() {
       const currentInsts = instrumentsRef.current;
       const nextTickStates: Record<string, 'UP' | 'DOWN' | 'NEUTRAL'> = {};
       let hasPriceChanged = false;
+      let anyItemChanged = false;
 
-      currentInsts.forEach((inst) => {
+      const updated = currentInsts.map((inst) => {
         const quote = quotes.get(inst.symbol);
-        if (!quote) return;
+        if (!quote) return inst;
+
         const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-        if (!mStatus.isOpen) return;
-
-        if (quote.bid > inst.bid || (quote.bid === inst.bid && quote.ask > inst.ask)) {
-          nextTickStates[inst.symbol] = 'UP';
-          hasPriceChanged = true;
-        } else if (quote.bid < inst.bid || (quote.bid === inst.bid && quote.ask < inst.ask)) {
-          nextTickStates[inst.symbol] = 'DOWN';
-          hasPriceChanged = true;
+        if (mStatus.isOpen) {
+          if (quote.bid > inst.bid || (quote.bid === inst.bid && quote.ask > inst.ask)) {
+            nextTickStates[inst.symbol] = 'UP';
+            hasPriceChanged = true;
+          } else if (quote.bid < inst.bid || (quote.bid === inst.bid && quote.ask < inst.ask)) {
+            nextTickStates[inst.symbol] = 'DOWN';
+            hasPriceChanged = true;
+          }
         }
-      });
 
-      setInstruments((prevInstruments) => {
-        let anyItemChanged = false;
+        const newBid = quote.bid;
+        const newAsk = quote.ask;
+        const nextSpread = quote.spread > 0 ? quote.spread : inst.spread;
 
-        const updated = prevInstruments.map((inst) => {
-          const quote = quotes.get(inst.symbol);
-          if (!quote) return inst;
+        if (inst.bid === newBid && inst.ask === newAsk && inst.spread === nextSpread) {
+          return inst;
+        }
+        anyItemChanged = true;
 
-          const mStatus = checkInstrumentMarketHours(inst.symbol, inst.category);
-          const newBid = quote.bid;
-          const newAsk = quote.ask;
-          const nextSpread = quote.spread > 0 ? quote.spread : inst.spread;
-
-          if (inst.bid === newBid && inst.ask === newAsk && inst.spread === nextSpread) {
-            return inst;
-          }
-          anyItemChanged = true;
-
-          if (!mStatus.isOpen) {
-            // Market is CLOSED! Sync to TradingView's official closing price once, then stay strictly frozen
-            return {
-              ...inst,
-              bid: newBid,
-              ask: newAsk,
-              spread: nextSpread,
-              change24h: quote.change24h,
-              high24h: quote.high24h,
-              low24h: quote.low24h,
-            };
-          }
-
-          // Keep sparkline anchored smoothly around live newBid with natural multi-wave curvature so it never flattens
-          const sparkStep = Math.pow(10, -inst.decimals) * (inst.decimals >= 4 ? 10 : inst.decimals === 3 ? 6 : 4);
-          const symSeed = inst.symbol
-            .split('')
-            .reduce((acc, ch, idx) => acc + ch.charCodeAt(0) * (idx + 1), 0);
-          const tickPhase = Math.round(newBid * Math.pow(10, inst.decimals)) * 0.45;
-          const sparkline = Array.from({ length: 12 }, (_, sIdx) => {
-            if (sIdx === 11) return newBid;
-            const wave =
-              Math.sin(sIdx * 1.25 + symSeed * 0.31 + tickPhase) * sparkStep * 2.4 +
-              Math.cos(sIdx * 2.05 - symSeed * 0.19 + tickPhase * 0.7) * sparkStep * 1.5;
-            return Number((newBid + wave).toFixed(inst.decimals));
-          });
-
+        if (!mStatus.isOpen) {
+          // Market is CLOSED! Sync to TradingView's official closing price once, then stay strictly frozen
           return {
             ...inst,
             bid: newBid,
@@ -2295,16 +2267,40 @@ export default function App() {
             change24h: quote.change24h,
             high24h: quote.high24h,
             low24h: quote.low24h,
-            sparkline,
           };
+        }
+
+        // Keep sparkline anchored smoothly around live newBid with natural multi-wave curvature so it never flattens
+        const sparkStep = Math.pow(10, -inst.decimals) * (inst.decimals >= 4 ? 10 : inst.decimals === 3 ? 6 : 4);
+        const symSeed = inst.symbol
+          .split('')
+          .reduce((acc, ch, idx) => acc + ch.charCodeAt(0) * (idx + 1), 0);
+        const tickPhase = Math.round(newBid * Math.pow(10, inst.decimals)) * 0.45;
+        const sparkline = Array.from({ length: 12 }, (_, sIdx) => {
+          if (sIdx === 11) return newBid;
+          const wave =
+            Math.sin(sIdx * 1.25 + symSeed * 0.31 + tickPhase) * sparkStep * 2.4 +
+            Math.cos(sIdx * 2.05 - symSeed * 0.19 + tickPhase * 0.7) * sparkStep * 1.5;
+          return Number((newBid + wave).toFixed(inst.decimals));
         });
 
-        if (!anyItemChanged) {
-          return prevInstruments;
-        }
-        instrumentsRef.current = updated;
-        return updated;
+        return {
+          ...inst,
+          bid: newBid,
+          ask: newAsk,
+          spread: nextSpread,
+          change24h: quote.change24h,
+          high24h: quote.high24h,
+          low24h: quote.low24h,
+          sparkline,
+        };
       });
+
+      if (anyItemChanged) {
+        instrumentsRef.current = updated;
+        setInstruments(updated);
+        processQuoteEffectsRef.current(updated);
+      }
 
       if (hasPriceChanged) {
         setTickStates((prev) => ({ ...prev, ...nextTickStates }));
@@ -2341,60 +2337,64 @@ export default function App() {
     const candleCheckInterval = setInterval(() => {
       if (!isMounted) return;
 
-      setInstruments((prevInsts) => {
-        let hasAnyChanged = false;
-        const nextInsts = prevInsts.map((item) => {
-          const mStatus = checkInstrumentMarketHours(item.symbol, item.category);
-          if (!mStatus.isOpen) {
-            // Market is CLOSED! Keep prices and spreads strictly frozen at closing levels
-            return item;
-          }
-
-          const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
-          const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
-          const lockedSpread = Number(
-            (tvAuthQuote?.spread && tvAuthQuote.spread > 0
-              ? tvAuthQuote.spread
-              : item.spread > 0
-              ? item.spread
-              : 0.35
-            ).toFixed(2)
-          );
-
-          let gap = lockedSpread;
-          if (item.decimals === 5) {
-            gap = Math.max(0.00001, Number((lockedSpread / 10000).toFixed(5)));
-          } else if (item.decimals === 4) {
-            gap = Math.max(0.0001, Number((lockedSpread / 1000).toFixed(4)));
-          } else if (item.decimals === 3) {
-            gap =
-              item.symbol === 'XAUUSD'
-                ? Number(lockedSpread.toFixed(3))
-                : Math.max(0.001, Number((lockedSpread * 0.01).toFixed(3)));
-          } else {
-            if (lockedBid < 250) {
-              gap = Math.max(0.01, Number((lockedSpread * 0.04).toFixed(2)));
-            } else if (lockedBid < 1000) {
-              gap = Math.max(0.01, Number((lockedSpread * 0.1).toFixed(2)));
-            } else {
-              gap = Math.max(0.01, Number(lockedSpread.toFixed(2)));
-            }
-          }
-
-          const nextAsk = Number((lockedBid + gap).toFixed(item.decimals));
-          if (item.bid !== lockedBid || item.ask !== nextAsk || item.spread !== lockedSpread) {
-            hasAnyChanged = true;
-            return {
-              ...item,
-              bid: lockedBid,
-              ask: nextAsk,
-              spread: lockedSpread,
-            };
-          }
+      const prevInsts = instrumentsRef.current;
+      let hasAnyChanged = false;
+      const nextInsts = prevInsts.map((item) => {
+        const mStatus = checkInstrumentMarketHours(item.symbol, item.category);
+        if (!mStatus.isOpen) {
+          // Market is CLOSED! Keep prices and spreads strictly frozen at closing levels
           return item;
-        });
-        return hasAnyChanged ? nextInsts : prevInsts;
+        }
+
+        const tvAuthQuote = realTVQuotesRef.current.get(item.symbol);
+        const lockedBid = Number((tvAuthQuote?.bid ?? item.bid).toFixed(item.decimals));
+        const lockedSpread = Number(
+          (tvAuthQuote?.spread && tvAuthQuote.spread > 0
+            ? tvAuthQuote.spread
+            : item.spread > 0
+            ? item.spread
+            : 0.35
+          ).toFixed(2)
+        );
+
+        let gap = lockedSpread;
+        if (item.decimals === 5) {
+          gap = Math.max(0.00001, Number((lockedSpread / 10000).toFixed(5)));
+        } else if (item.decimals === 4) {
+          gap = Math.max(0.0001, Number((lockedSpread / 1000).toFixed(4)));
+        } else if (item.decimals === 3) {
+          gap =
+            item.symbol === 'XAUUSD'
+              ? Number(lockedSpread.toFixed(3))
+              : Math.max(0.001, Number((lockedSpread * 0.01).toFixed(3)));
+        } else {
+          if (lockedBid < 250) {
+            gap = Math.max(0.01, Number((lockedSpread * 0.04).toFixed(2)));
+          } else if (lockedBid < 1000) {
+            gap = Math.max(0.01, Number((lockedSpread * 0.1).toFixed(2)));
+          } else {
+            gap = Math.max(0.01, Number(lockedSpread.toFixed(2)));
+          }
+        }
+
+        const nextAsk = Number((lockedBid + gap).toFixed(item.decimals));
+        if (item.bid !== lockedBid || item.ask !== nextAsk || item.spread !== lockedSpread) {
+          hasAnyChanged = true;
+          return {
+            ...item,
+            bid: lockedBid,
+            ask: nextAsk,
+            spread: lockedSpread,
+          };
+        }
+        return item;
       });
+
+      if (hasAnyChanged) {
+        instrumentsRef.current = nextInsts;
+        setInstruments(nextInsts);
+        processQuoteEffectsRef.current(nextInsts);
+      }
 
       const activeSym = selectedSymbolRef.current;
       const inst = instrumentsRef.current.find((i) => i.symbol === activeSym);
@@ -2405,26 +2405,25 @@ export default function App() {
       const now = Date.now();
       const currentTf = timeframeRef.current || '15M';
       const intervalMs = getTimeframeDurationMs(currentTf);
-
-      setCandles((prev) => {
-        if (prev.length === 0) return prev;
-        const last = prev[prev.length - 1];
-        if (now >= last.time + intervalMs) {
-          const newSlot = Math.floor(now / intervalMs) * intervalMs;
-          const currentPrice = inst.bid;
-          const newCandle: Candle = {
-            time: newSlot,
-            open: last.close,
-            high: currentPrice,
-            low: currentPrice,
-            close: currentPrice,
-            volume: 1,
-          };
-          const trimmed = prev.length >= 85 ? prev.slice(1) : prev;
-          return [...trimmed, newCandle];
-        }
-        return prev;
-      });
+      const prevCandles = candlesRef.current;
+      if (prevCandles.length === 0) return;
+      const last = prevCandles[prevCandles.length - 1];
+      if (now >= last.time + intervalMs) {
+        const newSlot = Math.floor(now / intervalMs) * intervalMs;
+        const currentPrice = inst.bid;
+        const newCandle: Candle = {
+          time: newSlot,
+          open: last.close,
+          high: currentPrice,
+          low: currentPrice,
+          close: currentPrice,
+          volume: 1,
+        };
+        const trimmed = prevCandles.length >= 85 ? prevCandles.slice(1) : prevCandles;
+        const nextCandles = [...trimmed, newCandle];
+        candlesRef.current = nextCandles;
+        setCandles(nextCandles);
+      }
     }, 1000);
 
     return () => {
@@ -2554,14 +2553,15 @@ export default function App() {
     return () => clearInterval(timer);
   }, [evaluateManualPositionsAndTpSl]);
 
-  // Update floating positions P&L and check pending orders when prices change
-  useEffect(() => {
-    const currentInstMap = new Map<string, Instrument>(instruments.map((i) => [i.symbol, i]));
+  // Evaluate floating positions P&L, active chart candles, pending orders, and price alerts directly on incoming quote updates (never inside passive useEffect([instruments]))
+  processQuoteEffectsRef.current = (instList: Instrument[]) => {
+    const currentInstMap = new Map<string, Instrument>(instList.map((i) => [i.symbol, i]));
 
-    evaluateManualPositionsAndTpSl(instruments);
+    evaluateManualPositionsAndTpSl(instList);
 
-    // Update active chart's latest candle smoothly in perfect sync with Buy/Sell buttons
-    const activeInst = currentInstMap.get(selectedSymbol);
+    // Update active chart's latest candle smoothly in perfect sync with Buy/Sell buttons (only when candle actually changes)
+    const activeSym = selectedSymbolRef.current;
+    const activeInst = currentInstMap.get(activeSym);
     if (activeInst) {
       const marketStatus = checkInstrumentMarketHours(activeInst.symbol, activeInst.category);
       if (marketStatus.isOpen) {
@@ -2569,17 +2569,15 @@ export default function App() {
         const now = Date.now();
         const currentTf = timeframeRef.current || '15M';
         const intervalMs = getTimeframeDurationMs(currentTf);
+        const prevCandles = candlesRef.current;
 
-        setCandles((prevCandles) => {
-          if (prevCandles.length === 0) return prevCandles;
+        if (prevCandles.length > 0) {
           const last = prevCandles[prevCandles.length - 1];
-
           if (last.open > 0 && Math.abs(executionPrice - last.open) / last.open > 0.0025) {
-            return generateCandles(executionPrice, currentTf, 75, activeInst.decimals);
-          }
-
-          // If time selected is over, form a brand new candle!
-          if (now >= last.time + intervalMs) {
+            const regenerated = generateCandles(executionPrice, currentTf, 75, activeInst.decimals);
+            candlesRef.current = regenerated;
+            setCandles(regenerated);
+          } else if (now >= last.time + intervalMs) {
             const newSlot = Math.floor(now / intervalMs) * intervalMs;
             const newCandle: Candle = {
               time: newSlot,
@@ -2590,63 +2588,66 @@ export default function App() {
               volume: 1,
             };
             const trimmed = prevCandles.length >= 85 ? prevCandles.slice(1) : prevCandles;
-            return [...trimmed, newCandle];
+            const nextCandles = [...trimmed, newCandle];
+            candlesRef.current = nextCandles;
+            setCandles(nextCandles);
+          } else if (last.close !== executionPrice) {
+            const bodyTop = Math.max(last.open, executionPrice);
+            const bodyBottom = Math.min(last.open, executionPrice);
+            const bodySize = bodyTop - bodyBottom;
+            const minStep = Math.pow(10, -activeInst.decimals);
+            const maxWick = Math.max(minStep * 2, bodySize * 0.25);
+
+            const safeHigh = Math.min(Math.max(last.high, executionPrice), bodyTop + maxWick);
+            const safeLow = Math.max(Math.min(last.low, executionPrice), bodyBottom - maxWick);
+
+            const updatedLast: Candle = {
+              ...last,
+              close: executionPrice,
+              high: Number(safeHigh.toFixed(activeInst.decimals)),
+              low: Number(safeLow.toFixed(activeInst.decimals)),
+              volume: (last.volume || 1) + 1,
+            };
+            const nextCandles = [...prevCandles.slice(0, prevCandles.length - 1), updatedLast];
+            candlesRef.current = nextCandles;
+            setCandles(nextCandles);
           }
-
-          if (last.close === executionPrice) {
-            return prevCandles;
-          }
-
-          const bodyTop = Math.max(last.open, executionPrice);
-          const bodyBottom = Math.min(last.open, executionPrice);
-          const bodySize = bodyTop - bodyBottom;
-          const minStep = Math.pow(10, -activeInst.decimals);
-          const maxWick = Math.max(minStep * 2, bodySize * 0.25);
-
-          const safeHigh = Math.min(Math.max(last.high, executionPrice), bodyTop + maxWick);
-          const safeLow = Math.max(Math.min(last.low, executionPrice), bodyBottom - maxWick);
-
-          const updatedLast: Candle = {
-            ...last,
-            close: executionPrice,
-            high: Number(safeHigh.toFixed(activeInst.decimals)),
-            low: Number(safeLow.toFixed(activeInst.decimals)),
-            volume: (last.volume || 1) + 1,
-          };
-          return [...prevCandles.slice(0, prevCandles.length - 1), updatedLast];
-        });
+        }
       }
     }
 
     // Check pending orders for trigger (only after live quote is hydrated)
-    pendingOrders.forEach((ord) => {
-      if (!realTVQuotesRef.current.has(ord.symbol)) return;
-      const inst = currentInstMap.get(ord.symbol);
-      if (!inst) return;
+    const currentPending = pendingOrdersRef.current;
+    if (currentPending.length > 0) {
+      currentPending.forEach((ord) => {
+        if (!realTVQuotesRef.current.has(ord.symbol)) return;
+        const inst = currentInstMap.get(ord.symbol);
+        if (!inst) return;
 
-      let triggered = false;
-      if (ord.type === 'BUY_LIMIT' && inst.ask <= ord.targetPrice) triggered = true;
-      if (ord.type === 'SELL_LIMIT' && inst.bid >= ord.targetPrice) triggered = true;
-      if (ord.type === 'BUY_STOP' && inst.ask >= ord.targetPrice) triggered = true;
-      if (ord.type === 'SELL_STOP' && inst.bid <= ord.targetPrice) triggered = true;
+        let triggered = false;
+        if (ord.type === 'BUY_LIMIT' && inst.ask <= ord.targetPrice) triggered = true;
+        if (ord.type === 'SELL_LIMIT' && inst.bid >= ord.targetPrice) triggered = true;
+        if (ord.type === 'BUY_STOP' && inst.ask >= ord.targetPrice) triggered = true;
+        if (ord.type === 'SELL_STOP' && inst.bid <= ord.targetPrice) triggered = true;
 
-      if (triggered) {
-        executeMarketOrderInternal({
-          symbol: ord.symbol,
-          side: ord.side,
-          lots: ord.lots,
-          sl: ord.sl,
-          tp: ord.tp,
-          executionPrice: ord.targetPrice,
-          accountId: ord.accountId,
-          accountNumber: ord.accountNumber,
-        });
-        setPendingOrders((orders) => orders.filter((o) => o.id !== ord.id));
-        addNotification(
-          `Pending order triggered: ${ord.type} ${ord.lots} ${ord.symbol} @ ${ord.targetPrice}`
-        );
-      }
-    });
+        if (triggered) {
+          executeMarketOrderInternal({
+            symbol: ord.symbol,
+            side: ord.side,
+            lots: ord.lots,
+            sl: ord.sl,
+            tp: ord.tp,
+            executionPrice: ord.targetPrice,
+            accountId: ord.accountId,
+            accountNumber: ord.accountNumber,
+          });
+          setPendingOrders((orders) => orders.filter((o) => o.id !== ord.id));
+          addNotification(
+            `Pending order triggered: ${ord.type} ${ord.lots} ${ord.symbol} @ ${ord.targetPrice}`
+          );
+        }
+      });
+    }
 
     // Check target price alerts for live trigger (only after live quote is hydrated)
     if (priceAlertsRef.current.length > 0) {
@@ -2719,7 +2720,7 @@ export default function App() {
         }
       }
     }
-  }, [instruments]);
+  };
 
 
 
@@ -4069,11 +4070,11 @@ export default function App() {
 
   // Favorite toggle
   const handleToggleFavorite = (symbol: string) => {
-    setInstruments((prev) =>
-      prev.map((inst) =>
-        inst.symbol === symbol ? { ...inst, isFavorite: !inst.isFavorite } : inst
-      )
+    const next = instrumentsRef.current.map((inst) =>
+      inst.symbol === symbol ? { ...inst, isFavorite: !inst.isFavorite } : inst
     );
+    instrumentsRef.current = next;
+    setInstruments(next);
   };
 
   // Quick Trade from Markets Tab
@@ -4770,7 +4771,9 @@ export default function App() {
       });
 
       if (syncResult?.simLimitExceeded || (isMpesaTx && exactAmountKes > 500000)) {
-        // Refund deducted amount since withdrawal was rejected by SIM capacity limit
+        // Refund deducted amount since withdrawal was rejected by SIM capacity limit.
+        // Stamp `refund:${existingTx.id}` alongside `existingTx.id` in appliedDebitTxIds so
+        // saveUserFinancials / pickAuthoritativeAccount never revert the refunded balance.
         const isWalletSource =
           sourceAcc === 'VTM Wallet' ||
           sourceAcc === 'VTM One Wallet' ||
@@ -4781,6 +4784,7 @@ export default function App() {
           : walletBalanceRef.current;
         const cleanSource = sourceAcc.replace(/^Account\s*#/i, '').trim();
         const refundTs = Date.now();
+        const refundMarker = `refund:${existingTx.id}`;
         const intactAccounts = isWalletSource
           ? [...accountsRef.current]
           : accountsRef.current.map((acc) =>
@@ -4793,8 +4797,11 @@ export default function App() {
                     balance: Number((acc.balance + amountUsd).toFixed(2)),
                     equity: Number((acc.equity + amountUsd).toFixed(2)),
                     freeMargin: Number((acc.freeMargin + amountUsd).toFixed(2)),
+                    lastWithdrawalAt: refundTs,
                     lastActivityAt: refundTs,
-                    appliedDebitTxIds: (acc.appliedDebitTxIds || []).filter((id) => id !== existingTx.id),
+                    appliedDebitTxIds: Array.from(
+                      new Set([...(acc.appliedDebitTxIds || []), existingTx.id, refundMarker])
+                    ).slice(-80),
                   }
                 : acc
             );
@@ -4832,6 +4839,11 @@ export default function App() {
           transactions: failedTransactions,
           lastUpdated: refundTs,
         });
+        try {
+          const ch = new BroadcastChannel('vtm_global_sync');
+          ch.postMessage({ type: 'FINANCES_UPDATED', email: activeUser.email, ts: refundTs });
+          ch.close();
+        } catch {}
         supabaseService.saveWithdrawal(activeUser, {
           id: existingTx.id,
           sourceAccount: sourceAcc,
@@ -4842,6 +4854,9 @@ export default function App() {
           status: 'FAILED',
         });
 
+        addNotification(
+          `Withdrawal of $${amountUsd.toFixed(2)} could not be completed (Customer wallet capacity exceeded). $${amountUsd.toFixed(2)} has been returned to ${sourceAcc}.`
+        );
         triggerActionPopup({
           type: 'WITHDRAWAL_FAILED',
           title: 'Customer wallet capacity exceeded',
