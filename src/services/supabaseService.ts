@@ -631,6 +631,16 @@ class SupabaseService {
     try {
       // If no password was supplied (e.g. profile/session sync), try PATCH first so we never overwrite an existing password_hash
       if (password === undefined || password === '') {
+        const patchBody: Record<string, any> = {
+          name: isAdmin ? 'mutwiri' : profile.name,
+          phone_number: profile.phoneNumber || profile.phone || '',
+          country_code: profile.countryCode || '+1',
+          country_name: profile.countryName || 'United States',
+          role: safeRole,
+          uid: verifiedUid,
+          last_login_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
         const patchExistingRes = await fetch(
           `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
           {
@@ -641,17 +651,7 @@ class SupabaseService {
               Authorization: `Bearer ${this.config.anonKey}`,
               Prefer: 'return=representation',
             },
-            body: JSON.stringify({
-              name: isAdmin ? 'mutwiri' : profile.name,
-              phone_number: profile.phoneNumber || profile.phone || '',
-              country_code: profile.countryCode || '+1',
-              country_name: profile.countryName || 'United States',
-              account_number: profile.accountNumber || '27330648',
-              role: safeRole,
-              uid: verifiedUid,
-              last_login_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }),
+            body: JSON.stringify(patchBody),
             signal: AbortSignal.timeout(5000),
           }
         );
@@ -709,13 +709,12 @@ class SupabaseService {
         return true;
       }
 
-      // Fallback PATCH if row already exists
+      // Fallback PATCH if row already exists (preserve existing account_number)
       const patchPayload: Record<string, any> = {
         name: isAdmin ? 'mutwiri' : profile.name,
         phone_number: profile.phoneNumber || profile.phone || '',
         country_code: profile.countryCode || '+1',
         country_name: profile.countryName || 'United States',
-        account_number: profile.accountNumber,
         role: safeRole,
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -4728,6 +4727,627 @@ class SupabaseService {
     } catch {
       return false;
     }
+  }
+
+  // =========================================================================
+  // 9B. CLOUD REFERRAL & COMMISSION SYNC / CLAIM PERSISTENCE
+  // =========================================================================
+
+  public async resolveReferrerByCodeFromCloud(
+    referralCode: string
+  ): Promise<{ email: string; accountNumber?: string } | null> {
+    if (!this.config || !referralCode || this.isQuotaRestricted()) return null;
+    const cleanCode = referralCode.trim().toUpperCase();
+    if (!cleanCode) return null;
+
+    if (cleanCode === 'VTM-674343' || cleanCode === 'VTM-635667') {
+      return { email: 'joelndungu1022@gmail.com', accountNumber: '36674343' };
+    }
+    if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
+      return { email: 'mutwirib964@gmail.com', accountNumber: '27330648' };
+    }
+
+    const suffix = cleanCode.replace(/^VTM-/i, '').trim();
+    const headers = {
+      apikey: this.config.anonKey,
+      Authorization: `Bearer ${this.config.anonKey}`,
+    };
+
+    try {
+      if (suffix && /^\d{4,8}$/.test(suffix)) {
+        const res = await fetch(
+          `${this.config.url}/rest/v1/vtm_registered_users?account_number=like.*${encodeURIComponent(suffix)}&select=email,account_number&limit=5`,
+          { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
+        );
+        this.checkResponseQuota(res);
+        if (res.ok) {
+          const rows = await res.json();
+          if (Array.isArray(rows) && rows.length > 0 && rows[0].email) {
+            return {
+              email: String(rows[0].email).trim().toLowerCase(),
+              accountNumber: rows[0].account_number ? String(rows[0].account_number) : undefined,
+            };
+          }
+        }
+      }
+
+      const refRes = await fetch(
+        `${this.config.url}/rest/v1/vtm_referrals?referrer_code=ilike.${encodeURIComponent(cleanCode)}&select=referrer_email&limit=1`,
+        { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
+      );
+      this.checkResponseQuota(refRes);
+      if (refRes.ok) {
+        const refRows = await refRes.json();
+        if (Array.isArray(refRows) && refRows.length > 0 && refRows[0].referrer_email) {
+          return {
+            email: String(refRows[0].referrer_email).trim().toLowerCase(),
+          };
+        }
+      }
+
+      // Fallback scan of registered users prefix if non-numeric code (e.g. VTM-ABCDEF)
+      if (suffix) {
+        const prefixRes = await fetch(
+          `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(suffix.toLowerCase())}*&select=email,account_number&limit=5`,
+          { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
+        );
+        this.checkResponseQuota(prefixRes);
+        if (prefixRes.ok) {
+          const pRows = await prefixRes.json();
+          if (Array.isArray(pRows) && pRows.length > 0 && pRows[0].email) {
+            return {
+              email: String(pRows[0].email).trim().toLowerCase(),
+              accountNumber: pRows[0].account_number ? String(pRows[0].account_number) : undefined,
+            };
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  public async fetchCloudReferralsForUser(
+    userEmail: string,
+    acceptedCodes: string[]
+  ): Promise<{
+    referrerAccountNumber?: string;
+    cloudReferrals: Array<{
+      id: string;
+      referrerEmail: string;
+      referrerCode: string;
+      referredEmail: string;
+      referredName: string;
+      referredAccountNumber: string;
+      totalDepositedUsd: number;
+      totalCommissionUsd: number;
+      status: 'ACTIVE' | 'INACTIVE';
+      createdAt: number;
+      lastDepositAt?: number;
+      firstDepositReference?: string;
+    }>;
+    cloudClaims: Array<{
+      id: string;
+      referrerEmail: string;
+      amountUsd: number;
+      claimedAt: number;
+      status: 'COMPLETED';
+      walletTxReference: string;
+    }>;
+    cloudStateData: any;
+  } | null> {
+    if (!this.config || !userEmail || this.isQuotaRestricted()) return null;
+    const cleanEmail = userEmail.trim().toLowerCase();
+    const uniqueCodes = Array.from(
+      new Set(
+        (acceptedCodes || [])
+          .map((c) => String(c || '').trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+    const codeSet = new Set(uniqueCodes);
+    const headers = {
+      apikey: this.config.anonKey,
+      Authorization: `Bearer ${this.config.anonKey}`,
+    };
+
+    try {
+      const codeOrFilter = uniqueCodes
+        .map((c) => `referred_by_code.ilike.${encodeURIComponent(c)}`)
+        .join(',');
+
+      const [selfRes, regRefRes, actRes, tblRefRes, claimsRes, cloudStateData, selfFinRes] =
+        await Promise.all([
+          fetch(
+            `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}&select=email,account_number,role&limit=1`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
+          ).catch(() => null),
+          codeOrFilter
+            ? fetch(
+                `${this.config.url}/rest/v1/vtm_registered_users?or=(${codeOrFilter})&select=uid,email,name,account_number,referred_by_code,created_at&limit=2000`,
+                { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
+              ).catch(() => null)
+            : Promise.resolve(null),
+          fetch(
+            `${this.config.url}/rest/v1/user_activities?activity_type=in.(SIGNUP,REGISTRATION)&select=user_email,metadata,created_at&limit=3000`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
+          ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_referrals?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&select=*&limit=2000`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
+          ).catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_referral_claims?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&order=claimed_at.desc&select=*&limit=500`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
+          ).catch(() => null),
+          this.fetchCloudStateRecord<any>(cleanEmail, 'STATE_REFERRALS').catch(() => null),
+          fetch(
+            `${this.config.url}/rest/v1/vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=transactions&limit=5`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
+          ).catch(() => null),
+        ]);
+
+      [selfRes, regRefRes, actRes, tblRefRes, claimsRes, selfFinRes].forEach((r) => {
+        if (r) this.checkResponseQuota(r);
+      });
+
+      const selfRows = selfRes && selfRes.ok ? await selfRes.json().catch(() => []) : [];
+      const referrerAccountNumber =
+        Array.isArray(selfRows) && selfRows[0]?.account_number
+          ? String(selfRows[0].account_number)
+          : undefined;
+
+      // Expand codeSet if self's authoritative account_number yields another code
+      if (referrerAccountNumber) {
+        const cleanAccDigits = referrerAccountNumber.replace(/\D/g, '');
+        if (cleanAccDigits.length >= 4) {
+          codeSet.add(`VTM-${cleanAccDigits.slice(-6)}`);
+        }
+      }
+
+      const mergedByEmail = new Map<
+        string,
+        {
+          id: string;
+          referrerEmail: string;
+          referrerCode: string;
+          referredEmail: string;
+          referredName: string;
+          referredAccountNumber: string;
+          totalDepositedUsd: number;
+          totalCommissionUsd: number;
+          status: 'ACTIVE' | 'INACTIVE';
+          createdAt: number;
+          lastDepositAt?: number;
+          firstDepositReference?: string;
+        }
+      >();
+
+      const regRows = regRefRes && regRefRes.ok ? await regRefRes.json().catch(() => []) : [];
+      if (Array.isArray(regRows)) {
+        for (const r of regRows) {
+          const refEmail = String(r?.email || '').trim().toLowerCase();
+          if (!refEmail || refEmail === cleanEmail) continue;
+          const refCode = String(r?.referred_by_code || uniqueCodes[0] || '').trim().toUpperCase();
+          const createdTs = r?.created_at ? new Date(r.created_at).getTime() : Date.now();
+          mergedByEmail.set(refEmail, {
+            id: `ref-${r?.uid || refEmail}`,
+            referrerEmail: cleanEmail,
+            referrerCode: refCode,
+            referredEmail: refEmail,
+            referredName: String(r?.name || refEmail.split('@')[0] || 'Referred Trader'),
+            referredAccountNumber: String(r?.account_number || '8842-1001'),
+            totalDepositedUsd: 0,
+            totalCommissionUsd: 0,
+            status: 'ACTIVE',
+            createdAt: Number.isFinite(createdTs) && createdTs > 0 ? createdTs : Date.now(),
+          });
+        }
+      }
+
+      const actRows = actRes && actRes.ok ? await actRes.json().catch(() => []) : [];
+      if (Array.isArray(actRows)) {
+        for (const a of actRows) {
+          const refEmail = String(a?.user_email || '').trim().toLowerCase();
+          const metaCode = String(a?.metadata?.referredByCode || '').trim().toUpperCase();
+          if (!refEmail || refEmail === cleanEmail || !metaCode || !codeSet.has(metaCode)) continue;
+          if (!mergedByEmail.has(refEmail)) {
+            const createdTs = a?.created_at ? new Date(a.created_at).getTime() : Date.now();
+            mergedByEmail.set(refEmail, {
+              id: `ref-act-${refEmail}`,
+              referrerEmail: cleanEmail,
+              referrerCode: metaCode,
+              referredEmail: refEmail,
+              referredName: String(a?.metadata?.name || refEmail.split('@')[0] || 'Referred Trader'),
+              referredAccountNumber: String(a?.metadata?.accountNumber || '8842-1001'),
+              totalDepositedUsd: 0,
+              totalCommissionUsd: 0,
+              status: 'ACTIVE',
+              createdAt: Number.isFinite(createdTs) && createdTs > 0 ? createdTs : Date.now(),
+            });
+          }
+        }
+      }
+
+      const tblRows = tblRefRes && tblRefRes.ok ? await tblRefRes.json().catch(() => []) : [];
+      if (Array.isArray(tblRows)) {
+        for (const row of tblRows) {
+          const refEmail = String(row?.referred_email || '').trim().toLowerCase();
+          if (!refEmail || refEmail === cleanEmail) continue;
+          const existing = mergedByEmail.get(refEmail);
+          const depUsd = Number(Number(row?.total_deposited_usd || 0).toFixed(2));
+          const commUsd = Number((depUsd * 0.05).toFixed(2));
+          const createdTs = row?.created_at ? new Date(row.created_at).getTime() : Date.now();
+          if (!existing) {
+            mergedByEmail.set(refEmail, {
+              id: String(row?.id || `ref-${refEmail}`),
+              referrerEmail: cleanEmail,
+              referrerCode: String(row?.referrer_code || uniqueCodes[0] || '').trim().toUpperCase(),
+              referredEmail: refEmail,
+              referredName: String(row?.referred_name || refEmail.split('@')[0] || 'Referred Trader'),
+              referredAccountNumber: String(row?.referred_account_number || '8842-1001'),
+              totalDepositedUsd: depUsd,
+              totalCommissionUsd: commUsd,
+              status: row?.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+              createdAt: Number.isFinite(createdTs) && createdTs > 0 ? createdTs : Date.now(),
+            });
+          } else if (depUsd > existing.totalDepositedUsd) {
+            existing.totalDepositedUsd = depUsd;
+            existing.totalCommissionUsd = Number((depUsd * 0.05).toFixed(2));
+          }
+        }
+      }
+
+      if (cloudStateData && Array.isArray(cloudStateData.referrals)) {
+        for (const r of cloudStateData.referrals) {
+          const refEmail = String(r?.referredEmail || '').trim().toLowerCase();
+          if (!refEmail || refEmail === cleanEmail) continue;
+          const existing = mergedByEmail.get(refEmail);
+          const depUsd = Number(Number(r?.totalDepositedUsd || 0).toFixed(2));
+          if (!existing) {
+            mergedByEmail.set(refEmail, {
+              id: String(r?.id || `ref-cs-${refEmail}`),
+              referrerEmail: cleanEmail,
+              referrerCode: String(r?.referrerCode || uniqueCodes[0] || '').trim().toUpperCase(),
+              referredEmail: refEmail,
+              referredName: String(r?.referredName || refEmail.split('@')[0] || 'Referred Trader'),
+              referredAccountNumber: String(r?.referredAccountNumber || '8842-1001'),
+              totalDepositedUsd: depUsd,
+              totalCommissionUsd: Number((depUsd * 0.05).toFixed(2)),
+              status: r?.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+              createdAt: Number(r?.createdAt) || Date.now(),
+              lastDepositAt: r?.lastDepositAt ? Number(r.lastDepositAt) : undefined,
+            });
+          } else if (existing.totalDepositedUsd <= 0 && depUsd > 0) {
+            existing.totalDepositedUsd = depUsd;
+            existing.totalCommissionUsd = Number((depUsd * 0.05).toFixed(2));
+            if (r?.lastDepositAt) existing.lastDepositAt = Number(r.lastDepositAt);
+          }
+        }
+      }
+
+      // Fetch first completed deposits from vtm_user_finances for ALL referred users (chunked cleanly)
+      const allRefEmails = Array.from(mergedByEmail.keys());
+      const chunkSize = 35;
+      for (let i = 0; i < allRefEmails.length; i += chunkSize) {
+        const chunk = allRefEmails.slice(i, i + chunkSize);
+        if (chunk.length === 0) continue;
+        const inFilter = chunk.map((e) => `"${e.replace(/"/g, '')}"`).join(',');
+        try {
+          const finRes = await fetch(
+            `${this.config.url}/rest/v1/vtm_user_finances?user_email=in.(${encodeURIComponent(inFilter)})&select=user_email,transactions,last_updated`,
+            { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
+          );
+          this.checkResponseQuota(finRes);
+          if (finRes.ok) {
+            const finRows = await finRes.json().catch(() => []);
+            if (Array.isArray(finRows)) {
+              for (const f of finRows) {
+                const fEmail = String(f?.user_email || '').trim().toLowerCase();
+                const entry = mergedByEmail.get(fEmail);
+                if (!entry) continue;
+                const txs = Array.isArray(f?.transactions) ? f.transactions : [];
+                const completedDeposits = txs
+                  .filter(
+                    (tx: any) =>
+                      tx &&
+                      tx.type === 'DEPOSIT' &&
+                      String(tx.status || 'COMPLETED').toUpperCase() === 'COMPLETED' &&
+                      Number(tx.amount) > 0 &&
+                      !/referral/i.test(String(tx.method || ''))
+                  )
+                  .sort((a: any, b: any) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
+
+                if (completedDeposits.length > 0) {
+                  const firstDep = completedDeposits[0];
+                  const firstAmt = Number(Number(firstDep.amount).toFixed(2));
+                  entry.totalDepositedUsd = firstAmt;
+                  entry.totalCommissionUsd = Number((firstAmt * 0.05).toFixed(2));
+                  entry.lastDepositAt = Number(firstDep.timestamp) || entry.lastDepositAt || Date.now();
+                  if (firstDep.reference) {
+                    entry.firstDepositReference = String(firstDep.reference);
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore chunk failure and continue
+        }
+      }
+
+      // Collect all claims from vtm_referral_claims, STATE_REFERRALS, and referrer's own wallet transactions
+      const claimsByRef = new Map<
+        string,
+        {
+          id: string;
+          referrerEmail: string;
+          amountUsd: number;
+          claimedAt: number;
+          status: 'COMPLETED';
+          walletTxReference: string;
+        }
+      >();
+
+      const rawClaimRows = claimsRes && claimsRes.ok ? await claimsRes.json().catch(() => []) : [];
+      if (Array.isArray(rawClaimRows)) {
+        for (const c of rawClaimRows) {
+          const refKey = String(c?.wallet_tx_reference || c?.id || '').trim();
+          const amt = Number(Number(c?.amount_claimed_usd || 0).toFixed(2));
+          if (!refKey || amt <= 0) continue;
+          const ts = c?.claimed_at ? new Date(c.claimed_at).getTime() : Date.now();
+          claimsByRef.set(refKey, {
+            id: String(c?.id || `claim-${refKey}`),
+            referrerEmail: cleanEmail,
+            amountUsd: amt,
+            claimedAt: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
+            status: 'COMPLETED',
+            walletTxReference: refKey,
+          });
+        }
+      }
+
+      if (cloudStateData && Array.isArray(cloudStateData.claims)) {
+        for (const c of cloudStateData.claims) {
+          const refKey = String(c?.walletTxReference || c?.id || '').trim();
+          const amt = Number(Number(c?.amountUsd || 0).toFixed(2));
+          if (!refKey || amt <= 0 || claimsByRef.has(refKey)) continue;
+          claimsByRef.set(refKey, {
+            id: String(c?.id || `claim-${refKey}`),
+            referrerEmail: cleanEmail,
+            amountUsd: amt,
+            claimedAt: Number(c?.claimedAt) || Date.now(),
+            status: 'COMPLETED',
+            walletTxReference: refKey,
+          });
+        }
+      }
+
+      const selfFinRows = selfFinRes && selfFinRes.ok ? await selfFinRes.json().catch(() => []) : [];
+      if (Array.isArray(selfFinRows)) {
+        for (const sf of selfFinRows) {
+          const txs = Array.isArray(sf?.transactions) ? sf.transactions : [];
+          for (const tx of txs) {
+            if (!tx || tx.type !== 'DEPOSIT') continue;
+            const methodStr = String(tx.method || '');
+            const refStr = String(tx.reference || '');
+            const isRefClaimTx =
+              /referral/i.test(methodStr) ||
+              refStr.startsWith('REF-COMM-') ||
+              refStr.startsWith('REF-CLAIM-');
+            if (!isRefClaimTx) continue;
+            const refKey = refStr || String(tx.id || '');
+            const amt = Number(Number(tx.amount || 0).toFixed(2));
+            if (!refKey || amt <= 0 || claimsByRef.has(refKey)) continue;
+            claimsByRef.set(refKey, {
+              id: String(tx.id || `claim-${refKey}`),
+              referrerEmail: cleanEmail,
+              amountUsd: amt,
+              claimedAt: Number(tx.timestamp) || Date.now(),
+              status: 'COMPLETED',
+              walletTxReference: refKey,
+            });
+          }
+        }
+      }
+
+      const cloudReferrals = Array.from(mergedByEmail.values()).sort(
+        (a, b) => b.createdAt - a.createdAt
+      );
+      const cloudClaims = Array.from(claimsByRef.values()).sort(
+        (a, b) => b.claimedAt - a.claimedAt
+      );
+
+      return {
+        referrerAccountNumber,
+        cloudReferrals,
+        cloudClaims,
+        cloudStateData,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public async syncCloudReferralsBatch(
+    referrerEmail: string,
+    referrerCode: string,
+    referrals: Array<{
+      referredEmail: string;
+      referredName: string;
+      referredAccountNumber: string;
+      totalDepositedUsd: number;
+      totalCommissionUsd: number;
+      createdAt: number;
+      lastDepositAt?: number;
+    }>,
+    fullStateSnapshot?: any
+  ): Promise<boolean> {
+    if (!this.config || !referrerEmail || this.isQuotaRestricted()) return false;
+    const cleanEmail = referrerEmail.trim().toLowerCase();
+    const cleanCode = (referrerCode || 'VTM-GLOBAL').trim().toUpperCase();
+
+    try {
+      if (Array.isArray(referrals) && referrals.length > 0) {
+        const rows = referrals.slice(0, 500).map((r) => ({
+          referrer_email: cleanEmail,
+          referrer_code: cleanCode,
+          referred_email: String(r.referredEmail || '').trim().toLowerCase(),
+          referred_name: String(r.referredName || 'Referred Trader'),
+          referred_account_number: String(r.referredAccountNumber || ''),
+          total_deposited_usd: Number(Number(r.totalDepositedUsd || 0).toFixed(2)),
+          total_commission_usd: Number(Number(r.totalCommissionUsd || 0).toFixed(2)),
+          status: 'ACTIVE',
+          created_at: new Date(r.createdAt || Date.now()).toISOString(),
+          updated_at: new Date().toISOString(),
+        }));
+
+        const res = await fetch(
+          `${this.config.url}/rest/v1/vtm_referrals?on_conflict=referrer_email,referred_email`,
+          {
+            method: 'POST',
+            headers: {
+              ...this.getHeaders(),
+              Prefer: 'resolution=merge-duplicates,return=minimal',
+            },
+            body: JSON.stringify(rows),
+            signal: AbortSignal.timeout(6000),
+          }
+        );
+        this.checkResponseQuota(res);
+      }
+
+      if (fullStateSnapshot) {
+        await this.saveCloudStateRecord(
+          cleanEmail,
+          'STATE_REFERRALS',
+          'Synced referral network state',
+          fullStateSnapshot
+        );
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async recordReferralSignupInCloud(
+    referrerCode: string,
+    referrerEmail: string | null,
+    newUser: { email: string; name: string; accountNumber?: string }
+  ): Promise<boolean> {
+    if (!this.config || !referrerCode || !newUser.email || this.isQuotaRestricted()) return false;
+    const cleanCode = referrerCode.trim().toUpperCase();
+    const cleanNewEmail = newUser.email.trim().toLowerCase();
+
+    try {
+      let resolvedEmail = referrerEmail ? referrerEmail.trim().toLowerCase() : null;
+      if (!resolvedEmail) {
+        const resolved = await this.resolveReferrerByCodeFromCloud(cleanCode);
+        if (resolved) resolvedEmail = resolved.email;
+      }
+      if (!resolvedEmail || resolvedEmail === cleanNewEmail) return false;
+
+      const res = await fetch(
+        `${this.config.url}/rest/v1/vtm_referrals?on_conflict=referrer_email,referred_email`,
+        {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify({
+            referrer_email: resolvedEmail,
+            referrer_code: cleanCode,
+            referred_email: cleanNewEmail,
+            referred_name: newUser.name.trim() || 'Referred Trader',
+            referred_account_number: newUser.accountNumber || '',
+            total_deposited_usd: 0,
+            total_commission_usd: 0,
+            status: 'ACTIVE',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }),
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+      this.checkResponseQuota(res);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  public async saveReferralClaimToCloud(
+    claim: {
+      referrerEmail: string;
+      amountUsd: number;
+      walletTxReference: string;
+      claimedAt: number;
+    },
+    fullStateSnapshot?: any
+  ): Promise<boolean> {
+    if (!this.config || !claim.referrerEmail) return false;
+    const cleanEmail = claim.referrerEmail.trim().toLowerCase();
+
+    let stateSaved = false;
+    if (fullStateSnapshot) {
+      stateSaved = await this.saveCloudStateRecord(
+        cleanEmail,
+        'STATE_REFERRALS',
+        `Claimed $${claim.amountUsd.toFixed(2)} referral commission`,
+        fullStateSnapshot
+      ).catch(() => false);
+    }
+
+    if (this.isQuotaRestricted()) return stateSaved;
+
+    let claimSaved = false;
+    try {
+      const res = await fetch(
+        `${this.config.url}/rest/v1/vtm_referral_claims?on_conflict=wallet_tx_reference`,
+        {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify({
+            referrer_email: cleanEmail,
+            amount_claimed_usd: Number(claim.amountUsd.toFixed(2)),
+            wallet_tx_reference: claim.walletTxReference,
+            wallet_credited: true,
+            status: 'COMPLETED',
+            claimed_at: new Date(claim.claimedAt || Date.now()).toISOString(),
+          }),
+          signal: AbortSignal.timeout(6000),
+        }
+      );
+      this.checkResponseQuota(res);
+      claimSaved = res.ok;
+
+      // Mark any pending commission rows as claimed
+      await fetch(
+        `${this.config.url}/rest/v1/vtm_referral_commissions?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&claimed=eq.false`,
+        {
+          method: 'PATCH',
+          headers: {
+            ...this.getHeaders(),
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            claimed: true,
+            claimed_at: new Date(claim.claimedAt || Date.now()).toISOString(),
+          }),
+          signal: AbortSignal.timeout(4000),
+        }
+      ).catch(() => {});
+    } catch {
+      claimSaved = false;
+    }
+
+    return claimSaved || stateSaved;
   }
 
   // =========================================================================

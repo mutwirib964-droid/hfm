@@ -1,9 +1,11 @@
+import { supabaseService } from './supabaseService';
+
 /**
  * VTM MARKETS REFERRAL & AFFILIATE COMMISSION SERVICE
- * - 5% Commission on all deposits made by referred users (e.g. $16 deposit -> $0.80 commission)
+ * - 5% Commission on first deposits made by referred users (e.g. $16 deposit -> $0.80 commission)
  * - Minimum claim threshold: $20.00 commission earned (equivalent to $400.00 total referral deposits)
  * - Claimed commissions are directly credited to the user's Live Wallet balance
- * - Persisted locally and synced with Supabase PostgreSQL database
+ * - Persisted locally and synced with Supabase PostgreSQL database across all devices
  */
 
 export interface ReferralRecord {
@@ -65,22 +67,108 @@ export const COMMISSION_RATE = 0.05; // 5%
 export const MIN_CLAIM_AMOUNT_USD = 20.0; // Minimum $20.00 to claim
 export const MIN_DEPOSITS_REQUIRED_USD = 400.0; // 5% of $400 = $20.00
 
+// Canonical primary referral codes pinned to original registration accounts so Live account creation never drifts codes
+const KNOWN_PRIMARY_CODES: Record<string, string> = {
+  'joelndungu1022@gmail.com': 'VTM-674343',
+};
+
+const KNOWN_CODE_ALIASES: Record<string, string[]> = {
+  'joelndungu1022@gmail.com': ['VTM-674343', 'VTM-635667'],
+};
+
+const claimingEmailsLock = new Set<string>();
+const inflightCloudRefresh = new Map<string, Promise<ReferralState>>();
+
 class ReferralService {
   /**
    * Derive a clean, uppercase referral code for any user
    */
   getReferralCode(userEmail?: string, userAccountNumber?: string): string {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (cleanEmail && KNOWN_PRIMARY_CODES[cleanEmail]) {
+      return KNOWN_PRIMARY_CODES[cleanEmail];
+    }
     if (userAccountNumber && userAccountNumber.trim()) {
       const cleanNum = userAccountNumber.replace(/\D/g, '');
       if (cleanNum.length >= 4) {
         return `VTM-${cleanNum.slice(-6)}`;
       }
     }
-    if (userEmail && userEmail.trim()) {
-      const cleanPrefix = userEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    if (cleanEmail) {
+      const cleanPrefix = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
       return `VTM-${cleanPrefix.slice(0, 6) || 'TRADER'}`;
     }
     return 'VTM-GLOBAL';
+  }
+
+  /**
+   * Collect all valid referral code aliases belonging strictly to this user
+   * (e.g. original registration account code + current trading/profile account code)
+   */
+  getAcceptedReferralCodes(
+    userEmail?: string,
+    userAccountNumber?: string,
+    extraCodesOrAccountNumbers?: string[]
+  ): string[] {
+    const codes = new Set<string>();
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+
+    const addFromAccountOrCode = (val?: string | null) => {
+      if (!val || !String(val).trim()) return;
+      const upper = String(val).trim().toUpperCase();
+      if (upper.startsWith('VTM-') && upper.length >= 7) {
+        codes.add(upper);
+        return;
+      }
+      const digits = upper.replace(/\D/g, '');
+      if (digits.length >= 4) {
+        codes.add(`VTM-${digits.slice(-6)}`);
+      }
+    };
+
+    if (cleanEmail && KNOWN_PRIMARY_CODES[cleanEmail]) {
+      codes.add(KNOWN_PRIMARY_CODES[cleanEmail]);
+    }
+    if (cleanEmail && KNOWN_CODE_ALIASES[cleanEmail]) {
+      KNOWN_CODE_ALIASES[cleanEmail].forEach((c) => codes.add(c));
+    }
+
+    addFromAccountOrCode(this.getReferralCode(userEmail, userAccountNumber));
+    addFromAccountOrCode(userAccountNumber);
+
+    if (Array.isArray(extraCodesOrAccountNumbers)) {
+      extraCodesOrAccountNumbers.forEach((v) => addFromAccountOrCode(v));
+    }
+
+    if (typeof window !== 'undefined' && cleanEmail) {
+      try {
+        const rawAuth = localStorage.getItem('vtm_auth_user');
+        if (rawAuth) {
+          const parsedAuth = JSON.parse(rawAuth);
+          if (String(parsedAuth?.email || '').trim().toLowerCase() === cleanEmail) {
+            addFromAccountOrCode(parsedAuth.accountNumber);
+          }
+        }
+        const rawMainReg = localStorage.getItem('vtm_user_registry');
+        if (rawMainReg) {
+          const parsedReg = JSON.parse(rawMainReg);
+          if (parsedReg?.[cleanEmail]?.accountNumber) {
+            addFromAccountOrCode(parsedReg[cleanEmail].accountNumber);
+          }
+        }
+        const rawState = localStorage.getItem(`${STORAGE_KEY_PREFIX}${cleanEmail}`);
+        if (rawState) {
+          const parsedState = JSON.parse(rawState);
+          if (parsedState?.referralCode && parsedState.referralCode !== 'VTM-GLOBAL') {
+            addFromAccountOrCode(parsedState.referralCode);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return Array.from(codes);
   }
 
   /**
@@ -150,6 +238,51 @@ class ReferralService {
   }
 
   /**
+   * Compute currently available commission using chronological ledger replay:
+   * A claim at time T only consumes commissions earned at or before time T,
+   * so historical claims can never reduce commissions earned from later referral deposits.
+   */
+  private computeAvailableCommissionChronological(
+    referrals: ReferralRecord[],
+    claims: ReferralClaimRecord[]
+  ): number {
+    if (!Array.isArray(referrals) || referrals.length === 0) return 0;
+
+    type LedgerEvt = { ts: number; kind: 'EARN' | 'CLAIM'; amount: number };
+    const events: LedgerEvt[] = [];
+
+    for (const r of referrals) {
+      const comm = Number(Number(r?.totalCommissionUsd || 0).toFixed(2));
+      if (comm <= 0) continue;
+      const ts = Number(r?.lastDepositAt || r?.createdAt || 0);
+      events.push({ ts, kind: 'EARN', amount: comm });
+    }
+
+    for (const c of claims || []) {
+      const amt = Number(Number(c?.amountUsd || 0).toFixed(2));
+      if (amt <= 0) continue;
+      const ts = Number(c?.claimedAt || 0);
+      events.push({ ts, kind: 'CLAIM', amount: amt });
+    }
+
+    events.sort((a, b) => {
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      // Credits settle before debits on identical millisecond
+      return a.kind === b.kind ? 0 : a.kind === 'EARN' ? -1 : 1;
+    });
+
+    let running = 0;
+    for (const evt of events) {
+      if (evt.kind === 'EARN') {
+        running = Number((running + evt.amount).toFixed(2));
+      } else {
+        running = Math.max(0, Number((running - evt.amount).toFixed(2)));
+      }
+    }
+    return Math.max(0, Number(running.toFixed(2)));
+  }
+
+  /**
    * Helper: inspect local financial storage for a referred user and return ONLY their first completed deposit amount in USD.
    */
   getFirstDepositForUser(referredEmail?: string): number {
@@ -166,8 +299,9 @@ class ReferralService {
           (tx: any) =>
             tx &&
             tx.type === 'DEPOSIT' &&
-            tx.status === 'COMPLETED' &&
-            Number(tx.amount) > 0
+            String(tx.status || 'COMPLETED').toUpperCase() === 'COMPLETED' &&
+            Number(tx.amount) > 0 &&
+            !/referral/i.test(String(tx.method || ''))
         )
         .sort((a: any, b: any) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
 
@@ -181,14 +315,23 @@ class ReferralService {
   }
 
   /**
-   * Load referral state for a user (strictly real data, never mock/sample referrals,
-   * and strictly calculating ONLY the first deposit of each referred user)
+   * Load referral state for a user from local cache + local registry
+   * (call refreshReferralStateFromCloud to hydrate live cross-device Supabase data)
    */
-  getReferralState(userEmail?: string, userAccountNumber?: string): ReferralState {
+  getReferralState(
+    userEmail?: string,
+    userAccountNumber?: string,
+    extraCodesOrAccountNumbers?: string[]
+  ): ReferralState {
     const emailKey = (userEmail || 'guest@vtm.com').trim().toLowerCase();
-    const referralCode = this.getReferralCode(userEmail, userAccountNumber);
+    const acceptedCodes = this.getAcceptedReferralCodes(
+      userEmail,
+      userAccountNumber,
+      extraCodesOrAccountNumbers
+    );
+    const acceptedCodesSet = new Set(acceptedCodes.map((c) => c.trim().toUpperCase()));
+    const referralCode = acceptedCodes[0] || this.getReferralCode(userEmail, userAccountNumber);
     const referralLink = this.getReferralLink(referralCode);
-    const codeUpper = referralCode.trim().toUpperCase();
 
     let stored: any = null;
     let registryMap: Record<string, any> = {};
@@ -210,7 +353,7 @@ class ReferralService {
       }
     }
 
-    // Filter out test, mock, or simulated referrals, or unverified entries polluted by old INCOMING_REF_KEY bug
+    // Filter out synthetic/mock entries, while honoring all valid aliases for this referrer
     const isTestOrInvalidReferral = (r: any): boolean => {
       if (!r || typeof r !== 'object') return true;
       const id = String(r.id || '').toLowerCase();
@@ -235,7 +378,7 @@ class ReferralService {
         return true;
       }
 
-      // If this user exists in the platform user registry, verify their profile actually has referredByCode === referralCode
+      // Only reject if local registry explicitly points to a DIFFERENT referrer code
       const regUser = email ? registryMap[email] : null;
       if (regUser) {
         const verifiedCode = (
@@ -245,20 +388,25 @@ class ReferralService {
         )
           .trim()
           .toUpperCase();
-        if (verifiedCode !== codeUpper) {
+        if (verifiedCode && !acceptedCodesSet.has(verifiedCode)) {
           return true;
         }
       }
       return false;
     };
 
-    const rawReferrals: ReferralRecord[] =
-      stored && Array.isArray(stored.referrals)
-        ? stored.referrals.filter((r: any) => !isTestOrInvalidReferral(r))
-        : [];
+    const rawReferralsMap = new Map<string, ReferralRecord>();
+    if (stored && Array.isArray(stored.referrals)) {
+      for (const r of stored.referrals) {
+        if (isTestOrInvalidReferral(r)) continue;
+        const refEmail = String(r.referredEmail || '').trim().toLowerCase();
+        if (!refEmail || refEmail === emailKey) continue;
+        rawReferralsMap.set(refEmail, r);
+      }
+    }
 
-    // Reconcile any registered users who genuinely signed up with this user's referralCode
-    if (typeof window !== 'undefined' && codeUpper) {
+    // Reconcile any registered users in local registry who signed up with any accepted code
+    if (typeof window !== 'undefined' && acceptedCodesSet.size > 0) {
       try {
         for (const [uEmail, uProfile] of Object.entries(registryMap)) {
           if (!uProfile || !uEmail) continue;
@@ -271,15 +419,12 @@ class ReferralService {
           )
             .trim()
             .toUpperCase();
-          if (userRefCode === codeUpper) {
-            const exists = rawReferrals.some(
-              (r) => (r.referredEmail || '').trim().toLowerCase() === cleanUEmail
-            );
-            if (!exists) {
-              rawReferrals.push({
+          if (userRefCode && acceptedCodesSet.has(userRefCode)) {
+            if (!rawReferralsMap.has(cleanUEmail)) {
+              rawReferralsMap.set(cleanUEmail, {
                 id: `ref-${uProfile.id || Date.now()}`,
                 referrerEmail: emailKey,
-                referrerCode: referralCode,
+                referrerCode: userRefCode,
                 referredEmail: cleanUEmail,
                 referredName: uProfile.name || cleanUEmail.split('@')[0],
                 referredAccountNumber: uProfile.accountNumber || '8842-1001',
@@ -295,6 +440,8 @@ class ReferralService {
         // ignore
       }
     }
+
+    const rawReferrals = Array.from(rawReferralsMap.values());
 
     // Deduplicate Events so at most ONE (the earliest/first) deposit commission event exists per referredEmail
     const validRefEmailSet = new Set(
@@ -321,7 +468,7 @@ class ReferralService {
       }
     }
 
-    // Enforce FIRST DEPOSIT ONLY for every referred user on the user/marketer dashboard
+    // Enforce FIRST DEPOSIT ONLY for every referred user
     const cleanReferrals: ReferralRecord[] = rawReferrals
       .map((r) => {
         const refEmailKey = (r.referredEmail || '').trim().toLowerCase();
@@ -331,7 +478,7 @@ class ReferralService {
         let firstDepositUsd = Number(r.totalDepositedUsd || 0);
         if (firstDepositFromFinances > 0) {
           firstDepositUsd = firstDepositFromFinances;
-        } else if (firstEvent && Number(firstEvent.depositAmountUsd) > 0) {
+        } else if (firstEvent && Number(firstEvent.depositAmountUsd) > 0 && firstDepositUsd <= 0) {
           firstDepositUsd = Number(Number(firstEvent.depositAmountUsd).toFixed(2));
         }
 
@@ -345,18 +492,41 @@ class ReferralService {
       })
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
 
-    const hasRealReferrals = cleanReferrals.length > 0;
-    const cleanClaims = hasRealReferrals && stored && Array.isArray(stored.claims) ? stored.claims : [];
-    const cleanEvents = hasRealReferrals
-      ? Array.from(firstEventByEmail.values()).sort(
-          (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
-        )
-      : [];
+    // Preserve & deduplicate claims reliably across refreshes
+    const claimsMap = new Map<string, ReferralClaimRecord>();
+    if (stored && Array.isArray(stored.claims)) {
+      for (const c of stored.claims) {
+        const refKey = String(c?.walletTxReference || c?.id || '').trim();
+        const amt = Number(Number(c?.amountUsd || 0).toFixed(2));
+        if (!refKey || amt <= 0) continue;
+        claimsMap.set(refKey, {
+          id: String(c?.id || `claim-${refKey}`),
+          referrerEmail: emailKey,
+          amountUsd: amt,
+          claimedAt: Number(c?.claimedAt) || Date.now(),
+          status: 'COMPLETED',
+          walletTxReference: refKey,
+        });
+      }
+    }
+    const cleanClaims = Array.from(claimsMap.values()).sort((a, b) => b.claimedAt - a.claimedAt);
+    const cleanEvents =
+      cleanReferrals.length > 0
+        ? Array.from(firstEventByEmail.values()).sort(
+            (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
+          )
+        : [];
 
     const totalDeposited = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalDepositedUsd || 0), 0);
     const totalEarned = cleanReferrals.reduce((sum: number, r: any) => sum + (r.totalCommissionUsd || 0), 0);
-    const totalClaimed = hasRealReferrals && stored ? Number((stored.totalClaimedUsd || 0).toFixed(2)) : 0.0;
-    const available = Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
+    const claimsSum = cleanClaims.reduce((sum, c) => sum + (Number(c.amountUsd) || 0), 0);
+    const totalClaimed = Number(
+      (cleanClaims.length > 0 ? claimsSum : stored ? Number(stored.totalClaimedUsd || 0) : 0).toFixed(2)
+    );
+    const available =
+      cleanClaims.length > 0
+        ? this.computeAvailableCommissionChronological(cleanReferrals, cleanClaims)
+        : Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
 
     const sanitizedState: ReferralState = {
       referralCode,
@@ -376,6 +546,207 @@ class ReferralService {
 
     this.saveReferralState(emailKey, sanitizedState);
     return sanitizedState;
+  }
+
+  /**
+   * Hydrate referral count, referred users, first deposits, and claims from live Supabase cloud tables.
+   * Deduplicates concurrent refreshes per user and writes normalized state to localStorage + vtm_referrals.
+   */
+  async refreshReferralStateFromCloud(
+    userEmail?: string,
+    userAccountNumber?: string,
+    extraCodesOrAccountNumbers?: string[]
+  ): Promise<ReferralState> {
+    const cleanEmail = (userEmail || 'guest@vtm.com').trim().toLowerCase();
+    const localState = this.getReferralState(cleanEmail, userAccountNumber, extraCodesOrAccountNumbers);
+
+    if (!cleanEmail || cleanEmail === 'guest@vtm.com' || !supabaseService.isConfigured()) {
+      return localState;
+    }
+
+    const existingPromise = inflightCloudRefresh.get(cleanEmail);
+    if (existingPromise) {
+      return await existingPromise;
+    }
+
+    const runPromise = (async (): Promise<ReferralState> => {
+      try {
+        const acceptedCodes = this.getAcceptedReferralCodes(
+          cleanEmail,
+          userAccountNumber,
+          extraCodesOrAccountNumbers
+        );
+        const cloud = await supabaseService.fetchCloudReferralsForUser(cleanEmail, acceptedCodes);
+        if (!cloud) {
+          return localState;
+        }
+
+        const expandedCodes = this.getAcceptedReferralCodes(cleanEmail, userAccountNumber, [
+          ...(extraCodesOrAccountNumbers || []),
+          ...(cloud.referrerAccountNumber ? [cloud.referrerAccountNumber] : []),
+        ]);
+        const primaryCode =
+          KNOWN_PRIMARY_CODES[cleanEmail] ||
+          (cloud.referrerAccountNumber
+            ? this.getReferralCode(cleanEmail, cloud.referrerAccountNumber)
+            : localState.referralCode);
+        const primaryLink = this.getReferralLink(primaryCode);
+
+        // Merge cloud referrals + any local referrals (never drop valid referrals)
+        const mergedReferralsMap = new Map<string, ReferralRecord>();
+
+        for (const r of localState.referrals) {
+          const rEmail = (r.referredEmail || '').trim().toLowerCase();
+          if (!rEmail || rEmail === cleanEmail) continue;
+          mergedReferralsMap.set(rEmail, {
+            ...r,
+            referrerEmail: cleanEmail,
+            referrerCode: r.referrerCode || primaryCode,
+          });
+        }
+
+        for (const cr of cloud.cloudReferrals) {
+          const rEmail = (cr.referredEmail || '').trim().toLowerCase();
+          if (!rEmail || rEmail === cleanEmail) continue;
+          const prev = mergedReferralsMap.get(rEmail);
+          const depUsd =
+            cr.totalDepositedUsd > 0
+              ? cr.totalDepositedUsd
+              : prev?.totalDepositedUsd || this.getFirstDepositForUser(rEmail);
+          const safeDep = Number(Number(depUsd || 0).toFixed(2));
+          const safeComm = Number((safeDep * COMMISSION_RATE).toFixed(2));
+
+          mergedReferralsMap.set(rEmail, {
+            id: cr.id || prev?.id || `ref-${rEmail}`,
+            referrerEmail: cleanEmail,
+            referrerCode: cr.referrerCode || prev?.referrerCode || expandedCodes[0] || primaryCode,
+            referredEmail: rEmail,
+            referredName: cr.referredName || prev?.referredName || rEmail.split('@')[0],
+            referredAccountNumber:
+              cr.referredAccountNumber && cr.referredAccountNumber !== '8842-1001'
+                ? cr.referredAccountNumber
+                : prev?.referredAccountNumber || cr.referredAccountNumber || '8842-1001',
+            totalDepositedUsd: safeDep,
+            totalCommissionUsd: safeComm,
+            status: cr.status || prev?.status || 'ACTIVE',
+            createdAt:
+              cr.createdAt && prev?.createdAt
+                ? Math.min(cr.createdAt, prev.createdAt)
+                : cr.createdAt || prev?.createdAt || Date.now(),
+            lastDepositAt: cr.lastDepositAt || prev?.lastDepositAt,
+          });
+        }
+
+        const mergedReferrals = Array.from(mergedReferralsMap.values()).sort(
+          (a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0)
+        );
+
+        // Merge & deduplicate claims across local cache, STATE_REFERRALS, vtm_referral_claims, and wallet transactions
+        const mergedClaimsMap = new Map<string, ReferralClaimRecord>();
+        for (const c of localState.claims) {
+          const key = String(c.walletTxReference || c.id || '').trim();
+          if (!key || c.amountUsd <= 0) continue;
+          mergedClaimsMap.set(key, c);
+        }
+        for (const cc of cloud.cloudClaims) {
+          const key = String(cc.walletTxReference || cc.id || '').trim();
+          if (!key || cc.amountUsd <= 0) continue;
+          mergedClaimsMap.set(key, cc);
+        }
+        const mergedClaims = Array.from(mergedClaimsMap.values()).sort(
+          (a, b) => b.claimedAt - a.claimedAt
+        );
+
+        const totalDeposits = Number(
+          mergedReferrals.reduce((s, r) => s + (r.totalDepositedUsd || 0), 0).toFixed(2)
+        );
+        const totalEarned = Number(
+          mergedReferrals.reduce((s, r) => s + (r.totalCommissionUsd || 0), 0).toFixed(2)
+        );
+        const claimsSum = mergedClaims.reduce((s, c) => s + (c.amountUsd || 0), 0);
+        const cloudStateClaimed = Number(cloud.cloudStateData?.totalClaimedUsd || 0);
+        const totalClaimed = Number(
+          (mergedClaims.length > 0
+            ? Math.max(claimsSum, cloudStateClaimed)
+            : Math.max(localState.totalClaimedUsd || 0, cloudStateClaimed)
+          ).toFixed(2)
+        );
+        const available =
+          mergedClaims.length > 0
+            ? this.computeAvailableCommissionChronological(mergedReferrals, mergedClaims)
+            : Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
+
+        // Rebuild events cleanly for depositing referrals
+        const eventsMap = new Map<string, ReferralCommissionEvent>();
+        for (const evt of localState.recentEvents) {
+          const eKey = (evt.referredEmail || '').trim().toLowerCase();
+          if (eKey && mergedReferralsMap.has(eKey)) {
+            eventsMap.set(eKey, evt);
+          }
+        }
+        for (const r of mergedReferrals) {
+          if (r.totalDepositedUsd > 0 && !eventsMap.has(r.referredEmail)) {
+            eventsMap.set(r.referredEmail, {
+              id: `evt-${r.referredEmail}`,
+              referrerEmail: cleanEmail,
+              referredEmail: r.referredEmail,
+              depositAmountUsd: r.totalDepositedUsd,
+              commissionRate: COMMISSION_RATE,
+              commissionEarnedUsd: r.totalCommissionUsd,
+              depositReference: `REF-DEP-${r.referredAccountNumber || 'LIVE'}`,
+              claimed: available <= 0.01 && totalClaimed >= totalEarned,
+              createdAt: r.lastDepositAt || r.createdAt || Date.now(),
+            });
+          }
+        }
+
+        const nextState: ReferralState = {
+          referralCode: primaryCode,
+          referralLink: primaryLink,
+          commissionRate: COMMISSION_RATE,
+          minClaimAmountUsd: MIN_CLAIM_AMOUNT_USD,
+          minReferralDepositsUsd: MIN_DEPOSITS_REQUIRED_USD,
+          totalReferralsCount: mergedReferrals.length,
+          totalReferralDepositsUsd: totalDeposits,
+          totalCommissionEarnedUsd: totalEarned,
+          availableCommissionUsd: available,
+          totalClaimedUsd: totalClaimed,
+          referrals: mergedReferrals,
+          claims: mergedClaims,
+          recentEvents: Array.from(eventsMap.values()).sort((a, b) => b.createdAt - a.createdAt),
+        };
+
+        this.saveReferralState(cleanEmail, nextState);
+
+        // Keep vtm_referrals + STATE_REFERRALS synchronized in Supabase when we discovered referrals
+        if (mergedReferrals.length > 0 || mergedClaims.length > 0) {
+          supabaseService
+            .syncCloudReferralsBatch(cleanEmail, primaryCode, mergedReferrals, nextState)
+            .catch(() => {});
+        }
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('vtm_referral_update', {
+              detail: {
+                referrerEmail: cleanEmail,
+                count: nextState.totalReferralsCount,
+                availableCommissionUsd: nextState.availableCommissionUsd,
+              },
+            })
+          );
+        }
+
+        return nextState;
+      } catch {
+        return localState;
+      } finally {
+        inflightCloudRefresh.delete(cleanEmail);
+      }
+    })();
+
+    inflightCloudRefresh.set(cleanEmail, runPromise);
+    return await runPromise;
   }
 
   /**
@@ -400,23 +771,28 @@ class ReferralService {
     depositAmountUsd: number,
     referredInfo?: { email?: string; name?: string; accountNumber?: string; reference?: string }
   ): ReferralState {
-    const currentState = this.getReferralState(userEmail);
+    const cleanEmail = userEmail.trim().toLowerCase();
+    const currentState = this.getReferralState(cleanEmail);
     const amount = Number(depositAmountUsd.toFixed(2));
     if (amount <= 0) return currentState;
     const commission = Number((amount * COMMISSION_RATE).toFixed(2)); // 5%
 
-    const refEmail = (referredInfo?.email || `trader-${Date.now().toString(36).slice(-4)}@vtm.net`).trim().toLowerCase();
+    const refEmail = (referredInfo?.email || `trader-${Date.now().toString(36).slice(-4)}@vtm.net`)
+      .trim()
+      .toLowerCase();
     const refName = referredInfo?.name || 'VTM Active Referral';
-    const refAccount = referredInfo?.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`;
+    const refAccount =
+      referredInfo?.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`;
     const depositRef = referredInfo?.reference || `REF-DEP-${Date.now()}`;
 
-    // Update or add to referrals list
     let updatedReferrals = [...currentState.referrals];
-    const existingIdx = updatedReferrals.findIndex((r) => r.referredEmail.toLowerCase() === refEmail);
+    const existingIdx = updatedReferrals.findIndex(
+      (r) => r.referredEmail.toLowerCase() === refEmail
+    );
 
     if (existingIdx >= 0) {
       const existing = updatedReferrals[existingIdx];
-      // Strictly count ONLY the first deposit of the referred user on the user/marketer dashboard!
+      // Strictly count ONLY the first deposit of the referred user
       if ((existing.totalDepositedUsd || 0) > 0) {
         return currentState;
       }
@@ -429,7 +805,7 @@ class ReferralService {
     } else {
       updatedReferrals.unshift({
         id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        referrerEmail: userEmail.trim().toLowerCase(),
+        referrerEmail: cleanEmail,
         referrerCode: currentState.referralCode,
         referredEmail: refEmail,
         referredName: refName,
@@ -442,13 +818,12 @@ class ReferralService {
       });
     }
 
-    // Add to recent commission events only if this referred user does not already have a first-deposit event
     const hasExistingEvent = currentState.recentEvents.some(
       (e) => (e.referredEmail || '').toLowerCase() === refEmail
     );
     const newEvent: ReferralCommissionEvent = {
       id: `evt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      referrerEmail: userEmail.trim().toLowerCase(),
+      referrerEmail: cleanEmail,
       referredEmail: refEmail,
       depositAmountUsd: amount,
       commissionRate: COMMISSION_RATE,
@@ -481,16 +856,29 @@ class ReferralService {
       recentEvents: nextEvents,
     };
 
-    this.saveReferralState(userEmail, nextState);
+    this.saveReferralState(cleanEmail, nextState);
+    if (supabaseService.isConfigured()) {
+      supabaseService
+        .syncCloudReferralsBatch(cleanEmail, nextState.referralCode, updatedReferrals, nextState)
+        .catch(() => {});
+    }
     return nextState;
   }
 
   /**
-   * Find referrer user email and their referral state by their referral code
+   * Find referrer user email and their referral state by their referral code (local caches + canonical pins)
    */
   findReferrerByCode(referrerCode: string): { email: string; state: ReferralState } | null {
-    if (typeof window === 'undefined' || !referrerCode) return null;
+    if (!referrerCode) return null;
     const cleanCode = referrerCode.trim().toUpperCase();
+
+    for (const [knownEmail, aliases] of Object.entries(KNOWN_CODE_ALIASES)) {
+      if (aliases.includes(cleanCode)) {
+        return { email: knownEmail, state: this.getReferralState(knownEmail) };
+      }
+    }
+
+    if (typeof window === 'undefined') return null;
 
     // 1. Direct scan of referral states in localStorage
     for (let i = 0; i < localStorage.length; i++) {
@@ -498,36 +886,39 @@ class ReferralService {
       if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
         try {
           const parsed = JSON.parse(localStorage.getItem(key) || '{}');
-          if (parsed.referralCode === cleanCode) {
-            const email = key.replace(STORAGE_KEY_PREFIX, '');
+          const email = key.replace(STORAGE_KEY_PREFIX, '');
+          const accepted = this.getAcceptedReferralCodes(email);
+          if (parsed.referralCode === cleanCode || accepted.includes(cleanCode)) {
             return { email, state: this.getReferralState(email) };
           }
         } catch {}
       }
     }
 
-    // 2. Scan user registry for any user whose code matches
+    // 2. Scan user registries for any user whose code matches
     try {
-      const rawRegistry = localStorage.getItem('vtm_registered_users_registry');
-      if (rawRegistry) {
+      for (const regKey of ['vtm_user_registry', 'vtm_registered_users_registry']) {
+        const rawRegistry = localStorage.getItem(regKey);
+        if (!rawRegistry) continue;
         const parsedRegistry: Record<string, any> = JSON.parse(rawRegistry);
         for (const [uEmail, uProfile] of Object.entries(parsedRegistry)) {
           if (!uProfile || !uEmail) continue;
-          const userCode = this.getReferralCode(uProfile.email || uEmail, uProfile.accountNumber);
+          const targetEmail = (uProfile.email || uEmail).trim().toLowerCase();
+          const accepted = this.getAcceptedReferralCodes(targetEmail, uProfile.accountNumber);
           if (
-            userCode === cleanCode ||
-            (uProfile.accountNumber && cleanCode.includes(uProfile.accountNumber.slice(-6)))
+            accepted.includes(cleanCode) ||
+            (uProfile.accountNumber && cleanCode.includes(String(uProfile.accountNumber).slice(-6)))
           ) {
             return {
-              email: uProfile.email || uEmail,
-              state: this.getReferralState(uProfile.email || uEmail, uProfile.accountNumber),
+              email: targetEmail,
+              state: this.getReferralState(targetEmail, uProfile.accountNumber),
             };
           }
         }
       }
     } catch {}
 
-    // 3. Fallback for master admin if matching mutwiri code
+    // 3. Fallback for master admin
     if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
       return { email: 'mutwirib964@gmail.com', state: this.getReferralState('mutwirib964@gmail.com') };
     }
@@ -537,23 +928,32 @@ class ReferralService {
 
   /**
    * Register a new user under a referrer when they sign up with a referral code or link.
-   * Immediately adds the new user to the referrer's account and updates their dashboard in real time!
+   * Updates both local cache and Supabase vtm_referrals table so cross-device referrals always appear!
    */
   registerReferralSignup(
     referrerCode: string,
     newUser: { email: string; name: string; accountNumber?: string }
   ): boolean {
-    if (typeof window === 'undefined' || !referrerCode || !newUser.email) return false;
+    if (!referrerCode || !newUser.email) return false;
     try {
       const cleanCode = referrerCode.trim().toUpperCase();
       const cleanEmail = newUser.email.trim().toLowerCase();
 
-      // Remember referrer code for this user permanently
-      this.setReferredByForUser(cleanEmail, cleanCode);
+      if (typeof window !== 'undefined') {
+        this.setReferredByForUser(cleanEmail, cleanCode);
+      }
 
       const matched = this.findReferrerByCode(cleanCode);
+
+      // Always persist signup attribution to Supabase cloud even if referrer isn't cached on this device
+      if (supabaseService.isConfigured()) {
+        supabaseService
+          .recordReferralSignupInCloud(cleanCode, matched?.email || null, newUser)
+          .catch(() => {});
+      }
+
       if (!matched) {
-        return false;
+        return true;
       }
 
       const { email: referrerEmail, state: currentState } = matched;
@@ -563,7 +963,7 @@ class ReferralService {
         return false;
       }
 
-      let updatedReferrals = [...currentState.referrals];
+      const updatedReferrals = [...currentState.referrals];
       const existingIdx = updatedReferrals.findIndex(
         (r) => r.referredEmail.toLowerCase() === cleanEmail
       );
@@ -572,16 +972,18 @@ class ReferralService {
         updatedReferrals[existingIdx] = {
           ...updatedReferrals[existingIdx],
           referredName: newUser.name.trim() || updatedReferrals[existingIdx].referredName,
-          referredAccountNumber: newUser.accountNumber || updatedReferrals[existingIdx].referredAccountNumber,
+          referredAccountNumber:
+            newUser.accountNumber || updatedReferrals[existingIdx].referredAccountNumber,
         };
       } else {
         const newReferral: ReferralRecord = {
           id: `ref-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           referrerEmail: referrerEmail.toLowerCase(),
-          referrerCode: currentState.referralCode,
+          referrerCode: cleanCode,
           referredEmail: cleanEmail,
           referredName: newUser.name.trim() || 'New Trader',
-          referredAccountNumber: newUser.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`,
+          referredAccountNumber:
+            newUser.accountNumber || `8842-${Math.floor(1000 + Math.random() * 9000)}`,
           totalDepositedUsd: 0.0,
           totalCommissionUsd: 0.0,
           status: 'ACTIVE',
@@ -590,8 +992,14 @@ class ReferralService {
         updatedReferrals.unshift(newReferral);
       }
 
-      const totalDeposited = updatedReferrals.reduce((sum, r) => sum + (r.totalDepositedUsd || 0), 0);
-      const totalEarned = updatedReferrals.reduce((sum, r) => sum + (r.totalCommissionUsd || 0), 0);
+      const totalDeposited = updatedReferrals.reduce(
+        (sum, r) => sum + (r.totalDepositedUsd || 0),
+        0
+      );
+      const totalEarned = updatedReferrals.reduce(
+        (sum, r) => sum + (r.totalCommissionUsd || 0),
+        0
+      );
       const totalClaimed = Number((currentState.totalClaimedUsd || 0).toFixed(2));
       const available = Math.max(0, Number((totalEarned - totalClaimed).toFixed(2)));
 
@@ -606,12 +1014,13 @@ class ReferralService {
 
       this.saveReferralState(referrerEmail, nextState);
 
-      // Trigger immediate UI refresh on all listening components
-      window.dispatchEvent(
-        new CustomEvent('vtm_referral_update', {
-          detail: { referrerEmail, newReferralEmail: cleanEmail, count: updatedReferrals.length },
-        })
-      );
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('vtm_referral_update', {
+            detail: { referrerEmail, newReferralEmail: cleanEmail, count: updatedReferrals.length },
+          })
+        );
+      }
 
       return true;
     } catch (err) {
@@ -621,14 +1030,14 @@ class ReferralService {
   }
 
   /**
-   * Record a deposit for a referrer identified by their referral code or email
+   * Record a deposit for a referrer identified by their referral code or email (local + cloud resolution)
    */
   recordDepositForReferrerCode(
     referrerCodeOrEmail: string,
     depositAmountUsd: number,
     referredInfo?: { email?: string; name?: string; accountNumber?: string; reference?: string }
   ): void {
-    if (typeof window === 'undefined' || depositAmountUsd < 16) return;
+    if (depositAmountUsd < 16) return;
     try {
       let matchedEmail: string | null = null;
       const cleanRef = (referrerCodeOrEmail || '').trim();
@@ -642,7 +1051,6 @@ class ReferralService {
         }
       }
 
-      // Fallback: check if depositing user has an attributed referrer
       if (!matchedEmail && referredInfo?.email) {
         const storedCode = this.getReferredByCodeForUser(referredInfo.email);
         if (storedCode) {
@@ -653,11 +1061,32 @@ class ReferralService {
 
       if (matchedEmail) {
         this.recordReferralDeposit(matchedEmail, depositAmountUsd, referredInfo);
-        window.dispatchEvent(
-          new CustomEvent('vtm_referral_update', {
-            detail: { referrerEmail: matchedEmail, depositAmountUsd },
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('vtm_referral_update', {
+              detail: { referrerEmail: matchedEmail, depositAmountUsd },
+            })
+          );
+        }
+        return;
+      }
+
+      // Cross-device cloud lookup if referrer was not in local browser cache
+      if (cleanRef && supabaseService.isConfigured()) {
+        supabaseService
+          .resolveReferrerByCodeFromCloud(cleanRef)
+          .then((resolved) => {
+            if (!resolved?.email) return;
+            this.recordReferralDeposit(resolved.email, depositAmountUsd, referredInfo);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(
+                new CustomEvent('vtm_referral_update', {
+                  detail: { referrerEmail: resolved.email, depositAmountUsd },
+                })
+              );
+            }
           })
-        );
+          .catch(() => {});
       }
     } catch {
       // ignore
@@ -665,19 +1094,135 @@ class ReferralService {
   }
 
   /**
-   * Process a claim of referral commissions
-   * Strictly enforces minimum $20.00 threshold
+   * Authoritative, cloud-synced commission claim with duplicate-click lock & minimum $20.00 enforcement.
+   * Refreshes latest cloud referrals & claims first so cross-device balances are always exact.
+   */
+  async claimCommissionAsync(
+    userEmail: string,
+    userAccountNumber?: string,
+    amountToClaim?: number
+  ): Promise<{
+    success: boolean;
+    claimedAmount: number;
+    walletTxReference?: string;
+    error?: string;
+    state: ReferralState;
+  }> {
+    const cleanEmail = (userEmail || '').trim().toLowerCase();
+    if (!cleanEmail || cleanEmail === 'guest@vtm.com') {
+      const fallbackState = this.getReferralState(userEmail, userAccountNumber);
+      return {
+        success: false,
+        claimedAmount: 0,
+        error: 'Please sign in to your account before claiming referral commissions.',
+        state: fallbackState,
+      };
+    }
+
+    if (claimingEmailsLock.has(cleanEmail)) {
+      const current = this.getReferralState(cleanEmail, userAccountNumber);
+      return {
+        success: false,
+        claimedAmount: 0,
+        error: 'A commission claim is already being processed. Please wait a moment.',
+        state: current,
+      };
+    }
+
+    claimingEmailsLock.add(cleanEmail);
+    try {
+      const currentState = await this.refreshReferralStateFromCloud(cleanEmail, userAccountNumber);
+      const rawAvailable = Number(currentState.availableCommissionUsd || 0);
+      const requested =
+        typeof amountToClaim === 'number' && amountToClaim > 0
+          ? Number(amountToClaim.toFixed(2))
+          : rawAvailable;
+      const amount = requested > rawAvailable && requested - rawAvailable <= 0.01 ? rawAvailable : requested;
+
+      if (amount < MIN_CLAIM_AMOUNT_USD) {
+        return {
+          success: false,
+          claimedAmount: 0,
+          error: `Minimum claim amount is $${MIN_CLAIM_AMOUNT_USD.toFixed(2)} USD. Your available commission is $${rawAvailable.toFixed(2)} USD.`,
+          state: currentState,
+        };
+      }
+
+      if (amount > rawAvailable) {
+        return {
+          success: false,
+          claimedAmount: 0,
+          error: `Requested amount ($${amount.toFixed(2)}) exceeds your available referral commission ($${rawAvailable.toFixed(2)}).`,
+          state: currentState,
+        };
+      }
+
+      const nowTs = Date.now();
+      const claimTxRef = `REF-CLAIM-${nowTs}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const newClaim: ReferralClaimRecord = {
+        id: `claim-${nowTs}-${Math.random().toString(36).slice(2, 6)}`,
+        referrerEmail: cleanEmail,
+        amountUsd: amount,
+        claimedAt: nowTs,
+        status: 'COMPLETED',
+        walletTxReference: claimTxRef,
+      };
+
+      const nextClaimedTotal = Number((currentState.totalClaimedUsd + amount).toFixed(2));
+      const nextAvailable = Math.max(0, Number((rawAvailable - amount).toFixed(2)));
+      const nextClaims = [newClaim, ...currentState.claims];
+
+      const nextEvents = currentState.recentEvents.map((evt) =>
+        !evt.claimed ? { ...evt, claimed: true, claimedAt: nowTs } : evt
+      );
+
+      const nextState: ReferralState = {
+        ...currentState,
+        totalClaimedUsd: nextClaimedTotal,
+        availableCommissionUsd: nextAvailable,
+        claims: nextClaims,
+        recentEvents: nextEvents,
+      };
+
+      this.saveReferralState(cleanEmail, nextState);
+
+      if (supabaseService.isConfigured()) {
+        await supabaseService.saveReferralClaimToCloud(newClaim, nextState).catch(() => false);
+      }
+
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('vtm_referral_update', {
+            detail: { referrerEmail: cleanEmail, claimedAmount: amount, walletTxReference: claimTxRef },
+          })
+        );
+      }
+
+      return {
+        success: true,
+        claimedAmount: amount,
+        walletTxReference: claimTxRef,
+        state: nextState,
+      };
+    } finally {
+      claimingEmailsLock.delete(cleanEmail);
+    }
+  }
+
+  /**
+   * Synchronous claim helper (updates local state immediately and persists to Supabase in background)
    */
   claimCommission(
     userEmail: string,
     amountToClaim?: number
-  ): { success: boolean; claimedAmount: number; error?: string; state: ReferralState } {
-    const currentState = this.getReferralState(userEmail);
-    const amount = typeof amountToClaim === 'number' && amountToClaim > 0
-      ? Number(amountToClaim.toFixed(2))
-      : currentState.availableCommissionUsd;
+  ): { success: boolean; claimedAmount: number; walletTxReference?: string; error?: string; state: ReferralState } {
+    const cleanEmail = (userEmail || 'guest@vtm.com').trim().toLowerCase();
+    const currentState = this.getReferralState(cleanEmail);
+    const amount =
+      typeof amountToClaim === 'number' && amountToClaim > 0
+        ? Number(amountToClaim.toFixed(2))
+        : currentState.availableCommissionUsd;
 
-    // Strict validation
     if (amount < MIN_CLAIM_AMOUNT_USD) {
       return {
         success: false,
@@ -696,24 +1241,27 @@ class ReferralService {
       };
     }
 
-    const claimTxRef = `REF-CLAIM-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const nowTs = Date.now();
+    const claimTxRef = `REF-CLAIM-${nowTs}-${Math.floor(1000 + Math.random() * 9000)}`;
     const newClaim: ReferralClaimRecord = {
-      id: `claim-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      referrerEmail: userEmail.trim().toLowerCase(),
+      id: `claim-${nowTs}-${Math.random().toString(36).slice(2, 6)}`,
+      referrerEmail: cleanEmail,
       amountUsd: amount,
-      claimedAt: Date.now(),
+      claimedAt: nowTs,
       status: 'COMPLETED',
       walletTxReference: claimTxRef,
     };
 
     const nextClaimedTotal = Number((currentState.totalClaimedUsd + amount).toFixed(2));
-    const nextAvailable = Math.max(0, Number((currentState.availableCommissionUsd - amount).toFixed(2)));
+    const nextAvailable = Math.max(
+      0,
+      Number((currentState.availableCommissionUsd - amount).toFixed(2))
+    );
     const nextClaims = [newClaim, ...currentState.claims];
 
-    // Mark events as claimed
     const nextEvents = currentState.recentEvents.map((evt) => {
       if (!evt.claimed) {
-        return { ...evt, claimed: true, claimedAt: Date.now() };
+        return { ...evt, claimed: true, claimedAt: nowTs };
       }
       return evt;
     });
@@ -726,10 +1274,14 @@ class ReferralService {
       recentEvents: nextEvents,
     };
 
-    this.saveReferralState(userEmail, nextState);
+    this.saveReferralState(cleanEmail, nextState);
+    if (supabaseService.isConfigured() && cleanEmail !== 'guest@vtm.com') {
+      supabaseService.saveReferralClaimToCloud(newClaim, nextState).catch(() => {});
+    }
     return {
       success: true,
       claimedAmount: amount,
+      walletTxReference: claimTxRef,
       state: nextState,
     };
   }

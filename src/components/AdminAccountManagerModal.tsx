@@ -716,8 +716,18 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     const rate = getUsdKesRate();
 
     const marketerRows = marketers.map((m) => {
-      const state = referralService.getReferralState(m.user.email, m.user.accountNumber);
-      const refCodeUpper = (state.referralCode || '').trim().toUpperCase();
+      const liveAccNums = (m.accounts || []).map((a) => a.accountNumber).filter(Boolean);
+      const acceptedCodes = referralService.getAcceptedReferralCodes(
+        m.user.email,
+        m.user.accountNumber,
+        liveAccNums
+      );
+      const acceptedCodeSet = new Set(acceptedCodes.map((c) => c.trim().toUpperCase()));
+      const state = referralService.getReferralState(
+        m.user.email,
+        m.user.accountNumber,
+        liveAccNums
+      );
 
       // Merge referrals stored in referralService state + any registered user whose referredByCode matches this marketer
       const mergedReferralsMap = new Map<
@@ -739,7 +749,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         const matchedMetric = userMetrics.find(
           (u) => u.user.email.toLowerCase() === (ref.referredEmail || '').toLowerCase()
         );
-        // If user exists in platform database, strictly verify their referredByCode matches this marketer
+        // If user exists in platform database, strictly verify their referredByCode matches one of this marketer's codes
         if (matchedMetric) {
           const verifiedRefCode = (
             matchedMetric.user.referredByCode ||
@@ -748,7 +758,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           )
             .trim()
             .toUpperCase();
-          if (verifiedRefCode !== refCodeUpper) {
+          if (verifiedRefCode && !acceptedCodeSet.has(verifiedRefCode)) {
             return;
           }
         }
@@ -768,7 +778,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         });
       });
 
-      // Also check all platform users who signed up with this marketer's referral code
+      // Also check all platform users who signed up with any of this marketer's referral codes
       userMetrics.forEach((um) => {
         if (um.user.email.toLowerCase() === m.user.email.toLowerCase()) return;
         const userRefCode = (
@@ -779,7 +789,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           .trim()
           .toUpperCase();
 
-        if (refCodeUpper && userRefCode === refCodeUpper) {
+        if (userRefCode && acceptedCodeSet.has(userRefCode)) {
           const key = um.user.email.toLowerCase();
           const existing = mergedReferralsMap.get(key);
           const actualDepositedUsd = Number(um.totalDepositedUsd || 0);

@@ -27,7 +27,7 @@ interface ReferralModalProps {
   onClose: () => void;
   isDarkMode?: boolean;
   currentUser?: UserAuthProfile | null;
-  onClaimCommissionToWallet: (amount: number) => void;
+  onClaimCommissionToWallet: (amount: number, walletTxReference?: string) => void | Promise<void>;
   isPage?: boolean;
 }
 
@@ -44,23 +44,18 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
   const [copiedCode, setCopiedCode] = useState(false);
   const [claimSuccessMsg, setClaimSuccessMsg] = useState<string | null>(null);
   const [claimErrorMsg, setClaimErrorMsg] = useState<string | null>(null);
+  const [isClaiming, setIsClaiming] = useState(false);
+  const [isSyncingReferrals, setIsSyncingReferrals] = useState(false);
 
   const [state, setState] = useState<ReferralState>(() =>
     referralService.getReferralState(currentUser?.email, currentUser?.accountNumber)
   );
 
   useEffect(() => {
-    if (isOpen) {
-      const refreshed = referralService.getReferralState(
-        currentUser?.email,
-        currentUser?.accountNumber
-      );
-      setState(refreshed);
-      setClaimSuccessMsg(null);
-      setClaimErrorMsg(null);
-    }
+    let active = true;
 
-    const handleRealtimeUpdate = () => {
+    const syncLocal = () => {
+      if (!active) return;
       const refreshed = referralService.getReferralState(
         currentUser?.email,
         currentUser?.accountNumber
@@ -68,9 +63,35 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
       setState(refreshed);
     };
 
+    if (isOpen) {
+      syncLocal();
+      setClaimSuccessMsg(null);
+      setClaimErrorMsg(null);
+
+      if (currentUser?.email) {
+        setIsSyncingReferrals(true);
+        referralService
+          .refreshReferralStateFromCloud(currentUser.email, currentUser.accountNumber)
+          .then((cloudState) => {
+            if (active && cloudState) {
+              setState(cloudState);
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (active) setIsSyncingReferrals(false);
+          });
+      }
+    }
+
+    const handleRealtimeUpdate = () => {
+      syncLocal();
+    };
+
     window.addEventListener('vtm_referral_update', handleRealtimeUpdate);
     window.addEventListener('storage', handleRealtimeUpdate);
     return () => {
+      active = false;
       window.removeEventListener('vtm_referral_update', handleRealtimeUpdate);
       window.removeEventListener('storage', handleRealtimeUpdate);
     };
@@ -120,23 +141,35 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
     window.open(`https://t.me/share/url?url=${encodeURIComponent(state.referralLink)}&text=${text}`, '_blank');
   };
 
-  const handleClaim = () => {
+  const handleClaim = async () => {
+    if (isClaiming) return;
     setClaimErrorMsg(null);
     setClaimSuccessMsg(null);
+    setIsClaiming(true);
 
-    const userEmail = currentUser?.email || 'guest@vtm.com';
-    const result = referralService.claimCommission(userEmail);
+    try {
+      const userEmail = currentUser?.email || 'guest@vtm.com';
+      const result = await referralService.claimCommissionAsync(
+        userEmail,
+        currentUser?.accountNumber
+      );
 
-    if (!result.success) {
-      setClaimErrorMsg(result.error || 'Failed to claim commission.');
-      return;
+      if (!result.success) {
+        setState(result.state);
+        setClaimErrorMsg(result.error || 'Failed to claim commission.');
+        return;
+      }
+
+      setState(result.state);
+      await onClaimCommissionToWallet(result.claimedAmount, result.walletTxReference);
+      setClaimSuccessMsg(
+        `Successfully claimed $${result.claimedAmount.toFixed(2)} USD! The funds have been credited directly to your Live Wallet.`
+      );
+    } catch {
+      setClaimErrorMsg('Unable to complete commission claim right now. Please try again.');
+    } finally {
+      setIsClaiming(false);
     }
-
-    setState(result.state);
-    onClaimCommissionToWallet(result.claimedAmount);
-    setClaimSuccessMsg(
-      `Successfully claimed $${result.claimedAmount.toFixed(2)} USD! The funds have been credited directly to your Live Wallet.`
-    );
   };
 
   const isClaimEligible = state.availableCommissionUsd >= MIN_CLAIM_AMOUNT_USD;
@@ -281,23 +314,36 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <span className="text-[10px] font-mono uppercase font-black tracking-wider text-emerald-600 dark:text-emerald-400 block mb-1">
-                      Deposit Commission Program
+                      5% Deposit Commission Program
                     </span>
                     <h3 className={`text-sm font-bold leading-snug ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
-                      Earn cash commissions when your referrals deposit.
+                      Earn 5% cash commission on every referral&apos;s first deposit.
                     </h3>
                     <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? 'text-neutral-300' : 'text-slate-700'}`}>
-                      Share your referral link with traders. When your referrals make a deposit of minimum{' '}
-                      <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>$16.00</span>, you will earn commissions credited directly to your referral balance. Once your commissions reach{' '}
-                      <span className="font-bold text-emerald-600 dark:text-emerald-400">$20.00</span>, you can claim the funds directly into your Live Wallet.
+                      Share your referral link with traders. You earn{' '}
+                      <span className="font-bold text-emerald-600 dark:text-emerald-400">5% commission</span> on their first deposit (min.{' '}
+                      <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>$16.00</span>). Once your available commission reaches the{' '}
+                      <span className="font-bold text-amber-600 dark:text-amber-400">$20.00 minimum claim</span> (equivalent to $400.00 in deposits), you can claim the full available balance directly into your Live Wallet.
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-3 pt-3 border-t border-emerald-500/20 grid grid-cols-3 gap-1.5 sm:gap-2 text-center text-xs">
+                <div className="mt-3 pt-3 border-t border-emerald-500/20 grid grid-cols-2 sm:grid-cols-4 gap-1.5 sm:gap-2 text-center text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('referrals')}
+                    className={`p-2 rounded-xl border text-center transition-colors cursor-pointer ${isDarkMode ? 'bg-black/25 border-white/5 hover:border-emerald-500/40' : 'bg-white border-emerald-200/80 shadow-2xs hover:border-emerald-400'}`}
+                  >
+                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Total Referred</span>
+                    <span className={`text-xs sm:text-sm font-black font-mono ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                      {isSyncingReferrals && state.totalReferralsCount === 0 ? '...' : state.totalReferralsCount}
+                    </span>
+                  </button>
                   <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-black/25 border-white/5' : 'bg-white border-emerald-200/80 shadow-2xs'}`}>
-                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Min. Deposit</span>
-                    <span className="text-xs sm:text-sm font-black text-emerald-600 dark:text-emerald-400 font-mono">$16.00</span>
+                    <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Earned (5%)</span>
+                    <span className="text-xs sm:text-sm font-black text-blue-600 dark:text-blue-400 font-mono">
+                      ${state.totalCommissionEarnedUsd.toFixed(2)}
+                    </span>
                   </div>
                   <div className={`p-2 rounded-xl border ${isDarkMode ? 'bg-black/25 border-white/5' : 'bg-white border-emerald-200/80 shadow-2xs'}`}>
                     <span className={`text-[9px] sm:text-[10px] block font-medium truncate ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>Min. Claim</span>
@@ -321,14 +367,14 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
                   <div>
                     <span className={`text-[10px] uppercase font-bold tracking-wider block ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                      Available Commission to Claim
+                      Available Commission to Claim (5% Rate)
                     </span>
-                    <div className="flex items-baseline gap-2 mt-0.5">
+                    <div className="flex items-baseline gap-2 mt-0.5 flex-wrap">
                       <span className="text-xl sm:text-2xl font-black font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
                         ${state.availableCommissionUsd.toFixed(2)}
                       </span>
                       <span className={`text-xs ${isDarkMode ? 'text-neutral-400' : 'text-slate-500'}`}>
-                        / ${MIN_CLAIM_AMOUNT_USD.toFixed(2)} Target
+                        (Min. Claim: ${MIN_CLAIM_AMOUNT_USD.toFixed(2)})
                       </span>
                     </div>
                   </div>
@@ -349,8 +395,12 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 {/* Progress Bar */}
                 <div className="space-y-1.5 mb-3.5">
                   <div className={`flex items-center justify-between flex-wrap gap-1 text-[10px] sm:text-[11px] font-mono ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
-                    <span>Progress: {progressPercent}% of $20.00 goal</span>
-                    <span>Referral Deposits: ${state.totalReferralDepositsUsd.toFixed(2)}</span>
+                    <span>
+                      {isClaimEligible
+                        ? `Min. $20.00 threshold reached • Claim full $${state.availableCommissionUsd.toFixed(2)}`
+                        : `Progress: ${progressPercent}% of $20.00 minimum claim`}
+                    </span>
+                    <span>Referral Deposits: ${state.totalReferralDepositsUsd.toFixed(2)} (5% = ${state.totalCommissionEarnedUsd.toFixed(2)})</span>
                   </div>
                   <div className="h-2.5 w-full rounded-full bg-slate-200 dark:bg-neutral-800 overflow-hidden p-0.5">
                     <div
@@ -367,10 +417,10 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 {/* Claim Button */}
                 <button
                   onClick={handleClaim}
-                  disabled={!isClaimEligible}
-                  className={`w-full py-2.5 sm:py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 cursor-pointer text-center ${
-                    isClaimEligible
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 active:scale-[0.99]'
+                  disabled={!isClaimEligible || isClaiming}
+                  className={`w-full py-2.5 sm:py-3 px-3 sm:px-4 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 text-center ${
+                    isClaimEligible && !isClaiming
+                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/30 active:scale-[0.99] cursor-pointer'
                       : isDarkMode
                       ? 'bg-neutral-800 text-neutral-400 cursor-not-allowed opacity-70'
                       : 'bg-slate-200 text-slate-500 cursor-not-allowed opacity-80'
@@ -378,7 +428,9 @@ export const ReferralModal: React.FC<ReferralModalProps> = ({
                 >
                   <Coins className="w-4 h-4 shrink-0" />
                   <span className="leading-tight">
-                    {isClaimEligible
+                    {isClaiming
+                      ? 'Processing Claim...'
+                      : isClaimEligible
                       ? `Claim $${state.availableCommissionUsd.toFixed(2)} to Live Wallet`
                       : `Minimum $20.00 Required to Claim ($${remainingUsd.toFixed(2)} needed)`}
                   </span>

@@ -1770,7 +1770,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                         <Users className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                         <input
                           type="text"
-                          placeholder="e.g. VTM-674343"
+                          placeholder="e.g. VTM-123456"
                           value={referralCodeInput}
                           onChange={(e) => setReferralCodeInput(e.target.value.toUpperCase())}
                           className={`w-full pl-10 pr-4 py-2.5 rounded-xl border text-base sm:text-sm font-mono uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-[#E51937]/30 focus:border-[#E51937] box-border ${

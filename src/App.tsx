@@ -447,14 +447,33 @@ export default function App() {
       }
       setCurrentUser((prevUser) => {
         if (!prevUser) return null;
-        if (prevUser.role !== remoteRole || String(prevUser.id) !== String(remote.profile.id)) {
-          const updated = { ...prevUser, id: String(remote.profile.id), role: remoteRole };
+        const nextAcc = remote.profile.accountNumber || prevUser.accountNumber;
+        const nextRefBy = remote.profile.referredByCode || prevUser.referredByCode;
+        if (
+          prevUser.role !== remoteRole ||
+          String(prevUser.id) !== String(remote.profile.id) ||
+          prevUser.accountNumber !== nextAcc ||
+          prevUser.referredByCode !== nextRefBy
+        ) {
+          const updated = {
+            ...prevUser,
+            id: String(remote.profile.id),
+            role: remoteRole,
+            accountNumber: nextAcc,
+            referredByCode: nextRefBy,
+          };
           currentUserRef.current = updated;
           localStorage.setItem('vtm_auth_user', JSON.stringify(updated));
           return updated;
         }
         return prevUser;
       });
+
+      if (isInitialMount && remote.profile.email) {
+        referralService
+          .refreshReferralStateFromCloud(remote.profile.email, remote.profile.accountNumber)
+          .catch(() => {});
+      }
 
       // Immediately apply any Live Account, Withdrawal, or Wallet updates made by Admin or another device in Supabase
       // (while protecting an explicit local Deposit/Withdrawal/Transfer made within the last 4 seconds from stale poll overwrites)
@@ -4575,8 +4594,7 @@ export default function App() {
       // Credit referral commission if user joined via a referral link and deposit is >= $16
       const incomingRefCode =
         currentUser.referredByCode ||
-        referralService.getReferredByCodeForUser(currentUser.email) ||
-        referralService.getReferredByCode();
+        referralService.getReferredByCodeForUser(currentUser.email);
       if (incomingRefCode && amountUsd >= 16) {
         referralService.recordDepositForReferrerCode(incomingRefCode, amountUsd, {
           email: currentUser.email,
@@ -4625,15 +4643,19 @@ export default function App() {
     });
   };
 
-  const handleClaimReferralCommission = (amountToClaim: number) => {
+  const handleClaimReferralCommission = async (
+    amountToClaim: number,
+    explicitClaimRef?: string
+  ) => {
     const amount = Number(amountToClaim.toFixed(2));
     if (amount < 20.0) return;
 
-    const claimRef = `REF-COMM-${Date.now()}`;
-    const nextWallet = Number((walletBalanceRef.current + amount).toFixed(2));
+    const claimRef = explicitClaimRef || `REF-CLAIM-${Date.now()}`;
+    const prevWallet = Number((walletBalanceRef.current || 0).toFixed(2));
+    const nextWallet = Number((prevWallet + amount).toFixed(2));
 
     const claimTx: Transaction = {
-      id: `tx-claim-${Date.now()}`,
+      id: `tx-claim-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       type: 'DEPOSIT',
       method: 'Referral 5% Commission',
       amount: amount,
@@ -4642,7 +4664,7 @@ export default function App() {
       timestamp: Date.now(),
       reference: claimRef,
       accountNumber: 'VTM One Wallet',
-      details: `Claimed 5% referral commission payout ($${amount.toFixed(2)} USD)`,
+      details: `Claimed 5% referral commission payout ($${amount.toFixed(2)} USD) • New Bal: $${nextWallet.toFixed(2)}`,
     };
 
     const nextTransactions = [claimTx, ...transactionsRef.current];
@@ -4655,20 +4677,25 @@ export default function App() {
     lastUserCashActionRef.current = Date.now();
 
     if (currentUser) {
-      saveUserFinancials(currentUser, {
-        walletBalance: nextWallet,
-        accounts: accountsRef.current,
-        selectedAccountId: selectedAccountRef.current?.id,
-        transactions: nextTransactions,
-      });
+      saveUserFinancials(
+        currentUser,
+        {
+          walletBalance: nextWallet,
+          accounts: accountsRef.current,
+          selectedAccountId: selectedAccountRef.current?.id,
+          transactions: nextTransactions,
+        },
+        true
+      );
 
       if (currentUser.email) {
         const savedLedger = appendLedgerEntry({
+          id: `ledg-ref-${claimRef}`,
           userEmail: currentUser.email,
           accountNumber: 'VTM One Wallet',
           type: 'DEPOSIT',
           amount: amount,
-          previousBalance: Math.max(0, Number((nextWallet - amount).toFixed(2))),
+          previousBalance: prevWallet,
           newBalance: nextWallet,
           referenceId: claimRef,
           reason: `Referral 5% Affiliate Commission Claim`,
@@ -4682,20 +4709,22 @@ export default function App() {
         supabaseService.syncLedgerEntry(currentUser, savedLedger).catch(() => {});
       }
 
-      supabaseService.saveDeposit(currentUser, {
-        id: claimTx.id,
-        targetAccount: 'VTM One Wallet',
-        amountUsd: amount,
-        method: 'Referral Commission Payout (5%)',
-        reference: claimRef,
-        status: 'COMPLETED',
-      });
-      supabaseService.syncTransactions(currentUser, nextTransactions);
-      supabaseService.syncActivity(currentUser, {
-        type: 'DEPOSIT',
-        description: `Claimed referral commission payout of $${amount.toFixed(2)} to VTM One Wallet`,
-        metadata: { amount, method: 'Referral Commission', reference: claimRef },
-      });
+      await Promise.all([
+        supabaseService.saveDeposit(currentUser, {
+          id: claimTx.id,
+          targetAccount: 'VTM One Wallet',
+          amountUsd: amount,
+          method: 'Referral Commission Payout (5%)',
+          reference: claimRef,
+          status: 'COMPLETED',
+        }),
+        supabaseService.syncTransactions(currentUser, nextTransactions),
+        supabaseService.syncActivity(currentUser, {
+          type: 'DEPOSIT',
+          description: `Claimed referral commission payout of $${amount.toFixed(2)} to VTM One Wallet`,
+          metadata: { amount, method: 'Referral Commission', reference: claimRef, newWalletBalance: nextWallet },
+        }),
+      ]).catch(() => {});
     }
 
     addNotification(`Claimed +$${amount.toFixed(2)} referral commission to Live Wallet!`);
@@ -7992,9 +8021,9 @@ export default function App() {
             onClose={() => setActiveTab('markets')}
             isDarkMode={isDarkMode}
             currentUser={currentUser}
-            onClaimCommissionToWallet={(amount) => {
-              handleClaimReferralCommission(amount);
-            }}
+            onClaimCommissionToWallet={(amount, walletTxReference) =>
+              handleClaimReferralCommission(amount, walletTxReference)
+            }
           />
         );
       case 'support':
