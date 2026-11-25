@@ -1298,9 +1298,20 @@ export function registerNewUser(
       ? 'marketer'
       : 'normal';
 
+    const existingPhoneRaw = String(existing?.phoneNumber || existing?.phone || '').trim();
+    const existingPhoneDigits = existingPhoneRaw.replace(/\D/g, '');
+    const hasImmutablePhone =
+      existingPhoneDigits.length >= 6 &&
+      existingPhoneDigits !== '254700000000' &&
+      existingPhoneDigits !== '0700000000' &&
+      existingPhoneDigits !== '700000000';
+    const incomingPhoneRaw = String(profile.phoneNumber || profile.phone || '').trim();
+    const preservedPhone = hasImmutablePhone ? existingPhoneRaw : incomingPhoneRaw;
+
     const completeProfile: UserAuthProfile = {
       ...(existing || {}),
       ...profile,
+      ...(preservedPhone ? { phoneNumber: preservedPhone, phone: preservedPhone } : {}),
       id: finalId,
       email: cleanEmail,
       role: finalRole,
@@ -1589,13 +1600,26 @@ export function bulkImportUsersLocally(rawUsersList: any[]): number {
         existing.accountNumber ||
         String(Math.floor(10000000 + Math.random() * 90000000));
 
+      const rawPhoneVal = String(raw.phone_number || raw.phoneNumber || raw.phone || '').trim();
+      const rawPhoneDigits = rawPhoneVal.replace(/\D/g, '');
+      const existingPhoneVal = String(existing.phoneNumber || existing.phone || '').trim();
+      const existingPhoneDigits = existingPhoneVal.replace(/\D/g, '');
+      const isPlaceholderPhone = (d: string) =>
+        !d || d === '254700000000' || d === '0700000000' || d === '700000000';
+      const safePhone =
+        existingPhoneDigits.length >= 6 && !isPlaceholderPhone(existingPhoneDigits)
+          ? existingPhoneVal
+          : rawPhoneDigits.length >= 6 && !isPlaceholderPhone(rawPhoneDigits)
+          ? rawPhoneVal
+          : existingPhoneVal || rawPhoneVal || '';
+
       const profile: UserAuthProfile = {
         ...existing,
         id: resolvedUid,
         email: cleanEmail,
         name: isMaster ? MASTER_ADMIN_NAME : raw.name || existing.name || cleanEmail.split('@')[0],
-        phoneNumber: raw.phone_number || raw.phoneNumber || existing.phoneNumber || '',
-        phone: raw.phone_number || raw.phoneNumber || existing.phone || '',
+        phoneNumber: safePhone,
+        phone: safePhone,
         countryCode: raw.country_code || raw.countryCode || existing.countryCode || '+254',
         countryName: raw.country_name || raw.countryName || existing.countryName || 'Kenya',
         accountNumber: accNum,

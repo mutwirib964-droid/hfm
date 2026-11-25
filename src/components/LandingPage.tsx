@@ -242,8 +242,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       // Check if user is already registered
-      const existingDb = await supabaseService.findUserInDatabase(cleanEmail);
-      if (existingDb && existingDb.hasVerifiedUid) {
+      const emailExists = await supabaseService.checkEmailExists(cleanEmail);
+      if (emailExists) {
         setIsSubmitting(false);
         setValidationError('An account with this email already exists. Please sign in instead.');
         return;
@@ -268,75 +268,56 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         referredByCode: cleanRefCode || undefined,
       };
 
-      // 1. Register in Auth service to obtain official Auth UID if available
-      const authRes = await supabaseService.signUpWithSupabaseAuth(newUserProfile, password);
-      if (authRes.success) {
-        const authUid = authRes.data?.user?.id || authRes.data?.id;
-        if (authUid && isValidUserUid(authUid) && !isMasterAdminEmail(cleanEmail)) {
-          newUserProfile.id = authUid;
-        }
-      } else {
-        const errLower = (authRes.error || '').toLowerCase();
-        if (
-          errLower.includes('already registered') ||
-          errLower.includes('already exists') ||
-          errLower.includes('unique') ||
-          errLower.includes('duplicate')
-        ) {
-          const signInRes = await supabaseService.signInWithSupabaseAuth(cleanEmail, password);
-          const existingAuthUid = signInRes.data?.user?.id || signInRes.data?.id;
-          if (signInRes.success && isValidUserUid(existingAuthUid)) {
-            newUserProfile.id = isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : existingAuthUid;
-          }
-        }
-      }
-
-      // 2. Persist user + verified UID + password directly to registry and confirm assigned UID
-      const saveDbResult = await supabaseService.registerUserInDatabase(newUserProfile, password);
-      const confirmedDb = await supabaseService.findUserInDatabase(cleanEmail).catch(() => null);
-      if (confirmedDb && isValidUserUid(confirmedDb.profile?.id)) {
-        newUserProfile.id = confirmedDb.profile.id;
-      }
-
-      if (!saveDbResult || !isValidUserUid(newUserProfile.id)) {
+      // Server-verified registration (mints signed sessionToken + locks phone/role integrity)
+      const regRes = await supabaseService.registerWithServer(newUserProfile, password);
+      if (!regRes.ok || !regRes.profile || !isValidUserUid(regRes.profile.id)) {
         setIsSubmitting(false);
-        setValidationError('Unable to complete registration at this moment. Please try again.');
+        setValidationError(
+          regRes.error || 'Unable to complete registration at this moment. Please try again.'
+        );
         return;
       }
 
-      // 3. Initialize financials
-      await supabaseService.syncUserFinancials(newUserProfile, {
+      const savedProfile: UserAuthProfile = {
+        ...regRes.profile,
+        isLoggedIn: true,
+        isNewRegistration: true,
+        referredByCode: regRes.profile.referredByCode || cleanRefCode || undefined,
+      };
+
+      // Initialize financials in Supabase & server fallback DB using signed session token
+      await supabaseService.syncUserFinancials(savedProfile, {
         walletBalance: 0.0,
         accounts: [],
         lastUpdated: Date.now(),
       });
 
-      // 4. Save to local device cache
-      registerNewUser(newUserProfile, password);
-      initializeUserFinancials(newUserProfile, true);
+      // Save to local device cache
+      registerNewUser(savedProfile, password);
+      initializeUserFinancials(savedProfile, true);
 
-      // 5. Connect referral attribution immediately if referral code was entered or captured
+      // Connect referral attribution immediately if referral code was entered or captured
       if (cleanRefCode) {
         referralService.registerReferralSignup(cleanRefCode, {
-          email: newUserProfile.email,
-          name: newUserProfile.name,
-          accountNumber: newUserProfile.accountNumber,
+          email: savedProfile.email,
+          name: savedProfile.name,
+          accountNumber: savedProfile.accountNumber,
         });
       }
 
-      await supabaseService.syncActivity(newUserProfile, {
+      await supabaseService.syncActivity(savedProfile, {
         type: 'REGISTRATION',
-        description: `New user registration for ${newUserProfile.email}`,
+        description: `New user registration for ${savedProfile.email}`,
         metadata: {
-          name: newUserProfile.name,
-          accountNumber: newUserProfile.accountNumber,
+          name: savedProfile.name,
+          accountNumber: savedProfile.accountNumber,
           referredByCode: cleanRefCode || undefined,
         },
       });
-      await supabaseService.syncDevice(newUserProfile);
+      await supabaseService.syncDevice(savedProfile);
 
       setIsSubmitting(false);
-      onSignIn(newUserProfile);
+      onSignIn(savedProfile);
     } else {
       // SIGN IN MODE
       const emailRegex = /^[a-zA-Z0-9._%+-]+@gmail\.com$/;
@@ -357,80 +338,81 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       }
 
       try {
-        // 1. Check user in Supabase, Server Platform DB, or Local Registry (with 402 recovery for login)
-        const remoteUser = await supabaseService.findUserInDatabase(cleanEmail, true).catch(() => null);
+        // Authenticate directly on server (verifies credentials & returns signed sessionToken without exposing password_hash)
+        const loginRes = await supabaseService.authenticateWithServer(cleanEmail, password);
 
-        // Master Admin Exclusive Login (Email: mutwirib964@gmail.com, Confirmed UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
-        if (isMasterAdminEmail(cleanEmail)) {
-          const localVerify = verifyUserCredentials(MASTER_ADMIN_EMAIL, password);
-          const remotePassMatch =
-            remoteUser &&
-            (!remoteUser.password ||
-              remoteUser.password === password ||
-              remoteUser.password.trim() === password.trim());
-
-          if (remotePassMatch || localVerify.success) {
-            const confirmedAdmin: UserAuthProfile = {
-              ...(remoteUser?.profile || localVerify.user || {}),
-              id: MASTER_ADMIN_UID,
-              email: MASTER_ADMIN_EMAIL,
-              name: 'mutwiri',
-              phoneNumber: remoteUser?.profile?.phoneNumber || '+254 741114162',
-              phone: remoteUser?.profile?.phone || '+254 741114162',
-              countryCode: '+254',
-              countryName: 'Kenya',
-              accountNumber: remoteUser?.profile?.accountNumber || '27330648',
-              role: 'admin',
-              isLoggedIn: true,
-            };
-            registerNewUser(confirmedAdmin, password);
-            supabaseService.registerUserInDatabase(confirmedAdmin, password).catch(() => {});
-            supabaseService.updateUserLastLoginInDatabase(MASTER_ADMIN_EMAIL).catch(() => {});
-            setIsSubmitting(false);
-            onSignIn(confirmedAdmin);
-            return;
+        if (!loginRes.ok || !loginRes.profile) {
+          // Offline fallback ONLY for Master Admin when server gateway is unreachable (not invalid password)
+          if (isMasterAdminEmail(cleanEmail) && !loginRes.code) {
+            const localVerify = verifyUserCredentials(MASTER_ADMIN_EMAIL, password);
+            if (localVerify.success) {
+              const confirmedAdmin: UserAuthProfile = {
+                ...(localVerify.user || {}),
+                id: MASTER_ADMIN_UID,
+                email: MASTER_ADMIN_EMAIL,
+                name: 'mutwiri',
+                phoneNumber: '+254 741114162',
+                phone: '+254 741114162',
+                countryCode: '+254',
+                countryName: 'Kenya',
+                accountNumber: '27330648',
+                role: 'admin',
+                isLoggedIn: true,
+                createdAt: localVerify.user?.createdAt || Date.now(),
+              };
+              registerNewUser(confirmedAdmin, password);
+              setIsSubmitting(false);
+              onSignIn(confirmedAdmin);
+              return;
+            }
           }
+
+          setIsSubmitting(false);
+          setValidationError(
+            loginRes.error ||
+              (loginRes.code === 'ACCOUNT_NOT_FOUND'
+                ? 'No registered account found for this email. Please create an account first.'
+                : 'Invalid email or password. Please try again.')
+          );
+          return;
         }
 
-        // Strict Enforcement: No user can ever sign in before creating an account and receiving an assigned UID
-        if (!remoteUser || !remoteUser.hasVerifiedUid || !isValidUserUid(remoteUser.profile?.id)) {
+        // Strict Enforcement: No user can ever sign in without a valid assigned UID
+        if (!isValidUserUid(loginRes.profile.id)) {
           setIsSubmitting(false);
           setValidationError('No registered account found for this email. Please create an account first.');
           return;
         }
 
-        const storedPass = remoteUser.password ?? '';
-        let passMatches =
-          storedPass.length === 0 ||
-          storedPass === password ||
-          storedPass.trim() === password.trim();
-
-        if (!passMatches) {
-          const sbAuthRetry = await supabaseService
-            .signInWithSupabaseAuth(cleanEmail, password)
-            .catch(() => ({ success: false, data: null }));
-          if (sbAuthRetry.success) {
-            passMatches = true;
-          }
-        }
-
-        if (!passMatches) {
+        if (isMasterAdminEmail(cleanEmail)) {
+          const confirmedAdmin: UserAuthProfile = {
+            ...loginRes.profile,
+            id: MASTER_ADMIN_UID,
+            email: MASTER_ADMIN_EMAIL,
+            name: 'mutwiri',
+            phoneNumber: loginRes.profile.phoneNumber || '+254 741114162',
+            phone: loginRes.profile.phone || '+254 741114162',
+            countryCode: '+254',
+            countryName: 'Kenya',
+            accountNumber: loginRes.profile.accountNumber || '27330648',
+            role: 'admin',
+            isLoggedIn: true,
+          };
+          registerNewUser(confirmedAdmin, password);
+          supabaseService.updateUserLastLoginInDatabase(MASTER_ADMIN_EMAIL).catch(() => {});
           setIsSubmitting(false);
-          setValidationError('Invalid email or password. Please try again.');
+          onSignIn(confirmedAdmin);
           return;
         }
 
-        const resolvedUid = remoteUser.profile.id;
-
         const verifiedProfile: UserAuthProfile = {
-          ...remoteUser.profile,
-          id: resolvedUid,
-          role: remoteUser.profile.role === 'marketer' ? 'marketer' : 'normal',
+          ...loginRes.profile,
+          id: loginRes.profile.id,
+          role: loginRes.profile.role === 'marketer' ? 'marketer' : 'normal',
           isLoggedIn: true,
         };
 
         registerNewUser({ ...verifiedProfile, isNewRegistration: false }, password);
-        supabaseService.registerUserInDatabase(verifiedProfile, password).catch(() => {});
 
         try {
           const localFinances = loadUserFinancials(verifiedProfile);
@@ -467,7 +449,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         supabaseService.syncDevice(verifiedProfile).catch(() => {});
         onSignIn({ ...verifiedProfile, isNewRegistration: false });
         return;
-      } catch (err: any) {
+      } catch {
         setIsSubmitting(false);
         setValidationError('Unable to sign in right now. Please try again.');
         return;
@@ -484,7 +466,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
     >
       {/* MAIN HEADER NAVIGATION */}
       <header
-        className={`pwa-safe-top sticky top-0 z-40 w-full max-w-full border-b backdrop-blur-md px-3 sm:px-6 lg:px-8 pb-2.5 sm:pb-3.5 flex items-center justify-between transition-colors overflow-hidden ${
+        className={`pwa-safe-top vtm-glass-header sticky top-0 z-40 w-full max-w-full px-3 sm:px-6 lg:px-8 pb-2.5 sm:pb-3.5 flex items-center justify-between transition-colors overflow-hidden ${
           isDarkMode ? 'bg-[#0A0C10]/95 border-neutral-800 text-white' : 'bg-white/95 border-slate-200 text-slate-900 shadow-xs'
         }`}
       >
@@ -636,6 +618,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         </div>
       </div>
 
+      <main aria-label="VTM Markets Platform Overview" className="w-full max-w-full flex-1">
       {/* 4. HERO SECTION */}
       <section className="relative px-3 sm:px-8 lg:px-12 xl:px-16 2xl:px-20 pt-10 sm:pt-14 pb-16 sm:pb-20 w-full max-w-full overflow-hidden mx-auto text-center flex flex-col items-center">
         {/* Glow effect */}
@@ -710,7 +693,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           }`}
         >
           <div
-            className={`p-5 rounded-2xl border text-center transition-all ${
+            className={`vtm-stat-tile ${
               isDarkMode ? 'border-neutral-800 bg-[#12151C]' : 'border-slate-200 bg-white shadow-xs'
             }`}
           >
@@ -721,7 +704,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
 
           <div
-            className={`p-5 rounded-2xl border text-center transition-all ${
+            className={`vtm-stat-tile ${
               isDarkMode ? 'border-neutral-800 bg-[#12151C]' : 'border-slate-200 bg-white shadow-xs'
             }`}
           >
@@ -734,7 +717,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
 
           <div
-            className={`p-5 rounded-2xl border text-center transition-all ${
+            className={`vtm-stat-tile ${
               isDarkMode ? 'border-neutral-800 bg-[#12151C]' : 'border-slate-200 bg-white shadow-xs'
             }`}
           >
@@ -747,7 +730,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </div>
 
           <div
-            className={`p-5 rounded-2xl border text-center transition-all ${
+            className={`vtm-stat-tile ${
               isDarkMode ? 'border-neutral-800 bg-[#12151C]' : 'border-slate-200 bg-white shadow-xs'
             }`}
           >
@@ -1092,9 +1075,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <Check className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     Professional TradingView Candlestick Engine
-                  </h4>
+                  </h3>
                   <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Over 50+ technical indicators, multiple chart timeframes (M1 to W1), and high-contrast candlestick modes.
                   </p>
@@ -1106,9 +1089,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <Check className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     1-Click Order Execution with SL/TP Protection
-                  </h4>
+                  </h3>
                   <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Instant Buy/Sell market orders with visual price flash alerts and integrated pending limit orders.
                   </p>
@@ -1120,9 +1103,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({
                   <Check className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
+                  <h3 className={`text-sm font-bold ${isDarkMode ? 'text-white' : 'text-slate-900'}`}>
                     Central VTM Wallet & Separate Account Segregation
-                  </h4>
+                  </h3>
                   <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-neutral-400' : 'text-slate-600'}`}>
                     Keep your core funds in your central wallet, and open tailored Live or Demo accounts whenever you're ready.
                   </p>
@@ -1328,6 +1311,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           </button>
         </div>
       </section>
+      </main>
 
       {/* 9. REGULATORY & RISK WARNING FOOTER */}
       <footer

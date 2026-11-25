@@ -2,6 +2,54 @@
 
 @custom-variant dark (&:is(.dark, .dark *));
 
+:root {
+  --vtm-accent: #E51937;
+  --vtm-accent-hover: #C0102A;
+  --vtm-bg-light: #F4F6F9;
+  --vtm-bg-dark: #0B0C0E;
+  --vtm-surface-light: #FFFFFF;
+  --vtm-surface-dark: #12151C;
+  --vtm-border-light: #E2E8F0;
+  --vtm-border-dark: #262626;
+  --vtm-text-light: #0F172A;
+  --vtm-text-dark: #F5F5F5;
+  --vtm-radius-card: 1rem;
+  --vtm-radius-btn: 0.75rem;
+}
+
+@layer components {
+  .vtm-glass-header {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom-width: 1px;
+  }
+
+  .vtm-surface-card {
+    border-radius: var(--vtm-radius-card);
+    border-width: 1px;
+    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .vtm-stat-tile {
+    border-radius: var(--vtm-radius-card);
+    border-width: 1px;
+    padding: 1.25rem;
+    text-align: center;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+  }
+
+  .vtm-btn-primary {
+    background-color: var(--vtm-accent);
+    color: #FFFFFF;
+    border-radius: var(--vtm-radius-btn);
+    font-weight: 900;
+    transition: background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .vtm-btn-primary:hover {
+    background-color: var(--vtm-accent-hover);
+  }
+}
+
 @layer base {
   *, ::before, ::after {
     font-variant-numeric: normal tabular-nums !important;

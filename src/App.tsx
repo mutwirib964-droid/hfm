@@ -340,6 +340,22 @@ export default function App() {
 
     if (!currentUser) return;
 
+    const handleSessionExpired = () => {
+      localStorage.removeItem('vtm_auth_user');
+      supabaseService.clearSessionToken();
+      currentUserRef.current = null;
+      setCurrentUser(null);
+    };
+    window.addEventListener('vtm_session_expired', handleSessionExpired);
+
+    // Pre-gateway cached sessions without an HMAC session token must re-sign in once cleanly
+    if (!currentUser.id?.startsWith('demo-') && !supabaseService.getSessionToken()) {
+      handleSessionExpired();
+      return () => {
+        window.removeEventListener('vtm_session_expired', handleSessionExpired);
+      };
+    }
+
     // Master Admin does not use the market terminal; sync their confirmed UID to Supabase
     if (isMasterAdminEmail(currentUser.email)) {
       if (supabaseService.isConfigured()) {
@@ -349,15 +365,18 @@ export default function App() {
           role: 'admin',
         });
       }
-      return;
+      return () => {
+        window.removeEventListener('vtm_session_expired', handleSessionExpired);
+      };
     }
 
     // Strict UID check for non-admin users
     if (!isValidUserUid(currentUser.id)) {
       console.warn('[Security] Non-admin user has no valid UID. Signing out immediately.');
-      localStorage.removeItem('vtm_auth_user');
-      setCurrentUser(null);
-      return;
+      handleSessionExpired();
+      return () => {
+        window.removeEventListener('vtm_session_expired', handleSessionExpired);
+      };
     }
 
     const applyRoleUpdateToUser = (nextRole: UserRole) => {
@@ -449,6 +468,13 @@ export default function App() {
         if (!prevUser) return null;
         const nextAcc = remote.profile.accountNumber || prevUser.accountNumber;
         const nextRefBy = remote.profile.referredByCode || prevUser.referredByCode;
+        const prevPhone = String(prevUser.phoneNumber || prevUser.phone || '').trim();
+        const prevDigits = prevPhone.replace(/\D/g, '');
+        const hasRealPrevPhone =
+          prevDigits.length >= 6 &&
+          prevDigits !== '254700000000' &&
+          prevDigits !== '0700000000' &&
+          prevDigits !== '700000000';
         const remotePhone = String(remote.profile.phoneNumber || remote.profile.phone || '').trim();
         const remoteDigits = remotePhone.replace(/\D/g, '');
         const hasRealRemotePhone =
@@ -456,13 +482,13 @@ export default function App() {
           remoteDigits !== '254700000000' &&
           remoteDigits !== '0700000000' &&
           remoteDigits !== '700000000';
-        const nextPhone = hasRealRemotePhone ? remotePhone : prevUser.phoneNumber || prevUser.phone;
+        const nextPhone = hasRealPrevPhone ? prevPhone : hasRealRemotePhone ? remotePhone : prevPhone;
         if (
           prevUser.role !== remoteRole ||
           String(prevUser.id) !== String(remote.profile.id) ||
           prevUser.accountNumber !== nextAcc ||
           prevUser.referredByCode !== nextRefBy ||
-          (hasRealRemotePhone && prevUser.phoneNumber !== nextPhone)
+          (!hasRealPrevPhone && hasRealRemotePhone && prevUser.phoneNumber !== nextPhone)
         ) {
           const updated = {
             ...prevUser,
@@ -1326,6 +1352,7 @@ export default function App() {
     return () => {
       clearInterval(watermarkInterval);
       clearInterval(pollInterval);
+      window.removeEventListener('vtm_session_expired', handleSessionExpired);
       window.removeEventListener('storage', handleStorageEvent);
       window.removeEventListener('vtm_role_changed', handleRoleChangedEvent);
       window.removeEventListener('focus', handleFocusOrVisible);
@@ -1967,6 +1994,7 @@ export default function App() {
     currentUserRef.current = null;
     setCurrentUser(null);
     localStorage.removeItem('vtm_auth_user');
+    supabaseService.clearSessionToken();
     triggerActionPopup({
       type: 'LOGOUT_SUCCESS',
       title: 'Signed Out',

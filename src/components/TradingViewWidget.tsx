@@ -191,7 +191,7 @@ export const TradingViewWidget: React.FC<TradingViewWidgetProps> = ({
     const initWidget = () => {
       if (!isMounted || !tvWidgetContainerRef.current || !window.TradingView) return;
 
-      tvWidgetContainerRef.current.innerHTML = '';
+      tvWidgetContainerRef.current.replaceChildren();
       const chartDiv = document.createElement('div');
       const uniqueId = `tv_chart_${symbol.replace(/[^A-Za-z0-9]/g, '')}_${Math.random().toString(36).substring(2, 7)}`;
       chartDiv.id = uniqueId;

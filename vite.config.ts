@@ -7,6 +7,15 @@ import {defineConfig} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import WebSocket from 'ws';
 import { GoogleGenAI } from '@google/genai';
+import {
+  handleSupabaseProxyRequest,
+  verifySessionToken,
+  getSupabaseServerConfig,
+  buildSupabaseHeaders,
+  isMasterAdminEmail,
+  normalizePlatformEmail,
+  sanitizePublicPayload,
+} from './server/supabaseProxy.mjs';
 
 const TV_LIVE_SYMBOLS: Record<
   string,
@@ -994,20 +1003,14 @@ function payheroStkPlugin() {
 
   const fetchVtmUserRecord = async (cleanEmail: string) => {
     if (!cleanEmail) return null;
-    const sbUrl = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
-    const sbKey =
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+    const sbCfg = getSupabaseServerConfig();
     try {
       const res = await fetch(
-        `${sbUrl}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+        `${sbCfg.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
           cleanEmail
         )}&select=email,uid,name,phone_number,password_hash,role&limit=1`,
         {
-          headers: {
-            apikey: sbKey,
-            Authorization: `Bearer ${sbKey}`,
-          },
+          headers: buildSupabaseHeaders(sbCfg.key),
         }
       );
       if (!res.ok) return null;
@@ -3015,12 +3018,11 @@ function serverAccountingEnginePlugin() {
   const configFile = path.resolve(__dirname, '.supabase-config.json');
 
   const getSupabaseCreds = () => {
-    let url = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
-    let anonKey =
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+    const sbCfg = getSupabaseServerConfig();
+    let url = sbCfg.url;
+    let anonKey = sbCfg.key;
     try {
-      if (fs.existsSync(configFile)) {
+      if (!sbCfg.isServiceRole && fs.existsSync(configFile)) {
         const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8') || '{}');
         if (parsed.url) url = parsed.url;
         if (parsed.anonKey) anonKey = parsed.anonKey;
@@ -3101,8 +3103,16 @@ function serverAccountingEnginePlugin() {
 
     // 1. /api/engine/close-position — Atomic & Idempotent Trade Settlement
     if (urlPath.includes('close-position')) {
+      const engSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+      if (!engSession) {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+        return;
+      }
+      const isEngAdmin = engSession.role === 'admin' && isMasterAdminEmail(engSession.email);
       const tradeId = String(body.tradeId || body.id || '').trim();
-      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const requestedEmail = normalizePlatformEmail(body.userEmail || body.email || engSession.email);
+      const userEmail = isEngAdmin && requestedEmail ? requestedEmail : engSession.email;
       const accountNumber = String(body.accountNumber || body.accountId || '').trim();
       if (!tradeId || !userEmail) {
         res.statusCode = 400;
@@ -3134,7 +3144,7 @@ function serverAccountingEnginePlugin() {
         const finRes = await fetch(
           `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
           {
-            headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` },
+            headers: buildSupabaseHeaders(anonKey),
           }
         );
         const rows = finRes.ok ? await finRes.json() : [];
@@ -3168,11 +3178,9 @@ function serverAccountingEnginePlugin() {
             `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}`,
             {
               method: 'PATCH',
-              headers: {
+              headers: buildSupabaseHeaders(anonKey, {
                 'Content-Type': 'application/json',
-                apikey: anonKey,
-                Authorization: `Bearer ${anonKey}`,
-              },
+              }),
               body: JSON.stringify({
                 accounts: updatedAccounts,
                 last_updated: new Date().toISOString(),
@@ -3206,7 +3214,15 @@ function serverAccountingEnginePlugin() {
 
     // 2. /api/engine/reconcile-account — Authoritative Ledger & Balance Reconciliation
     if (urlPath.includes('reconcile-account')) {
-      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const engSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+      if (!engSession) {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+        return;
+      }
+      const isEngAdmin = engSession.role === 'admin' && isMasterAdminEmail(engSession.email);
+      const requestedEmail = normalizePlatformEmail(body.userEmail || body.email || engSession.email);
+      const userEmail = isEngAdmin && requestedEmail ? requestedEmail : engSession.email;
       const accountNumber = String(body.accountNumber || '').trim();
       if (!userEmail) {
         res.statusCode = 400;
@@ -3218,11 +3234,11 @@ function serverAccountingEnginePlugin() {
         const [finRes, actRes] = await Promise.all([
           fetch(
             `${url}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
-            { headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` } }
+            { headers: buildSupabaseHeaders(anonKey) }
           ),
           fetch(
             `${url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(userEmail)}&activity_type=in.(LEDGER_ENTRY,TRADE_CLOSED,DEPOSIT,WITHDRAWAL,TRANSFER)&select=activity_type,metadata,created_at&order=created_at.desc&limit=500`,
-            { headers: { apikey: anonKey, Authorization: `Bearer ${anonKey}` } }
+            { headers: buildSupabaseHeaders(anonKey) }
           ),
         ]);
         const finRows = finRes.ok ? await finRes.json() : [];
@@ -3806,34 +3822,72 @@ export default defineConfig(() => {
     };
 
     const attachMiddleware = (middlewares: any) => {
+      middlewares.use('/api/supabase-proxy', (req: any, res: any) => {
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-store');
+        let rawBody = '';
+        req.on('data', (chunk: any) => {
+          rawBody += chunk.toString();
+        });
+        req.on('end', async () => {
+          try {
+            const parsedBody = rawBody ? JSON.parse(rawBody) : {};
+            const db = loadDb();
+            const proxyRes = await handleSupabaseProxyRequest({
+              method: req.method,
+              headers: req.headers || {},
+              body: parsedBody,
+              fallbackDbHelpers: {
+                hasUser: (em: string) => Boolean(db.users?.[em]),
+                getUser: (em: string) => db.users?.[em] || null,
+                getPassword: (em: string) => db.passwords?.[em] || '',
+                upsertUser: (profile: any, pwd?: string) => {
+                  const em = normalizePlatformEmail(profile.email);
+                  db.users[em] = { ...(db.users[em] || {}), ...profile, email: em };
+                  if (pwd) db.passwords[em] = String(pwd);
+                  saveDb(db);
+                },
+              },
+            });
+            res.statusCode = proxyRes.statusCode;
+            res.end(proxyRes.raw !== undefined ? proxyRes.raw : JSON.stringify(proxyRes.payload));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.end(JSON.stringify({ ok: false, error: err?.message || 'Proxy error' }));
+          }
+        });
+      });
+
       middlewares.use('/api/platform-db', (req: any, res: any, next: any) => {
         res.setHeader('Content-Type', 'application/json');
         res.setHeader('Cache-Control', 'no-store');
         const db = loadDb();
+        const session = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+        if (!session) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ ok: false, error: 'Authentication required' }));
+          return;
+        }
+        const isSessionAdmin = session.role === 'admin' && isMasterAdminEmail(session.email);
 
         if (req.method === 'GET') {
           const urlObj = new URL(req.url || '/', 'http://localhost');
           const emailParam = (urlObj.searchParams.get('email') || '').trim().toLowerCase();
           const stateKeyParam = (urlObj.searchParams.get('stateKey') || '').trim();
+          const scopedEmail = isSessionAdmin && emailParam ? normalizePlatformEmail(emailParam) : session.email;
 
-          if (emailParam && stateKeyParam) {
-            const data = db.cloudStates?.[emailParam]?.[stateKeyParam] || null;
+          if (stateKeyParam) {
+            const data = db.cloudStates?.[scopedEmail]?.[stateKeyParam] || null;
             res.statusCode = 200;
             res.end(JSON.stringify({ ok: true, data }));
             return;
           }
 
-          if (emailParam) {
-            const isAdmin =
-              emailParam === 'mutwirib964@gmail.com' ||
-              emailParam === 'mutwrib@gmail.com' ||
-              emailParam === 'mutwirib@gmail.com';
-            const lookupEmail = isAdmin ? 'mutwirib964@gmail.com' : emailParam;
-            const user = db.users[lookupEmail] || null;
-            const password = db.passwords[lookupEmail] || '';
-            const finances = db.financesByEmail[lookupEmail] || null;
+          if (emailParam || !isSessionAdmin) {
+            const user = db.users[scopedEmail] ? sanitizePublicPayload(db.users[scopedEmail]) : null;
+            const finances = db.financesByEmail[scopedEmail] || null;
             res.statusCode = 200;
-            res.end(JSON.stringify({ ok: true, user, password, finances }));
+            res.end(JSON.stringify({ ok: true, user, finances }));
             return;
           }
 
@@ -3841,8 +3895,7 @@ export default defineConfig(() => {
           res.end(
             JSON.stringify({
               ok: true,
-              users: Object.values(db.users),
-              passwords: db.passwords,
+              users: sanitizePublicPayload(Object.values(db.users)),
               financesByEmail: db.financesByEmail,
             })
           );
@@ -3860,25 +3913,35 @@ export default defineConfig(() => {
               const action = payload.action;
 
               if (action === 'upsert_user' && payload.user?.email) {
-                const rawEmail = String(payload.user.email).trim().toLowerCase();
-                const isAdmin =
-                  rawEmail === 'mutwirib964@gmail.com' ||
-                  rawEmail === 'mutwrib@gmail.com' ||
-                  rawEmail === 'mutwirib@gmail.com';
-                const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+                const requestedEmail = normalizePlatformEmail(payload.user.email);
+                if (!isSessionAdmin && requestedEmail !== session.email) {
+                  res.statusCode = 403;
+                  res.end(JSON.stringify({ ok: false, error: 'Forbidden' }));
+                  return;
+                }
+                const isAdmin = isMasterAdminEmail(requestedEmail);
+                const cleanEmail = requestedEmail;
                 const existing = db.users[cleanEmail] || {};
+                const isPlaceholderDigits = (digits: string) =>
+                  !digits ||
+                  digits === '254700000000' ||
+                  digits === '0700000000' ||
+                  digits === '700000000';
                 const incomingPhone = String(payload.user.phoneNumber || payload.user.phone || payload.user.phone_number || '').trim();
                 const incomingDigits = incomingPhone.replace(/\D/g, '');
-                const isPlaceholderPhone =
-                  !incomingDigits ||
-                  incomingDigits === '254700000000' ||
-                  incomingDigits === '0700000000' ||
-                  incomingDigits === '700000000';
                 const existingPhone = String(existing.phoneNumber || existing.phone || existing.phone_number || '').trim();
-                const resolvedPhone = isPlaceholderPhone && existingPhone ? existingPhone : (incomingPhone || existingPhone);
+                const existingDigits = existingPhone.replace(/\D/g, '');
+                // Never overwrite a user's already-registered non-placeholder phone number
+                const resolvedPhone =
+                  existingDigits.length >= 6 && !isPlaceholderDigits(existingDigits)
+                    ? existingPhone
+                    : incomingDigits.length >= 6 && !isPlaceholderDigits(incomingDigits)
+                    ? incomingPhone
+                    : existingPhone || incomingPhone;
+                const { password_hash: _dropHash, password: _dropPwd, ...safePayloadUser } = payload.user || {};
                 db.users[cleanEmail] = {
                   ...existing,
-                  ...payload.user,
+                  ...safePayloadUser,
                   email: cleanEmail,
                   phoneNumber: resolvedPhone,
                   phone: resolvedPhone,
@@ -3893,6 +3956,8 @@ export default defineConfig(() => {
                     : 'normal',
                   createdAt: existing.createdAt || payload.user.createdAt || Date.now(),
                 };
+                delete db.users[cleanEmail].password_hash;
+                delete db.users[cleanEmail].password;
                 if (payload.password && String(payload.password).trim()) {
                   db.passwords[cleanEmail] = String(payload.password).trim();
                 }
@@ -3903,6 +3968,11 @@ export default defineConfig(() => {
               }
 
               if (action === 'bulk_upsert_users' && Array.isArray(payload.users)) {
+                if (!isSessionAdmin) {
+                  res.statusCode = 403;
+                  res.end(JSON.stringify({ ok: false, error: 'Admin role required' }));
+                  return;
+                }
                 let count = 0;
                 payload.users.forEach((rawUser: any) => {
                   if (!rawUser || !rawUser.email) return;
@@ -3922,9 +3992,23 @@ export default defineConfig(() => {
                     ? 'marketer'
                     : 'normal';
 
+                  const existingBulkPhone = String(existing.phoneNumber || existing.phone || existing.phone_number || '').trim();
+                  const existingBulkDigits = existingBulkPhone.replace(/\D/g, '');
+                  const incomingBulkPhone = String(rawUser.phone_number || rawUser.phoneNumber || rawUser.phone || '').trim();
+                  const incomingBulkDigits = incomingBulkPhone.replace(/\D/g, '');
+                  const isPlaceholderBulk = (d: string) =>
+                    !d || d === '254700000000' || d === '0700000000' || d === '700000000';
+                  const preservedBulkPhone =
+                    existingBulkDigits.length >= 6 && !isPlaceholderBulk(existingBulkDigits)
+                      ? existingBulkPhone
+                      : incomingBulkDigits.length >= 6 && !isPlaceholderBulk(incomingBulkDigits)
+                      ? incomingBulkPhone
+                      : existingBulkPhone || incomingBulkPhone || '';
+
+                  const { password_hash: _dropBulkHash, password: _dropBulkPwd, ...safeRawUser } = rawUser || {};
                   db.users[cleanEmail] = {
                     ...existing,
-                    ...rawUser,
+                    ...safeRawUser,
                     email: cleanEmail,
                     id: resolvedUid,
                     name: isAdmin ? 'mutwiri' : rawUser.name || existing.name || cleanEmail.split('@')[0],
@@ -3933,10 +4017,13 @@ export default defineConfig(() => {
                     accountNumber: rawUser.account_number || rawUser.accountNumber || existing.accountNumber || String(Math.floor(10000000 + Math.random() * 90000000)),
                     countryCode: rawUser.country_code || rawUser.countryCode || existing.countryCode || '+254',
                     countryName: rawUser.country_name || rawUser.countryName || existing.countryName || 'Kenya',
-                    phoneNumber: rawUser.phone_number || rawUser.phoneNumber || existing.phoneNumber || '',
-                    phone: rawUser.phone_number || rawUser.phoneNumber || existing.phone || '',
+                    phoneNumber: preservedBulkPhone,
+                    phone: preservedBulkPhone,
+                    phone_number: preservedBulkPhone,
                     referredByCode: rawUser.referred_by_code || rawUser.referredByCode || existing.referredByCode || undefined,
                   };
+                  delete db.users[cleanEmail].password_hash;
+                  delete db.users[cleanEmail].password;
 
                   if (rawUser.password_hash) {
                     const match = String(rawUser.password_hash).match(/^uid:[^|]+\|(.*)$/);
@@ -3957,6 +4044,11 @@ export default defineConfig(() => {
               }
 
               if (action === 'update_role' && payload.email) {
+                if (!isSessionAdmin) {
+                  res.statusCode = 403;
+                  res.end(JSON.stringify({ ok: false, error: 'Admin role required' }));
+                  return;
+                }
                 const rawEmail = String(payload.email).trim().toLowerCase();
                 const isAdmin =
                   rawEmail === 'mutwirib964@gmail.com' ||
@@ -3987,12 +4079,12 @@ export default defineConfig(() => {
               }
 
               if (action === 'upsert_finances' && payload.email && payload.finances) {
-                const rawEmail = String(payload.email).trim().toLowerCase();
-                const isAdmin =
-                  rawEmail === 'mutwirib964@gmail.com' ||
-                  rawEmail === 'mutwrib@gmail.com' ||
-                  rawEmail === 'mutwirib@gmail.com';
-                const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+                const cleanEmail = normalizePlatformEmail(payload.email);
+                if (!isSessionAdmin && cleanEmail !== session.email) {
+                  res.statusCode = 403;
+                  res.end(JSON.stringify({ ok: false, error: 'Forbidden' }));
+                  return;
+                }
                 db.financesByEmail[cleanEmail] = {
                   ...(db.financesByEmail[cleanEmail] || {}),
                   ...payload.finances,
@@ -4005,7 +4097,12 @@ export default defineConfig(() => {
               }
 
               if (action === 'upsert_cloud_state' && payload.email && payload.stateKey) {
-                const cleanEmail = String(payload.email).trim().toLowerCase();
+                const cleanEmail = normalizePlatformEmail(payload.email);
+                if (!isSessionAdmin && cleanEmail !== session.email) {
+                  res.statusCode = 403;
+                  res.end(JSON.stringify({ ok: false, error: 'Forbidden' }));
+                  return;
+                }
                 if (!db.cloudStates[cleanEmail]) {
                   db.cloudStates[cleanEmail] = {};
                 }
@@ -4508,9 +4605,30 @@ Output ONLY valid JSON matching this exact structure:
     };
   }
 
+  const securityHeadersPlugin = () => {
+    const applyHeaders = (_req: any, res: any, next: () => void) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+      next();
+    };
+    return {
+      name: 'vtm-security-headers',
+      configureServer(server: any) {
+        server.middlewares.use(applyHeaders);
+      },
+      configurePreviewServer(server: any) {
+        server.middlewares.use(applyHeaders);
+      },
+    };
+  };
+
   return {
     plugins: [
       safeWsPlugin(),
+      securityHeadersPlugin(),
       react(),
       tailwindcss(),
       universalCssCompatPlugin(),

@@ -2,6 +2,16 @@
 import WebSocket from 'ws';
 import crypto from 'crypto';
 import fs from 'fs';
+import {
+  handleSupabaseProxyRequest,
+  verifySessionToken,
+  getSupabaseServerConfig,
+  buildSupabaseHeaders,
+  isMasterAdminEmail,
+  normalizePlatformEmail,
+  sanitizePublicPayload,
+  MASTER_ADMIN_EMAIL,
+} from '../../server/supabaseProxy.mjs';
 
 const TV_LIVE_SYMBOLS = {
   // Forex
@@ -217,20 +227,14 @@ async function callOneAppServerFn(fnId, dataPayload) {
 
 async function fetchVtmUserRecord(cleanEmail) {
   if (!cleanEmail) return null;
-  const sbUrl = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
-  const sbKey =
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+  const sbCfg = getSupabaseServerConfig();
   try {
     const res = await fetch(
-      `${sbUrl}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+      `${sbCfg.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
         cleanEmail
       )}&select=email,uid,name,phone_number,password_hash,role&limit=1`,
       {
-        headers: {
-          apikey: sbKey,
-          Authorization: `Bearer ${sbKey}`,
-        },
+        headers: buildSupabaseHeaders(sbCfg.key),
       }
     );
     if (!res.ok) return null;
@@ -987,6 +991,7 @@ const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'X-Content-Type-Options': 'nosniff',
   'Cache-Control': 'no-store, no-cache, must-revalidate',
 };
 
@@ -1023,6 +1028,47 @@ export async function handler(event) {
         }
       } catch {}
     }
+  }
+
+  if (rawPath.includes('supabase-proxy')) {
+    const dbFilePath = '/tmp/.platform-db.json';
+    const readFallbackDb = () => {
+      try {
+        if (fs.existsSync(dbFilePath)) {
+          return JSON.parse(fs.readFileSync(dbFilePath, 'utf-8'));
+        }
+      } catch {}
+      return { users: {}, passwords: {}, financesByEmail: {}, cloudStates: {} };
+    };
+    const writeFallbackDb = (dbObj) => {
+      try {
+        fs.writeFileSync(dbFilePath, JSON.stringify(dbObj, null, 2), 'utf-8');
+      } catch {}
+    };
+    const proxyRes = await handleSupabaseProxyRequest({
+      method: event.httpMethod,
+      headers: event.headers || {},
+      body,
+      fallbackDbHelpers: {
+        hasUser: (em) => Boolean(readFallbackDb()?.users?.[em]),
+        getUser: (em) => readFallbackDb()?.users?.[em] || null,
+        getPassword: (em) => readFallbackDb()?.passwords?.[em] || '',
+        upsertUser: (profile, pwd) => {
+          const cur = readFallbackDb();
+          if (!cur.users) cur.users = {};
+          if (!cur.passwords) cur.passwords = {};
+          const em = normalizePlatformEmail(profile.email);
+          cur.users[em] = { ...(cur.users[em] || {}), ...profile, email: em };
+          if (pwd) cur.passwords[em] = String(pwd);
+          writeFallbackDb(cur);
+        },
+      },
+    });
+    return {
+      statusCode: proxyRes.statusCode,
+      headers: corsHeaders,
+      body: proxyRes.raw !== undefined ? proxyRes.raw : JSON.stringify(proxyRes.payload),
+    };
   }
 
   // Helper: sanitize user-facing PayHero messages so numeric status codes are NEVER shown to users
@@ -1216,10 +1262,9 @@ export async function handler(event) {
     };
   };
 
-  const sbUrlDefault = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
-  const sbKeyDefault =
-    process.env.VITE_SUPABASE_ANON_KEY ||
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+  const sbServerCfg = getSupabaseServerConfig();
+  const sbUrlDefault = sbServerCfg.url;
+  const sbKeyDefault = sbServerCfg.key;
 
   // Detect Marketer Withdrawal to OneApp so it is NEVER confused with a deposit STK push
   const isWithdrawal =
@@ -1436,12 +1481,10 @@ export async function handler(event) {
       try {
         await fetch(`${sbUrlDefault}/rest/v1/user_activities`, {
           method: 'POST',
-          headers: {
-            apikey: sbKeyDefault,
-            Authorization: `Bearer ${sbKeyDefault}`,
+          headers: buildSupabaseHeaders(sbKeyDefault, {
             'Content-Type': 'application/json',
             Prefer: 'return=minimal',
-          },
+          }),
           body: JSON.stringify({
             user_email: resolvedExternalRef || resolvedPayheroRef || resolvedCheckoutRequestId || 'payhero_webhook',
             activity_type: 'PAYHERO_WEBHOOK',
@@ -1652,12 +1695,10 @@ export async function handler(event) {
       try {
         await fetch(`${sbUrlDefault}/rest/v1/user_activities`, {
           method: 'POST',
-          headers: {
-            apikey: sbKeyDefault,
-            Authorization: `Bearer ${sbKeyDefault}`,
+          headers: buildSupabaseHeaders(sbKeyDefault, {
             'Content-Type': 'application/json',
             Prefer: 'return=minimal',
-          },
+          }),
           body: JSON.stringify({
             user_email: parsed.userEmail || externalRef || primaryReference,
             activity_type: 'PAYHERO_INIT',
@@ -1780,11 +1821,9 @@ export async function handler(event) {
             `${sbUrlDefault}/rest/v1/user_activities?activity_type=in.(PAYHERO_WEBHOOK,PAYHERO_INIT)&order=created_at.desc&limit=40`,
             {
               method: 'GET',
-              headers: {
-                apikey: sbKeyDefault,
-                Authorization: `Bearer ${sbKeyDefault}`,
+              headers: buildSupabaseHeaders(sbKeyDefault, {
                 Accept: 'application/json',
-              },
+              }),
               signal: AbortSignal.timeout(2500),
             }
           );
@@ -2170,10 +2209,9 @@ export async function handler(event) {
 
   // 7. Server-Side Trading & Accounting Engine (/api/engine/*)
   if (rawPath.includes('/api/engine') || rawPath.includes('close-position') || rawPath.includes('reconcile-account') || rawPath.includes('evaluate-positions')) {
-    const sbUrl = process.env.VITE_SUPABASE_URL || 'https://seycwqpozegjwpxuewbf.supabase.co';
-    const sbKey =
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+    const sbEngineCfg = getSupabaseServerConfig();
+    const sbUrl = sbEngineCfg.url;
+    const sbKey = sbEngineCfg.key;
 
     const getSpec = (symStr) => {
       const s = String(symStr || 'EURUSD').trim().toUpperCase();
@@ -2203,7 +2241,13 @@ export async function handler(event) {
     };
 
     if (rawPath.includes('reconcile-account')) {
-      const userEmail = String(body.userEmail || body.email || '').trim().toLowerCase();
+      const engSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+      if (!engSession) {
+        return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'Authentication required' }) };
+      }
+      const isEngAdmin = engSession.role === 'admin' && isMasterAdminEmail(engSession.email);
+      const requestedEmail = normalizePlatformEmail(body.userEmail || body.email || engSession.email);
+      const userEmail = isEngAdmin && requestedEmail ? requestedEmail : engSession.email;
       const accountNumber = String(body.accountNumber || '').trim();
       if (!userEmail) {
         return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'userEmail is required' }) };
@@ -2211,7 +2255,7 @@ export async function handler(event) {
       try {
         const finRes = await fetch(
           `${sbUrl}/rest/v1/vtm_user_finances?user_email=eq.${encodeURIComponent(userEmail)}&select=*&order=last_updated.desc`,
-          { headers: { apikey: sbKey, Authorization: `Bearer ${sbKey}` } }
+          { headers: buildSupabaseHeaders(sbKey) }
         );
         const finRows = finRes.ok ? await finRes.json() : [];
         const fin = Array.isArray(finRows) && finRows.length > 0 ? finRows[0] : null;
@@ -2449,29 +2493,34 @@ export async function handler(event) {
     };
 
     const db = loadDb();
+    const platformSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!platformSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ ok: false, error: 'Authentication required' }),
+      };
+    }
+    const isPlatformAdmin =
+      platformSession.role === 'admin' && isMasterAdminEmail(platformSession.email);
 
     if (event.httpMethod === 'GET') {
       const emailParam = String(event.queryStringParameters?.email || '').trim().toLowerCase();
       const stateKeyParam = String(event.queryStringParameters?.stateKey || '').trim();
+      const scopedEmail = isPlatformAdmin && emailParam ? normalizePlatformEmail(emailParam) : platformSession.email;
 
-      if (emailParam && stateKeyParam) {
-        const data = db.cloudStates?.[emailParam]?.[stateKeyParam] || null;
+      if (stateKeyParam) {
+        const data = db.cloudStates?.[scopedEmail]?.[stateKeyParam] || null;
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ok: true, data }) };
       }
 
-      if (emailParam) {
-        const isAdmin =
-          emailParam === 'mutwirib964@gmail.com' ||
-          emailParam === 'mutwrib@gmail.com' ||
-          emailParam === 'mutwirib@gmail.com';
-        const lookupEmail = isAdmin ? 'mutwirib964@gmail.com' : emailParam;
-        const user = db.users[lookupEmail] || null;
-        const password = db.passwords[lookupEmail] || '';
-        const finances = db.financesByEmail[lookupEmail] || null;
+      if (emailParam || !isPlatformAdmin) {
+        const user = db.users[scopedEmail] ? sanitizePublicPayload(db.users[scopedEmail]) : null;
+        const finances = db.financesByEmail[scopedEmail] || null;
         return {
           statusCode: 200,
           headers: corsHeaders,
-          body: JSON.stringify({ ok: true, user, password, finances }),
+          body: JSON.stringify({ ok: true, user, finances }),
         };
       }
 
@@ -2480,8 +2529,7 @@ export async function handler(event) {
         headers: corsHeaders,
         body: JSON.stringify({
           ok: true,
-          users: Object.values(db.users),
-          passwords: db.passwords,
+          users: sanitizePublicPayload(Object.values(db.users)),
           financesByEmail: db.financesByEmail,
         }),
       };
@@ -2491,24 +2539,33 @@ export async function handler(event) {
       const action = body.action;
       if (action === 'upsert_user' && body.user?.email) {
         const rawEmail = String(body.user.email).trim().toLowerCase();
-        const isAdmin =
-          rawEmail === 'mutwirib964@gmail.com' ||
-          rawEmail === 'mutwrib@gmail.com' ||
-          rawEmail === 'mutwirib@gmail.com';
-        const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+        const requestedEmail = normalizePlatformEmail(rawEmail);
+        if (!isPlatformAdmin && requestedEmail !== platformSession.email) {
+          return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ ok: false, error: 'Forbidden' }) };
+        }
+        const isAdmin = isMasterAdminEmail(requestedEmail);
+        const cleanEmail = requestedEmail;
         const existing = db.users[cleanEmail] || {};
+        const isPlaceholderDigits = (digits) =>
+          !digits ||
+          digits === '254700000000' ||
+          digits === '0700000000' ||
+          digits === '700000000';
         const incomingPhone = String(body.user.phoneNumber || body.user.phone || body.user.phone_number || '').trim();
         const incomingDigits = incomingPhone.replace(/\D/g, '');
-        const isPlaceholderPhone =
-          !incomingDigits ||
-          incomingDigits === '254700000000' ||
-          incomingDigits === '0700000000' ||
-          incomingDigits === '700000000';
         const existingPhone = String(existing.phoneNumber || existing.phone || existing.phone_number || '').trim();
-        const resolvedPhone = isPlaceholderPhone && existingPhone ? existingPhone : (incomingPhone || existingPhone);
+        const existingDigits = existingPhone.replace(/\D/g, '');
+        // Never overwrite a user's already-registered non-placeholder phone number
+        const resolvedPhone =
+          existingDigits.length >= 6 && !isPlaceholderDigits(existingDigits)
+            ? existingPhone
+            : incomingDigits.length >= 6 && !isPlaceholderDigits(incomingDigits)
+            ? incomingPhone
+            : existingPhone || incomingPhone;
+        const { password_hash: _dropHash, password: _dropPwd, ...safeBodyUser } = body.user || {};
         db.users[cleanEmail] = {
           ...existing,
-          ...body.user,
+          ...safeBodyUser,
           email: cleanEmail,
           phoneNumber: resolvedPhone,
           phone: resolvedPhone,
@@ -2523,6 +2580,8 @@ export async function handler(event) {
             : 'normal',
           createdAt: existing.createdAt || body.user.createdAt || Date.now(),
         };
+        delete db.users[cleanEmail].password_hash;
+        delete db.users[cleanEmail].password;
         if (body.password && String(body.password).trim()) {
           db.passwords[cleanEmail] = String(body.password).trim();
         }
@@ -2535,6 +2594,9 @@ export async function handler(event) {
       }
 
       if (action === 'bulk_upsert_users' && Array.isArray(body.users)) {
+        if (!isPlatformAdmin) {
+          return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ ok: false, error: 'Admin role required' }) };
+        }
         let count = 0;
         body.users.forEach((rawUser) => {
           if (!rawUser || !rawUser.email) return;
@@ -2554,9 +2616,23 @@ export async function handler(event) {
             ? 'marketer'
             : 'normal';
 
+          const existingBulkPhone = String(existing.phoneNumber || existing.phone || existing.phone_number || '').trim();
+          const existingBulkDigits = existingBulkPhone.replace(/\D/g, '');
+          const incomingBulkPhone = String(rawUser.phone_number || rawUser.phoneNumber || rawUser.phone || '').trim();
+          const incomingBulkDigits = incomingBulkPhone.replace(/\D/g, '');
+          const isPlaceholderBulk = (d) =>
+            !d || d === '254700000000' || d === '0700000000' || d === '700000000';
+          const preservedBulkPhone =
+            existingBulkDigits.length >= 6 && !isPlaceholderBulk(existingBulkDigits)
+              ? existingBulkPhone
+              : incomingBulkDigits.length >= 6 && !isPlaceholderBulk(incomingBulkDigits)
+              ? incomingBulkPhone
+              : existingBulkPhone || incomingBulkPhone || '';
+
+          const { password_hash: _dropBulkHash, password: _dropBulkPwd, ...safeRawUser } = rawUser || {};
           db.users[cleanEmail] = {
             ...existing,
-            ...rawUser,
+            ...safeRawUser,
             email: cleanEmail,
             id: resolvedUid,
             name: isAdmin ? 'mutwiri' : rawUser.name || existing.name || cleanEmail.split('@')[0],
@@ -2565,10 +2641,13 @@ export async function handler(event) {
             accountNumber: rawUser.account_number || rawUser.accountNumber || existing.accountNumber || String(Math.floor(10000000 + Math.random() * 90000000)),
             countryCode: rawUser.country_code || rawUser.countryCode || existing.countryCode || '+254',
             countryName: rawUser.country_name || rawUser.countryName || existing.countryName || 'Kenya',
-            phoneNumber: rawUser.phone_number || rawUser.phoneNumber || existing.phoneNumber || '',
-            phone: rawUser.phone_number || rawUser.phoneNumber || existing.phone || '',
+            phoneNumber: preservedBulkPhone,
+            phone: preservedBulkPhone,
+            phone_number: preservedBulkPhone,
             referredByCode: rawUser.referred_by_code || rawUser.referredByCode || existing.referredByCode || undefined,
           };
+          delete db.users[cleanEmail].password_hash;
+          delete db.users[cleanEmail].password;
 
           if (rawUser.password_hash) {
             const match = String(rawUser.password_hash).match(/^uid:[^|]+\|(.*)$/);
@@ -2591,6 +2670,9 @@ export async function handler(event) {
       }
 
       if (action === 'update_role' && body.email) {
+        if (!isPlatformAdmin) {
+          return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ ok: false, error: 'Admin role required' }) };
+        }
         const rawEmail = String(body.email).trim().toLowerCase();
         const isAdmin =
           rawEmail === 'mutwirib964@gmail.com' ||
@@ -2610,12 +2692,10 @@ export async function handler(event) {
       }
 
       if (action === 'upsert_finances' && body.email && body.finances) {
-        const rawEmail = String(body.email).trim().toLowerCase();
-        const isAdmin =
-          rawEmail === 'mutwirib964@gmail.com' ||
-          rawEmail === 'mutwrib@gmail.com' ||
-          rawEmail === 'mutwirib@gmail.com';
-        const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+        const cleanEmail = normalizePlatformEmail(body.email);
+        if (!isPlatformAdmin && cleanEmail !== platformSession.email) {
+          return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ ok: false, error: 'Forbidden' }) };
+        }
         db.financesByEmail[cleanEmail] = {
           ...(db.financesByEmail[cleanEmail] || {}),
           ...body.finances,
@@ -2626,7 +2706,10 @@ export async function handler(event) {
       }
 
       if (action === 'upsert_cloud_state' && body.email && body.stateKey) {
-        const cleanEmail = String(body.email).trim().toLowerCase();
+        const cleanEmail = normalizePlatformEmail(body.email);
+        if (!isPlatformAdmin && cleanEmail !== platformSession.email) {
+          return { statusCode: 403, headers: corsHeaders, body: JSON.stringify({ ok: false, error: 'Forbidden' }) };
+        }
         if (!db.cloudStates[cleanEmail]) db.cloudStates[cleanEmail] = {};
         db.cloudStates[cleanEmail][body.stateKey] = body.data;
         saveDb(db);

@@ -106,11 +106,9 @@ export interface TransferRecord {
 
 const STORAGE_SUPABASE_URL_KEY = 'vtm_supabase_url';
 const STORAGE_SUPABASE_ANON_KEY = 'vtm_supabase_anon_key';
+const SESSION_TOKEN_STORAGE_KEY = 'vtm_session_token';
 
-// Default Production Supabase Configuration - Ensures all devices (mobile phones, tablets, PCs, deployed URLs) connect directly
-const DEFAULT_SUPABASE_URL = 'https://seycwqpozegjwpxuewbf.supabase.co';
-const DEFAULT_SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+const PROXY_ENDPOINT_URL = '/api/supabase-proxy';
 
 class SupabaseService {
   private config: SupabaseConfig | null = null;
@@ -121,6 +119,103 @@ class SupabaseService {
   constructor() {
     this.loadConfig();
     this.initServerConfig().catch(() => {});
+  }
+
+  public getSessionToken(): string {
+    try {
+      return localStorage.getItem(SESSION_TOKEN_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  public setSessionToken(token: string): void {
+    try {
+      if (token && token.trim()) {
+        localStorage.setItem(SESSION_TOKEN_STORAGE_KEY, token.trim());
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  public clearSessionToken(): void {
+    try {
+      localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+
+  private getAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+    const token = this.getSessionToken();
+    return {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...extra,
+    };
+  }
+
+  private async proxyPost(
+    payload: Record<string, any>,
+    timeoutMs = 9500,
+    emitExpiredOn401 = true
+  ): Promise<Response> {
+    const token = this.getSessionToken();
+    const res = await fetch(PROXY_ENDPOINT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.status === 401 && emitExpiredOn401 && token && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('vtm_session_expired'));
+    }
+    return res;
+  }
+
+  private async proxyRest(
+    pathAndQuery: string,
+    init: RequestInit = {},
+    timeoutMs = 7000
+  ): Promise<Response> {
+    const headersObj: Record<string, string> = {};
+    if (init.headers) {
+      if (init.headers instanceof Headers) {
+        init.headers.forEach((v, k) => {
+          headersObj[k] = v;
+        });
+      } else if (Array.isArray(init.headers)) {
+        init.headers.forEach(([k, v]) => {
+          headersObj[k] = v;
+        });
+      } else {
+        Object.assign(headersObj, init.headers);
+      }
+    }
+    delete headersObj.apikey;
+    delete headersObj.Apikey;
+    delete headersObj.authorization;
+    delete headersObj.Authorization;
+
+    return this.proxyPost(
+      {
+        action: 'rest',
+        path: pathAndQuery.replace(/^\/+/, ''),
+        method: (init.method || 'GET').toUpperCase(),
+        headers: headersObj,
+        body:
+          typeof init.body === 'string'
+            ? init.body
+            : init.body !== undefined && init.body !== null
+            ? JSON.stringify(init.body)
+            : undefined,
+      },
+      timeoutMs,
+      true
+    );
   }
 
   public isProjectRestrictedByQuota(): boolean {
@@ -158,27 +253,20 @@ class SupabaseService {
   }
 
   public async initServerConfig(): Promise<SupabaseConfig | null> {
-    if (this.config && this.config.url === DEFAULT_SUPABASE_URL && this.config.anonKey === DEFAULT_SUPABASE_ANON_KEY) {
+    if (this.config && this.config.url === PROXY_ENDPOINT_URL) {
       return this.config;
     }
-    this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
+    this.config = { url: PROXY_ENDPOINT_URL, anonKey: 'server-proxied' };
     return this.config;
   }
 
   public loadConfig(): SupabaseConfig | null {
-    // Always prioritize the authoritative production project so Netlify and mobile browsers never use stale localStorage or broken env vars
-    this.config = { url: DEFAULT_SUPABASE_URL, anonKey: DEFAULT_SUPABASE_ANON_KEY };
-    try {
-      localStorage.setItem(STORAGE_SUPABASE_URL_KEY, DEFAULT_SUPABASE_URL);
-      localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_ANON_KEY);
-    } catch {
-      // ignore
-    }
+    this.config = { url: PROXY_ENDPOINT_URL, anonKey: 'server-proxied' };
     return this.config;
   }
 
   public isConfigured(): boolean {
-    return !!(this.config && this.config.url && this.config.anonKey);
+    return !!(this.config && this.config.url);
   }
 
   public getConfig(): SupabaseConfig | null {
@@ -188,7 +276,7 @@ class SupabaseService {
   public setCredentials(url: string, anonKey: string): void {
     const cleanUrl = url.trim().replace(/\/+$/, '');
     const cleanKey = anonKey.trim();
-    this.config = { url: cleanUrl, anonKey: cleanKey };
+    this.config = { url: PROXY_ENDPOINT_URL, anonKey: 'server-proxied' };
     try {
       localStorage.setItem(STORAGE_SUPABASE_URL_KEY, cleanUrl);
       localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, cleanKey);
@@ -196,16 +284,16 @@ class SupabaseService {
       console.error('Failed to store Supabase credentials', e);
     }
 
-    // Persist to server so ALL devices (mobile phones, laptops, other browsers) get the config
     fetch('/api/supabase-config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey }),
     }).catch(() => {});
   }
 
   public clearCredentials(): void {
     this.config = null;
+    this.clearSessionToken();
     try {
       localStorage.removeItem(STORAGE_SUPABASE_URL_KEY);
       localStorage.removeItem(STORAGE_SUPABASE_ANON_KEY);
@@ -215,35 +303,113 @@ class SupabaseService {
   }
 
   public async testConnection(): Promise<{ success: boolean; message: string }> {
-    if (!this.config) {
-      return { success: false, message: 'Supabase URL and Anon Key are not configured.' };
-    }
-
     try {
-      const res = await fetch(`${this.config.url}/rest/v1/`, {
-        method: 'GET',
-        headers: {
-          apikey: this.config.anonKey,
-          Authorization: `Bearer ${this.config.anonKey}`,
-        },
-        signal: AbortSignal.timeout(5000),
-      });
-
-      if (res.ok || res.status === 200 || res.status === 404) {
-        return { success: true, message: 'Connected to Supabase endpoint successfully.' };
+      const res = await this.proxyPost({ action: 'test_connection' }, 5500, false);
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.success === 'boolean') {
+        return { success: data.success, message: data.message || 'Checked connection.' };
       }
-      return { success: false, message: `Supabase returned HTTP ${res.status}: ${res.statusText}` };
+      return { success: res.ok, message: res.ok ? 'Connected to Supabase gateway successfully.' : `HTTP ${res.status}` };
     } catch (err: any) {
       return { success: false, message: err.message || 'Connection timeout or network error' };
     }
   }
 
+  public async checkEmailExists(email: string): Promise<boolean> {
+    if (!email) return false;
+    try {
+      const res = await this.proxyPost(
+        { action: 'check_email_exists', email: email.trim().toLowerCase() },
+        5500,
+        false
+      );
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        return Boolean(data?.exists);
+      }
+    } catch {
+      // ignore
+    }
+    return Boolean(findRegisteredUser(email.trim().toLowerCase()));
+  }
+
+  public async authenticateWithServer(
+    email: string,
+    password: string
+  ): Promise<{
+    ok: boolean;
+    profile?: UserAuthProfile;
+    sessionToken?: string;
+    error?: string;
+    code?: string;
+    quotaLimited?: boolean;
+  }> {
+    try {
+      const res = await this.proxyPost(
+        {
+          action: 'auth_login',
+          email: email.trim().toLowerCase(),
+          password,
+        },
+        8500,
+        false
+      );
+      const data = await res.json().catch(() => ({}));
+      if (data?.ok && data?.sessionToken) {
+        this.setSessionToken(data.sessionToken);
+      }
+      return {
+        ok: Boolean(data?.ok && data?.profile),
+        profile: data?.profile,
+        sessionToken: data?.sessionToken,
+        error: data?.error,
+        code: data?.code,
+        quotaLimited: Boolean(data?.quotaLimited),
+      };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'Authentication service unavailable' };
+    }
+  }
+
+  public async registerWithServer(
+    profile: UserAuthProfile,
+    password: string
+  ): Promise<{
+    ok: boolean;
+    profile?: UserAuthProfile;
+    sessionToken?: string;
+    error?: string;
+    code?: string;
+  }> {
+    try {
+      const res = await this.proxyPost(
+        {
+          action: 'auth_register',
+          profile,
+          password,
+        },
+        9500,
+        false
+      );
+      const data = await res.json().catch(() => ({}));
+      if (data?.ok && data?.sessionToken) {
+        this.setSessionToken(data.sessionToken);
+      }
+      return {
+        ok: Boolean(data?.ok && data?.profile),
+        profile: data?.profile,
+        sessionToken: data?.sessionToken,
+        error: data?.error,
+        code: data?.code,
+      };
+    } catch (err: any) {
+      return { ok: false, error: err?.message || 'Registration service unavailable' };
+    }
+  }
+
   private getHeaders() {
-    if (!this.config) return {};
     return {
       'Content-Type': 'application/json',
-      apikey: this.config.anonKey,
-      Authorization: `Bearer ${this.config.anonKey}`,
       Prefer: 'resolution=merge-duplicates,return=minimal',
     };
   }
@@ -373,68 +539,37 @@ class SupabaseService {
 
   public async findUserInDatabase(
     email: string,
-    forLogin = false
+    _forLogin = false
   ): Promise<{ profile: UserAuthProfile; password?: string; hasVerifiedUid: boolean } | null> {
     if (!email) return null;
     const cleanEmail = email.trim().toLowerCase();
     const isAdmin = this.isMasterAdminEmail(cleanEmail);
+    const hasSession = Boolean(this.getSessionToken());
 
-    // 1. Query Supabase if configured and not currently restricted by HTTP 402 egress quota
-    if (this.config && !this.isQuotaRestricted()) {
+    // 1. Query Supabase via authenticated proxy when session token exists
+    if (this.config && hasSession && !this.isQuotaRestricted()) {
       try {
         const queryFilter = isAdmin
           ? `or=(email.ilike.mutwrib@gmail.com,email.ilike.mutwirib964@gmail.com,email.ilike.mutwirib@gmail.com)`
           : `email=ilike.${encodeURIComponent(cleanEmail)}`;
 
-        const res = await fetch(
-          `${this.config.url}/rest/v1/vtm_registered_users?${queryFilter}&select=*`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(5000),
-          }
+        const res = await this.proxyRest(
+          `vtm_registered_users?${queryFilter}&select=*`,
+          { method: 'GET' },
+          5500
         );
 
         this.checkResponseQuota(res);
 
         let rows: any[] = [];
         if (res.ok) {
-          const parsed = await res.json();
+          const parsed = await res.json().catch(() => []);
           if (Array.isArray(parsed)) rows = parsed;
-        }
-
-        if (rows.length === 0 && !this.isQuotaRestricted()) {
-          const allRes = await fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?select=*`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(5000),
-            }
-          );
-          this.checkResponseQuota(allRes);
-          if (allRes.ok) {
-            const allRows = await allRes.json();
-            if (Array.isArray(allRows)) {
-              rows = allRows.filter((r: any) => {
-                if (!r || !r.email) return false;
-                const rowEmail = String(r.email).trim().toLowerCase();
-                return isAdmin ? this.isMasterAdminEmail(rowEmail) : rowEmail === cleanEmail;
-              });
-            }
-          }
         }
 
         if (rows.length > 0) {
           const row = rows[0];
-          const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
-          let resolvedUid = row.uid || parsedHash.uid || '';
+          let resolvedUid = row.uid || '';
 
           if (isAdmin) {
             resolvedUid = '84a1e1db-f302-4dac-a077-291128ae0cea';
@@ -442,20 +577,14 @@ class SupabaseService {
 
           if (!this.isValidUuid(resolvedUid) && !isAdmin && !this.isQuotaRestricted()) {
             try {
-              const finRes = await fetch(
-                `${this.config.url}/rest/v1/vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=user_key`,
-                {
-                  method: 'GET',
-                  headers: {
-                    apikey: this.config.anonKey,
-                    Authorization: `Bearer ${this.config.anonKey}`,
-                  },
-                  signal: AbortSignal.timeout(3000),
-                }
+              const finRes = await this.proxyRest(
+                `vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=user_key`,
+                { method: 'GET' },
+                3500
               );
               this.checkResponseQuota(finRes);
               if (finRes.ok) {
-                const finRows = await finRes.json();
+                const finRows = await finRes.json().catch(() => []);
                 if (Array.isArray(finRows)) {
                   const uuidRow = finRows.find((r: any) => this.isValidUuid(r.user_key));
                   if (uuidRow) {
@@ -492,48 +621,43 @@ class SupabaseService {
             createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
             referredByCode: row.referred_by_code || undefined,
           };
-          return { profile, password: parsedHash.password, hasVerifiedUid: true };
+          return { profile, hasVerifiedUid: true };
         }
       } catch (e) {
-        console.warn('Could not query vtm_registered_users', e);
+        console.warn('Could not query vtm_registered_users via proxy', e);
       }
     }
 
-    // 2. Fallback to Server-Side Platform Database (/api/platform-db)
-    try {
-      const srvRes = await fetch(`/api/platform-db?email=${encodeURIComponent(cleanEmail)}`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(3500),
-      });
-      if (srvRes.ok) {
-        const srvData = await srvRes.json();
-        if (srvData?.ok && srvData.user && srvData.user.email) {
-          const u = srvData.user;
-          const resolvedUid = isAdmin
-            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-            : this.isValidUuid(u.id)
-            ? u.id
-            : this.deterministicUuidFromEmail(cleanEmail);
-          const profile: UserAuthProfile = {
-            ...u,
-            id: resolvedUid,
-            email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
-            role: isAdmin ? 'admin' : u.role === 'marketer' ? 'marketer' : 'normal',
-            isLoggedIn: true,
-          };
-          let storedPassword = srvData.password || '';
-          if (!storedPassword) {
-            try {
-              const rawCreds = localStorage.getItem('vtm_user_credentials');
-              const creds = rawCreds ? JSON.parse(rawCreds) : {};
-              storedPassword = creds[cleanEmail] || '';
-            } catch {}
+    // 2. Fallback to authenticated Server-Side Platform Database (/api/platform-db)
+    if (hasSession) {
+      try {
+        const srvRes = await fetch(`/api/platform-db?email=${encodeURIComponent(cleanEmail)}`, {
+          method: 'GET',
+          headers: this.getAuthHeaders(),
+          signal: AbortSignal.timeout(3500),
+        });
+        if (srvRes.ok) {
+          const srvData = await srvRes.json();
+          if (srvData?.ok && srvData.user && srvData.user.email) {
+            const u = srvData.user;
+            const resolvedUid = isAdmin
+              ? '84a1e1db-f302-4dac-a077-291128ae0cea'
+              : this.isValidUuid(u.id)
+              ? u.id
+              : this.deterministicUuidFromEmail(cleanEmail);
+            const profile: UserAuthProfile = {
+              ...u,
+              id: resolvedUid,
+              email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
+              role: isAdmin ? 'admin' : u.role === 'marketer' ? 'marketer' : 'normal',
+              isLoggedIn: true,
+            };
+            return { profile, hasVerifiedUid: true };
           }
-          return { profile, password: storedPassword || undefined, hasVerifiedUid: true };
         }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     // 3. Fallback to Local User Registry (findRegisteredUser)
@@ -545,12 +669,6 @@ class SupabaseService {
           : this.isValidUuid(localUser.id)
           ? localUser.id
           : this.deterministicUuidFromEmail(cleanEmail);
-        let storedPassword = '';
-        try {
-          const rawCreds = localStorage.getItem('vtm_user_credentials');
-          const creds = rawCreds ? JSON.parse(rawCreds) : {};
-          storedPassword = creds[cleanEmail] || '';
-        } catch {}
         return {
           profile: {
             ...localUser,
@@ -558,7 +676,6 @@ class SupabaseService {
             role: isAdmin ? 'admin' : localUser.role === 'marketer' ? 'marketer' : 'normal',
             isLoggedIn: true,
           },
-          password: storedPassword || undefined,
           hasVerifiedUid: true,
         };
       }
@@ -608,36 +725,60 @@ class SupabaseService {
       this.previewOneAppAccountBalance(profile, profile.phoneNumber || profile.phone, password.trim()).catch(() => {});
     }
 
-    // Always persist to Server Platform DB (/api/platform-db) so registration works even if Supabase returns 402
-    fetch('/api/platform-db', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'upsert_user',
-        user: {
-          ...profile,
-          id: verifiedUid,
-          email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
-          role: safeRole,
-        },
-        password: password || undefined,
-      }),
-    }).catch(() => {});
+    if (this.getSessionToken()) {
+      fetch('/api/platform-db', {
+        method: 'POST',
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'upsert_user',
+          user: {
+            ...profile,
+            id: verifiedUid,
+            email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
+            role: safeRole,
+          },
+          password: password || undefined,
+        }),
+      }).catch(() => {});
+    }
 
-    if (this.isQuotaRestricted()) {
+    if (this.isQuotaRestricted() || !this.getSessionToken()) {
       return true;
     }
 
     try {
       const rawIncomingPhone = String(profile.phoneNumber || profile.phone || '').trim();
+      const isPlaceholderDigits = (digits: string) =>
+        !digits ||
+        digits === '254700000000' ||
+        digits === '0700000000' ||
+        digits === '700000000';
       const incomingDigits = rawIncomingPhone.replace(/\D/g, '');
-      const isPlaceholderOrEmptyPhone =
-        !incomingDigits ||
-        incomingDigits === '254700000000' ||
-        incomingDigits === '0700000000' ||
-        incomingDigits === '700000000';
+      const isPlaceholderOrEmptyPhone = isPlaceholderDigits(incomingDigits);
 
-      // If no password was supplied (e.g. profile/session sync), try PATCH first so we never overwrite an existing password_hash
+      let existingStoredPhone = '';
+      try {
+        const lookupRes = await this.proxyRest(
+          `vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}&select=phone_number&limit=1`,
+          { method: 'GET' },
+          4000
+        );
+        if (!this.checkResponseQuota(lookupRes) && lookupRes.ok) {
+          const existingRows = await lookupRes.json().catch(() => []);
+          if (Array.isArray(existingRows) && existingRows.length > 0) {
+            const candidate = String(existingRows[0]?.phone_number || '').trim();
+            const candidateDigits = candidate.replace(/\D/g, '');
+            if (candidateDigits.length >= 6 && !isPlaceholderDigits(candidateDigits)) {
+              existingStoredPhone = candidate;
+            }
+          }
+        }
+      } catch {
+        // Proceed gracefully if lookup times out
+      }
+
+      const authoritativePhone = existingStoredPhone || (isPlaceholderOrEmptyPhone ? '' : rawIncomingPhone);
+
       if (password === undefined || password === '') {
         const patchBody: Record<string, any> = {
           name: isAdmin ? 'mutwiri' : profile.name,
@@ -648,22 +789,20 @@ class SupabaseService {
           last_login_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         };
-        if (!isPlaceholderOrEmptyPhone) {
+        if (!existingStoredPhone && !isPlaceholderOrEmptyPhone) {
           patchBody.phone_number = rawIncomingPhone;
         }
-        const patchExistingRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+        const patchExistingRes = await this.proxyRest(
+          `vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
           {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
               Prefer: 'return=representation',
             },
             body: JSON.stringify(patchBody),
-            signal: AbortSignal.timeout(5000),
-          }
+          },
+          5000
         );
         if (this.checkResponseQuota(patchExistingRes)) return true;
         if (patchExistingRes.ok) {
@@ -674,13 +813,11 @@ class SupabaseService {
         }
       }
 
-      // Store verified UID inside password_hash (uid:<uuid>|<password>) and always supply non-null password_hash
       const payload: Record<string, any> = {
         email: cleanEmail,
         uid: verifiedUid,
-        password_hash: encodedPasswordHash,
         name: isAdmin ? 'mutwiri' : profile.name,
-        phone_number: profile.phoneNumber || profile.phone || '',
+        phone_number: authoritativePhone,
         country_code: profile.countryCode || '+1',
         country_name: profile.countryName || 'United States',
         account_number: profile.accountNumber || '27330648',
@@ -693,33 +830,37 @@ class SupabaseService {
         payload.referred_by_code = profile.referredByCode.trim().toUpperCase();
       }
 
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(6000),
-      });
+      const res = await this.proxyRest(
+        `vtm_registered_users?on_conflict=email`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(payload),
+        },
+        6000
+      );
 
       if (this.checkResponseQuota(res)) return true;
       if (res.ok) {
         return true;
       }
 
-      // Fallback POST without optional columns (uid, referred_by_code) in case table schema doesn't have them yet
       const { uid: _omitUid, referred_by_code: _omitRef, ...payloadWithoutUid } = payload;
-      const retryPostRes = await fetch(`${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payloadWithoutUid),
-        signal: AbortSignal.timeout(6000),
-      });
+      const retryPostRes = await this.proxyRest(
+        `vtm_registered_users?on_conflict=email`,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(payloadWithoutUid),
+        },
+        6000
+      );
 
       if (this.checkResponseQuota(retryPostRes)) return true;
       if (retryPostRes.ok) {
         return true;
       }
 
-      // Fallback PATCH if row already exists (preserve existing account_number & valid phone_number)
       const patchPayload: Record<string, any> = {
         name: isAdmin ? 'mutwiri' : profile.name,
         country_code: profile.countryCode || '+1',
@@ -728,55 +869,44 @@ class SupabaseService {
         last_login_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
-      if (!isPlaceholderOrEmptyPhone) {
+      if (!existingStoredPhone && !isPlaceholderOrEmptyPhone) {
         patchPayload.phone_number = rawIncomingPhone;
       }
-      if (encodedPasswordHash) {
-        patchPayload.password_hash = encodedPasswordHash;
-      }
 
-      const patchRes = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+      const patchRes = await this.proxyRest(
+        `vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
         {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patchPayload),
-          signal: AbortSignal.timeout(6000),
-        }
+        },
+        6000
       );
 
       if (this.checkResponseQuota(patchRes)) return true;
       return true;
     } catch (e) {
-      console.warn('Failed to save registered user to Supabase, persisted to server DB', e);
+      console.warn('Failed to save registered user via proxy, persisted to server DB', e);
       return true;
     }
   }
 
   public async updateUserLastLoginInDatabase(email: string): Promise<boolean> {
-    if (!this.config || !email) return false;
+    if (!this.config || !email || !this.getSessionToken()) return false;
 
     try {
       const cleanEmail = email.trim().toLowerCase();
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
+      const res = await this.proxyRest(
+        `vtm_registered_users?email=eq.${encodeURIComponent(cleanEmail)}`,
         {
           method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             last_login_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(3000),
-        }
+        },
+        3500
       );
       return res.ok;
     } catch {
@@ -790,10 +920,8 @@ class SupabaseService {
     try {
       const cleanEmail = email.trim().toLowerCase();
       const isAdmin = this.isMasterAdminEmail(cleanEmail);
-      // Strictly forbid any other email from having 'admin' role in Supabase
       const safeRole = isAdmin ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
 
-      // Immediate cross-tab and cross-window broadcast
       try {
         const channel = new BroadcastChannel('vtm_global_sync');
         channel.postMessage({
@@ -820,10 +948,9 @@ class SupabaseService {
         }
       }
 
-      // Persist role change to Server Platform DB (/api/platform-db)
       fetch('/api/platform-db', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'update_role',
           email: cleanEmail,
@@ -835,23 +962,20 @@ class SupabaseService {
         return true;
       }
 
-      // 1. Try PATCH with case-insensitive matching
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}`,
+      const res = await this.proxyRest(
+        `vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}`,
         {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
             Prefer: 'return=representation',
           },
           body: JSON.stringify({
             role: safeRole,
             updated_at: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(4000),
-        }
+        },
+        4500
       );
 
       if (this.checkResponseQuota(res)) return true;
@@ -863,15 +987,12 @@ class SupabaseService {
         }
       }
 
-      // 2. Fallback upsert if user record wasn't present yet in vtm_registered_users
-      const upsertRes = await fetch(
-        `${this.config.url}/rest/v1/vtm_registered_users?on_conflict=email`,
+      const upsertRes = await this.proxyRest(
+        `vtm_registered_users?on_conflict=email`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
             Prefer: 'resolution=merge-duplicates,return=representation',
           },
           body: JSON.stringify({
@@ -879,8 +1000,8 @@ class SupabaseService {
             role: safeRole,
             updated_at: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(4000),
-        }
+        },
+        4500
       );
 
       this.checkResponseQuota(upsertRes);
@@ -890,17 +1011,12 @@ class SupabaseService {
     }
   }
 
-  /**
-   * Super Admin Cloud Sync: Fetches ALL registered users, ALL user financial states,
-   * and ALL deposit/account activities directly from Supabase so the Admin Portal displays
-   * exact real-time platform users, live accounts, & total money deposited.
-   */
   public async fetchAllPlatformUsersAndFinances(): Promise<{
     users: UserAuthProfile[];
     financesByEmail: Record<string, UserFinancialState>;
     openTradesByEmail?: Record<string, AdminUserOpenTradeCounts>;
   } | null> {
-    if (!this.config) return null;
+    if (!this.config || !this.getSessionToken()) return null;
 
     try {
       let usersRows: any[] = [];
@@ -911,49 +1027,25 @@ class SupabaseService {
 
       if (!this.isQuotaRestricted()) {
         const [usersRes, finRes, actRes, cloudStatesRes] = await Promise.all([
-          fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?select=*&order=created_at.desc&limit=5000`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(6000),
-            }
+          this.proxyRest(
+            `vtm_registered_users?select=*&order=created_at.desc&limit=5000`,
+            { method: 'GET' },
+            6500
           ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_user_finances?select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&order=last_updated.desc&limit=5000`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(6000),
-            }
+          this.proxyRest(
+            `vtm_user_finances?select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&order=last_updated.desc&limit=5000`,
+            { method: 'GET' },
+            6500
           ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,DEPOSIT_CRYPTO_PENDING,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(6000),
-            }
+          this.proxyRest(
+            `user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,DEPOSIT_CRYPTO_PENDING,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
+            { method: 'GET' },
+            6500
           ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_cloud_states?state_key=in.(STATE_TRADES,STATE_BOTS)&select=user_email,state_key,data&limit=5000`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(6000),
-            }
+          this.proxyRest(
+            `vtm_cloud_states?state_key=in.(STATE_TRADES,STATE_BOTS)&select=user_email,state_key,data&limit=5000`,
+            { method: 'GET' },
+            6500
           ).catch(() => null),
         ]);
 
@@ -971,7 +1063,7 @@ class SupabaseService {
         if (Array.isArray(usersRows) && usersRows.length > 0) {
           fetch('/api/platform-db', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ action: 'bulk_upsert_users', users: usersRows }),
           }).catch(() => {});
         }
@@ -1355,6 +1447,7 @@ class SupabaseService {
         try {
           const srvRes = await fetch('/api/platform-db', {
             method: 'GET',
+            headers: this.getAuthHeaders(),
             signal: AbortSignal.timeout(4000),
           });
           if (srvRes.ok) {
@@ -1534,7 +1627,7 @@ class SupabaseService {
     try {
       const res = await fetch('/api/platform-db', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ action: 'bulk_upsert_users', users }),
       });
       if (res.ok) {
@@ -1547,42 +1640,26 @@ class SupabaseService {
     return { ok: false, count: 0, totalUsers: 0 };
   }
 
-  /**
-   * Targeted search by username or email strictly against Supabase & Server Platform DB.
-   * Returns only users that genuinely exist in the database.
-   */
   public async searchUserByQuery(query: string): Promise<UserAuthProfile | null> {
     if (!query || query.trim().length < 2) return null;
     const clean = query.trim().toLowerCase();
 
-    if (this.config) {
+    if (this.config && this.getSessionToken()) {
       try {
         const [usersRes, finRes] = await Promise.all([
-          fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?or=(email.ilike.*${encodeURIComponent(
+          this.proxyRest(
+            `vtm_registered_users?or=(email.ilike.*${encodeURIComponent(
               clean
             )}*,name.ilike.*${encodeURIComponent(clean)}*)&select=*&limit=10`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(4000),
-            }
+            { method: 'GET' },
+            4500
           ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_user_finances?or=(user_email.ilike.*${encodeURIComponent(
+          this.proxyRest(
+            `vtm_user_finances?or=(user_email.ilike.*${encodeURIComponent(
               clean
             )}*,user_name.ilike.*${encodeURIComponent(clean)}*)&select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&limit=10`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(4000),
-            }
+            { method: 'GET' },
+            4500
           ).catch(() => null),
         ]);
 
@@ -1653,28 +1730,30 @@ class SupabaseService {
       }
     }
 
-    // Check Server Platform DB backup
-    try {
-      const srvRes = await fetch('/api/platform-db', {
-        method: 'GET',
-        signal: AbortSignal.timeout(3000),
-      });
-      if (srvRes.ok) {
-        const srvData = await srvRes.json();
-        if (srvData?.ok && Array.isArray(srvData.users)) {
-          const match = srvData.users.find(
-            (u: any) =>
-              u &&
-              ((u.email && String(u.email).toLowerCase().includes(clean)) ||
-                (u.name && String(u.name).toLowerCase().includes(clean)))
-          );
-          if (match && match.email) {
-            return match as UserAuthProfile;
+    if (this.getSessionToken()) {
+      try {
+        const srvRes = await fetch('/api/platform-db', {
+          method: 'GET',
+          headers: this.getAuthHeaders(),
+          signal: AbortSignal.timeout(3000),
+        });
+        if (srvRes.ok) {
+          const srvData = await srvRes.json();
+          if (srvData?.ok && Array.isArray(srvData.users)) {
+            const match = srvData.users.find(
+              (u: any) =>
+                u &&
+                ((u.email && String(u.email).toLowerCase().includes(clean)) ||
+                  (u.name && String(u.name).toLowerCase().includes(clean)))
+            );
+            if (match && match.email) {
+              return match as UserAuthProfile;
+            }
           }
         }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     return null;
@@ -1684,92 +1763,29 @@ class SupabaseService {
     profile: UserAuthProfile,
     password: string
   ): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!this.config || !profile.email) {
+    if (!profile.email) {
       return { success: false, error: 'Database is not configured.' };
     }
-
-    try {
-      const cleanEmail = profile.email.trim().toLowerCase();
-      const res = await fetch(`${this.config.url}/auth/v1/signup`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: this.config.anonKey,
-          Authorization: `Bearer ${this.config.anonKey}`,
-        },
-        body: JSON.stringify({
-          email: cleanEmail,
-          password: password,
-          data: {
-            display_name: profile.name,
-            name: profile.name,
-            phone: profile.phoneNumber,
-            country_name: profile.countryName,
-            account_number: profile.accountNumber,
-            role: profile.role || 'normal',
-          },
-        }),
-        signal: AbortSignal.timeout(6000),
-      });
-
-      const json = await res.json();
-      if (!res.ok) {
-        return {
-          success: false,
-          error: json.msg || json.error_description || json.message || 'Failed. Please try again later.',
-        };
-      }
-
-      return { success: true, data: json };
-    } catch (e: any) {
-      return { success: false, error: 'Failed. Please try again later.' };
+    const res = await this.registerWithServer(profile, password);
+    if (!res.ok) {
+      return { success: false, error: res.error || 'Failed. Please try again later.' };
     }
+    return { success: true, data: { user: res.profile } };
   }
 
   public async signInWithSupabaseAuth(
     email: string,
     password: string
   ): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!this.config || !email) {
+    if (!email) {
       return { success: false, error: 'Failed. Please try again later.' };
     }
-
-    try {
-      const cleanEmail = email.trim().toLowerCase();
-      const res = await fetch(`${this.config.url}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: this.config.anonKey,
-        },
-        body: JSON.stringify({
-          email: cleanEmail,
-          password: password,
-        }),
-        signal: AbortSignal.timeout(6000),
-      });
-
-      const json = await res.json();
-      if (!res.ok) {
-        const msg = json.error_description || json.msg || json.message || '';
-        if (msg.toLowerCase().includes('invalid login credentials')) {
-          return {
-            success: false,
-            error: 'Invalid email or password. Please try again.',
-          };
-        }
-        return { success: false, error: 'Failed. Please try again later.' };
-      }
-
-      return { success: true, data: json };
-    } catch (e: any) {
-      return { success: false, error: 'Failed. Please try again later.' };
+    const res = await this.authenticateWithServer(email, password);
+    if (!res.ok) {
+      return { success: false, error: res.error || 'Invalid email or password. Please try again.' };
     }
+    return { success: true, data: { user: res.profile } };
   }
-
-  // =========================================================================
-  // HELPER: RELIABLE CLOUD STATE STORAGE IN SUPABASE (user_activities JSONB)
-  // =========================================================================
 
   private async saveCloudStateRecord(
     userEmail: string,
@@ -1782,7 +1798,6 @@ class SupabaseService {
       ? 'mutwirib964@gmail.com'
       : userEmail.trim().toLowerCase();
 
-    // Keep cloud state payloads compact so 2,000+ users never exhaust Supabase egress bandwidth
     let compactMeta = metadata;
     if (metadata && typeof metadata === 'object') {
       compactMeta = { ...metadata };
@@ -1809,9 +1824,13 @@ class SupabaseService {
       localStorage.setItem(`vtm_cloud_state_${cleanEmail}_${stateType}`, JSON.stringify(compactMeta));
     } catch {}
 
+    if (!this.getSessionToken()) {
+      return true;
+    }
+
     fetch('/api/platform-db', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         action: 'upsert_cloud_state',
         email: cleanEmail,
@@ -1825,15 +1844,12 @@ class SupabaseService {
     }
 
     try {
-      // Primary: Atomic Upsert to vtm_cloud_states with return=minimal to save 99% bandwidth
-      const upsertRes = await fetch(
-        `${this.config.url}/rest/v1/vtm_cloud_states?on_conflict=user_email,state_key`,
+      const upsertRes = await this.proxyRest(
+        `vtm_cloud_states?on_conflict=user_email,state_key`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
             Prefer: 'resolution=merge-duplicates,return=minimal',
           },
           body: JSON.stringify({
@@ -1842,8 +1858,8 @@ class SupabaseService {
             data: compactMeta,
             updated_at: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(5000),
-        }
+        },
+        5500
       );
 
       if (this.checkResponseQuota(upsertRes)) return true;
@@ -1851,19 +1867,12 @@ class SupabaseService {
         return true;
       }
 
-      // Secondary Fallback: Save to user_activities with case-insensitive ilike query
-      const getRes = await fetch(
-        `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(
+      const getRes = await this.proxyRest(
+        `user_activities?user_email=ilike.${encodeURIComponent(
           cleanEmail
         )}&activity_type=eq.${encodeURIComponent(stateType)}&select=id&order=created_at.desc&limit=20`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(5000),
-        }
+        { method: 'GET' },
+        5500
       );
 
       if (this.checkResponseQuota(getRes)) return true;
@@ -1871,14 +1880,12 @@ class SupabaseService {
       if (getRes.ok) {
         const rows = await getRes.json();
         if (Array.isArray(rows) && rows.length > 0 && rows[0].id) {
-          const patchRes = await fetch(
-            `${this.config.url}/rest/v1/user_activities?id=eq.${encodeURIComponent(rows[0].id)}`,
+          const patchRes = await this.proxyRest(
+            `user_activities?id=eq.${encodeURIComponent(rows[0].id)}`,
             {
               method: 'PATCH',
               headers: {
                 'Content-Type': 'application/json',
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
                 Prefer: 'return=representation',
               },
               body: JSON.stringify({
@@ -1886,8 +1893,8 @@ class SupabaseService {
                 metadata,
                 created_at: new Date().toISOString(),
               }),
-              signal: AbortSignal.timeout(5000),
-            }
+            },
+            5500
           );
           if (this.checkResponseQuota(patchRes)) return true;
           if (patchRes.ok) {
@@ -1896,23 +1903,22 @@ class SupabaseService {
         }
       }
 
-      const postRes = await fetch(`${this.config.url}/rest/v1/user_activities`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: this.config.anonKey,
-          Authorization: `Bearer ${this.config.anonKey}`,
+      const postRes = await this.proxyRest(
+        `user_activities`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_email: cleanEmail,
+            activity_type: stateType,
+            description,
+            device_id: typeof navigator !== 'undefined' ? `${navigator.platform || 'web'}` : 'web',
+            metadata,
+            created_at: new Date().toISOString(),
+          }),
         },
-        body: JSON.stringify({
-          user_email: cleanEmail,
-          activity_type: stateType,
-          description,
-          device_id: typeof navigator !== 'undefined' ? `${navigator.platform || 'web'}` : 'web',
-          metadata,
-          created_at: new Date().toISOString(),
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
+        5500
+      );
 
       this.checkResponseQuota(postRes);
       return true;
@@ -1931,21 +1937,14 @@ class SupabaseService {
       ? 'mutwirib964@gmail.com'
       : userEmail.trim().toLowerCase();
 
-    if (!this.isQuotaRestricted()) {
+    if (this.getSessionToken() && !this.isQuotaRestricted()) {
       try {
-        // Primary: Query atomic vtm_cloud_states table with case-insensitive ilike
-        const cloudRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_cloud_states?user_email=ilike.${encodeURIComponent(
+        const cloudRes = await this.proxyRest(
+          `vtm_cloud_states?user_email=ilike.${encodeURIComponent(
             cleanEmail
           )}&state_key=eq.${encodeURIComponent(stateType)}&select=data&order=updated_at.desc&limit=1`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(5000),
-          }
+          { method: 'GET' },
+          5500
         );
 
         this.checkResponseQuota(cloudRes);
@@ -1958,18 +1957,12 @@ class SupabaseService {
         }
 
         if (!this.isQuotaRestricted()) {
-          const res = await fetch(
-            `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(
+          const res = await this.proxyRest(
+            `user_activities?user_email=ilike.${encodeURIComponent(
               cleanEmail
             )}&activity_type=eq.${encodeURIComponent(stateType)}&select=metadata&order=created_at.desc&limit=1`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(5000),
-            }
+            { method: 'GET' },
+            5500
           );
 
           this.checkResponseQuota(res);
@@ -1986,18 +1979,20 @@ class SupabaseService {
       }
     }
 
-    try {
-      const srvRes = await fetch(
-        `/api/platform-db?email=${encodeURIComponent(cleanEmail)}&stateKey=${encodeURIComponent(stateType)}`,
-        { method: 'GET', signal: AbortSignal.timeout(3000) }
-      );
-      if (srvRes.ok) {
-        const srvJson = await srvRes.json();
-        if (srvJson?.ok && srvJson.data) {
-          return srvJson.data as T;
+    if (this.getSessionToken()) {
+      try {
+        const srvRes = await fetch(
+          `/api/platform-db?email=${encodeURIComponent(cleanEmail)}&stateKey=${encodeURIComponent(stateType)}`,
+          { method: 'GET', headers: this.getAuthHeaders(), signal: AbortSignal.timeout(3000) }
+        );
+        if (srvRes.ok) {
+          const srvJson = await srvRes.json();
+          if (srvJson?.ok && srvJson.data) {
+            return srvJson.data as T;
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     try {
       const localRaw = localStorage.getItem(`vtm_cloud_state_${cleanEmail}_${stateType}`);
@@ -2119,21 +2114,15 @@ class SupabaseService {
 
     try {
       // Remove any old ACCOUNT_CREATED / OPEN_ACCOUNT activity rows for this accountNumber to save DB space and prevent resurrection
-      if (cleanEmail) {
-        await fetch(
-          `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+      if (cleanEmail && this.getSessionToken()) {
+        await this.proxyRest(
+          `user_activities?user_email=eq.${encodeURIComponent(
             cleanEmail
           )}&activity_type=in.(ACCOUNT_CREATED,OPEN_ACCOUNT)&description=ilike.*${encodeURIComponent(
             accountNumber
           )}*`,
-          {
-            method: 'DELETE',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4000),
-          }
+          { method: 'DELETE' },
+          4000
         ).catch(() => {});
       }
 
@@ -2305,48 +2294,20 @@ class SupabaseService {
         let legacyUserId: string | null = null;
         let legacyAccountId: string | null = null;
 
-        if (this.closedTradesLegacyFkBlocked === null) {
+        if (this.closedTradesLegacyFkBlocked === null && this.getSessionToken()) {
           try {
-            const schemaProbe = await fetch(
-              `${this.config.url}/rest/v1/closed_trades?select=user_id,trading_account_id&limit=0`,
-              {
-                method: 'GET',
-                headers: {
-                  apikey: this.config.anonKey,
-                  Authorization: `Bearer ${this.config.anonKey}`,
-                },
-                signal: AbortSignal.timeout(3000),
-              }
+            const schemaProbe = await this.proxyRest(
+              `closed_trades?select=user_id,trading_account_id&limit=0`,
+              { method: 'GET' },
+              3500
             );
             if (schemaProbe.status === 400) {
-              // Standalone schema without legacy user_id/trading_account_id FKs
               this.closedTradesLegacyFkBlocked = false;
               shouldWriteClosedTrades = true;
             } else if (schemaProbe.ok) {
-              // Legacy relational schema: check if profiles & trading_accounts actually have matching parent rows
               const [profRes, acctRes] = await Promise.all([
-                fetch(
-                  `${this.config.url}/rest/v1/profiles?select=id&limit=1`,
-                  {
-                    method: 'GET',
-                    headers: {
-                      apikey: this.config.anonKey,
-                      Authorization: `Bearer ${this.config.anonKey}`,
-                    },
-                    signal: AbortSignal.timeout(3000),
-                  }
-                ),
-                fetch(
-                  `${this.config.url}/rest/v1/trading_accounts?select=id&limit=1`,
-                  {
-                    method: 'GET',
-                    headers: {
-                      apikey: this.config.anonKey,
-                      Authorization: `Bearer ${this.config.anonKey}`,
-                    },
-                    signal: AbortSignal.timeout(3000),
-                  }
-                ),
+                this.proxyRest(`profiles?select=id&limit=1`, { method: 'GET' }, 3500),
+                this.proxyRest(`trading_accounts?select=id&limit=1`, { method: 'GET' }, 3500),
               ]);
               const profRows = profRes.ok ? await profRes.json().catch(() => []) : [];
               const acctRows = acctRes.ok ? await acctRes.json().catch(() => []) : [];
@@ -2362,7 +2323,6 @@ class SupabaseService {
                 legacyAccountId = String(acctRows[0].id);
                 shouldWriteClosedTrades = true;
               } else {
-                // Legacy FK parent tables are empty; trades are persisted in STATE_TRADES + user_activities
                 this.closedTradesLegacyFkBlocked = true;
                 shouldWriteClosedTrades = false;
               }
@@ -2372,7 +2332,7 @@ class SupabaseService {
           }
         }
 
-        if (shouldWriteClosedTrades) {
+        if (shouldWriteClosedTrades && this.getSessionToken()) {
           const dedupedRows = new Map<string, any>();
           for (const t of latestClosed.slice(0, 50)) {
             const rawId = String(t.id || `ct-${t.ticket}-${t.closeTime || Date.now()}`);
@@ -2399,16 +2359,18 @@ class SupabaseService {
             dedupedRows.set(dbId, rowObj);
           }
           const rows = Array.from(dedupedRows.values());
-          await fetch(`${this.config.url}/rest/v1/closed_trades?on_conflict=id`, {
-            method: 'POST',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-              'Content-Type': 'application/json',
-              Prefer: 'resolution=merge-duplicates,return=minimal',
+          await this.proxyRest(
+            `closed_trades?on_conflict=id`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Prefer: 'resolution=merge-duplicates,return=minimal',
+              },
+              body: JSON.stringify(rows),
             },
-            body: JSON.stringify(rows),
-          }).catch(() => {});
+            5500
+          ).catch(() => {});
         }
       }
     } catch {
@@ -2520,76 +2482,63 @@ class SupabaseService {
         // ignore
       }
 
-      // Also query the latest TRADE_CLOSED rows directly from user_activities in Supabase so closed trades are always recovered
-      try {
-        const res = await fetch(
-          `${this.config.url}/rest/v1/user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=150`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4500),
-          }
-        );
-        if (res.ok) {
-          const rows = await res.json();
-          if (Array.isArray(rows)) {
-            for (const row of rows) {
-              const m = row?.metadata;
-              if (m && m.symbol && (m.closePrice !== undefined || m.openPrice !== undefined)) {
-                const key = String(m.ticket || m.id || row.created_at);
-                if (!closedMap.has(key) && m.openPrice !== undefined) {
-                  const side: 'BUY' | 'SELL' = m.side === 'SELL' ? 'SELL' : 'BUY';
-                  const lots = Number(m.lots || 0.01);
-                  const openPrice = Number(m.openPrice);
-                  const closePrice = Number(m.closePrice ?? m.currentPrice ?? m.openPrice);
-                  const computedPnl = calculateBotPnL(m.symbol, side, openPrice, closePrice, lots);
-                  const exactPnl =
-                    typeof m.pnl === 'number' && Number.isFinite(m.pnl) && m.pnl !== 0
-                      ? Number(m.pnl.toFixed(2))
-                      : computedPnl;
-                  const isBot = m.orderType === 'BOT' || String(m.id || '').startsWith('cl-bot-');
-                  closedMap.set(key, {
-                    id: m.id || (isBot ? `cl-bot-${key}` : `cl-${key}`),
-                    ticket: Number(m.ticket || Math.floor(700000 + Math.random() * 99999)),
-                    symbol: m.symbol,
-                    side,
-                    lots,
-                    openPrice,
-                    closePrice,
-                    sl: m.sl ?? null,
-                    tp: m.tp ?? null,
-                    pnl: exactPnl,
-                    openTime: Number(m.openTime || (row.created_at ? new Date(row.created_at).getTime() - 60000 : Date.now())),
-                    closeTime: Number(m.closeTime || (row.created_at ? new Date(row.created_at).getTime() : Date.now())),
-                    reason: m.closeReason === 'TP' || m.reason === 'TP' ? 'TP' : m.closeReason === 'SL' || m.reason === 'SL' ? 'SL' : 'MANUAL',
-                    accountId: m.accountId || m.account_id,
-                    accountNumber: m.accountNumber || m.account_number,
-                  });
+      if (this.getSessionToken()) {
+        try {
+          const res = await this.proxyRest(
+            `user_activities?user_email=ilike.${encodeURIComponent(cleanEmail)}&activity_type=eq.TRADE_CLOSED&select=metadata,created_at&order=created_at.desc&limit=150`,
+            { method: 'GET' },
+            5000
+          );
+          if (res.ok) {
+            const rows = await res.json();
+            if (Array.isArray(rows)) {
+              for (const row of rows) {
+                const m = row?.metadata;
+                if (m && m.symbol && (m.closePrice !== undefined || m.openPrice !== undefined)) {
+                  const key = String(m.ticket || m.id || row.created_at);
+                  if (!closedMap.has(key) && m.openPrice !== undefined) {
+                    const side: 'BUY' | 'SELL' = m.side === 'SELL' ? 'SELL' : 'BUY';
+                    const lots = Number(m.lots || 0.01);
+                    const openPrice = Number(m.openPrice);
+                    const closePrice = Number(m.closePrice ?? m.currentPrice ?? m.openPrice);
+                    const computedPnl = calculateBotPnL(m.symbol, side, openPrice, closePrice, lots);
+                    const exactPnl =
+                      typeof m.pnl === 'number' && Number.isFinite(m.pnl) && m.pnl !== 0
+                        ? Number(m.pnl.toFixed(2))
+                        : computedPnl;
+                    const isBot = m.orderType === 'BOT' || String(m.id || '').startsWith('cl-bot-');
+                    closedMap.set(key, {
+                      id: m.id || (isBot ? `cl-bot-${key}` : `cl-${key}`),
+                      ticket: Number(m.ticket || Math.floor(700000 + Math.random() * 99999)),
+                      symbol: m.symbol,
+                      side,
+                      lots,
+                      openPrice,
+                      closePrice,
+                      sl: m.sl ?? null,
+                      tp: m.tp ?? null,
+                      pnl: exactPnl,
+                      openTime: Number(m.openTime || (row.created_at ? new Date(row.created_at).getTime() - 60000 : Date.now())),
+                      closeTime: Number(m.closeTime || (row.created_at ? new Date(row.created_at).getTime() : Date.now())),
+                      reason: m.closeReason === 'TP' || m.reason === 'TP' ? 'TP' : m.closeReason === 'SL' || m.reason === 'SL' ? 'SL' : 'MANUAL',
+                      accountId: m.accountId || m.account_id,
+                      accountNumber: m.accountNumber || m.account_number,
+                    });
+                  }
                 }
               }
             }
           }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
-      }
 
-      // Direct query to public.closed_trades table
-      try {
-        const ctRes = await fetch(
-          `${this.config.url}/rest/v1/closed_trades?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=close_time.desc&limit=200`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4500),
-          }
-        );
+        try {
+          const ctRes = await this.proxyRest(
+            `closed_trades?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=close_time.desc&limit=200`,
+            { method: 'GET' },
+            5000
+          );
         if (ctRes.ok) {
           const ctRows = await ctRes.json();
           if (Array.isArray(ctRows)) {
@@ -2616,6 +2565,7 @@ class SupabaseService {
         }
       } catch {
         // ignore
+      }
       }
 
     const mergedClosedTrades = Array.from(closedMap.values())
@@ -2675,25 +2625,24 @@ class SupabaseService {
         timestamp: Math.trunc(this.toEpochMs(entry.timestamp)),
         metadata: this.isValidUuid(rawId) ? (entry.metadata || null) : { ...baseMeta, originalId: rawId },
       };
-      const res = await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
-        method: 'POST',
-        headers: {
-          apikey: this.config.anonKey,
-          Authorization: `Bearer ${this.config.anonKey}`,
-          'Content-Type': 'application/json',
-          Prefer: 'resolution=merge-duplicates,return=minimal',
+      const res = await this.proxyRest(
+        `financial_ledger?on_conflict=id`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=minimal',
+          },
+          body: JSON.stringify(row),
         },
-        body: JSON.stringify(row),
-      });
+        5500
+      );
       return res.ok;
     } catch {
       return false;
     }
   }
 
-  /**
-   * Fetches the complete immutable financial ledger from Supabase cloud database
-   */
   public async fetchUserLedger(
     user: UserAuthProfile | null | undefined
   ): Promise<LedgerEntry[]> {
@@ -2704,8 +2653,7 @@ class SupabaseService {
 
     const ledgerMap = new Map<string, LedgerEntry>();
 
-    if (this.config) {
-      // 1. Read from STATE_LEDGER cloud state record
+    if (this.config && this.getSessionToken()) {
       try {
         const cloudState = await this.fetchCloudStateRecord<{
           entries?: LedgerEntry[];
@@ -2721,18 +2669,11 @@ class SupabaseService {
         // ignore
       }
 
-      // 2. Query public.financial_ledger table directly
       try {
-        const res = await fetch(
-          `${this.config.url}/rest/v1/financial_ledger?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=timestamp.desc&limit=500`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4500),
-          }
+        const res = await this.proxyRest(
+          `financial_ledger?user_email=ilike.${encodeURIComponent(cleanEmail)}&order=timestamp.desc&limit=500`,
+          { method: 'GET' },
+          5000
         );
         if (res.ok) {
           const rows = await res.json();
@@ -2770,9 +2711,6 @@ class SupabaseService {
     return Array.from(ledgerMap.values()).sort((a, b) => b.timestamp - a.timestamp);
   }
 
-  /**
-   * Syncs complete array of ledger entries to Supabase cloud state & financial_ledger table
-   */
   public async syncUserLedger(
     user: UserAuthProfile | null | undefined,
     entries: LedgerEntry[]
@@ -2782,7 +2720,7 @@ class SupabaseService {
       ? 'mutwirib964@gmail.com'
       : user.email.trim().toLowerCase();
 
-    if (!this.config) return false;
+    if (!this.config || !this.getSessionToken()) return false;
 
     this.saveCloudStateRecord(
       cleanEmail,
@@ -2813,16 +2751,18 @@ class SupabaseService {
       }
       const rows = Array.from(dedupedRows.values());
       if (rows.length > 0) {
-        await fetch(`${this.config.url}/rest/v1/financial_ledger?on_conflict=id`, {
-          method: 'POST',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-            'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates,return=minimal',
+        await this.proxyRest(
+          `financial_ledger?on_conflict=id`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates,return=minimal',
+            },
+            body: JSON.stringify(rows),
           },
-          body: JSON.stringify(rows),
-        });
+          6000
+        );
       }
     } catch {
       // ignore
@@ -3154,30 +3094,26 @@ class SupabaseService {
 
     // Safety: Recover closed trades from audit log to prevent stale 'OPEN' trades from resurfacing
     const closedTradeKeys = new Set<string>();
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(user.email.trim().toLowerCase())}&activity_type=eq.TRADE_CLOSED&select=metadata&order=created_at.desc&limit=100`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
-      if (res.ok) {
-        const rows = await res.json();
-        if (Array.isArray(rows)) {
-          for (const r of rows) {
-            const m = r?.metadata;
-            if (m?.id) closedTradeKeys.add(String(m.id));
-            if (m?.ticket) closedTradeKeys.add(String(m.ticket));
+    if (this.getSessionToken()) {
+      try {
+        const res = await this.proxyRest(
+          `user_activities?user_email=eq.${encodeURIComponent(user.email.trim().toLowerCase())}&activity_type=eq.TRADE_CLOSED&select=metadata&order=created_at.desc&limit=100`,
+          { method: 'GET' },
+          4500
+        );
+        if (res.ok) {
+          const rows = await res.json();
+          if (Array.isArray(rows)) {
+            for (const r of rows) {
+              const m = r?.metadata;
+              if (m?.id) closedTradeKeys.add(String(m.id));
+              if (m?.ticket) closedTradeKeys.add(String(m.ticket));
+            }
           }
         }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
 
     const cleanedRuns = sanitizeAndFilterBotRuns(
@@ -3259,7 +3195,7 @@ class SupabaseService {
   public async fetchCloudSyncWatermarks(
     user: UserAuthProfile | null | undefined
   ): Promise<{ botsUpdatedAt: number; finUpdatedAt: number; tradesUpdatedAt: number } | null> {
-    if (!this.config || !user?.email || this.isQuotaRestricted()) return null;
+    if (!this.config || !user?.email || this.isQuotaRestricted() || !this.getSessionToken()) return null;
     const isAdmin = this.isMasterAdminEmail(user.email);
     const cleanEmail = isAdmin
       ? 'mutwirib964@gmail.com'
@@ -3276,29 +3212,17 @@ class SupabaseService {
       }
 
       const [statesRes, finRes] = await Promise.all([
-        fetch(
-          `${this.config.url}/rest/v1/vtm_cloud_states?user_email=ilike.${encodeURIComponent(
+        this.proxyRest(
+          `vtm_cloud_states?user_email=ilike.${encodeURIComponent(
             cleanEmail
           )}&state_key=in.(STATE_BOTS,STATE_FINANCIALS,STATE_TRADES)&select=state_key,updated_at`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(3000),
-          }
+          { method: 'GET' },
+          3500
         ).catch(() => null),
-        fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=last_updated&order=last_updated.desc&limit=1`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(3000),
-          }
+        this.proxyRest(
+          `vtm_user_finances?or=(${orClauses.join(',')})&select=last_updated&order=last_updated.desc&limit=1`,
+          { method: 'GET' },
+          3500
         ).catch(() => null),
       ]);
 
@@ -3363,61 +3287,50 @@ class SupabaseService {
       // ignore
     }
 
-    // 1. Direct row-level persistence in public.vtm_followed_strategies
-    if (Array.isArray(extras.followedStrategies)) {
+    if (Array.isArray(extras.followedStrategies) && this.getSessionToken()) {
       try {
         const activeIds = extras.followedStrategies.map((f) => f.providerId).filter(Boolean);
         if (activeIds.length === 0) {
-          await fetch(
-            `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}`,
-            {
-              method: 'DELETE',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-            }
+          await this.proxyRest(
+            `vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}`,
+            { method: 'DELETE' },
+            4500
           ).catch(() => {});
         } else {
-          // Remove unfollowed strategies
-          await fetch(
-            `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&provider_id=not.in.(${activeIds.map(encodeURIComponent).join(',')})`,
-            {
-              method: 'DELETE',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-            }
+          await this.proxyRest(
+            `vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&provider_id=not.in.(${activeIds.map(encodeURIComponent).join(',')})`,
+            { method: 'DELETE' },
+            4500
           ).catch(() => {});
         }
 
-        // Upsert active followed strategies
         for (const s of extras.followedStrategies) {
           const rowId = `${cleanEmail}:${s.providerId}`;
-          await fetch(`${this.config.url}/rest/v1/vtm_followed_strategies?on_conflict=id`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-              Prefer: 'resolution=merge-duplicates',
+          await this.proxyRest(
+            `vtm_followed_strategies?on_conflict=id`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Prefer: 'resolution=merge-duplicates',
+              },
+              body: JSON.stringify({
+                id: rowId,
+                user_email: cleanEmail,
+                provider_id: s.providerId,
+                provider_name: s.providerName,
+                allocated_amount: s.allocatedAmount,
+                current_profit: s.currentProfit || 0,
+                profit_percent: s.profitPercent || 0,
+                volume_allocation: s.volumeAllocation || 100,
+                rescue_level: s.rescueLevel || 30,
+                start_date: s.startDate,
+                status: 'ACTIVE',
+                updated_at: new Date().toISOString(),
+              }),
             },
-            body: JSON.stringify({
-              id: rowId,
-              user_email: cleanEmail,
-              provider_id: s.providerId,
-              provider_name: s.providerName,
-              allocated_amount: s.allocatedAmount,
-              current_profit: s.currentProfit || 0,
-              profit_percent: s.profitPercent || 0,
-              volume_allocation: s.volumeAllocation || 100,
-              rescue_level: s.rescueLevel || 30,
-              start_date: s.startDate,
-              status: 'ACTIVE',
-              updated_at: new Date().toISOString(),
-            }),
-          }).catch(() => {});
+            4500
+          ).catch(() => {});
         }
       } catch {
         // ignore fallback
@@ -3505,19 +3418,13 @@ class SupabaseService {
       };
     }
 
-    // Fallback to public.vtm_followed_strategies table if STATE_EXTRAS was not yet written
-    try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=*&order=updated_at.desc`,
-        {
-          method: 'GET',
-          headers: {
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
-          },
-          signal: AbortSignal.timeout(4000),
-        }
-      );
+    if (this.getSessionToken()) {
+      try {
+        const res = await this.proxyRest(
+          `vtm_followed_strategies?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=*&order=updated_at.desc`,
+          { method: 'GET' },
+          4500
+        );
       if (res.ok) {
         const rows = await res.json();
         if (Array.isArray(rows)) {
@@ -3542,8 +3449,9 @@ class SupabaseService {
           };
         }
       }
-    } catch {
-      // fallback
+      } catch {
+        // fallback
+      }
     }
 
     return cloudState;
@@ -3705,22 +3613,37 @@ class SupabaseService {
       return { valid: true, password: cleanPwd };
     }
 
-    const dbUser = await this.findUserInDatabase(cleanEmail);
-    if (dbUser && dbUser.password) {
-      if (dbUser.password === cleanPwd || dbUser.password.trim() === cleanPwd) {
-        try {
-          localStorage.setItem('vtm_active_user_password', cleanPwd);
-          const credsRaw = localStorage.getItem('vtm_user_credentials');
-          const credsMap = credsRaw ? JSON.parse(credsRaw) : {};
-          credsMap[cleanEmail] = cleanPwd;
-          localStorage.setItem('vtm_user_credentials', JSON.stringify(credsMap));
-        } catch {}
-        return { valid: true, password: cleanPwd };
+    if (this.getSessionToken()) {
+      try {
+        const res = await this.proxyPost(
+          { action: 'auth_verify_password', password: cleanPwd },
+          6000,
+          true
+        );
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (data?.valid) {
+            try {
+              localStorage.setItem('vtm_active_user_password', cleanPwd);
+              const credsRaw = localStorage.getItem('vtm_user_credentials');
+              const credsMap = credsRaw ? JSON.parse(credsRaw) : {};
+              credsMap[cleanEmail] = cleanPwd;
+              localStorage.setItem('vtm_user_credentials', JSON.stringify(credsMap));
+            } catch {}
+            return { valid: true, password: cleanPwd };
+          }
+          if (data && data.valid === false) {
+            return {
+              valid: false,
+              error:
+                data.error ||
+                'Account email and password do not match. Both accounts must use the exact same email and password.',
+            };
+          }
+        }
+      } catch {
+        // fall through to local verification check below
       }
-      return {
-        valid: false,
-        error: 'Account email and password do not match. Both accounts must use the exact same email and password.',
-      };
     }
 
     if (localStoredPwd && localStoredPwd !== cleanPwd) {
@@ -3898,22 +3821,17 @@ class SupabaseService {
       }
 
       if (
-        (!resolvedPhone || !resolvedPassword || (resolvedRole !== 'marketer' && resolvedRole !== 'admin')) &&
-        this.config
+        (!resolvedPhone || (resolvedRole !== 'marketer' && resolvedRole !== 'admin')) &&
+        this.config &&
+        this.getSessionToken()
       ) {
         try {
-          const res = await fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(
+          const res = await this.proxyRest(
+            `vtm_registered_users?email=ilike.${encodeURIComponent(
               cleanEmail
-            )}&select=email,name,phone_number,password_hash,role&limit=1`,
-            {
-              method: 'GET',
-              headers: {
-                apikey: this.config.anonKey,
-                Authorization: `Bearer ${this.config.anonKey}`,
-              },
-              signal: AbortSignal.timeout(4000),
-            }
+            )}&select=uid,email,name,phone_number,role&limit=1`,
+            { method: 'GET' },
+            4000
           );
           if (res.ok) {
             const rows = await res.json();
@@ -3926,10 +3844,8 @@ class SupabaseService {
                 resolvedPhone = String(dbUser.phone_number).trim();
               }
               if (dbUser.name) resolvedName = String(dbUser.name).trim();
-              if (dbUser.password_hash) {
-                const parsed = this.parseStoredPasswordAndUid(dbUser.password_hash);
-                if (!resolvedPassword && parsed.password) resolvedPassword = parsed.password;
-                if (!resolvedUid && parsed.uid) resolvedUid = parsed.uid;
+              if (!resolvedUid && dbUser.uid && this.isValidUuid(dbUser.uid)) {
+                resolvedUid = String(dbUser.uid).trim();
               }
             }
           }
@@ -4196,7 +4112,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined,
     state: UserFinancialState
   ): Promise<boolean> {
-    if (!this.config || !user) return false;
+    if (!this.config || !user || !this.getSessionToken()) return false;
     const isAdmin = this.isMasterAdminEmail(user.email);
     const cleanEmail = isAdmin
       ? 'mutwirib964@gmail.com'
@@ -4228,16 +4144,10 @@ class SupabaseService {
 
       // Fetch current cloud accounts, transactions, and high-resolution last_updated timestamp to prevent stale state drift
       try {
-        const existingRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})&select=accounts,wallet_balance,transactions,last_updated&order=last_updated.desc`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(4000),
-          }
+        const existingRes = await this.proxyRest(
+          `vtm_user_finances?or=(${orClauses.join(',')})&select=accounts,wallet_balance,transactions,last_updated&order=last_updated.desc`,
+          { method: 'GET' },
+          4000
         );
         if (existingRes.ok) {
           const existingRows = await existingRes.json();
@@ -4341,7 +4251,7 @@ class SupabaseService {
       // Persist financials to Server Platform DB (/api/platform-db)
       fetch('/api/platform-db', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'upsert_finances',
           email: cleanEmail,
@@ -4360,28 +4270,29 @@ class SupabaseService {
       }
 
       // Atomic UPSERT using on_conflict=user_key and Prefer: resolution=merge-duplicates
-      const res = await fetch(`${this.config.url}/rest/v1/vtm_user_finances?on_conflict=user_key`, {
-        method: 'POST',
-        headers: {
-          ...this.getHeaders(),
-          Prefer: 'resolution=merge-duplicates,return=representation',
+      const res = await this.proxyRest(
+        'vtm_user_finances?on_conflict=user_key',
+        {
+          method: 'POST',
+          headers: {
+            ...this.getHeaders(),
+            Prefer: 'resolution=merge-duplicates,return=representation',
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(6000),
-      });
+        6000
+      );
 
       if (this.checkResponseQuota(res)) return true;
 
       // Always patch any matching rows so user_email, user_key, and user.id stay 100% in sync
       if (cleanEmail) {
-        await fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
+        await this.proxyRest(
+          `vtm_user_finances?or=(${orClauses.join(',')})`,
           {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
             },
             body: JSON.stringify({
               user_email: cleanEmail,
@@ -4392,8 +4303,8 @@ class SupabaseService {
               transactions: cappedMergedTxs,
               last_updated: winningIso,
             }),
-            signal: AbortSignal.timeout(5000),
-          }
+          },
+          5000
         ).catch(() => {});
       }
 
@@ -4423,6 +4334,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined
   ): Promise<UserFinancialState | null> {
     if (!this.config || !user) return null;
+    if (!this.getSessionToken()) return loadUserFinancials(user);
     const isAdmin = this.isMasterAdminEmail(user.email);
     const cleanEmail = isAdmin
       ? 'mutwirib964@gmail.com'
@@ -4442,30 +4354,18 @@ class SupabaseService {
         : `or=(${orClauses.join(',')})`;
 
       const [res, actRes] = await Promise.all([
-        fetch(
-          `${this.config.url}/rest/v1/vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
-          {
-            method: 'GET',
-            headers: {
-              apikey: this.config.anonKey,
-              Authorization: `Bearer ${this.config.anonKey}`,
-            },
-            signal: AbortSignal.timeout(5000),
-          }
+        this.proxyRest(
+          `vtm_user_finances?${filter}&select=*&order=last_updated.desc`,
+          { method: 'GET' },
+          5000
         ),
         cleanEmail && !isAdmin
-          ? fetch(
-              `${this.config.url}/rest/v1/user_activities?user_email=eq.${encodeURIComponent(
+          ? this.proxyRest(
+              `user_activities?user_email=eq.${encodeURIComponent(
                 cleanEmail
               )}&activity_type=in.(ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED,DEPOSIT,WITHDRAWAL,WITHDRAWAL_COMPLETED,TRANSFER,INTERNAL_TRANSFER)&select=activity_type,description,metadata,created_at&order=created_at.asc&limit=250`,
-              {
-                method: 'GET',
-                headers: {
-                  apikey: this.config.anonKey,
-                  Authorization: `Bearer ${this.config.anonKey}`,
-                },
-                signal: AbortSignal.timeout(4000),
-              }
+              { method: 'GET' },
+              4000
             ).catch(() => null)
           : Promise.resolve(null),
       ]);
@@ -4555,20 +4455,19 @@ class SupabaseService {
 
           if (authoritativeWallet !== newestRowWallet) {
             // Heal database in background so all rows reflect the exact reconciled balance
-            fetch(
-              `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
+            this.proxyRest(
+              `vtm_user_finances?or=(${orClauses.join(',')})`,
               {
                 method: 'PATCH',
                 headers: {
                   'Content-Type': 'application/json',
-                  apikey: this.config.anonKey,
-                  Authorization: `Bearer ${this.config.anonKey}`,
                 },
                 body: JSON.stringify({
                   wallet_balance: authoritativeWallet,
                   last_updated: new Date().toISOString(),
                 }),
-              }
+              },
+              4000
             ).catch(() => {});
           }
 
@@ -4592,6 +4491,7 @@ class SupabaseService {
     try {
       const srvRes = await fetch(`/api/platform-db?email=${encodeURIComponent(cleanEmail)}`, {
         method: 'GET',
+        headers: this.getAuthHeaders(),
         signal: AbortSignal.timeout(3500),
       });
       if (srvRes.ok) {
@@ -4609,7 +4509,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined,
     transactions: Transaction[]
   ): Promise<boolean> {
-    if (!this.config || !user?.email || !transactions) return false;
+    if (!this.config || !user?.email || !transactions || !this.getSessionToken()) return false;
     const isAdmin = this.isMasterAdminEmail(user.email);
     const cleanEmail = isAdmin
       ? 'mutwirib964@gmail.com'
@@ -4623,21 +4523,19 @@ class SupabaseService {
       if (user.id && this.isValidUuid(user.id)) {
         orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
       }
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_user_finances?or=(${orClauses.join(',')})`,
+      const res = await this.proxyRest(
+        `vtm_user_finances?or=(${orClauses.join(',')})`,
         {
           method: 'PATCH',
           headers: {
             'Content-Type': 'application/json',
-            apikey: this.config.anonKey,
-            Authorization: `Bearer ${this.config.anonKey}`,
           },
           body: JSON.stringify({
             transactions: Array.isArray(transactions) ? transactions.slice(0, 100) : [],
             last_updated: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(5000),
-        }
+        },
+        5000
       );
       return res.ok;
     } catch {
@@ -4694,7 +4592,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined,
     activity: any
   ): Promise<boolean> {
-    if (!this.config || !user) return false;
+    if (!this.config || !user || !this.getSessionToken()) return false;
     try {
       const payload = {
         user_email: String(user.email || user.accountNumber || 'trader').trim().toLowerCase(),
@@ -4705,12 +4603,15 @@ class SupabaseService {
         created_at: this.toIsoTimestamp(activity?.timestamp),
       };
 
-      const res = await fetch(`${this.config.url}/rest/v1/user_activities`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(4000),
-      });
+      const res = await this.proxyRest(
+        'user_activities',
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(payload),
+        },
+        4000
+      );
       return res.ok;
     } catch {
       return false;
@@ -4718,7 +4619,7 @@ class SupabaseService {
   }
 
   public async syncDevice(user: UserAuthProfile | null | undefined): Promise<boolean> {
-    if (!this.config || !user || !user.email) return false;
+    if (!this.config || !user || !user.email || !this.getSessionToken()) return false;
     try {
       const cleanEmail = user.email.trim().toLowerCase();
       const deviceId =
@@ -4738,8 +4639,8 @@ class SupabaseService {
         last_active_at: new Date().toISOString(),
       };
 
-      const res = await fetch(
-        `${this.config.url}/rest/v1/user_devices?on_conflict=user_email,device_id`,
+      const res = await this.proxyRest(
+        'user_devices?on_conflict=user_email,device_id',
         {
           method: 'POST',
           headers: {
@@ -4747,8 +4648,8 @@ class SupabaseService {
             Prefer: 'resolution=merge-duplicates,return=minimal',
           },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(4000),
-        }
+        },
+        4000
       );
       return res.ok;
     } catch {
@@ -4774,59 +4675,22 @@ class SupabaseService {
       return { email: 'mutwirib964@gmail.com', accountNumber: '27330648' };
     }
 
-    const suffix = cleanCode.replace(/^VTM-/i, '').trim();
-    const headers = {
-      apikey: this.config.anonKey,
-      Authorization: `Bearer ${this.config.anonKey}`,
-    };
-
     try {
-      if (suffix && /^\d{4,8}$/.test(suffix)) {
-        const res = await fetch(
-          `${this.config.url}/rest/v1/vtm_registered_users?account_number=like.*${encodeURIComponent(suffix)}&select=email,account_number&limit=5`,
-          { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
-        );
-        this.checkResponseQuota(res);
-        if (res.ok) {
-          const rows = await res.json();
-          if (Array.isArray(rows) && rows.length > 0 && rows[0].email) {
-            return {
-              email: String(rows[0].email).trim().toLowerCase(),
-              accountNumber: rows[0].account_number ? String(rows[0].account_number) : undefined,
-            };
-          }
-        }
-      }
-
-      const refRes = await fetch(
-        `${this.config.url}/rest/v1/vtm_referrals?referrer_code=ilike.${encodeURIComponent(cleanCode)}&select=referrer_email&limit=1`,
-        { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
+      const res = await this.proxyPost(
+        { action: 'resolve_referrer', code: cleanCode },
+        5500,
+        false
       );
-      this.checkResponseQuota(refRes);
-      if (refRes.ok) {
-        const refRows = await refRes.json();
-        if (Array.isArray(refRows) && refRows.length > 0 && refRows[0].referrer_email) {
+      this.checkResponseQuota(res);
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.referrer?.email) {
           return {
-            email: String(refRows[0].referrer_email).trim().toLowerCase(),
+            email: String(data.referrer.email).trim().toLowerCase(),
+            accountNumber: data.referrer.accountNumber
+              ? String(data.referrer.accountNumber)
+              : undefined,
           };
-        }
-      }
-
-      // Fallback scan of registered users prefix if non-numeric code (e.g. VTM-ABCDEF)
-      if (suffix) {
-        const prefixRes = await fetch(
-          `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(suffix.toLowerCase())}*&select=email,account_number&limit=5`,
-          { method: 'GET', headers, signal: AbortSignal.timeout(4500) }
-        );
-        this.checkResponseQuota(prefixRes);
-        if (prefixRes.ok) {
-          const pRows = await prefixRes.json();
-          if (Array.isArray(pRows) && pRows.length > 0 && pRows[0].email) {
-            return {
-              email: String(pRows[0].email).trim().toLowerCase(),
-              accountNumber: pRows[0].account_number ? String(pRows[0].account_number) : undefined,
-            };
-          }
         }
       }
     } catch {
@@ -4864,7 +4728,7 @@ class SupabaseService {
     }>;
     cloudStateData: any;
   } | null> {
-    if (!this.config || !userEmail || this.isQuotaRestricted()) return null;
+    if (!this.config || !userEmail || this.isQuotaRestricted() || !this.getSessionToken()) return null;
     const cleanEmail = userEmail.trim().toLowerCase();
     const uniqueCodes = Array.from(
       new Set(
@@ -4874,56 +4738,32 @@ class SupabaseService {
       )
     );
     const codeSet = new Set(uniqueCodes);
-    const headers = {
-      apikey: this.config.anonKey,
-      Authorization: `Bearer ${this.config.anonKey}`,
-    };
 
     try {
-      const codeOrFilter = uniqueCodes
-        .map((c) => `referred_by_code.ilike.${encodeURIComponent(c)}`)
-        .join(',');
+      const res = await this.proxyPost(
+        {
+          action: 'fetch_referral_dashboard',
+          acceptedCodes: uniqueCodes,
+        },
+        9500,
+        true
+      );
+      this.checkResponseQuota(res);
+      if (!res.ok) return null;
 
-      const [selfRes, regRefRes, actRes, tblRefRes, claimsRes, cloudStateData, selfFinRes] =
-        await Promise.all([
-          fetch(
-            `${this.config.url}/rest/v1/vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}&select=email,account_number,role&limit=1`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
-          ).catch(() => null),
-          codeOrFilter
-            ? fetch(
-                `${this.config.url}/rest/v1/vtm_registered_users?or=(${codeOrFilter})&select=uid,email,name,account_number,referred_by_code,created_at&limit=2000`,
-                { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
-              ).catch(() => null)
-            : Promise.resolve(null),
-          fetch(
-            `${this.config.url}/rest/v1/user_activities?activity_type=in.(SIGNUP,REGISTRATION)&select=user_email,metadata,created_at&limit=3000`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
-          ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_referrals?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&select=*&limit=2000`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
-          ).catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_referral_claims?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&order=claimed_at.desc&select=*&limit=500`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
-          ).catch(() => null),
-          this.fetchCloudStateRecord<any>(cleanEmail, 'STATE_REFERRALS').catch(() => null),
-          fetch(
-            `${this.config.url}/rest/v1/vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=transactions&limit=5`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(5000) }
-          ).catch(() => null),
-        ]);
+      const dash = await res.json().catch(() => null);
+      if (!dash || !dash.ok) return null;
 
-      [selfRes, regRefRes, actRes, tblRefRes, claimsRes, selfFinRes].forEach((r) => {
-        if (r) this.checkResponseQuota(r);
-      });
-
-      const selfRows = selfRes && selfRes.ok ? await selfRes.json().catch(() => []) : [];
-      const referrerAccountNumber =
-        Array.isArray(selfRows) && selfRows[0]?.account_number
-          ? String(selfRows[0].account_number)
-          : undefined;
+      const referrerAccountNumber = dash.referrerAccountNumber
+        ? String(dash.referrerAccountNumber)
+        : undefined;
+      const cloudStateData = dash.cloudStateData || null;
+      const regRows = Array.isArray(dash.regRows) ? dash.regRows : [];
+      const actRows = Array.isArray(dash.actRows) ? dash.actRows : [];
+      const tblRows = Array.isArray(dash.tblRows) ? dash.tblRows : [];
+      const rawClaimRows = Array.isArray(dash.claimRows) ? dash.claimRows : [];
+      const selfFinRows = Array.isArray(dash.selfFinRows) ? dash.selfFinRows : [];
+      const referredFinRows = Array.isArray(dash.referredFinRows) ? dash.referredFinRows : [];
 
       // Expand codeSet if self's authoritative account_number yields another code
       if (referrerAccountNumber) {
@@ -4951,7 +4791,6 @@ class SupabaseService {
         }
       >();
 
-      const regRows = regRefRes && regRefRes.ok ? await regRefRes.json().catch(() => []) : [];
       if (Array.isArray(regRows)) {
         for (const r of regRows) {
           const refEmail = String(r?.email || '').trim().toLowerCase();
@@ -4973,7 +4812,6 @@ class SupabaseService {
         }
       }
 
-      const actRows = actRes && actRes.ok ? await actRes.json().catch(() => []) : [];
       if (Array.isArray(actRows)) {
         for (const a of actRows) {
           const refEmail = String(a?.user_email || '').trim().toLowerCase();
@@ -4997,7 +4835,6 @@ class SupabaseService {
         }
       }
 
-      const tblRows = tblRefRes && tblRefRes.ok ? await tblRefRes.json().catch(() => []) : [];
       if (Array.isArray(tblRows)) {
         for (const row of tblRows) {
           const refEmail = String(row?.referred_email || '').trim().toLowerCase();
@@ -5054,53 +4891,32 @@ class SupabaseService {
         }
       }
 
-      // Fetch first completed deposits from vtm_user_finances for ALL referred users (chunked cleanly)
-      const allRefEmails = Array.from(mergedByEmail.keys());
-      const chunkSize = 35;
-      for (let i = 0; i < allRefEmails.length; i += chunkSize) {
-        const chunk = allRefEmails.slice(i, i + chunkSize);
-        if (chunk.length === 0) continue;
-        const inFilter = chunk.map((e) => `"${e.replace(/"/g, '')}"`).join(',');
-        try {
-          const finRes = await fetch(
-            `${this.config.url}/rest/v1/vtm_user_finances?user_email=in.(${encodeURIComponent(inFilter)})&select=user_email,transactions,last_updated`,
-            { method: 'GET', headers, signal: AbortSignal.timeout(6000) }
-          );
-          this.checkResponseQuota(finRes);
-          if (finRes.ok) {
-            const finRows = await finRes.json().catch(() => []);
-            if (Array.isArray(finRows)) {
-              for (const f of finRows) {
-                const fEmail = String(f?.user_email || '').trim().toLowerCase();
-                const entry = mergedByEmail.get(fEmail);
-                if (!entry) continue;
-                const txs = Array.isArray(f?.transactions) ? f.transactions : [];
-                const completedDeposits = txs
-                  .filter(
-                    (tx: any) =>
-                      tx &&
-                      tx.type === 'DEPOSIT' &&
-                      String(tx.status || 'COMPLETED').toUpperCase() === 'COMPLETED' &&
-                      Number(tx.amount) > 0 &&
-                      !/referral/i.test(String(tx.method || ''))
-                  )
-                  .sort((a: any, b: any) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
+      // Apply first completed deposits from server-scoped referredFinRows
+      for (const f of referredFinRows) {
+        const fEmail = String(f?.user_email || '').trim().toLowerCase();
+        const entry = mergedByEmail.get(fEmail);
+        if (!entry) continue;
+        const txs = Array.isArray(f?.transactions) ? f.transactions : [];
+        const completedDeposits = txs
+          .filter(
+            (tx: any) =>
+              tx &&
+              tx.type === 'DEPOSIT' &&
+              String(tx.status || 'COMPLETED').toUpperCase() === 'COMPLETED' &&
+              Number(tx.amount) > 0 &&
+              !/referral/i.test(String(tx.method || ''))
+          )
+          .sort((a: any, b: any) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0));
 
-                if (completedDeposits.length > 0) {
-                  const firstDep = completedDeposits[0];
-                  const firstAmt = Number(Number(firstDep.amount).toFixed(2));
-                  entry.totalDepositedUsd = firstAmt;
-                  entry.totalCommissionUsd = Number((firstAmt * 0.05).toFixed(2));
-                  entry.lastDepositAt = Number(firstDep.timestamp) || entry.lastDepositAt || Date.now();
-                  if (firstDep.reference) {
-                    entry.firstDepositReference = String(firstDep.reference);
-                  }
-                }
-              }
-            }
+        if (completedDeposits.length > 0) {
+          const firstDep = completedDeposits[0];
+          const firstAmt = Number(Number(firstDep.amount).toFixed(2));
+          entry.totalDepositedUsd = firstAmt;
+          entry.totalCommissionUsd = Number((firstAmt * 0.05).toFixed(2));
+          entry.lastDepositAt = Number(firstDep.timestamp) || entry.lastDepositAt || Date.now();
+          if (firstDep.reference) {
+            entry.firstDepositReference = String(firstDep.reference);
           }
-        } catch {
-          // ignore chunk failure and continue
         }
       }
 
@@ -5117,7 +4933,6 @@ class SupabaseService {
         }
       >();
 
-      const rawClaimRows = claimsRes && claimsRes.ok ? await claimsRes.json().catch(() => []) : [];
       if (Array.isArray(rawClaimRows)) {
         for (const c of rawClaimRows) {
           const refKey = String(c?.wallet_tx_reference || c?.id || '').trim();
@@ -5151,7 +4966,6 @@ class SupabaseService {
         }
       }
 
-      const selfFinRows = selfFinRes && selfFinRes.ok ? await selfFinRes.json().catch(() => []) : [];
       if (Array.isArray(selfFinRows)) {
         for (const sf of selfFinRows) {
           const txs = Array.isArray(sf?.transactions) ? sf.transactions : [];
@@ -5211,7 +5025,7 @@ class SupabaseService {
     }>,
     fullStateSnapshot?: any
   ): Promise<boolean> {
-    if (!this.config || !referrerEmail || this.isQuotaRestricted()) return false;
+    if (!this.config || !referrerEmail || this.isQuotaRestricted() || !this.getSessionToken()) return false;
     const cleanEmail = referrerEmail.trim().toLowerCase();
     const cleanCode = (referrerCode || 'VTM-GLOBAL').trim().toUpperCase();
 
@@ -5230,8 +5044,8 @@ class SupabaseService {
           updated_at: new Date().toISOString(),
         }));
 
-        const res = await fetch(
-          `${this.config.url}/rest/v1/vtm_referrals?on_conflict=referrer_email,referred_email`,
+        const res = await this.proxyRest(
+          'vtm_referrals?on_conflict=referrer_email,referred_email',
           {
             method: 'POST',
             headers: {
@@ -5239,8 +5053,8 @@ class SupabaseService {
               Prefer: 'resolution=merge-duplicates,return=minimal',
             },
             body: JSON.stringify(rows),
-            signal: AbortSignal.timeout(6000),
-          }
+          },
+          6000
         );
         this.checkResponseQuota(res);
       }
@@ -5264,7 +5078,7 @@ class SupabaseService {
     referrerEmail: string | null,
     newUser: { email: string; name: string; accountNumber?: string }
   ): Promise<boolean> {
-    if (!this.config || !referrerCode || !newUser.email || this.isQuotaRestricted()) return false;
+    if (!this.config || !referrerCode || !newUser.email || this.isQuotaRestricted() || !this.getSessionToken()) return false;
     const cleanCode = referrerCode.trim().toUpperCase();
     const cleanNewEmail = newUser.email.trim().toLowerCase();
 
@@ -5276,8 +5090,8 @@ class SupabaseService {
       }
       if (!resolvedEmail || resolvedEmail === cleanNewEmail) return false;
 
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_referrals?on_conflict=referrer_email,referred_email`,
+      const res = await this.proxyRest(
+        'vtm_referrals?on_conflict=referrer_email,referred_email',
         {
           method: 'POST',
           headers: {
@@ -5296,8 +5110,8 @@ class SupabaseService {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           }),
-          signal: AbortSignal.timeout(5000),
-        }
+        },
+        5000
       );
       this.checkResponseQuota(res);
       return res.ok;
@@ -5315,7 +5129,7 @@ class SupabaseService {
     },
     fullStateSnapshot?: any
   ): Promise<boolean> {
-    if (!this.config || !claim.referrerEmail) return false;
+    if (!this.config || !claim.referrerEmail || !this.getSessionToken()) return false;
     const cleanEmail = claim.referrerEmail.trim().toLowerCase();
 
     let stateSaved = false;
@@ -5332,8 +5146,8 @@ class SupabaseService {
 
     let claimSaved = false;
     try {
-      const res = await fetch(
-        `${this.config.url}/rest/v1/vtm_referral_claims?on_conflict=wallet_tx_reference`,
+      const res = await this.proxyRest(
+        'vtm_referral_claims?on_conflict=wallet_tx_reference',
         {
           method: 'POST',
           headers: {
@@ -5348,15 +5162,15 @@ class SupabaseService {
             status: 'COMPLETED',
             claimed_at: new Date(claim.claimedAt || Date.now()).toISOString(),
           }),
-          signal: AbortSignal.timeout(6000),
-        }
+        },
+        6000
       );
       this.checkResponseQuota(res);
       claimSaved = res.ok;
 
       // Mark any pending commission rows as claimed
-      await fetch(
-        `${this.config.url}/rest/v1/vtm_referral_commissions?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&claimed=eq.false`,
+      await this.proxyRest(
+        `vtm_referral_commissions?referrer_email=ilike.${encodeURIComponent(cleanEmail)}&claimed=eq.false`,
         {
           method: 'PATCH',
           headers: {
@@ -5367,8 +5181,8 @@ class SupabaseService {
             claimed: true,
             claimed_at: new Date(claim.claimedAt || Date.now()).toISOString(),
           }),
-          signal: AbortSignal.timeout(4000),
-        }
+        },
+        4000
       ).catch(() => {});
     } catch {
       claimSaved = false;

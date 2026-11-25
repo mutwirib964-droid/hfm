@@ -5,10 +5,22 @@
 
 [build.environment]
   SECRETS_SCAN_ENABLED = "false"
-  SECRETS_SCAN_OMIT_KEYS = "PAYHERO_API_KEY,PAYHERO_BASIC_AUTH,PAYHERO_CHANNEL_ID,PAYHERO_ACCOUNT_ID,HASHBACK_API_KEY,HASHBACK_ACCOUNT_ID,VTMMARKETS_WEBHOOK_SECRET,VITE_SUPABASE_ANON_KEY,VITE_SUPABASE_URL"
+  SECRETS_SCAN_OMIT_KEYS = "PAYHERO_API_KEY,PAYHERO_BASIC_AUTH,PAYHERO_CHANNEL_ID,PAYHERO_ACCOUNT_ID,HASHBACK_API_KEY,HASHBACK_ACCOUNT_ID,VTMMARKETS_WEBHOOK_SECRET,VITE_SUPABASE_ANON_KEY,VITE_SUPABASE_URL,SUPABASE_SERVICE_ROLE_KEY,SUPABASE_SECRET_KEY,AUTH_SESSION_SECRET"
 
 [functions]
   node_bundler = "esbuild"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    Cross-Origin-Opener-Policy = "same-origin-allow-popups"
+    Cross-Origin-Resource-Policy = "same-origin"
+    X-XSS-Protection = "0"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' https://s3.tradingview.com https://*.tradingview.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; worker-src 'self' blob:; connect-src 'self' https://vtmmarkets.com https://*.supabase.co wss://*.supabase.co https://*.tradingview.com wss://*.tradingview.com wss://stream.binance.com wss://stream.binance.com:9443 https://min-api.cryptocompare.com https://backend.payhero.co.ke https://fonts.googleapis.com https://fonts.gstatic.com; frame-src 'self' https://*.tradingview.com; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://aistudio.google.com https://*.aistudio.google.com; upgrade-insecure-requests"
 
 [[headers]]
   for = "/"
@@ -80,6 +92,12 @@
 [[redirects]]
   from = "/api/supabase-config"
   to = "/.netlify/functions/api?route=supabase-config"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/supabase-proxy"
+  to = "/.netlify/functions/api?route=supabase-proxy"
   status = 200
   force = true
 
