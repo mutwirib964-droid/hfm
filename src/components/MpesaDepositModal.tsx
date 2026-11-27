@@ -357,22 +357,7 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
             rawCallbackResponse: res.raw || res.data || res,
           });
 
-          // Save deposit to Supabase cloud database with consistent primary PayHero reference
-          supabaseService.saveDeposit(latest.currentUser, {
-            id: activeDepositTxIdRef.current || undefined,
-            targetAccount: latest.targetAccount,
-            amountUsd: latest.numUsd,
-            amountKes: latest.numKes,
-            method: 'M-PESA',
-            phone: latest.phoneFormatted || latest.phoneInput,
-            reference: primaryPayheroRef,
-            payheroReference: primaryPayheroRef,
-            checkoutId: checkoutRequestId || undefined,
-            checkoutRequestId: checkoutRequestId || undefined,
-            mpesaReceiptNumber: mpesaReceipt || undefined,
-            externalReference: externalRef,
-            status: 'COMPLETED',
-          });
+          // Confirm activity log (onDepositComplete already persists the DEPOSIT record via handleDeposit)
           supabaseService.syncActivity(latest.currentUser, {
             type: 'DEPOSIT_CONFIRMED',
             description: `M-PESA payment of $${latest.numUsd.toFixed(2)} (KES ${latest.numKes.toLocaleString()}) confirmed for ${latest.userAccountName} -> ${latest.settlementDestinationLabel}. Ref: ${primaryPayheroRef}${mpesaReceipt ? ` | Receipt: ${mpesaReceipt}` : ''}`,

@@ -390,6 +390,7 @@ export function mergeTransactionLists(
       tx.reference,
       tx.checkoutRequestId,
       tx.externalReference,
+      tx.mpesaReceiptNumber,
     ]
       .filter(Boolean)
       .map((k) => String(k).trim());
@@ -403,6 +404,7 @@ export function mergeTransactionLists(
         existing.reference,
         existing.checkoutRequestId,
         existing.externalReference,
+        existing.mpesaReceiptNumber,
       ]
         .filter(Boolean)
         .map((k) => String(k).trim());
@@ -422,6 +424,12 @@ export function mergeTransactionLists(
       const checkoutReqId = tx.checkoutRequestId || existing.checkoutRequestId;
       const mpesaReceipt = tx.mpesaReceiptNumber || existing.mpesaReceiptNumber;
       const extRef = tx.externalReference || existing.externalReference;
+      const preferredMethod =
+        existing.method && !/^Instant Deposit$/i.test(existing.method)
+          ? existing.method
+          : tx.method && !/^Instant Deposit$/i.test(tx.method)
+          ? tx.method
+          : existing.method || tx.method;
 
       const incomingFailed =
         tx.status === 'FAILED' ||
@@ -440,6 +448,7 @@ export function mergeTransactionLists(
           ...tx,
           ...existing,
           id: existing.id || tx.id,
+          method: preferredMethod,
           status: 'COMPLETED',
           details: completedDetails,
           reference: primaryRef,
@@ -459,6 +468,7 @@ export function mergeTransactionLists(
           ...tx,
           ...existing,
           id: existing.id || tx.id,
+          method: preferredMethod,
           status: 'FAILED',
           details: failedDetails,
           reference: primaryRef,
@@ -472,6 +482,7 @@ export function mergeTransactionLists(
           ...tx,
           ...existing,
           id: existing.id || tx.id,
+          method: preferredMethod,
           reference: primaryRef,
           payheroReference: tx.payheroReference || existing.payheroReference || primaryRef,
           checkoutRequestId: checkoutReqId,
@@ -1873,9 +1884,25 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
 
     const primaryRef = String(tx.payheroReference || tx.reference || '').trim();
     const dedupeKey = String(tx.id || primaryRef || `${tx.type}-${tx.timestamp}`);
-    if (seenIds.has(dedupeKey) || (primaryRef && seenIds.has(`ref:${primaryRef}`))) continue;
+    const extraKeys =
+      tx.type === 'DEPOSIT'
+        ? [
+            tx.reference ? `ref:${String(tx.reference).trim()}` : '',
+            tx.checkoutRequestId ? `ck:${String(tx.checkoutRequestId).trim()}` : '',
+            tx.externalReference ? `ext:${String(tx.externalReference).trim()}` : '',
+            tx.mpesaReceiptNumber ? `rcpt:${String(tx.mpesaReceiptNumber).trim()}` : '',
+          ].filter(Boolean)
+        : [];
+    if (
+      seenIds.has(dedupeKey) ||
+      (primaryRef && seenIds.has(`ref:${primaryRef}`)) ||
+      extraKeys.some((k) => seenIds.has(k))
+    ) {
+      continue;
+    }
     seenIds.add(dedupeKey);
     if (primaryRef) seenIds.add(`ref:${primaryRef}`);
+    extraKeys.forEach((k) => seenIds.add(k));
 
     let normalizedStatus: Transaction['status'] = tx.status;
     if (tx.type === 'WITHDRAWAL') {
@@ -1967,8 +1994,46 @@ export function sanitizeRealTransactions(txs?: Transaction[] | null): Transactio
     });
   }
 
-  result.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-  return result;
+  // Suppress phantom 'Instant Deposit' (or unverified UUID-ref) activity echoes when a real COMPLETED deposit
+  // for the same amount and target account exists within 10 minutes.
+  const normalizeDepositTarget = (acc?: string) => {
+    const clean = String(acc || 'VTM Wallet').trim().toLowerCase();
+    if (!clean || clean.includes('wallet')) return 'wallet';
+    return clean.replace(/^account\s*#?/i, '').trim();
+  };
+  const verifiedCompletedDeposits = result.filter(
+    (t) =>
+      t.type === 'DEPOSIT' &&
+      t.status === 'COMPLETED' &&
+      !/^Instant Deposit$/i.test(String(t.method || '').trim())
+  );
+  const filteredResult = result.filter((t) => {
+    if (t.type !== 'DEPOSIT' || t.status !== 'COMPLETED') return true;
+    const methodStr = String(t.method || '').trim();
+    const refStr = String(t.payheroReference || t.reference || '').trim();
+    const isPhantomInstant = /^Instant Deposit$/i.test(methodStr);
+    const isUnverifiedUuidEcho =
+      !t.mpesaReceiptNumber &&
+      !t.checkoutRequestId &&
+      !/crypto|btc|eth|usdt|trc20|erc20|bep20|direct|institutional|referral/i.test(methodStr) &&
+      (/^[0-9a-f-]{20,}$/i.test(refStr) || /^DB-DEP-/i.test(refStr));
+    if (!isPhantomInstant && !isUnverifiedUuidEcho) return true;
+
+    const tAmt = Math.abs(Number(t.amount || 0));
+    const tTarget = normalizeDepositTarget(t.accountNumber);
+    const tTime = Number(t.timestamp || 0);
+    const hasVerifiedMatch = verifiedCompletedDeposits.some(
+      (real) =>
+        real !== t &&
+        Math.abs(Math.abs(Number(real.amount || 0)) - tAmt) < 0.01 &&
+        normalizeDepositTarget(real.accountNumber) === tTarget &&
+        Math.abs(Number(real.timestamp || 0) - tTime) <= 10 * 60 * 1000
+    );
+    return !hasVerifiedMatch;
+  });
+
+  filteredResult.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  return filteredResult;
 }
 
 export interface PlatformTransactionRecord {

@@ -1172,36 +1172,9 @@ class SupabaseService {
             });
             const mergedAccounts = Array.from(mergedAccMap.values());
 
-            const mergedTxMap = new Map<string, Transaction>();
-            const seenTxIds = new Set<string>();
-            if (!isMasterEmail) {
-              (existing.transactions || []).forEach((tx) => {
-                const key = tx.reference || tx.id;
-                if (key && (!tx.id || !seenTxIds.has(tx.id))) {
-                  mergedTxMap.set(key, tx);
-                  if (tx.id) seenTxIds.add(tx.id);
-                }
-              });
-              incomingTxs.forEach((tx) => {
-                const key = tx.reference || tx.id;
-                if (!key) return;
-                const prev = mergedTxMap.get(key);
-                if (!prev && (!tx.id || !seenTxIds.has(tx.id))) {
-                  mergedTxMap.set(key, tx);
-                  if (tx.id) seenTxIds.add(tx.id);
-                } else if (prev) {
-                  if (tx.status === 'FAILED' && prev.status !== 'FAILED') {
-                    mergedTxMap.set(key, { ...prev, ...tx, status: 'FAILED' });
-                  } else if (tx.status === 'COMPLETED' && prev.status === 'PENDING') {
-                    mergedTxMap.set(key, { ...prev, ...tx, status: 'COMPLETED' });
-                  }
-                }
-              });
-            }
-
-            const sortedTxs = Array.from(mergedTxMap.values()).sort(
-              (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
-            );
+            const sortedTxs = isMasterEmail
+              ? []
+              : mergeTransactionLists(existing.transactions, incomingTxs);
             const newerWallet =
               incomingUpdated >= (existing.lastUpdated || 0)
                 ? incomingWallet
@@ -1259,11 +1232,15 @@ class SupabaseService {
           ) {
             const amt = Number(meta.amountUsd ?? meta.amount ?? 0);
             if (amt > 0) {
-              const ref =
-                meta.reference ||
-                meta.checkoutId ||
-                meta.id ||
-                `DB-DEP-${String(act.id || '').slice(0, 8).toUpperCase()}`;
+              const ref = String(
+                meta.payheroReference ||
+                  meta.reference ||
+                  meta.externalReference ||
+                  meta.checkoutRequestId ||
+                  meta.checkoutId ||
+                  meta.id ||
+                  `DB-DEP-${String(act.id || '').slice(0, 8).toUpperCase()}`
+              ).trim();
               const defaultStatus =
                 act.activity_type === 'DEPOSIT_CRYPTO_PENDING' ? 'PENDING' : 'COMPLETED';
               const rawStatus = String(meta.status || defaultStatus).toUpperCase();
@@ -1274,30 +1251,91 @@ class SupabaseService {
                   ? 'PENDING'
                   : 'COMPLETED';
               const targetAcc = String(meta.targetAccount || 'VTM Wallet').trim();
-              const isWalletTarget = /wallet/i.test(targetAcc);
-              void isWalletTarget;
+              const actTs = act.created_at ? new Date(act.created_at).getTime() : Date.now();
 
-              const existingIdx = (fin.transactions || []).findIndex(
-                (t) =>
-                  t.type === 'DEPOSIT' &&
-                  (t.reference === ref || t.id === meta.id || t.id === act.id)
-              );
+              const actKeys = [
+                meta.id,
+                act.id,
+                meta.reference,
+                meta.payheroReference,
+                meta.checkoutRequestId,
+                meta.checkoutId,
+                meta.externalReference,
+                meta.mpesaReceiptNumber,
+              ]
+                .filter(Boolean)
+                .map((k) => String(k).trim());
+
+              const existingIdx = (fin.transactions || []).findIndex((t) => {
+                if (t.type !== 'DEPOSIT') return false;
+                const tKeys = [
+                  t.id,
+                  t.reference,
+                  t.payheroReference,
+                  t.checkoutRequestId,
+                  t.externalReference,
+                  t.mpesaReceiptNumber,
+                ]
+                  .filter(Boolean)
+                  .map((k) => String(k).trim());
+                return actKeys.some((k) => tKeys.includes(k));
+              });
+
+              const inferredMethod =
+                meta.method ||
+                (act.activity_type === 'DEPOSIT_CRYPTO_PENDING' || /crypto/i.test(String(act.description || ''))
+                  ? 'Crypto Deposit'
+                  : meta.mpesaReceiptNumber ||
+                    meta.checkoutRequestId ||
+                    meta.checkoutId ||
+                    /m-?pesa/i.test(String(act.description || ''))
+                  ? 'M-PESA'
+                  : 'Instant Deposit');
+
+              const normalizeTarget = (acc?: string) => {
+                const c = String(acc || 'VTM Wallet').trim().toLowerCase();
+                if (!c || c.includes('wallet')) return 'wallet';
+                return c.replace(/^account\s*#?/i, '').trim();
+              };
+
+              // Do not synthesize a phantom 'Instant Deposit' (or unverified echo without method/receipt)
+              // when fin.transactions already contains a verified deposit of the same amount & target within 10 minutes.
+              const isUnverifiedEcho =
+                !meta.method ||
+                /^Instant Deposit$/i.test(String(inferredMethod)) ||
+                (!meta.mpesaReceiptNumber && !meta.checkoutRequestId && !meta.checkoutId && /^[0-9a-f-]{20,}$/i.test(ref));
+              const hasNearbyMatchingDeposit =
+                existingIdx === -1 &&
+                isUnverifiedEcho &&
+                (fin.transactions || []).some(
+                  (t) =>
+                    t.type === 'DEPOSIT' &&
+                    t.status === status &&
+                    Math.abs(Math.abs(Number(t.amount || 0)) - amt) < 0.01 &&
+                    normalizeTarget(t.accountNumber) === normalizeTarget(targetAcc) &&
+                    Math.abs(Number(t.timestamp || 0) - actTs) <= 10 * 60 * 1000
+                );
+
+              if (hasNearbyMatchingDeposit) {
+                return;
+              }
+
               if (existingIdx === -1) {
                 fin.transactions = [
                   ...(fin.transactions || []),
                   {
                     id: meta.id || act.id || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     type: 'DEPOSIT',
-                    method:
-                      meta.method ||
-                      (act.activity_type === 'DEPOSIT_CRYPTO_PENDING'
-                        ? 'Crypto Deposit'
-                        : 'Instant Deposit'),
+                    method: inferredMethod,
                     amount: amt,
                     currency: 'USD',
                     status,
-                    timestamp: act.created_at ? new Date(act.created_at).getTime() : Date.now(),
+                    timestamp: actTs,
                     reference: ref,
+                    payheroReference: meta.payheroReference || ref,
+                    checkoutRequestId: meta.checkoutRequestId || meta.checkoutId || undefined,
+                    mpesaReceiptNumber: meta.mpesaReceiptNumber || undefined,
+                    externalReference: meta.externalReference || undefined,
                     accountNumber: targetAcc,
                     details:
                       status === 'FAILED'
@@ -1305,18 +1343,30 @@ class SupabaseService {
                         : meta.details || act.description || `Funded to ${targetAcc}`,
                   },
                 ];
-              } else if (
-                fin.transactions &&
-                fin.transactions[existingIdx].status === 'PENDING' &&
-                (status === 'COMPLETED' || status === 'FAILED')
-              ) {
+              } else if (fin.transactions && fin.transactions[existingIdx]) {
+                const prevTx = fin.transactions[existingIdx];
+                const nextStatus =
+                  prevTx.status === 'PENDING' && (status === 'COMPLETED' || status === 'FAILED')
+                    ? status
+                    : prevTx.status;
                 fin.transactions[existingIdx] = {
-                  ...fin.transactions[existingIdx],
-                  status,
+                  ...prevTx,
+                  method:
+                    prevTx.method && !/^Instant Deposit$/i.test(prevTx.method)
+                      ? prevTx.method
+                      : inferredMethod,
+                  payheroReference: prevTx.payheroReference || meta.payheroReference,
+                  checkoutRequestId:
+                    prevTx.checkoutRequestId || meta.checkoutRequestId || meta.checkoutId,
+                  mpesaReceiptNumber: prevTx.mpesaReceiptNumber || meta.mpesaReceiptNumber,
+                  externalReference: prevTx.externalReference || meta.externalReference,
+                  status: nextStatus,
                   details:
-                    meta.details ||
-                    fin.transactions[existingIdx].details ||
-                    (status === 'FAILED' ? 'Failed' : `Funded to ${targetAcc}`),
+                    nextStatus !== prevTx.status
+                      ? meta.details ||
+                        prevTx.details ||
+                        (nextStatus === 'FAILED' ? 'Failed' : `Funded to ${targetAcc}`)
+                      : prevTx.details,
                 };
               }
             }
@@ -1351,9 +1401,10 @@ class SupabaseService {
         });
       }
 
-      // Ensure each user's walletBalance is reconciled without resurrecting used or withdrawn funds
+      // Ensure each user's transactions are deduplicated and walletBalance is reconciled cleanly
       Object.values(financesByEmail).forEach((f) => {
         if (f) {
+          f.transactions = sanitizeRealTransactions(f.transactions);
           f.walletBalance = reconcileWalletBalanceWithTransactions(
             Number(f.walletBalance || 0),
             f.transactions,

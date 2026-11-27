@@ -4615,19 +4615,6 @@ export default function App() {
         status: 'COMPLETED',
       });
       supabaseService.syncTransactions(currentUser, nextTransactions);
-      supabaseService.syncActivity(currentUser, {
-        type: 'DEPOSIT',
-        description: `Funded $${amountUsd.toFixed(2)} to ${params.targetAccount} via ${params.method}`,
-        metadata: {
-          amount: amountUsd,
-          targetAccount: params.targetAccount,
-          reference: resolvedPrimaryRef,
-          payheroReference: resolvedPrimaryRef,
-          checkoutRequestId: resolvedCheckoutRequestId,
-          mpesaReceiptNumber: resolvedMpesaReceipt,
-          externalReference: resolvedExternalRef,
-        },
-      });
 
       // Credit referral commission if user joined via a referral link and deposit is >= $16
       const incomingRefCode =
@@ -4757,11 +4744,6 @@ export default function App() {
           status: 'COMPLETED',
         }),
         supabaseService.syncTransactions(currentUser, nextTransactions),
-        supabaseService.syncActivity(currentUser, {
-          type: 'DEPOSIT',
-          description: `Claimed referral commission payout of $${amount.toFixed(2)} to VTM One Wallet`,
-          metadata: { amount, method: 'Referral Commission', reference: claimRef, newWalletBalance: nextWallet },
-        }),
       ]).catch(() => {});
     }
 
