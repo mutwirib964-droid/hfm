@@ -104,8 +104,6 @@ export interface TransferRecord {
   createdAt: number;
 }
 
-const STORAGE_SUPABASE_URL_KEY = 'vtm_supabase_url';
-const STORAGE_SUPABASE_ANON_KEY = 'vtm_supabase_anon_key';
 const SESSION_TOKEN_STORAGE_KEY = 'vtm_session_token';
 
 const PROXY_ENDPOINT_URL = '/api/supabase-proxy';
@@ -115,10 +113,15 @@ class SupabaseService {
   private initPromise: Promise<SupabaseConfig | null> | null = null;
   private quotaRestrictedUntil = 0;
   private closedTradesLegacyFkBlocked: boolean | null = null;
+  private activeSessionPasswordInMemory = '';
 
   constructor() {
     this.loadConfig();
     this.initServerConfig().catch(() => {});
+  }
+
+  public setActiveSessionPassword(password?: string | null): void {
+    this.activeSessionPasswordInMemory = typeof password === 'string' ? password.trim() : '';
   }
 
   public getSessionToken(): string {
@@ -140,8 +143,11 @@ class SupabaseService {
   }
 
   public clearSessionToken(): void {
+    this.activeSessionPasswordInMemory = '';
     try {
       localStorage.removeItem(SESSION_TOKEN_STORAGE_KEY);
+      localStorage.removeItem('vtm_active_user_password');
+      localStorage.removeItem('vtm_user_credentials');
     } catch {
       // ignore
     }
@@ -262,6 +268,12 @@ class SupabaseService {
 
   public loadConfig(): SupabaseConfig | null {
     this.config = { url: PROXY_ENDPOINT_URL, anonKey: 'server-proxied' };
+    try {
+      localStorage.removeItem('vtm_supabase_url');
+      localStorage.removeItem('vtm_supabase_anon_key');
+    } catch {
+      // ignore
+    }
     return this.config;
   }
 
@@ -273,33 +285,9 @@ class SupabaseService {
     return this.config;
   }
 
-  public setCredentials(url: string, anonKey: string): void {
-    const cleanUrl = url.trim().replace(/\/+$/, '');
-    const cleanKey = anonKey.trim();
-    this.config = { url: PROXY_ENDPOINT_URL, anonKey: 'server-proxied' };
-    try {
-      localStorage.setItem(STORAGE_SUPABASE_URL_KEY, cleanUrl);
-      localStorage.setItem(STORAGE_SUPABASE_ANON_KEY, cleanKey);
-    } catch (e) {
-      console.error('Failed to store Supabase credentials', e);
-    }
-
-    fetch('/api/supabase-config', {
-      method: 'POST',
-      headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ url: cleanUrl, anonKey: cleanKey }),
-    }).catch(() => {});
-  }
-
   public clearCredentials(): void {
     this.config = null;
     this.clearSessionToken();
-    try {
-      localStorage.removeItem(STORAGE_SUPABASE_URL_KEY);
-      localStorage.removeItem(STORAGE_SUPABASE_ANON_KEY);
-    } catch (e) {
-      // ignore
-    }
   }
 
   public async testConnection(): Promise<{ success: boolean; message: string }> {
@@ -357,6 +345,7 @@ class SupabaseService {
       const data = await res.json().catch(() => ({}));
       if (data?.ok && data?.sessionToken) {
         this.setSessionToken(data.sessionToken);
+        if (password) this.setActiveSessionPassword(password);
       }
       return {
         ok: Boolean(data?.ok && data?.profile),
@@ -394,6 +383,7 @@ class SupabaseService {
       const data = await res.json().catch(() => ({}));
       if (data?.ok && data?.sessionToken) {
         this.setSessionToken(data.sessionToken);
+        if (password) this.setActiveSessionPassword(password);
       }
       return {
         ok: Boolean(data?.ok && data?.profile),
@@ -417,16 +407,6 @@ class SupabaseService {
   // =========================================================================
   // 1. ACCOUNT CREATION & PROFILES (vtm_registered_users & Supabase Auth)
   // =========================================================================
-
-  private isMasterAdminEmail(email?: string | null): boolean {
-    if (!email) return false;
-    const clean = email.trim().toLowerCase();
-    return (
-      clean === 'mutwrib@gmail.com' ||
-      clean === 'mutwirib964@gmail.com' ||
-      clean === 'mutwirib@gmail.com'
-    );
-  }
 
   private isValidUuid(val?: string | null): boolean {
     if (!val || typeof val !== 'string') return false;
@@ -524,34 +504,18 @@ class SupabaseService {
     return 100000 + (hash % 89999999);
   }
 
-  private parseStoredPasswordAndUid(rawHash?: string | null): { uid?: string; password?: string } {
-    if (!rawHash) return {};
-    if (rawHash.startsWith('uid:')) {
-      const pipeIdx = rawHash.indexOf('|');
-      if (pipeIdx > 4) {
-        const uid = rawHash.slice(4, pipeIdx).trim();
-        const password = rawHash.slice(pipeIdx + 1);
-        return { uid: this.isValidUuid(uid) ? uid : undefined, password };
-      }
-    }
-    return { password: rawHash };
-  }
-
   public async findUserInDatabase(
     email: string,
     _forLogin = false
   ): Promise<{ profile: UserAuthProfile; password?: string; hasVerifiedUid: boolean } | null> {
     if (!email) return null;
     const cleanEmail = email.trim().toLowerCase();
-    const isAdmin = this.isMasterAdminEmail(cleanEmail);
     const hasSession = Boolean(this.getSessionToken());
 
     // 1. Query Supabase via authenticated proxy when session token exists
     if (this.config && hasSession && !this.isQuotaRestricted()) {
       try {
-        const queryFilter = isAdmin
-          ? `or=(email.ilike.mutwrib@gmail.com,email.ilike.mutwirib964@gmail.com,email.ilike.mutwirib@gmail.com)`
-          : `email=ilike.${encodeURIComponent(cleanEmail)}`;
+        const queryFilter = `email=ilike.${encodeURIComponent(cleanEmail)}`;
 
         const res = await this.proxyRest(
           `vtm_registered_users?${queryFilter}&select=*`,
@@ -571,11 +535,7 @@ class SupabaseService {
           const row = rows[0];
           let resolvedUid = row.uid || '';
 
-          if (isAdmin) {
-            resolvedUid = '84a1e1db-f302-4dac-a077-291128ae0cea';
-          }
-
-          if (!this.isValidUuid(resolvedUid) && !isAdmin && !this.isQuotaRestricted()) {
+          if (!this.isValidUuid(resolvedUid) && !this.isQuotaRestricted()) {
             try {
               const finRes = await this.proxyRest(
                 `vtm_user_finances?user_email=ilike.${encodeURIComponent(cleanEmail)}&select=user_key`,
@@ -597,20 +557,21 @@ class SupabaseService {
             }
           }
 
-          if (!this.isValidUuid(resolvedUid) && !isAdmin) {
+          if (!this.isValidUuid(resolvedUid)) {
             resolvedUid = this.deterministicUuidFromEmail(cleanEmail);
           }
 
-          const safeRole = isAdmin
-            ? 'admin'
-            : row.role === 'marketer'
-            ? 'marketer'
-            : 'normal';
+          const safeRole =
+            row.role === 'admin'
+              ? 'admin'
+              : row.role === 'marketer'
+              ? 'marketer'
+              : 'normal';
 
           const profile: UserAuthProfile = {
             id: resolvedUid,
-            name: isAdmin ? 'mutwiri' : row.name || 'Trader',
-            email: isAdmin ? 'mutwirib964@gmail.com' : row.email.trim().toLowerCase(),
+            name: row.name || 'Trader',
+            email: row.email.trim().toLowerCase(),
             phoneNumber: row.phone_number || '',
             phone: row.phone_number || '',
             countryCode: row.country_code || '+1',
@@ -640,16 +601,19 @@ class SupabaseService {
           const srvData = await srvRes.json();
           if (srvData?.ok && srvData.user && srvData.user.email) {
             const u = srvData.user;
-            const resolvedUid = isAdmin
-              ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-              : this.isValidUuid(u.id)
+            const resolvedUid = this.isValidUuid(u.id)
               ? u.id
               : this.deterministicUuidFromEmail(cleanEmail);
             const profile: UserAuthProfile = {
               ...u,
               id: resolvedUid,
-              email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
-              role: isAdmin ? 'admin' : u.role === 'marketer' ? 'marketer' : 'normal',
+              email: cleanEmail,
+              role:
+                u.role === 'admin'
+                  ? 'admin'
+                  : u.role === 'marketer'
+                  ? 'marketer'
+                  : 'normal',
               isLoggedIn: true,
             };
             return { profile, hasVerifiedUid: true };
@@ -664,16 +628,19 @@ class SupabaseService {
     try {
       const localUser = findRegisteredUser(cleanEmail);
       if (localUser && localUser.email) {
-        const resolvedUid = isAdmin
-          ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-          : this.isValidUuid(localUser.id)
+        const resolvedUid = this.isValidUuid(localUser.id)
           ? localUser.id
           : this.deterministicUuidFromEmail(cleanEmail);
         return {
           profile: {
             ...localUser,
             id: resolvedUid,
-            role: isAdmin ? 'admin' : localUser.role === 'marketer' ? 'marketer' : 'normal',
+            role:
+              localUser.role === 'admin'
+                ? 'admin'
+                : localUser.role === 'marketer'
+                ? 'marketer'
+                : 'normal',
             isLoggedIn: true,
           },
           hasVerifiedUid: true,
@@ -692,12 +659,7 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!this.config || !profile.email) return false;
     const cleanEmail = profile.email.trim().toLowerCase();
-    const isAdmin = this.isMasterAdminEmail(cleanEmail);
-    const verifiedUid = isAdmin
-      ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-      : this.isValidUuid(profile.id)
-      ? profile.id.trim()
-      : '';
+    const verifiedUid = this.isValidUuid(profile.id) ? profile.id.trim() : '';
 
     // Strict rule: user without a valid UID can NEVER be saved or sign in
     if (!verifiedUid) {
@@ -705,22 +667,15 @@ class SupabaseService {
       return false;
     }
 
-    // Strict rule: only Master Admin email can ever have role 'admin'
-    const safeRole = isAdmin
-      ? 'admin'
-      : profile.role === 'marketer'
-      ? 'marketer'
-      : 'normal';
-
-    const encodedPasswordHash =
-      password !== undefined && password !== ''
-        ? `uid:${verifiedUid}|${password}`
-        : `uid:${verifiedUid}|`;
+    const safeRole =
+      profile.role === 'admin'
+        ? 'admin'
+        : profile.role === 'marketer'
+        ? 'marketer'
+        : 'normal';
 
     if (password && password.trim()) {
-      try {
-        localStorage.setItem('vtm_active_user_password', password.trim());
-      } catch {}
+      this.setActiveSessionPassword(password.trim());
       // Auto-link OneApp account with the exact same email, phone, and password
       this.previewOneAppAccountBalance(profile, profile.phoneNumber || profile.phone, password.trim()).catch(() => {});
     }
@@ -734,7 +689,7 @@ class SupabaseService {
           user: {
             ...profile,
             id: verifiedUid,
-            email: isAdmin ? 'mutwirib964@gmail.com' : cleanEmail,
+            email: cleanEmail,
             role: safeRole,
           },
           password: password || undefined,
@@ -781,7 +736,7 @@ class SupabaseService {
 
       if (password === undefined || password === '') {
         const patchBody: Record<string, any> = {
-          name: isAdmin ? 'mutwiri' : profile.name,
+          name: profile.name,
           country_code: profile.countryCode || '+1',
           country_name: profile.countryName || 'United States',
           role: safeRole,
@@ -816,7 +771,7 @@ class SupabaseService {
       const payload: Record<string, any> = {
         email: cleanEmail,
         uid: verifiedUid,
-        name: isAdmin ? 'mutwiri' : profile.name,
+        name: profile.name,
         phone_number: authoritativePhone,
         country_code: profile.countryCode || '+1',
         country_name: profile.countryName || 'United States',
@@ -862,7 +817,7 @@ class SupabaseService {
       }
 
       const patchPayload: Record<string, any> = {
-        name: isAdmin ? 'mutwiri' : profile.name,
+        name: profile.name,
         country_code: profile.countryCode || '+1',
         country_name: profile.countryName || 'United States',
         role: safeRole,
@@ -919,8 +874,8 @@ class SupabaseService {
 
     try {
       const cleanEmail = email.trim().toLowerCase();
-      const isAdmin = this.isMasterAdminEmail(cleanEmail);
-      const safeRole = isAdmin ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
+      const safeRole =
+        role === 'admin' ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
 
       try {
         const channel = new BroadcastChannel('vtm_global_sync');
@@ -1114,6 +1069,15 @@ class SupabaseService {
         });
       }
 
+      const adminEmailsSet = new Set<string>();
+      if (Array.isArray(usersRows)) {
+        usersRows.forEach((row: any) => {
+          if (row?.email && row?.role === 'admin') {
+            adminEmailsSet.add(String(row.email).trim().toLowerCase());
+          }
+        });
+      }
+
       if (Array.isArray(finRows)) {
         finRows.forEach((r: any) => {
           const emailKey = (r.user_email || r.user_key || '').trim().toLowerCase();
@@ -1126,17 +1090,15 @@ class SupabaseService {
             nameByEmail[emailKey] = r.user_name;
           }
 
-          const canonicalEmail = this.isMasterAdminEmail(emailKey)
-            ? 'mutwirib964@gmail.com'
-            : emailKey;
+          const canonicalEmail = emailKey;
 
           const userDeletedSet = getDeletedSetForEmail(canonicalEmail);
           const existing = financesByEmail[canonicalEmail];
           const incomingAccounts: TradingAccount[] = (Array.isArray(r.accounts) ? r.accounts : []).filter(
             (acc: TradingAccount) => !acc?.accountNumber || !userDeletedSet.has(String(acc.accountNumber))
           );
-          const isMasterEmail = this.isMasterAdminEmail(canonicalEmail);
-          const incomingTxs: Transaction[] = isMasterEmail
+          const isAdminEmail = adminEmailsSet.has(canonicalEmail);
+          const incomingTxs: Transaction[] = isAdminEmail
             ? []
             : sanitizeRealTransactions(
                 Array.isArray(r.transactions) ? r.transactions : []
@@ -1153,9 +1115,6 @@ class SupabaseService {
               lastUpdated: incomingUpdated,
             };
             financesByEmail[canonicalEmail] = state;
-            if (canonicalEmail !== emailKey) {
-              financesByEmail[emailKey] = state;
-            }
           } else {
             // Merge non-deleted accounts and transactions across rows so no account is ever lost or overwritten by a $0 skeleton
             const mergedAccMap = new Map<string, TradingAccount>();
@@ -1172,7 +1131,7 @@ class SupabaseService {
             });
             const mergedAccounts = Array.from(mergedAccMap.values());
 
-            const sortedTxs = isMasterEmail
+            const sortedTxs = isAdminEmail
               ? []
               : mergeTransactionLists(existing.transactions, incomingTxs);
             const newerWallet =
@@ -1195,9 +1154,6 @@ class SupabaseService {
               lastUpdated: Math.max(existing.lastUpdated || 0, incomingUpdated),
             };
             financesByEmail[canonicalEmail] = mergedState;
-            if (canonicalEmail !== emailKey) {
-              financesByEmail[emailKey] = mergedState;
-            }
           }
         });
       }
@@ -1208,9 +1164,7 @@ class SupabaseService {
           if (!act || !act.user_email) return;
           const rawEmail = String(act.user_email).trim().toLowerCase();
           if (!rawEmail.includes('@')) return;
-          const canonicalEmail = this.isMasterAdminEmail(rawEmail)
-            ? 'mutwirib964@gmail.com'
-            : rawEmail;
+          const canonicalEmail = rawEmail;
 
           if (!financesByEmail[canonicalEmail]) {
             financesByEmail[canonicalEmail] = {
@@ -1228,7 +1182,7 @@ class SupabaseService {
 
           if (
             (act.activity_type === 'DEPOSIT' || act.activity_type === 'DEPOSIT_CRYPTO_PENDING') &&
-            !this.isMasterAdminEmail(canonicalEmail)
+            !adminEmailsSet.has(canonicalEmail)
           ) {
             const amt = Number(meta.amountUsd ?? meta.amount ?? 0);
             if (amt > 0) {
@@ -1373,7 +1327,7 @@ class SupabaseService {
           } else if (
             (act.activity_type === 'ACCOUNT_CREATED' || act.activity_type === 'OPEN_ACCOUNT') &&
             meta.accountNumber &&
-            !this.isMasterAdminEmail(canonicalEmail)
+            !adminEmailsSet.has(canonicalEmail)
           ) {
             const accNum = String(meta.accountNumber);
             if (!userDeletedSet.has(accNum)) {
@@ -1418,23 +1372,19 @@ class SupabaseService {
       if (Array.isArray(usersRows)) {
         usersRows.forEach((row: any) => {
           if (!row || !row.email) return;
-          const rawEmail = row.email.trim().toLowerCase();
-          const isAdmin = this.isMasterAdminEmail(rawEmail);
-          const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
-          const parsedHash = this.parseStoredPasswordAndUid(row.password_hash);
-          let resolvedUid = isAdmin
-            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-            : row.uid || parsedHash.uid || uidByEmail[rawEmail] || '';
+          const canonicalEmail = row.email.trim().toLowerCase();
+          let resolvedUid = row.uid || uidByEmail[canonicalEmail] || '';
 
-          if (!isAdmin && !this.isValidUuid(resolvedUid)) {
-            resolvedUid = this.deterministicUuidFromEmail(rawEmail);
+          if (!this.isValidUuid(resolvedUid)) {
+            resolvedUid = this.deterministicUuidFromEmail(canonicalEmail);
           }
 
-          const safeRole = isAdmin
-            ? 'admin'
-            : row.role === 'marketer'
-            ? 'marketer'
-            : 'normal';
+          const safeRole =
+            row.role === 'admin'
+              ? 'admin'
+              : row.role === 'marketer'
+              ? 'marketer'
+              : 'normal';
 
           const resolvedRefCode =
             row.referred_by_code || referredByEmail[canonicalEmail] || undefined;
@@ -1445,7 +1395,7 @@ class SupabaseService {
 
           usersMap.set(canonicalEmail, {
             id: resolvedUid,
-            name: isAdmin ? 'mutwiri' : row.name || nameByEmail[canonicalEmail] || 'Trader',
+            name: row.name || nameByEmail[canonicalEmail] || 'Trader',
             email: canonicalEmail,
             phoneNumber: row.phone_number || '',
             phone: row.phone_number || '',
@@ -1463,12 +1413,10 @@ class SupabaseService {
       // Also include any user who has a row in vtm_user_finances even if missing from vtm_registered_users
       Object.keys(financesByEmail).forEach((em) => {
         if (!em || !em.includes('@')) return;
-        const isAdmin = this.isMasterAdminEmail(em);
-        const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : em.trim().toLowerCase();
+        const canonicalEmail = em.trim().toLowerCase();
         if (!usersMap.has(canonicalEmail)) {
-          const resolvedUid = isAdmin
-            ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-            : uidByEmail[canonicalEmail] || this.deterministicUuidFromEmail(canonicalEmail);
+          const resolvedUid =
+            uidByEmail[canonicalEmail] || this.deterministicUuidFromEmail(canonicalEmail);
           const fin = financesByEmail[canonicalEmail];
           const firstAccNum =
             fin?.accounts?.find((a) => a.type === 'Live')?.accountNumber ||
@@ -1476,16 +1424,14 @@ class SupabaseService {
             String(Math.floor(10000000 + Math.random() * 90000000));
           usersMap.set(canonicalEmail, {
             id: resolvedUid,
-            name: isAdmin
-              ? 'mutwiri'
-              : nameByEmail[canonicalEmail] || canonicalEmail.split('@')[0],
+            name: nameByEmail[canonicalEmail] || canonicalEmail.split('@')[0],
             email: canonicalEmail,
             phoneNumber: '',
             phone: '',
             countryCode: '+1',
             countryName: 'United States',
             accountNumber: firstAccNum,
-            role: isAdmin ? 'admin' : 'normal',
+            role: adminEmailsSet.has(canonicalEmail) ? 'admin' : 'normal',
             isLoggedIn: false,
             createdAt: signupTimeByEmail[canonicalEmail] || fin?.lastUpdated || Date.now(),
             referredByCode: referredByEmail[canonicalEmail] || undefined,
@@ -1507,12 +1453,9 @@ class SupabaseService {
               if (Array.isArray(srvData.users)) {
                 srvData.users.forEach((u: any) => {
                   if (!u || !u.email) return;
-                  const isAdmin = this.isMasterAdminEmail(u.email);
-                  const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : String(u.email).trim().toLowerCase();
+                  const canonicalEmail = String(u.email).trim().toLowerCase();
                   const existing = usersMap.get(canonicalEmail);
-                  const resolvedUid = isAdmin
-                    ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                    : this.isValidUuid(existing?.id)
+                  const resolvedUid = this.isValidUuid(existing?.id)
                     ? existing!.id
                     : this.isValidUuid(u.id)
                     ? u.id
@@ -1522,21 +1465,20 @@ class SupabaseService {
                     ...u,
                     id: resolvedUid,
                     email: canonicalEmail,
-                    name: isAdmin ? 'mutwiri' : existing?.name || u.name || canonicalEmail.split('@')[0],
-                    role: isAdmin
-                      ? 'admin'
-                      : existing?.role === 'marketer' || u.role === 'marketer'
-                      ? 'marketer'
-                      : 'normal',
+                    name: existing?.name || u.name || canonicalEmail.split('@')[0],
+                    role:
+                      existing?.role === 'admin' || u.role === 'admin'
+                        ? 'admin'
+                        : existing?.role === 'marketer' || u.role === 'marketer'
+                        ? 'marketer'
+                        : 'normal',
                     referredByCode: existing?.referredByCode || u.referredByCode,
                   });
                 });
               }
               if (srvData.financesByEmail && typeof srvData.financesByEmail === 'object') {
                 Object.entries(srvData.financesByEmail).forEach(([em, srvFin]: [string, any]) => {
-                  const canonicalEmail = this.isMasterAdminEmail(em)
-                    ? 'mutwirib964@gmail.com'
-                    : em.trim().toLowerCase();
+                  const canonicalEmail = em.trim().toLowerCase();
                   if (!financesByEmail[canonicalEmail]) {
                     financesByEmail[canonicalEmail] = srvFin;
                   }
@@ -1552,18 +1494,20 @@ class SupabaseService {
           const localUsers = getAllRegisteredUsers();
           localUsers.forEach((lu) => {
             if (!lu || !lu.email) return;
-            const isAdmin = this.isMasterAdminEmail(lu.email);
-            const canonicalEmail = isAdmin ? 'mutwirib964@gmail.com' : lu.email.trim().toLowerCase();
+            const canonicalEmail = lu.email.trim().toLowerCase();
             if (!usersMap.has(canonicalEmail)) {
               usersMap.set(canonicalEmail, {
                 ...lu,
-                id: isAdmin
-                  ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                  : this.isValidUuid(lu.id)
+                id: this.isValidUuid(lu.id)
                   ? lu.id
                   : this.deterministicUuidFromEmail(canonicalEmail),
                 email: canonicalEmail,
-                role: isAdmin ? 'admin' : lu.role === 'marketer' ? 'marketer' : 'normal',
+                role:
+                  lu.role === 'admin'
+                    ? 'admin'
+                    : lu.role === 'marketer'
+                    ? 'marketer'
+                    : 'normal',
               });
             }
             const localFin = loadUserFinancials(lu);
@@ -1574,23 +1518,6 @@ class SupabaseService {
         } catch {
           // ignore
         }
-      }
-
-      // Guarantee Master Admin is always present with confirmed UID
-      if (!usersMap.has('mutwirib964@gmail.com')) {
-        usersMap.set('mutwirib964@gmail.com', {
-          id: '84a1e1db-f302-4dac-a077-291128ae0cea',
-          name: 'mutwiri',
-          email: 'mutwirib964@gmail.com',
-          phoneNumber: '+254 741114162',
-          phone: '+254 741114162',
-          countryCode: '+254',
-          countryName: 'Kenya',
-          accountNumber: '27330648',
-          role: 'admin',
-          isLoggedIn: true,
-          createdAt: 1790257470000,
-        });
       }
 
       const sortedUsers = Array.from(usersMap.values()).sort((a, b) => {
@@ -1604,10 +1531,7 @@ class SupabaseService {
         const groupedByEmail: Record<string, { tradesData?: any; botsData?: any }> = {};
         cloudStateRows.forEach((row: any) => {
           if (!row || !row.user_email || !row.data) return;
-          const rawEmail = String(row.user_email).trim().toLowerCase();
-          const canonicalEmail = this.isMasterAdminEmail(rawEmail)
-            ? 'mutwirib964@gmail.com'
-            : rawEmail;
+          const canonicalEmail = String(row.user_email).trim().toLowerCase();
           if (!groupedByEmail[canonicalEmail]) {
             groupedByEmail[canonicalEmail] = {};
           }
@@ -1723,21 +1647,19 @@ class SupabaseService {
             const r = rows[0];
             const rawEmail = String(r.email || '').trim().toLowerCase();
             if (rawEmail) {
-              const isAdmin = this.isMasterAdminEmail(rawEmail);
-              const parsedHash = this.parseStoredPasswordAndUid(r.password_hash);
-              const resolvedUid = isAdmin
-                ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                : r.uid || parsedHash.uid || this.deterministicUuidFromEmail(rawEmail);
+              const resolvedUid = this.isValidUuid(r.uid)
+                ? r.uid
+                : this.deterministicUuidFromEmail(rawEmail);
               return {
                 id: resolvedUid,
-                name: isAdmin ? 'mutwiri' : r.name || rawEmail.split('@')[0],
-                email: isAdmin ? 'mutwirib964@gmail.com' : rawEmail,
+                name: r.name || rawEmail.split('@')[0],
+                email: rawEmail,
                 phoneNumber: r.phone_number || '',
                 phone: r.phone_number || '',
                 countryCode: r.country_code || '+254',
                 countryName: r.country_name || 'Kenya',
                 accountNumber: r.account_number || '27330648',
-                role: isAdmin ? 'admin' : r.role === 'marketer' ? 'marketer' : 'normal',
+                role: r.role === 'admin' ? 'admin' : r.role === 'marketer' ? 'marketer' : 'normal',
                 isLoggedIn: true,
                 createdAt: r.created_at ? new Date(r.created_at).getTime() : Date.now(),
                 referredByCode: r.referred_by_code || undefined,
@@ -1752,24 +1674,21 @@ class SupabaseService {
             const r = finRows[0];
             const rawEmail = String(r.user_email || '').trim().toLowerCase();
             if (rawEmail && rawEmail.includes('@')) {
-              const isAdmin = this.isMasterAdminEmail(rawEmail);
-              const resolvedUid = isAdmin
-                ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                : this.isValidUuid(r.user_key)
+              const resolvedUid = this.isValidUuid(r.user_key)
                 ? r.user_key
                 : this.deterministicUuidFromEmail(rawEmail);
               const firstAccNum =
                 (Array.isArray(r.accounts) && r.accounts[0]?.accountNumber) || '8492014';
               return {
                 id: resolvedUid,
-                name: isAdmin ? 'mutwiri' : r.user_name || rawEmail.split('@')[0],
-                email: isAdmin ? 'mutwirib964@gmail.com' : rawEmail,
+                name: r.user_name || rawEmail.split('@')[0],
+                email: rawEmail,
                 phoneNumber: '',
                 phone: '',
                 countryCode: '+254',
                 countryName: 'Kenya',
                 accountNumber: String(firstAccNum),
-                role: isAdmin ? 'admin' : 'normal',
+                role: 'normal',
                 isLoggedIn: true,
                 createdAt: r.last_updated ? new Date(r.last_updated).getTime() : Date.now(),
               };
@@ -1845,9 +1764,7 @@ class SupabaseService {
     metadata: any
   ): Promise<boolean> {
     if (!this.config || !userEmail) return false;
-    const cleanEmail = this.isMasterAdminEmail(userEmail)
-      ? 'mutwirib964@gmail.com'
-      : userEmail.trim().toLowerCase();
+    const cleanEmail = userEmail.trim().toLowerCase();
 
     let compactMeta = metadata;
     if (metadata && typeof metadata === 'object') {
@@ -1984,9 +1901,7 @@ class SupabaseService {
     stateType: string
   ): Promise<T | null> {
     if (!this.config || !userEmail) return null;
-    const cleanEmail = this.isMasterAdminEmail(userEmail)
-      ? 'mutwirib964@gmail.com'
-      : userEmail.trim().toLowerCase();
+    const cleanEmail = userEmail.trim().toLowerCase();
 
     if (this.getSessionToken() && !this.isQuotaRestricted()) {
       try {
@@ -2157,9 +2072,7 @@ class SupabaseService {
     isSilentCleanup = false
   ): Promise<boolean> {
     if (!this.config || !user || !accountNumber) return false;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : (user.email || '').trim().toLowerCase();
+    const cleanEmail = (user.email || '').trim().toLowerCase();
 
     markAccountDeletedLocally(cleanEmail, accountNumber);
 
@@ -2243,9 +2156,7 @@ class SupabaseService {
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
 
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     const nowMs = Date.now();
     const incomingMs = data.updatedAt || (data.lastUpdated ? new Date(data.lastUpdated).getTime() : nowMs);
@@ -2455,9 +2366,7 @@ class SupabaseService {
     closedTrades: ClosedTrade[];
   } | null> {
     if (!this.config || !user?.email) return null;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     const data = await this.fetchCloudStateRecord<{
       positions?: Position[];
@@ -2698,9 +2607,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined
   ): Promise<LedgerEntry[]> {
     if (!user?.email) return [];
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     const ledgerMap = new Map<string, LedgerEntry>();
 
@@ -2767,9 +2674,7 @@ class SupabaseService {
     entries: LedgerEntry[]
   ): Promise<boolean> {
     if (!user?.email || !Array.isArray(entries)) return false;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     if (!this.config || !this.getSessionToken()) return false;
 
@@ -3247,11 +3152,8 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined
   ): Promise<{ botsUpdatedAt: number; finUpdatedAt: number; tradesUpdatedAt: number } | null> {
     if (!this.config || !user?.email || this.isQuotaRestricted() || !this.getSessionToken()) return null;
-    const isAdmin = this.isMasterAdminEmail(user.email);
-    const cleanEmail = isAdmin
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
-    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
+    const cleanEmail = user.email.trim().toLowerCase();
+    const userKey = getUserStorageKey(user);
 
     try {
       const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
@@ -3321,9 +3223,7 @@ class SupabaseService {
     }
   ): Promise<boolean> {
     if (!this.config || !user?.email) return false;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     let localUnfollowedMap: Record<string, number> = { ...(extras.unfollowedStrategyMap || {}) };
     try {
@@ -3410,9 +3310,7 @@ class SupabaseService {
     updatedAt?: number;
   } | null> {
     if (!this.config || !user?.email) return null;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
 
     let localUnfollowedMap: Record<string, number> = {};
     try {
@@ -3622,31 +3520,8 @@ class SupabaseService {
     });
   }
 
-  public getStoredAccountPassword(email: string): string {
-    if (!email) return '';
-    const cleanEmail = email.trim().toLowerCase();
-    try {
-      const credsRaw = localStorage.getItem('vtm_user_credentials');
-      if (credsRaw) {
-        const credsMap = JSON.parse(credsRaw);
-        if (credsMap?.[cleanEmail]) {
-          return String(credsMap[cleanEmail]);
-        }
-      }
-      const regRaw = localStorage.getItem('vtm_registered_users_v3');
-      if (regRaw) {
-        const regMap = JSON.parse(regRaw);
-        const regUser = regMap?.[cleanEmail];
-        if (regUser?.password) {
-          return String(regUser.password);
-        }
-      }
-      const sessionPwd = localStorage.getItem('vtm_active_user_password');
-      if (sessionPwd) return sessionPwd;
-    } catch {
-      // ignore
-    }
-    return '';
+  public getStoredAccountPassword(_email: string): string {
+    return this.activeSessionPasswordInMemory || '';
   }
 
   public async verifyAccountPasswordForWithdrawal(
@@ -3659,8 +3534,7 @@ class SupabaseService {
       return { valid: false, error: 'Please enter your account email and password to link M-PESA withdrawal.' };
     }
 
-    const localStoredPwd = this.getStoredAccountPassword(cleanEmail);
-    if (localStoredPwd && localStoredPwd === cleanPwd) {
+    if (this.activeSessionPasswordInMemory && this.activeSessionPasswordInMemory === cleanPwd) {
       return { valid: true, password: cleanPwd };
     }
 
@@ -3671,40 +3545,35 @@ class SupabaseService {
           6000,
           true
         );
-        if (res.ok) {
-          const data = await res.json().catch(() => null);
-          if (data?.valid) {
-            try {
-              localStorage.setItem('vtm_active_user_password', cleanPwd);
-              const credsRaw = localStorage.getItem('vtm_user_credentials');
-              const credsMap = credsRaw ? JSON.parse(credsRaw) : {};
-              credsMap[cleanEmail] = cleanPwd;
-              localStorage.setItem('vtm_user_credentials', JSON.stringify(credsMap));
-            } catch {}
-            return { valid: true, password: cleanPwd };
-          }
-          if (data && data.valid === false) {
-            return {
-              valid: false,
-              error:
-                data.error ||
-                'Account email and password do not match. Both accounts must use the exact same email and password.',
-            };
-          }
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.valid) {
+          this.setActiveSessionPassword(cleanPwd);
+          return { valid: true, password: cleanPwd };
+        }
+        if (data && data.valid === false) {
+          return {
+            valid: false,
+            error:
+              data.error ||
+              'Account email and password do not match. Both accounts must use the exact same email and password.',
+          };
         }
       } catch {
-        // fall through to local verification check below
+        // fall through to unavailable error
       }
     }
 
-    if (localStoredPwd && localStoredPwd !== cleanPwd) {
+    if (this.activeSessionPasswordInMemory && this.activeSessionPasswordInMemory !== cleanPwd) {
       return {
         valid: false,
         error: 'Account email and password do not match. Both accounts must use the exact same email and password.',
       };
     }
 
-    return { valid: true, password: cleanPwd };
+    return {
+      valid: false,
+      error: 'Unable to verify your password right now. Please sign in again and retry.',
+    };
   }
 
   public async previewOneAppAccountBalance(
@@ -4075,9 +3944,7 @@ class SupabaseService {
     settings: UserPlatformSettings
   ): Promise<boolean> {
     if (!user?.email) return false;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
     const nowTs = settings.updatedAt || Date.now();
     const payload: UserPlatformSettings = {
       ...settings,
@@ -4102,9 +3969,7 @@ class SupabaseService {
     user: UserAuthProfile | null | undefined
   ): Promise<UserPlatformSettings | null> {
     if (!user?.email) return null;
-    const cleanEmail = this.isMasterAdminEmail(user.email)
-      ? 'mutwirib964@gmail.com'
-      : user.email.trim().toLowerCase();
+    const cleanEmail = user.email.trim().toLowerCase();
     let localCached: UserPlatformSettings | null = null;
     try {
       const raw = localStorage.getItem(`vtm_user_settings_${cleanEmail}`);
@@ -4164,11 +4029,8 @@ class SupabaseService {
     state: UserFinancialState
   ): Promise<boolean> {
     if (!this.config || !user || !this.getSessionToken()) return false;
-    const isAdmin = this.isMasterAdminEmail(user.email);
-    const cleanEmail = isAdmin
-      ? 'mutwirib964@gmail.com'
-      : (user.email || getUserStorageKey(user)).trim().toLowerCase();
-    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
+    const cleanEmail = (user.email || getUserStorageKey(user)).trim().toLowerCase();
+    const userKey = getUserStorageKey(user);
 
     try {
       const deletedAccountNums = getDeletedAccountNumbers(cleanEmail);
@@ -4291,7 +4153,7 @@ class SupabaseService {
       const payload = {
         user_key: userKey,
         user_email: cleanEmail,
-        user_name: isAdmin ? 'mutwiri' : user.name || '',
+        user_name: user.name || '',
         wallet_balance: finalWalletBalance,
         accounts: mergedAccounts,
         selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
@@ -4347,7 +4209,7 @@ class SupabaseService {
             },
             body: JSON.stringify({
               user_email: cleanEmail,
-              user_name: isAdmin ? 'mutwiri' : user.name || '',
+              user_name: user.name || '',
               wallet_balance: finalWalletBalance,
               accounts: mergedAccounts,
               selected_account_id: state.selectedAccountId || mergedAccounts[0]?.id || null,
@@ -4386,11 +4248,9 @@ class SupabaseService {
   ): Promise<UserFinancialState | null> {
     if (!this.config || !user) return null;
     if (!this.getSessionToken()) return loadUserFinancials(user);
-    const isAdmin = this.isMasterAdminEmail(user.email);
-    const cleanEmail = isAdmin
-      ? 'mutwirib964@gmail.com'
-      : (user.email || getUserStorageKey(user)).trim().toLowerCase();
-    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
+    const isAdmin = user.role === 'admin';
+    const cleanEmail = (user.email || getUserStorageKey(user)).trim().toLowerCase();
+    const userKey = getUserStorageKey(user);
 
     try {
       const orClauses = [`user_key.eq.${encodeURIComponent(userKey)}`];
@@ -4400,9 +4260,7 @@ class SupabaseService {
       if (user.id && this.isValidUuid(user.id)) {
         orClauses.push(`user_key.eq.${encodeURIComponent(user.id)}`);
       }
-      const filter = isAdmin
-        ? `or=(user_key.eq.mutwirib964@gmail.com,user_email.eq.mutwirib964@gmail.com)`
-        : `or=(${orClauses.join(',')})`;
+      const filter = `or=(${orClauses.join(',')})`;
 
       const [res, actRes] = await Promise.all([
         this.proxyRest(
@@ -4561,11 +4419,8 @@ class SupabaseService {
     transactions: Transaction[]
   ): Promise<boolean> {
     if (!this.config || !user?.email || !transactions || !this.getSessionToken()) return false;
-    const isAdmin = this.isMasterAdminEmail(user.email);
-    const cleanEmail = isAdmin
-      ? 'mutwirib964@gmail.com'
-      : (user.email || getUserStorageKey(user)).trim().toLowerCase();
-    const userKey = isAdmin ? 'mutwirib964@gmail.com' : getUserStorageKey(user);
+    const cleanEmail = (user.email || getUserStorageKey(user)).trim().toLowerCase();
+    const userKey = getUserStorageKey(user);
     try {
       const orClauses = [
         `user_key.eq.${encodeURIComponent(userKey)}`,
@@ -4718,13 +4573,6 @@ class SupabaseService {
     if (!this.config || !referralCode || this.isQuotaRestricted()) return null;
     const cleanCode = referralCode.trim().toUpperCase();
     if (!cleanCode) return null;
-
-    if (cleanCode === 'VTM-674343' || cleanCode === 'VTM-635667') {
-      return { email: 'joelndungu1022@gmail.com', accountNumber: '36674343' };
-    }
-    if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
-      return { email: 'mutwirib964@gmail.com', accountNumber: '27330648' };
-    }
 
     try {
       const res = await this.proxyPost(
@@ -5242,619 +5090,6 @@ class SupabaseService {
     return claimSaved || stateSaved;
   }
 
-  // =========================================================================
-  // 10. POSTGRESQL DDL (For user to copy & run in Supabase SQL Editor if desired)
-  // =========================================================================
-
-  public getDatabaseSchemaSQL(): string {
-    return `-- =========================================================================
--- VTM MARKETS COMPLETE SUPABASE SQL SCHEMA
--- COPY & RUN THIS ENTIRE SCRIPT IN SUPABASE -> SQL EDITOR -> NEW QUERY
--- =========================================================================
-
--- Enable UUID generation extension
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-
--- 1. Registered Users Table (Strict UID Required & Global Country Support)
-CREATE TABLE IF NOT EXISTS public.vtm_registered_users (
-  email TEXT PRIMARY KEY,
-  uid UUID,
-  password_hash TEXT,
-  name TEXT,
-  phone_number TEXT,
-  country_code TEXT DEFAULT '+1',
-  country_name TEXT DEFAULT 'United States',
-  account_number TEXT,
-  role TEXT DEFAULT 'normal',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  last_login_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- Ensure all required columns exist and drop any restrictive NOT NULL constraints
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS uid UUID;
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS password_hash TEXT DEFAULT '';
-ALTER TABLE public.vtm_registered_users ALTER COLUMN password_hash DROP NOT NULL;
-ALTER TABLE public.vtm_registered_users ALTER COLUMN password_hash SET DEFAULT '';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS name TEXT DEFAULT 'Trader';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS phone_number TEXT DEFAULT '';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS country_code TEXT DEFAULT '+1';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS country_name TEXT DEFAULT 'United States';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS account_number TEXT;
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'normal';
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ DEFAULT now();
-ALTER TABLE public.vtm_registered_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
-
--- Backfill uid from auth.users for any existing registered email
-UPDATE public.vtm_registered_users r
-SET uid = a.id
-FROM auth.users a
-WHERE LOWER(r.email) = LOWER(a.email)
-  AND r.uid IS NULL;
-
--- Assign a valid UUID to any remaining existing registered user so they are never locked out
-UPDATE public.vtm_registered_users
-SET uid = gen_random_uuid()
-WHERE uid IS NULL
-  AND LOWER(email) NOT IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com');
-
--- Ensure password_hash is never null on any existing row
-UPDATE public.vtm_registered_users
-SET password_hash = 'uid:' || uid::text || '|'
-WHERE password_hash IS NULL AND uid IS NOT NULL;
-
--- 2. Confirm Exclusive Master Admin (Email: mutwirib964@gmail.com, UID: 84a1e1db-f302-4dac-a077-291128ae0cea)
-INSERT INTO public.vtm_registered_users (
-  email, uid, password_hash, name, phone_number, country_code, country_name, account_number, role, created_at, last_login_at, updated_at
-) VALUES (
-  'mutwirib964@gmail.com',
-  '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid,
-  'uid:84a1e1db-f302-4dac-a077-291128ae0cea|admin',
-  'mutwiri',
-  '+254 741114162',
-  '+254',
-  'Kenya',
-  '27330648',
-  'admin',
-  now(),
-  now(),
-  now()
-)
-ON CONFLICT (email) DO UPDATE SET
-  uid = '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid,
-  password_hash = COALESCE(NULLIF(public.vtm_registered_users.password_hash, ''), EXCLUDED.password_hash),
-  role = 'admin',
-  updated_at = now();
-
-UPDATE public.vtm_registered_users
-SET role = 'admin',
-    uid = '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid,
-    password_hash = COALESCE(NULLIF(password_hash, ''), 'uid:84a1e1db-f302-4dac-a077-291128ae0cea|admin')
-WHERE LOWER(email) IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com');
-
--- Revoke admin role from EVERY other email in the database
-UPDATE public.vtm_registered_users
-SET role = 'normal'
-WHERE LOWER(email) NOT IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com')
-  AND role = 'admin';
-
--- 3. Strict Trigger: Enforce Valid UID, Non-Null Password Hash & Exclusive Single Admin
-CREATE OR REPLACE FUNCTION public.enforce_strict_uid_and_single_admin()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-BEGIN
-  NEW.email := LOWER(TRIM(NEW.email));
-
-  IF NEW.email IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com') THEN
-    NEW.uid := '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid;
-    NEW.role := 'admin';
-  ELSE
-    IF NEW.role = 'admin' THEN
-      NEW.role := 'normal';
-    END IF;
-    IF NEW.role NOT IN ('normal', 'marketer') OR NEW.role IS NULL THEN
-      NEW.role := 'normal';
-    END IF;
-  END IF;
-
-  IF NEW.uid IS NULL THEN
-    NEW.uid := gen_random_uuid();
-  END IF;
-
-  IF NEW.password_hash IS NULL THEN
-    NEW.password_hash := 'uid:' || NEW.uid::text || '|';
-  END IF;
-
-  NEW.updated_at := now();
-  RETURN NEW;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.enforce_strict_uid_and_single_admin() FROM PUBLIC, anon, authenticated;
-
-DROP TRIGGER IF EXISTS trg_enforce_strict_uid_and_single_admin ON public.vtm_registered_users;
-CREATE TRIGGER trg_enforce_strict_uid_and_single_admin
-BEFORE INSERT OR UPDATE ON public.vtm_registered_users
-FOR EACH ROW EXECUTE FUNCTION public.enforce_strict_uid_and_single_admin();
-
--- 4. Automatic Sync Trigger from Supabase Auth (auth.users -> public.vtm_registered_users)
-CREATE OR REPLACE FUNCTION public.handle_auth_user_sync_vtm()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-DECLARE
-  v_role TEXT;
-  v_uid UUID;
-BEGIN
-  IF LOWER(NEW.email) IN ('mutwrib@gmail.com', 'mutwirib964@gmail.com') THEN
-    v_role := 'admin';
-    v_uid := '84a1e1db-f302-4dac-a077-291128ae0cea'::uuid;
-  ELSE
-    v_role := COALESCE(NEW.raw_user_meta_data->>'role', 'normal');
-    IF v_role = 'admin' THEN v_role := 'normal'; END IF;
-    v_uid := NEW.id;
-  END IF;
-
-  INSERT INTO public.vtm_registered_users (
-    email, uid, password_hash, name, phone_number, country_code, country_name, account_number, role, created_at, last_login_at, updated_at
-  ) VALUES (
-    LOWER(NEW.email),
-    v_uid,
-    'uid:' || v_uid::text || '|',
-    COALESCE(NEW.raw_user_meta_data->>'name', NEW.raw_user_meta_data->>'display_name', split_part(NEW.email, '@', 1)),
-    COALESCE(NEW.raw_user_meta_data->>'phone', ''),
-    COALESCE(NEW.raw_user_meta_data->>'country_code', '+1'),
-    COALESCE(NEW.raw_user_meta_data->>'country_name', 'United States'),
-    COALESCE(NEW.raw_user_meta_data->>'account_number', LPAD(FLOOR(RANDOM() * 90000000 + 10000000)::TEXT, 8, '0')),
-    v_role,
-    now(),
-    now(),
-    now()
-  )
-  ON CONFLICT (email) DO UPDATE SET
-    uid = EXCLUDED.uid,
-    password_hash = COALESCE(NULLIF(public.vtm_registered_users.password_hash, ''), EXCLUDED.password_hash),
-    last_login_at = now(),
-    updated_at = now();
-
-  RETURN NEW;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.handle_auth_user_sync_vtm() FROM PUBLIC, anon, authenticated;
-
-DROP TRIGGER IF EXISTS on_auth_user_created_vtm ON auth.users;
-CREATE TRIGGER on_auth_user_created_vtm
-AFTER INSERT ON auth.users
-FOR EACH ROW EXECUTE FUNCTION public.handle_auth_user_sync_vtm();
-
--- 5. User Financials & Live Accounts Table (Primary Authoritative Store)
-CREATE TABLE IF NOT EXISTS public.vtm_user_finances (
-  user_key TEXT PRIMARY KEY,
-  user_email TEXT,
-  user_name TEXT,
-  wallet_balance NUMERIC(15, 2) DEFAULT 0.00,
-  accounts JSONB DEFAULT '[]'::jsonb,
-  selected_account_id TEXT,
-  transactions JSONB DEFAULT '[]'::jsonb,
-  last_updated TIMESTAMPTZ DEFAULT now()
-);
-
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS user_email TEXT;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS user_name TEXT;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS wallet_balance NUMERIC(15, 2) DEFAULT 0.00;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS accounts JSONB DEFAULT '[]'::jsonb;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS selected_account_id TEXT;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS transactions JSONB DEFAULT '[]'::jsonb;
-ALTER TABLE public.vtm_user_finances ADD COLUMN IF NOT EXISTS last_updated TIMESTAMPTZ DEFAULT now();
-
--- 6. Ensure Live Accounts Are Preserved Permanently (Remove any legacy idle sweep function)
-DROP FUNCTION IF EXISTS public.sweep_idle_live_accounts_in_db();
-
--- Database-Level Account Balance Guard:
--- Prevents any uninitialized $0 skeleton state from overwriting a funded Live/Demo account in vtm_user_finances
-CREATE OR REPLACE FUNCTION public.protect_vtm_user_finances_accounts()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-DECLARE
-  v_old_acc JSONB;
-  v_new_acc JSONB;
-  v_merged JSONB := '[]'::jsonb;
-  v_found BOOLEAN;
-  v_old_num TEXT;
-  v_new_num TEXT;
-  v_old_bal NUMERIC;
-  v_new_bal NUMERIC;
-  v_new_has_activity BOOLEAN;
-BEGIN
-  IF TG_OP = 'UPDATE' AND jsonb_typeof(OLD.accounts) = 'array' AND jsonb_typeof(NEW.accounts) = 'array' THEN
-    FOR v_new_acc IN SELECT * FROM jsonb_array_elements(NEW.accounts)
-    LOOP
-      v_new_num := COALESCE(v_new_acc->>'accountNumber', v_new_acc->>'id', '');
-      v_new_bal := COALESCE((v_new_acc->>'balance')::numeric, 0);
-      v_new_has_activity := (v_new_acc ? 'lastTradeAt' AND v_new_acc->>'lastTradeAt' IS NOT NULL)
-                         OR (v_new_acc ? 'lastActivityAt' AND v_new_acc->>'lastActivityAt' IS NOT NULL)
-                         OR (v_new_acc ? 'lastDepositAt' AND v_new_acc->>'lastDepositAt' IS NOT NULL);
-      v_found := false;
-
-      IF v_new_bal = 0 AND NOT v_new_has_activity AND v_new_num <> '' THEN
-        FOR v_old_acc IN SELECT * FROM jsonb_array_elements(OLD.accounts)
-        LOOP
-          v_old_num := COALESCE(v_old_acc->>'accountNumber', v_old_acc->>'id', '');
-          v_old_bal := COALESCE((v_old_acc->>'balance')::numeric, 0);
-          IF v_old_num = v_new_num AND v_old_bal > 0 THEN
-            v_merged := v_merged || jsonb_build_array(v_old_acc);
-            v_found := true;
-            EXIT;
-          END IF;
-        END LOOP;
-      END IF;
-
-      IF NOT v_found THEN
-        v_merged := v_merged || jsonb_build_array(v_new_acc);
-      END IF;
-    END LOOP;
-
-    NEW.accounts := v_merged;
-  END IF;
-
-  NEW.last_updated := now();
-  RETURN NEW;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.protect_vtm_user_finances_accounts() FROM PUBLIC, anon, authenticated;
-
-DROP TRIGGER IF EXISTS trg_protect_vtm_user_finances_accounts ON public.vtm_user_finances;
-CREATE TRIGGER trg_protect_vtm_user_finances_accounts
-BEFORE UPDATE ON public.vtm_user_finances
-FOR EACH ROW EXECUTE FUNCTION public.protect_vtm_user_finances_accounts();
-
--- Fix legacy functions if present in database
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public' AND p.proname = 'update_updated_at_column') THEN
-    ALTER FUNCTION public.update_updated_at_column() SET search_path = public, pg_temp;
-  END IF;
-  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public' AND p.proname = 'handle_new_vtm_user') THEN
-    ALTER FUNCTION public.handle_new_vtm_user() SET search_path = public, pg_temp;
-    REVOKE ALL ON FUNCTION public.handle_new_vtm_user() FROM PUBLIC, anon, authenticated;
-  END IF;
-END $$;
-
--- 7. Supporting Platform Tables
-CREATE TABLE IF NOT EXISTS public.vtm_trading_accounts (
-  account_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  account_number TEXT NOT NULL,
-  server TEXT,
-  account_type TEXT DEFAULT 'Live',
-  tier TEXT DEFAULT 'Premium',
-  balance NUMERIC(15, 2) DEFAULT 0.00,
-  equity NUMERIC(15, 2) DEFAULT 0.00,
-  margin NUMERIC(15, 2) DEFAULT 0.00,
-  free_margin NUMERIC(15, 2) DEFAULT 0.00,
-  margin_level NUMERIC(10, 2) DEFAULT 0.00,
-  currency TEXT DEFAULT 'USD',
-  leverage TEXT DEFAULT '1:500',
-  is_default BOOLEAN DEFAULT false,
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_trades (
-  trade_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  account_number TEXT,
-  ticket BIGINT,
-  symbol TEXT NOT NULL,
-  side TEXT NOT NULL,
-  order_type TEXT DEFAULT 'MARKET',
-  lots NUMERIC(10, 2) NOT NULL,
-  open_price NUMERIC(15, 5) NOT NULL,
-  current_price NUMERIC(15, 5),
-  close_price NUMERIC(15, 5),
-  sl NUMERIC(15, 5),
-  tp NUMERIC(15, 5),
-  pnl NUMERIC(15, 2) DEFAULT 0.00,
-  status TEXT NOT NULL,
-  open_time TIMESTAMPTZ DEFAULT now(),
-  close_time TIMESTAMPTZ,
-  close_reason TEXT,
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_deposits (
-  deposit_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  target_account TEXT NOT NULL,
-  amount_usd NUMERIC(15, 2) NOT NULL,
-  amount_kes NUMERIC(15, 2) DEFAULT 0.00,
-  payment_method TEXT NOT NULL,
-  phone_number TEXT,
-  reference TEXT,
-  checkout_id TEXT,
-  status TEXT DEFAULT 'COMPLETED',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_withdrawals (
-  withdrawal_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  source_account TEXT NOT NULL,
-  amount_usd NUMERIC(15, 2) NOT NULL,
-  payment_method TEXT NOT NULL,
-  reference TEXT,
-  status TEXT DEFAULT 'PENDING',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_transfers (
-  transfer_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  from_account TEXT NOT NULL,
-  to_account TEXT NOT NULL,
-  amount_usd NUMERIC(15, 2) NOT NULL,
-  status TEXT DEFAULT 'COMPLETED',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_user_settings (
-  user_email TEXT PRIMARY KEY,
-  is_dark_mode BOOLEAN DEFAULT true,
-  one_click_trading BOOLEAN DEFAULT false,
-  slippage NUMERIC(5, 2) DEFAULT 0.5,
-  sound_enabled BOOLEAN DEFAULT true,
-  show_spread_brackets BOOLEAN DEFAULT true,
-  drawdown_protection BOOLEAN DEFAULT true,
-  two_factor_enabled BOOLEAN DEFAULT false,
-  two_factor_secret TEXT,
-  default_leverage TEXT DEFAULT '1:500',
-  favorite_symbols JSONB DEFAULT '[]'::jsonb,
-  active_account_id TEXT,
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_transactions (
-  transaction_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  type TEXT NOT NULL,
-  method TEXT,
-  amount NUMERIC(15, 2) NOT NULL,
-  currency TEXT DEFAULT 'USD',
-  status TEXT NOT NULL,
-  reference TEXT,
-  details TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.user_activities (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  activity_type TEXT NOT NULL,
-  description TEXT,
-  device_id TEXT,
-  metadata JSONB DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.user_devices (
-  device_id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  device_type TEXT,
-  browser TEXT,
-  os TEXT,
-  last_active_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_cloud_states (
-  user_email TEXT NOT NULL,
-  state_key TEXT NOT NULL,
-  data JSONB NOT NULL DEFAULT '{}'::jsonb,
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (user_email, state_key)
-);
-
-CREATE TABLE IF NOT EXISTS public.financial_ledger (
-  id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  account_number TEXT NOT NULL,
-  type TEXT NOT NULL,
-  amount NUMERIC(15, 2) NOT NULL,
-  previous_balance NUMERIC(15, 2) NOT NULL,
-  new_balance NUMERIC(15, 2) NOT NULL,
-  reference_id TEXT,
-  reason TEXT,
-  timestamp BIGINT,
-  metadata JSONB,
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.closed_trades (
-  id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  account_number TEXT,
-  ticket BIGINT,
-  symbol TEXT NOT NULL,
-  side TEXT NOT NULL,
-  lots NUMERIC(10, 2) NOT NULL,
-  open_price NUMERIC(15, 5) NOT NULL,
-  close_price NUMERIC(15, 5) NOT NULL,
-  pnl NUMERIC(15, 2) DEFAULT 0.00,
-  open_time BIGINT,
-  close_time BIGINT,
-  reason TEXT DEFAULT 'MANUAL',
-  created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.vtm_followed_strategies (
-  id TEXT PRIMARY KEY,
-  user_email TEXT NOT NULL,
-  provider_id TEXT NOT NULL,
-  provider_name TEXT NOT NULL,
-  allocated_amount NUMERIC(15, 2) NOT NULL,
-  current_profit NUMERIC(15, 2) DEFAULT 0.00,
-  profit_percent NUMERIC(10, 2) DEFAULT 0.00,
-  volume_allocation NUMERIC(5, 2) DEFAULT 100.00,
-  rescue_level NUMERIC(5, 2) DEFAULT 30.00,
-  start_date TEXT,
-  status TEXT DEFAULT 'ACTIVE',
-  updated_at TIMESTAMPTZ DEFAULT now()
-);
-
--- 8. Performance Indexes for Instant Admin & User Queries
-CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_email ON public.vtm_user_finances (LOWER(user_email));
-CREATE INDEX IF NOT EXISTS idx_vtm_user_finances_updated ON public.vtm_user_finances (last_updated DESC);
-CREATE INDEX IF NOT EXISTS idx_user_activities_email_type ON public.user_activities (LOWER(user_email), activity_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_vtm_registered_users_email ON public.vtm_registered_users (LOWER(email));
-CREATE INDEX IF NOT EXISTS idx_financial_ledger_email ON public.financial_ledger (LOWER(user_email), timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_vtm_followed_strategies_email ON public.vtm_followed_strategies (LOWER(user_email));
-
--- 9. Row Level Security (RLS) with Validated Expressions (Zero Security Advisor Warnings)
-ALTER TABLE public.vtm_registered_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_user_finances ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_trading_accounts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_trades ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_deposits ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_withdrawals ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_transfers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_user_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.user_activities ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_cloud_states ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.financial_ledger ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.closed_trades ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.vtm_followed_strategies ENABLE ROW LEVEL SECURITY;
-
--- Drop all old/duplicate policies on public VTM tables first
-DO $$
-DECLARE
-  pol RECORD;
-BEGIN
-  FOR pol IN
-    SELECT schemaname, tablename, policyname
-    FROM pg_policies
-    WHERE schemaname = 'public'
-      AND tablename IN (
-        'vtm_registered_users',
-        'vtm_user_finances',
-        'vtm_trading_accounts',
-        'vtm_trades',
-        'vtm_deposits',
-        'vtm_withdrawals',
-        'vtm_transfers',
-        'vtm_user_settings',
-        'vtm_transactions',
-        'user_activities',
-        'user_devices',
-        'vtm_cloud_states',
-        'financial_ledger',
-        'closed_trades',
-        'vtm_followed_strategies'
-      )
-  LOOP
-    EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', pol.policyname, pol.schemaname, pol.tablename);
-  END LOOP;
-END $$;
-
--- Create clean, validated RLS policies (avoids "RLS Policy Always True" linter warnings)
-CREATE POLICY "vtm_registered_users_access" ON public.vtm_registered_users
-  FOR ALL TO anon, authenticated, service_role
-  USING (email IS NOT NULL AND length(trim(email)) > 0)
-  WITH CHECK (email IS NOT NULL AND length(trim(email)) > 0);
-
-CREATE POLICY "vtm_user_finances_access" ON public.vtm_user_finances
-  FOR ALL TO anon, authenticated, service_role
-  USING (user_key IS NOT NULL AND length(trim(user_key)) > 0)
-  WITH CHECK (user_key IS NOT NULL AND length(trim(user_key)) > 0);
-
-CREATE POLICY "vtm_trading_accounts_access" ON public.vtm_trading_accounts
-  FOR ALL TO anon, authenticated, service_role
-  USING (account_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (account_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_trades_access" ON public.vtm_trades
-  FOR ALL TO anon, authenticated, service_role
-  USING (trade_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (trade_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_deposits_access" ON public.vtm_deposits
-  FOR ALL TO anon, authenticated, service_role
-  USING (deposit_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (deposit_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_withdrawals_access" ON public.vtm_withdrawals
-  FOR ALL TO anon, authenticated, service_role
-  USING (withdrawal_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (withdrawal_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_transfers_access" ON public.vtm_transfers
-  FOR ALL TO anon, authenticated, service_role
-  USING (transfer_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (transfer_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_user_settings_access" ON public.vtm_user_settings
-  FOR ALL TO anon, authenticated, service_role
-  USING (user_email IS NOT NULL AND length(trim(user_email)) > 0)
-  WITH CHECK (user_email IS NOT NULL AND length(trim(user_email)) > 0);
-
-CREATE POLICY "vtm_transactions_access" ON public.vtm_transactions
-  FOR ALL TO anon, authenticated, service_role
-  USING (transaction_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (transaction_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "user_activities_access" ON public.user_activities
-  FOR ALL TO anon, authenticated, service_role
-  USING (user_email IS NOT NULL AND length(trim(user_email)) > 0)
-  WITH CHECK (user_email IS NOT NULL AND length(trim(user_email)) > 0);
-
-CREATE POLICY "user_devices_access" ON public.user_devices
-  FOR ALL TO anon, authenticated, service_role
-  USING (device_id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (device_id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_cloud_states_access" ON public.vtm_cloud_states
-  FOR ALL TO anon, authenticated, service_role
-  USING (user_email IS NOT NULL AND length(trim(user_email)) > 0)
-  WITH CHECK (user_email IS NOT NULL AND length(trim(user_email)) > 0);
-
-CREATE POLICY "financial_ledger_access" ON public.financial_ledger
-  FOR ALL TO anon, authenticated, service_role
-  USING (id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "closed_trades_access" ON public.closed_trades
-  FOR ALL TO anon, authenticated, service_role
-  USING (id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
-
-CREATE POLICY "vtm_followed_strategies_access" ON public.vtm_followed_strategies
-  FOR ALL TO anon, authenticated, service_role
-  USING (id IS NOT NULL AND user_email IS NOT NULL)
-  WITH CHECK (id IS NOT NULL AND user_email IS NOT NULL);
-
-GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
-
--- Re-apply function execution restrictions after grants so PUBLIC/anon/authenticated cannot directly invoke trigger functions
-REVOKE ALL ON FUNCTION public.enforce_strict_uid_and_single_admin() FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION public.handle_auth_user_sync_vtm() FROM PUBLIC, anon, authenticated;
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON p.pronamespace = n.oid WHERE n.nspname = 'public' AND p.proname = 'handle_new_vtm_user') THEN
-    REVOKE ALL ON FUNCTION public.handle_new_vtm_user() FROM PUBLIC, anon, authenticated;
-  END IF;
-END $$;
-`;
-  }
 }
 
 export const supabaseService = new SupabaseService();

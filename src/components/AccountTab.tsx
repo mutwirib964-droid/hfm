@@ -215,7 +215,7 @@ export const AccountTab: React.FC<AccountTabProps> = ({
               <span className={`font-mono ${isDarkMode ? 'text-neutral-200' : 'text-slate-800 font-semibold'}`}>
                 #{currentUser?.accountNumber || '8842-9102-LIVE'}
               </span>{' '}
-              • {currentUser?.email || 'mutwirib964@gmail.com'}
+              • {currentUser?.email || ''}
             </p>
           </div>
         </div>

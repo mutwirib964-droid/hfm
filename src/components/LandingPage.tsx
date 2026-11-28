@@ -41,15 +41,11 @@ import { UserAuthProfile } from '../types/botTypes';
 import {
   getOrCreateUserProfile,
   findRegisteredUser,
-  verifyUserCredentials,
   registerNewUser,
   initializeUserFinancials,
   loadUserFinancials,
   saveUserFinancials,
   mergeUserFinancialStates,
-  MASTER_ADMIN_EMAIL,
-  MASTER_ADMIN_UID,
-  isMasterAdminEmail,
   isValidUserUid,
   generateSupabaseUuid,
   calculateNetWalletFromLedger,
@@ -253,15 +249,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({
       const cleanRefCode = referralCodeInput.trim().toUpperCase();
 
       const newUserProfile: UserAuthProfile = {
-        id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : generateSupabaseUuid(),
+        id: generateSupabaseUuid(),
         name: name.trim(),
-        email: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_EMAIL : cleanEmail,
+        email: cleanEmail,
         phoneNumber: fullPhoneNumber,
         phone: fullPhoneNumber,
         countryCode: selectedCountry.dialCode,
         countryName: selectedCountry.name,
         accountNumber: `${Math.floor(10000000 + Math.random() * 90000000)}`,
-        role: isMasterAdminEmail(cleanEmail) ? 'admin' : 'normal',
+        role: 'normal',
         isLoggedIn: true,
         isNewRegistration: true,
         createdAt: Date.now(),
@@ -342,31 +338,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         const loginRes = await supabaseService.authenticateWithServer(cleanEmail, password);
 
         if (!loginRes.ok || !loginRes.profile) {
-          // Offline fallback ONLY for Master Admin when server gateway is unreachable (not invalid password)
-          if (isMasterAdminEmail(cleanEmail) && !loginRes.code) {
-            const localVerify = verifyUserCredentials(MASTER_ADMIN_EMAIL, password);
-            if (localVerify.success) {
-              const confirmedAdmin: UserAuthProfile = {
-                ...(localVerify.user || {}),
-                id: MASTER_ADMIN_UID,
-                email: MASTER_ADMIN_EMAIL,
-                name: 'mutwiri',
-                phoneNumber: '+254 741114162',
-                phone: '+254 741114162',
-                countryCode: '+254',
-                countryName: 'Kenya',
-                accountNumber: '27330648',
-                role: 'admin',
-                isLoggedIn: true,
-                createdAt: localVerify.user?.createdAt || Date.now(),
-              };
-              registerNewUser(confirmedAdmin, password);
-              setIsSubmitting(false);
-              onSignIn(confirmedAdmin);
-              return;
-            }
-          }
-
           setIsSubmitting(false);
           setValidationError(
             loginRes.error ||
@@ -384,35 +355,30 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           return;
         }
 
-        if (isMasterAdminEmail(cleanEmail)) {
-          const confirmedAdmin: UserAuthProfile = {
-            ...loginRes.profile,
-            id: MASTER_ADMIN_UID,
-            email: MASTER_ADMIN_EMAIL,
-            name: 'mutwiri',
-            phoneNumber: loginRes.profile.phoneNumber || '+254 741114162',
-            phone: loginRes.profile.phone || '+254 741114162',
-            countryCode: '+254',
-            countryName: 'Kenya',
-            accountNumber: loginRes.profile.accountNumber || '27330648',
-            role: 'admin',
-            isLoggedIn: true,
-          };
-          registerNewUser(confirmedAdmin, password);
-          supabaseService.updateUserLastLoginInDatabase(MASTER_ADMIN_EMAIL).catch(() => {});
-          setIsSubmitting(false);
-          onSignIn(confirmedAdmin);
-          return;
-        }
+        supabaseService.setActiveSessionPassword(password);
+
+        const safeRole =
+          loginRes.profile.role === 'admin'
+            ? 'admin'
+            : loginRes.profile.role === 'marketer'
+            ? 'marketer'
+            : 'normal';
 
         const verifiedProfile: UserAuthProfile = {
           ...loginRes.profile,
           id: loginRes.profile.id,
-          role: loginRes.profile.role === 'marketer' ? 'marketer' : 'normal',
+          role: safeRole,
           isLoggedIn: true,
         };
 
         registerNewUser({ ...verifiedProfile, isNewRegistration: false }, password);
+
+        if (verifiedProfile.role === 'admin') {
+          supabaseService.updateUserLastLoginInDatabase(verifiedProfile.email).catch(() => {});
+          setIsSubmitting(false);
+          onSignIn({ ...verifiedProfile, isNewRegistration: false });
+          return;
+        }
 
         try {
           const localFinances = loadUserFinancials(verifiedProfile);

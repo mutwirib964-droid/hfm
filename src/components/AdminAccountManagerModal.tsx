@@ -44,9 +44,7 @@ import {
   PlatformDepositTransaction,
   PlatformTransactionRecord,
   PlatformUserMetric,
-  MASTER_ADMIN_EMAIL,
-  MASTER_ADMIN_UID,
-  isMasterAdminEmail,
+  isAdminUser,
   replaceLocalRegistryWithSupabase,
   getOrCreateUserProfile,
   adminResolveCryptoDeposit,
@@ -156,7 +154,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       ({ id: clean, email: clean, name: clean.split('@')[0], role: 'normal' } as UserAuthProfile);
 
     setSelectedUserRole(
-      isMasterAdminEmail(clean)
+      isAdminUser(targetUser)
         ? 'admin'
         : targetUser.role === 'marketer'
         ? 'marketer'
@@ -205,7 +203,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         (!currentSelected || !updatedMetrics.some((m) => m.user.email.toLowerCase() === currentSelected))
       ) {
         const firstClient =
-          updatedMetrics.find((m) => !isMasterAdminEmail(m.user.email)) || updatedMetrics[0];
+          updatedMetrics.find((m) => !isAdminUser(m.user)) || updatedMetrics[0];
         if (firstClient) {
           handleSelectUserForEdit(firstClient.user.email);
         }
@@ -291,13 +289,13 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       const existingProfile =
         allUsers.find((u) => u.email.toLowerCase() === cleanEmail) ||
         ({
-          id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : cleanEmail,
+          id: cleanEmail,
           email: cleanEmail,
           name: cleanEmail.split('@')[0],
           role: selectedUserRole,
         } as UserAuthProfile);
 
-      const effectiveRole: 'normal' | 'marketer' | 'admin' = isMasterAdminEmail(cleanEmail)
+      const effectiveRole: 'normal' | 'marketer' | 'admin' = isAdminUser(existingProfile)
         ? 'admin'
         : selectedUserRole === 'marketer'
         ? 'marketer'
@@ -397,7 +395,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   // Instant Role Assignment from the Users Directory Table
   const handleQuickAssignRole = async (email: string, newRole: 'normal' | 'marketer') => {
     const clean = email.trim().toLowerCase();
-    if (isMasterAdminEmail(clean)) return;
+    const targetRow = getAllRegisteredUsers().find((u) => u.email.toLowerCase() === clean);
+    if (isAdminUser(targetRow)) return;
 
     const ok = assignUserRole(clean, newRole);
     await supabaseService.updateUserRoleInDatabase(clean, newRole);
@@ -914,7 +913,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
               <div className={`flex items-center gap-1.5 text-[11px] sm:text-xs truncate ${mutedText}`}>
                 <span className="hidden xs:inline">Administrator</span>
                 <span className="hidden xs:inline" aria-hidden="true">·</span>
-                <span className={`font-medium truncate ${secondaryText}`}>{MASTER_ADMIN_EMAIL}</span>
+                <span className={`font-medium truncate ${secondaryText}`}>{currentUser?.email || 'Administrator'}</span>
               </div>
             </div>
           </div>
@@ -1333,8 +1332,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                   ) : (
                     filteredUsers.map((m) => {
                       const u = m.user;
-                      const isMaster = isMasterAdminEmail(u.email);
-                      const displayEmail = isMaster ? MASTER_ADMIN_EMAIL : u.email;
+                      const isMaster = isAdminUser(u);
+                      const displayEmail = u.email;
 
                       return (
                         <tr
@@ -1522,15 +1521,11 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                     onChange={(e) => handleSelectUserForEdit(e.target.value)}
                     className={`w-full p-2.5 rounded-lg border text-xs font-medium focus:outline-none focus:border-[#E51937] ${inputBg}`}
                   >
-                    {(filteredUsers.length > 0 ? filteredUsers : userMetrics).map((m) => {
-                      const isMaster = isMasterAdminEmail(m.user.email);
-                      const emailShown = isMaster ? MASTER_ADMIN_EMAIL : m.user.email;
-                      return (
-                        <option key={m.user.email} value={m.user.email.toLowerCase()}>
-                          {m.user.name} — {emailShown} ({m.accountsCount} Live Accounts)
-                        </option>
-                      );
-                    })}
+                    {(filteredUsers.length > 0 ? filteredUsers : userMetrics).map((m) => (
+                      <option key={m.user.email} value={m.user.email.toLowerCase()}>
+                        {m.user.name} — {m.user.email} ({m.accountsCount} Live Accounts)
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -1549,7 +1544,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                 <label className={`text-xs font-medium block ${mutedText}`}>
                   Assign Account Role
                 </label>
-                {isMasterAdminEmail(selectedUserEmail) ? (
+                {isAdminUser(selectedUserObj) || selectedUserRole === 'admin' ? (
                   <div
                     className={`p-2.5 rounded-lg border text-xs font-medium flex items-center gap-2 ${
                       isDarkMode
@@ -1558,7 +1553,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
                     }`}
                   >
                     <Lock className="w-3.5 h-3.5 text-[#E51937]" />
-                    <span>Administrator ({MASTER_ADMIN_EMAIL})</span>
+                    <span>Administrator ({selectedUserObj?.email || selectedUserEmail})</span>
                   </div>
                 ) : (
                   <div className="grid grid-cols-2 gap-2">

@@ -15,6 +15,11 @@ import {
   isMasterAdminEmail,
   normalizePlatformEmail,
   sanitizePublicPayload,
+  hashPasswordScrypt,
+  verifyPasswordAgainstStored,
+  getAdminEnvConfig,
+  isValidUuid,
+  deterministicUuidFromEmail,
 } from './server/supabaseProxy.mjs';
 
 const TV_LIVE_SYMBOLS: Record<
@@ -1018,16 +1023,12 @@ function payheroStkPlugin() {
       if (!Array.isArray(rows) || rows.length === 0) return null;
       const row = rows[0];
       const rawHash = String(row.password_hash || '');
-      const storedPassword =
-        rawHash.startsWith('uid:') && rawHash.includes('|')
-          ? rawHash.slice(rawHash.indexOf('|') + 1)
-          : rawHash;
       return {
         email: String(row.email || cleanEmail).trim().toLowerCase(),
         uid: String(row.uid || '').trim(),
         name: String(row.name || '').trim(),
         phone: String(row.phone_number || '').trim(),
-        password: storedPassword,
+        passwordHash: rawHash,
         role: String(row.role || 'normal'),
       };
     } catch {
@@ -1075,7 +1076,7 @@ function payheroStkPlugin() {
     const effectivePassword =
       passwordToLink && String(passwordToLink).trim().length >= 4
         ? String(passwordToLink).trim()
-        : 'Jos134ka2';
+        : crypto.randomBytes(12).toString('hex');
 
     if (!existingSettings && cleanEmail && matchedPhone) {
       const keRes = await callOneAppServerFn(
@@ -1201,20 +1202,23 @@ function payheroStkPlugin() {
         const vtmUser = await fetchVtmUserRecord(cleanEmail);
         const suppliedPassword = String(body.password || body.accountPassword || '').trim();
 
-        if (vtmUser && vtmUser.password && suppliedPassword && suppliedPassword !== vtmUser.password) {
-          res.setHeader('Content-Type', 'application/json');
-          res.setHeader('Access-Control-Allow-Origin', '*');
-          res.statusCode = 401;
-          res.end(
-            JSON.stringify({
-              success: false,
-              error: 'Account email and password do not match your registered VTM Markets account.',
-            })
-          );
-          return;
+        if (vtmUser && vtmUser.passwordHash && suppliedPassword) {
+          const pwdCheck = verifyPasswordAgainstStored(suppliedPassword, vtmUser.passwordHash);
+          if (!pwdCheck.valid) {
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.statusCode = 401;
+            res.end(
+              JSON.stringify({
+                success: false,
+                error: 'Account email and password do not match your registered VTM Markets account.',
+              })
+            );
+            return;
+          }
         }
 
-        const verifiedPassword = suppliedPassword || vtmUser?.password || 'Jos134ka2';
+        const verifiedPassword = suppliedPassword || '';
         const cleanPhone = String(
           body.phone || body.phone_number || body.msisdn || body.marketer_phone || vtmUser?.phone || ''
         ).trim();
@@ -2904,16 +2908,15 @@ function supabaseConfigPlugin() {
 
   const handleGetConfig = (_req: any, res: any) => {
     res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
     const cfg = getConfig();
-    res.end(JSON.stringify(cfg));
+    res.end(JSON.stringify({ configured: Boolean(cfg.configured), proxied: true }));
   };
 
   const handleSaveConfig = (req: any, res: any) => {
     if (req.method === 'OPTIONS') {
-      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       res.statusCode = 200;
       res.end();
       return;
@@ -2923,6 +2926,20 @@ function supabaseConfigPlugin() {
       res.statusCode = 405;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const session = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!session) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+      return;
+    }
+    if (session.role !== 'admin' && !isMasterAdminEmail(session.email)) {
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Admin role required' }));
       return;
     }
 
@@ -2972,14 +2989,14 @@ function supabaseConfigPlugin() {
         }
 
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'no-store');
         res.statusCode = 200;
         res.end(
           JSON.stringify({
             success: true,
+            configured: true,
+            proxied: true,
             message: 'Supabase configuration saved on server for all devices',
-            url,
-            anonKey,
           })
         );
       } catch (err: any) {
@@ -3109,7 +3126,7 @@ function serverAccountingEnginePlugin() {
         res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
         return;
       }
-      const isEngAdmin = engSession.role === 'admin' && isMasterAdminEmail(engSession.email);
+      const isEngAdmin = engSession.role === 'admin' || isMasterAdminEmail(engSession.email);
       const tradeId = String(body.tradeId || body.id || '').trim();
       const requestedEmail = normalizePlatformEmail(body.userEmail || body.email || engSession.email);
       const userEmail = isEngAdmin && requestedEmail ? requestedEmail : engSession.email;
@@ -3220,7 +3237,7 @@ function serverAccountingEnginePlugin() {
         res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
         return;
       }
-      const isEngAdmin = engSession.role === 'admin' && isMasterAdminEmail(engSession.email);
+      const isEngAdmin = engSession.role === 'admin' || isMasterAdminEmail(engSession.email);
       const requestedEmail = normalizePlatformEmail(body.userEmail || body.email || engSession.email);
       const userEmail = isEngAdmin && requestedEmail ? requestedEmail : engSession.email;
       const accountNumber = String(body.accountNumber || '').trim();
@@ -3346,18 +3363,6 @@ function safeWsPlugin() {
 }
 
 export default defineConfig(() => {
-  let bakedSupabaseUrl = process.env.VITE_SUPABASE_URL || '';
-  let bakedSupabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY || '';
-  try {
-    const sbCfgPath = path.resolve(__dirname, '.supabase-config.json');
-    if (fs.existsSync(sbCfgPath)) {
-      const parsed = JSON.parse(fs.readFileSync(sbCfgPath, 'utf-8') || '{}');
-      if (!bakedSupabaseUrl && parsed.url) bakedSupabaseUrl = parsed.url;
-      if (!bakedSupabaseAnonKey && parsed.anonKey) bakedSupabaseAnonKey = parsed.anonKey;
-    }
-  } catch {
-    // ignore
-  }
 
   // Universal CSS Compatibility Plugin: Downlevels Tailwind v4 oklch(), oklab, color-mix(), and @layer
   // into standard #hex and rgba() CSS3 so every Android, iOS, and desktop browser renders all colors & gradients identically.
@@ -3618,166 +3623,12 @@ export default defineConfig(() => {
   const platformDbPlugin = () => {
     const dbFilePath = path.resolve(__dirname, '.platform-db.json');
 
-    const getSeedData = () => {
-      const now = Date.now();
-      return {
-        users: {
-          'mutwirib964@gmail.com': {
-            id: '84a1e1db-f302-4dac-a077-291128ae0cea',
-            name: 'mutwiri',
-            email: 'mutwirib964@gmail.com',
-            phoneNumber: '+254 741114162',
-            phone: '+254 741114162',
-            countryCode: '+254',
-            countryName: 'Kenya',
-            accountNumber: '27330648',
-            role: 'admin',
-            isLoggedIn: true,
-            createdAt: 1790257470000,
-          },
-          'joelndungu1022@gmail.com': {
-            id: 'c2940f1a-8e33-411b-a910-763566710220',
-            name: 'Joel Ndungu',
-            email: 'joelndungu1022@gmail.com',
-            phoneNumber: '+254 741114162',
-            phone: '+254 741114162',
-            countryCode: '+254',
-            countryName: 'Kenya',
-            accountNumber: '7635667',
-            role: 'marketer',
-            isLoggedIn: true,
-            createdAt: 1790340000000,
-          },
-          'kelvinmunene263@gmail.com': {
-            id: 'b1839e2b-7c44-422c-b821-849201402630',
-            name: 'Kelvin Munene',
-            email: 'kelvinmunene263@gmail.com',
-            phoneNumber: '+254 712345678',
-            phone: '+254 712345678',
-            countryCode: '+254',
-            countryName: 'Kenya',
-            accountNumber: '8492014',
-            role: 'normal',
-            isLoggedIn: true,
-            createdAt: 1790420000000,
-          },
-        } as Record<string, any>,
-        passwords: {} as Record<string, string>,
-        financesByEmail: {
-          'mutwirib964@gmail.com': {
-            walletBalance: 0,
-            accounts: [
-              {
-                id: 'acc-27330648',
-                accountNumber: '27330648',
-                server: 'VTMarkets-LiveServer1',
-                type: 'Live',
-                tier: 'ECN',
-                balance: 0,
-                equity: 0,
-                margin: 0,
-                freeMargin: 0,
-                marginLevel: 0,
-                currency: 'USD',
-                leverage: '1:500',
-                createdAt: 1790257470000,
-              },
-            ],
-            selectedAccountId: 'acc-27330648',
-            transactions: [],
-            lastUpdated: now,
-          },
-          'joelndungu1022@gmail.com': {
-            walletBalance: 352.0,
-            accounts: [
-              {
-                id: 'acc-7635667',
-                accountNumber: '7635667',
-                server: 'VTMarkets-LiveServer1',
-                type: 'Live',
-                tier: 'Premium',
-                balance: 201.39,
-                equity: 201.39,
-                margin: 0,
-                freeMargin: 201.39,
-                marginLevel: 0,
-                currency: 'USD',
-                leverage: '1:500',
-                createdAt: 1790340000000,
-              },
-              {
-                id: 'acc-7821884',
-                accountNumber: '7821884',
-                server: 'VTMarkets-DemoServer',
-                type: 'Demo',
-                tier: 'Premium',
-                balance: 131936.92,
-                equity: 131936.92,
-                margin: 0,
-                freeMargin: 131936.92,
-                marginLevel: 0,
-                currency: 'USD',
-                leverage: '1:500',
-                createdAt: 1790340000000,
-              },
-            ],
-            selectedAccountId: 'acc-7635667',
-            transactions: [
-              {
-                id: 'tx-joel-dep-1',
-                type: 'DEPOSIT',
-                method: 'M-Pesa Express',
-                amount: 352.0,
-                currency: 'USD',
-                status: 'COMPLETED',
-                timestamp: 1790341000000,
-                reference: 'MPESA-JOEL-352',
-                accountNumber: 'VTM Wallet',
-                details: 'M-Pesa Deposit to VTM Wallet',
-              },
-            ],
-            lastUpdated: now,
-          },
-          'kelvinmunene263@gmail.com': {
-            walletBalance: 0,
-            accounts: [
-              {
-                id: 'acc-8492014',
-                accountNumber: '8492014',
-                server: 'VTMarkets-LiveServer1',
-                type: 'Live',
-                tier: 'Premium',
-                balance: 16.0,
-                equity: 16.0,
-                margin: 0,
-                freeMargin: 16.0,
-                marginLevel: 0,
-                currency: 'USD',
-                leverage: '1:500',
-                createdAt: 1790420000000,
-              },
-            ],
-            selectedAccountId: 'acc-8492014',
-            transactions: [
-              {
-                id: 'tx-kelvin-dep-1',
-                type: 'DEPOSIT',
-                method: 'M-Pesa Express',
-                amount: 16.0,
-                currency: 'USD',
-                status: 'COMPLETED',
-                timestamp: 1790421000000,
-                reference: 'MPESA-KELVIN-16',
-                accountNumber: '8492014',
-                details: 'M-Pesa Deposit to #8492014',
-              },
-            ],
-            lastUpdated: now,
-          },
-        } as Record<string, any>,
-        cloudStates: {} as Record<string, Record<string, any>>,
-      };
-    };
+    const getSeedData = () => ({
+      users: {} as Record<string, any>,
+      passwords: {} as Record<string, string>,
+      financesByEmail: {} as Record<string, any>,
+      cloudStates: {} as Record<string, Record<string, any>>,
+    });
 
     let cachedDb: any = null;
     let saveDebounceTimer: any = null;
@@ -3797,11 +3648,8 @@ export default defineConfig(() => {
           return cachedDb;
         }
       } catch (e) {
-        console.warn('[platformDbPlugin] Failed to load .platform-db.json, using seed:', e);
+        console.warn('[platformDbPlugin] Failed to load .platform-db.json, using empty state:', e);
       }
-      try {
-        fs.writeFileSync(dbFilePath, JSON.stringify(seed, null, 2), 'utf-8');
-      } catch {}
       cachedDb = seed;
       return cachedDb;
     };
@@ -3844,7 +3692,10 @@ export default defineConfig(() => {
                 upsertUser: (profile: any, pwd?: string) => {
                   const em = normalizePlatformEmail(profile.email);
                   db.users[em] = { ...(db.users[em] || {}), ...profile, email: em };
-                  if (pwd) db.passwords[em] = String(pwd);
+                  if (pwd) {
+                    const pwdStr = String(pwd);
+                    db.passwords[em] = pwdStr.startsWith('scrypt:') ? pwdStr : hashPasswordScrypt(pwdStr);
+                  }
                   saveDb(db);
                 },
               },
@@ -3868,7 +3719,7 @@ export default defineConfig(() => {
           res.end(JSON.stringify({ ok: false, error: 'Authentication required' }));
           return;
         }
-        const isSessionAdmin = session.role === 'admin' && isMasterAdminEmail(session.email);
+        const isSessionAdmin = session.role === 'admin' || isMasterAdminEmail(session.email);
 
         if (req.method === 'GET') {
           const urlObj = new URL(req.url || '/', 'http://localhost');
@@ -3919,9 +3770,10 @@ export default defineConfig(() => {
                   res.end(JSON.stringify({ ok: false, error: 'Forbidden' }));
                   return;
                 }
-                const isAdmin = isMasterAdminEmail(requestedEmail);
                 const cleanEmail = requestedEmail;
                 const existing = db.users[cleanEmail] || {};
+                const isAdmin = isMasterAdminEmail(requestedEmail) || existing.role === 'admin';
+                const { uid: adminUid } = getAdminEnvConfig();
                 const isPlaceholderDigits = (digits: string) =>
                   !digits ||
                   digits === '254700000000' ||
@@ -3938,7 +3790,22 @@ export default defineConfig(() => {
                     : incomingDigits.length >= 6 && !isPlaceholderDigits(incomingDigits)
                     ? incomingPhone
                     : existingPhone || incomingPhone;
-                const { password_hash: _dropHash, password: _dropPwd, ...safePayloadUser } = payload.user || {};
+                const { password_hash: _dropHash, password: _dropPwd, role: _dropRole, ...safePayloadUser } = payload.user || {};
+                const resolvedRole = isAdmin
+                  ? 'admin'
+                  : isSessionAdmin
+                  ? payload.user.role === 'marketer'
+                    ? 'marketer'
+                    : payload.user.role === 'admin'
+                    ? 'admin'
+                    : payload.user.role === 'normal'
+                    ? 'normal'
+                    : existing.role === 'marketer'
+                    ? 'marketer'
+                    : 'normal'
+                  : existing.role === 'marketer'
+                  ? 'marketer'
+                  : 'normal';
                 db.users[cleanEmail] = {
                   ...existing,
                   ...safePayloadUser,
@@ -3946,20 +3813,19 @@ export default defineConfig(() => {
                   phoneNumber: resolvedPhone,
                   phone: resolvedPhone,
                   phone_number: resolvedPhone,
-                  id: isAdmin
-                    ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                    : payload.user.id || existing.id,
-                  role: isAdmin
-                    ? 'admin'
-                    : payload.user.role === 'marketer' || existing.role === 'marketer'
-                    ? 'marketer'
-                    : 'normal',
+                  id:
+                    isAdmin && isValidUuid(adminUid)
+                      ? adminUid
+                      : existing.id ||
+                        (isValidUuid(payload.user.id) ? payload.user.id : deterministicUuidFromEmail(cleanEmail)),
+                  role: resolvedRole,
                   createdAt: existing.createdAt || payload.user.createdAt || Date.now(),
                 };
                 delete db.users[cleanEmail].password_hash;
                 delete db.users[cleanEmail].password;
                 if (payload.password && String(payload.password).trim()) {
-                  db.passwords[cleanEmail] = String(payload.password).trim();
+                  const pwdStr = String(payload.password).trim();
+                  db.passwords[cleanEmail] = pwdStr.startsWith('scrypt:') ? pwdStr : hashPasswordScrypt(pwdStr);
                 }
                 saveDb(db);
                 res.statusCode = 200;
@@ -3973,19 +3839,21 @@ export default defineConfig(() => {
                   res.end(JSON.stringify({ ok: false, error: 'Admin role required' }));
                   return;
                 }
+                const { uid: adminUid } = getAdminEnvConfig();
                 let count = 0;
                 payload.users.forEach((rawUser: any) => {
                   if (!rawUser || !rawUser.email) return;
-                  const rawEmail = String(rawUser.email).trim().toLowerCase();
-                  const isAdmin =
-                    rawEmail === 'mutwirib964@gmail.com' ||
-                    rawEmail === 'mutwrib@gmail.com' ||
-                    rawEmail === 'mutwirib@gmail.com';
-                  const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+                  const cleanEmail = normalizePlatformEmail(rawUser.email);
                   const existing = db.users[cleanEmail] || {};
-                  const resolvedUid = isAdmin
-                    ? '84a1e1db-f302-4dac-a077-291128ae0cea'
-                    : rawUser.uid || rawUser.id || existing.id || crypto.randomUUID();
+                  const isAdmin =
+                    isMasterAdminEmail(cleanEmail) || existing.role === 'admin' || rawUser.role === 'admin';
+                  const candidateUid = rawUser.uid || rawUser.id || existing.id;
+                  const resolvedUid =
+                    isAdmin && isValidUuid(adminUid)
+                      ? adminUid
+                      : isValidUuid(candidateUid)
+                      ? candidateUid
+                      : deterministicUuidFromEmail(cleanEmail);
                   const safeRole = isAdmin
                     ? 'admin'
                     : rawUser.role === 'marketer' || existing.role === 'marketer'
@@ -4011,7 +3879,7 @@ export default defineConfig(() => {
                     ...safeRawUser,
                     email: cleanEmail,
                     id: resolvedUid,
-                    name: isAdmin ? 'mutwiri' : rawUser.name || existing.name || cleanEmail.split('@')[0],
+                    name: rawUser.name || existing.name || cleanEmail.split('@')[0],
                     role: safeRole,
                     createdAt: existing.createdAt || rawUser.createdAt || (rawUser.created_at ? new Date(rawUser.created_at).getTime() : Date.now()),
                     accountNumber: rawUser.account_number || rawUser.accountNumber || existing.accountNumber || String(Math.floor(10000000 + Math.random() * 90000000)),
@@ -4026,12 +3894,17 @@ export default defineConfig(() => {
                   delete db.users[cleanEmail].password;
 
                   if (rawUser.password_hash) {
-                    const match = String(rawUser.password_hash).match(/^uid:[^|]+\|(.*)$/);
-                    if (match && match[1]) {
-                      db.passwords[cleanEmail] = match[1];
+                    const hashStr = String(rawUser.password_hash).trim();
+                    if (hashStr.startsWith('scrypt:')) {
+                      db.passwords[cleanEmail] = hashStr;
+                    } else {
+                      const match = hashStr.match(/^uid:[^|]+\|(.*)$/);
+                      if (match && match[1]) {
+                        db.passwords[cleanEmail] = hashPasswordScrypt(match[1]);
+                      }
                     }
                   } else if (rawUser.password) {
-                    db.passwords[cleanEmail] = String(rawUser.password).trim();
+                    db.passwords[cleanEmail] = hashPasswordScrypt(String(rawUser.password).trim());
                   }
 
                   count++;
@@ -4049,22 +3922,21 @@ export default defineConfig(() => {
                   res.end(JSON.stringify({ ok: false, error: 'Admin role required' }));
                   return;
                 }
-                const rawEmail = String(payload.email).trim().toLowerCase();
-                const isAdmin =
-                  rawEmail === 'mutwirib964@gmail.com' ||
-                  rawEmail === 'mutwrib@gmail.com' ||
-                  rawEmail === 'mutwirib@gmail.com';
-                const cleanEmail = isAdmin ? 'mutwirib964@gmail.com' : rawEmail;
+                const cleanEmail = normalizePlatformEmail(payload.email);
+                const existing = db.users[cleanEmail];
+                const isAdmin = isMasterAdminEmail(cleanEmail) || existing?.role === 'admin';
                 const safeRole = isAdmin
+                  ? 'admin'
+                  : payload.role === 'admin'
                   ? 'admin'
                   : payload.role === 'marketer'
                   ? 'marketer'
                   : 'normal';
-                if (db.users[cleanEmail]) {
-                  db.users[cleanEmail].role = safeRole;
+                if (existing) {
+                  existing.role = safeRole;
                 } else {
                   db.users[cleanEmail] = {
-                    id: crypto.randomUUID(),
+                    id: deterministicUuidFromEmail(cleanEmail),
                     email: cleanEmail,
                     name: cleanEmail.split('@')[0],
                     role: safeRole,
@@ -4720,8 +4592,6 @@ Output ONLY valid JSON matching this exact structure:
     },
     define: {
       '__VTM_BUILD_ID__': JSON.stringify(currentBuildId),
-      'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(bakedSupabaseUrl),
-      'import.meta.env.VITE_SUPABASE_ANON_KEY': JSON.stringify(bakedSupabaseAnonKey),
       'import.meta.env.VITE_USD_KES_RATE': JSON.stringify(
         process.env.USD_KES_RATE || process.env.VITE_USD_KES_RATE || ''
       ),

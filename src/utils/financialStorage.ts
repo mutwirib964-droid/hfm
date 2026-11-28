@@ -32,7 +32,6 @@ export function getUserStorageKey(user?: UserAuthProfile | null): string {
 const STORAGE_PREFIX = 'vtm_finances_';
 const ACTIVE_FINANCES_KEY = 'vtm_active_finances';
 const USER_REGISTRY_KEY = 'vtm_user_registry';
-const USER_CREDENTIALS_KEY = 'vtm_user_credentials';
 const DELETED_ACCOUNTS_KEY = 'vtm_deleted_live_accounts';
 
 // 2 Weeks (14 days) in milliseconds for silent background idle Live account cleanup
@@ -637,35 +636,8 @@ export function sweepIdleLiveAccountsSilently(
   };
 }
 
-// Master Super Administrator Identity (Strictly Exclusive)
-export const MASTER_ADMIN_EMAIL = 'mutwirib964@gmail.com';
-export const MASTER_ADMIN_ALT_EMAIL = 'mutwirib964@gmail.com';
-export const MASTER_ADMIN_UID = '84a1e1db-f302-4dac-a077-291128ae0cea';
-export const MASTER_ADMIN_NAME = 'mutwiri';
-
-const ALLOWED_ADMIN_EMAILS = new Set([
-  'mutwirib964@gmail.com',
-]);
-
-/**
- * Strictly checks if an email belongs to the sole Master Admin (mutwirib964@gmail.com).
- * No other email is ever allowed to access the admin side.
- */
-export function isMasterAdminEmail(email?: string | null): boolean {
-  if (!email) return false;
-  const clean = email.trim().toLowerCase();
-  return clean === 'mutwirib964@gmail.com' || clean === 'mutwrib@gmail.com';
-}
-
-/**
- * Strictly checks if a user profile is the confirmed Master Admin with UID 84a1e1db-f302-4dac-a077-291128ae0cea.
- */
-export function isMasterAdminUser(user?: UserAuthProfile | null): boolean {
-  if (!user || !user.email) return false;
-  return (
-    isMasterAdminEmail(user.email) &&
-    (user.id === MASTER_ADMIN_UID || user.role === 'admin')
-  );
+export function isAdminUser(user?: UserAuthProfile | null): boolean {
+  return Boolean(user && user.role === 'admin');
 }
 
 /**
@@ -734,140 +706,16 @@ export function formatDisplayNameFromEmailOrQuery(raw: string): string {
   return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-const SEEDED_PLATFORM_USERS: Record<string, UserAuthProfile> = {
-  [MASTER_ADMIN_EMAIL]: {
-    id: MASTER_ADMIN_UID,
-    email: MASTER_ADMIN_EMAIL,
-    name: MASTER_ADMIN_NAME,
-    phoneNumber: '+254 741114162',
-    phone: '+254 741114162',
-    countryCode: '+254',
-    countryName: 'Kenya',
-    accountNumber: '27330648',
-    role: 'admin',
-    isLoggedIn: true,
-    createdAt: 1790257470000,
-  },
-  'joelndungu1022@gmail.com': {
-    id: 'c2940f1a-8e33-411b-a910-763566710220',
-    email: 'joelndungu1022@gmail.com',
-    name: 'Joel Ndungu',
-    phoneNumber: '+254 741114162',
-    phone: '+254 741114162',
-    countryCode: '+254',
-    countryName: 'Kenya',
-    accountNumber: '7635667',
-    role: 'marketer',
-    isLoggedIn: true,
-    createdAt: 1790340000000,
-  },
-  'kelvinmunene263@gmail.com': {
-    id: 'b1839e2b-7c44-422c-b821-849201402630',
-    email: 'kelvinmunene263@gmail.com',
-    name: 'Kelvin Munene',
-    phoneNumber: '+254 712345678',
-    phone: '+254 712345678',
-    countryCode: '+254',
-    countryName: 'Kenya',
-    accountNumber: '8492014',
-    role: 'normal',
-    isLoggedIn: true,
-    createdAt: 1790420000000,
-  },
-};
-
-const SEEDED_PLATFORM_FINANCES: Record<string, UserFinancialState> = {
-  'joelndungu1022@gmail.com': {
-    walletBalance: 352.0,
-    accounts: [
-      {
-        id: 'acc-7635667',
-        accountNumber: '7635667',
-        server: 'VTMarkets-LiveServer1',
-        type: 'Live',
-        tier: 'Premium',
-        balance: 201.39,
-        equity: 201.39,
-        margin: 0,
-        freeMargin: 201.39,
-        marginLevel: 0,
-        currency: 'USD',
-        leverage: '1:500',
-        createdAt: 1790340000000,
-      },
-      {
-        id: 'acc-7821884',
-        accountNumber: '7821884',
-        server: 'VTMarkets-DemoServer',
-        type: 'Demo',
-        tier: 'Premium',
-        balance: 131936.92,
-        equity: 131936.92,
-        margin: 0,
-        freeMargin: 131936.92,
-        marginLevel: 0,
-        currency: 'USD',
-        leverage: '1:500',
-        createdAt: 1790340000000,
-      },
-    ],
-    selectedAccountId: 'acc-7635667',
-    transactions: [
-      {
-        id: 'tx-joel-dep-1',
-        type: 'DEPOSIT',
-        method: 'M-Pesa Express',
-        amount: 352.0,
-        currency: 'USD',
-        status: 'COMPLETED',
-        timestamp: 1790341000000,
-        reference: 'MPESA-JOEL-352',
-        accountNumber: 'VTM Wallet',
-        details: 'M-Pesa Deposit to VTM Wallet',
-      },
-    ],
-    lastUpdated: 1790341000000,
-  },
-  'kelvinmunene263@gmail.com': {
-    walletBalance: 0,
-    accounts: [
-      {
-        id: 'acc-8492014',
-        accountNumber: '8492014',
-        server: 'VTMarkets-LiveServer1',
-        type: 'Live',
-        tier: 'Premium',
-        balance: 16.0,
-        equity: 16.0,
-        margin: 0,
-        freeMargin: 16.0,
-        marginLevel: 0,
-        currency: 'USD',
-        leverage: '1:500',
-        createdAt: 1790420000000,
-      },
-    ],
-    selectedAccountId: 'acc-8492014',
-    transactions: [
-      {
-        id: 'tx-kelvin-dep-1',
-        type: 'DEPOSIT',
-        method: 'M-Pesa Express',
-        amount: 16.0,
-        currency: 'USD',
-        status: 'COMPLETED',
-        timestamp: 1790421000000,
-        reference: 'MPESA-KELVIN-16',
-        accountNumber: '8492014',
-        details: 'M-Pesa Deposit to #8492014',
-      },
-    ],
-    lastUpdated: 1790421000000,
-  },
-};
-
 export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile> {
   try {
+    // Purge legacy plaintext credential storage keys if present from older versions
+    try {
+      localStorage.removeItem('vtm_user_credentials');
+      localStorage.removeItem('vtm_active_user_password');
+    } catch {
+      // ignore
+    }
+
     const raw = localStorage.getItem(USER_REGISTRY_KEY);
     const registry: Record<string, UserAuthProfile> = raw ? JSON.parse(raw) : {};
     let changed = false;
@@ -880,14 +728,18 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
         Object.entries(legacyReg).forEach(([em, prof]) => {
           const clean = (prof?.email || em || '').trim().toLowerCase();
           if (clean && clean.includes('@') && !registry[clean]) {
-            const isMaster = isMasterAdminEmail(clean);
             registry[clean] = {
               ...prof,
-              id: isMaster ? MASTER_ADMIN_UID : prof?.id || deterministicUuidFromEmail(clean),
-              email: isMaster ? MASTER_ADMIN_EMAIL : clean,
-              name: isMaster ? MASTER_ADMIN_NAME : prof?.name || formatDisplayNameFromEmailOrQuery(clean),
+              id: prof?.id || deterministicUuidFromEmail(clean),
+              email: clean,
+              name: prof?.name || formatDisplayNameFromEmailOrQuery(clean),
               accountNumber: prof?.accountNumber || deterministicAccountNumberFromEmail(clean),
-              role: isMaster ? 'admin' : prof?.role === 'marketer' ? 'marketer' : 'normal',
+              role:
+                prof?.role === 'admin'
+                  ? 'admin'
+                  : prof?.role === 'marketer'
+                  ? 'marketer'
+                  : 'normal',
               createdAt: prof?.createdAt || Date.now(),
             };
             changed = true;
@@ -898,37 +750,7 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
       // ignore
     }
 
-    // 2. Ensure core seeded accounts exist and enforce authoritative seeded roles
-    Object.entries(SEEDED_PLATFORM_USERS).forEach(([em, seedProfile]) => {
-      if (!registry[em] || !isValidUserUid(registry[em].id)) {
-        registry[em] = { ...seedProfile, ...(registry[em] || {}), id: seedProfile.id };
-        changed = true;
-      } else if (seedProfile.role && registry[em].role !== seedProfile.role) {
-        registry[em] = { ...registry[em], role: seedProfile.role };
-        changed = true;
-      }
-    });
-
-    Object.entries(SEEDED_PLATFORM_FINANCES).forEach(([em, seedFin]) => {
-      const finKey = STORAGE_PREFIX + em;
-      const existingRaw = localStorage.getItem(finKey);
-      if (!existingRaw) {
-        localStorage.setItem(finKey, JSON.stringify(seedFin));
-      } else {
-        try {
-          const parsed = JSON.parse(existingRaw);
-          if (!Array.isArray(parsed.accounts) || parsed.accounts.length === 0) {
-            localStorage.setItem(finKey, JSON.stringify(seedFin));
-          }
-        } catch {
-          localStorage.setItem(finKey, JSON.stringify(seedFin));
-        }
-      }
-    });
-
-    // 3. Deep Recovery: Scan all localStorage keys (vtm_finances_*, vtm_cloud_state_*, vtm_referral_state_*,
-    // vtm_open_positions_*, vtm_closed_trades_*, vtm_bot_runs_*, vtm_user_credentials, etc.)
-    // so any of the 50+ users cached at midnight are immediately restored to the registry!
+    // 2. Scan localStorage keys for any locally cached user workspaces
     const discoveredEmails = new Map<
       string,
       { name?: string; accountNumber?: string; createdAt?: number; referredByCode?: string }
@@ -944,7 +766,6 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
         !clean.includes('@') ||
         clean === 'guest@vtm.com' ||
         clean === 'default_user' ||
-        clean === 'mutwrib@gmail.com' ||
         clean.includes('@vtm.net')
       ) {
         return;
@@ -1014,12 +835,6 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
         }
       }
 
-      // Check credentials map & referred_by map
-      const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
-      if (rawCreds) {
-        const creds = JSON.parse(rawCreds);
-        Object.keys(creds || {}).forEach((em) => recordDiscoveredEmail(em));
-      }
       const rawRefMap = localStorage.getItem('vtm_referred_by_map');
       if (rawRefMap) {
         const refMap = JSON.parse(rawRefMap);
@@ -1032,7 +847,7 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
     }
 
     discoveredEmails.forEach((info, cleanEmail) => {
-      if (isMasterAdminEmail(cleanEmail)) return;
+      if (registry[cleanEmail]?.role === 'admin') return;
       if (!registry[cleanEmail] || !isValidUserUid(registry[cleanEmail].id)) {
         registry[cleanEmail] = {
           id: deterministicUuidFromEmail(cleanEmail),
@@ -1057,54 +872,20 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
     }
     return registry;
   } catch {
-    return { ...SEEDED_PLATFORM_USERS };
+    return {};
   }
 }
 
 /**
  * Look up a registered user by email in the local registry.
- * Guarantees that ONLY mutwrib@gmail.com / mutwirib964@gmail.com is recognized as Super Admin with UID 84a1e1db-f302-4dac-a077-291128ae0cea.
  */
 export function findRegisteredUser(email: string): UserAuthProfile | null {
   if (!email || !email.trim()) return null;
   const cleanEmail = email.trim().toLowerCase();
   const registry = ensureDefaultPlatformRegistry();
 
-  // If this is the master admin, ensure they are registered as Super Admin with confirmed UID
-  if (isMasterAdminEmail(cleanEmail)) {
-    try {
-      delete registry['mutwrib@gmail.com'];
-      const adminProfile: UserAuthProfile = {
-        ...(registry[MASTER_ADMIN_EMAIL] || {}),
-        id: MASTER_ADMIN_UID,
-        email: MASTER_ADMIN_EMAIL,
-        name: MASTER_ADMIN_NAME,
-        role: 'admin',
-        accountNumber: registry[MASTER_ADMIN_EMAIL]?.accountNumber || '27330648',
-        countryCode: '+254',
-        countryName: 'Kenya',
-        isLoggedIn: true,
-        createdAt: registry[MASTER_ADMIN_EMAIL]?.createdAt || 1790257470000,
-      };
-      registry[MASTER_ADMIN_EMAIL] = adminProfile;
-      localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(registry));
-      return adminProfile;
-    } catch {
-      return SEEDED_PLATFORM_USERS[MASTER_ADMIN_EMAIL];
-    }
-  }
-
   try {
-    const found = registry[cleanEmail] || null;
-    if (!found) return null;
-
-    // Enforce: NO other email can EVER have role === 'admin'
-    if (found.role === 'admin' && !isMasterAdminEmail(found.email)) {
-      found.role = 'normal';
-      registry[cleanEmail] = found;
-      localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(registry));
-    }
-    return found;
+    return registry[cleanEmail] || null;
   } catch (e) {
     console.error('Failed to look up user in registry', e);
     return null;
@@ -1112,103 +893,14 @@ export function findRegisteredUser(email: string): UserAuthProfile | null {
 }
 
 /**
- * Verify credentials for sign in.
- * Recognizes ONLY master admin email with UID 84a1e1db-f302-4dac-a077-291128ae0cea as 'admin'.
- * Rejects any user without a valid UID.
- */
-export function verifyUserCredentials(
-  email: string,
-  passwordAttempt: string
-): { success: boolean; user?: UserAuthProfile; error?: string } {
-  if (!email || !email.trim()) {
-    return { success: false, error: 'Please enter your email.' };
-  }
-  if (!passwordAttempt) {
-    return { success: false, error: 'Please enter your password.' };
-  }
-
-  const cleanEmail = email.trim().toLowerCase();
-  const existingUser = findRegisteredUser(cleanEmail);
-
-  if (!existingUser) {
-    return {
-      success: false,
-      error: 'Invalid email or password. Please try again.',
-    };
-  }
-
-  try {
-    const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
-    const creds: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
-    const storedPassword = creds[cleanEmail];
-
-    // Master Admin login with confirmed UID 84a1e1db-f302-4dac-a077-291128ae0cea
-    if (isMasterAdminEmail(cleanEmail)) {
-      creds[cleanEmail] = passwordAttempt;
-      localStorage.setItem(USER_CREDENTIALS_KEY, JSON.stringify(creds));
-
-      const updatedAdmin: UserAuthProfile = {
-        ...existingUser,
-        id: MASTER_ADMIN_UID,
-        email: cleanEmail,
-        name: MASTER_ADMIN_NAME,
-        role: 'admin',
-        isLoggedIn: true,
-      };
-      getOrCreateUserProfile(updatedAdmin);
-      return { success: true, user: updatedAdmin };
-    }
-
-    // Strict check: Non-admin user MUST have a valid UID
-    if (!isValidUserUid(existingUser.id)) {
-      return {
-        success: false,
-        error: 'Invalid email or password. Please try again.',
-      };
-    }
-
-    // If password was stored, verify match; if not yet stored (e.g. cloud-seeded account), bind the entered password
-    if (storedPassword && storedPassword !== passwordAttempt) {
-      return {
-        success: false,
-        error: 'Incorrect password. Please verify your credentials and try again.',
-      };
-    }
-    if (!storedPassword) {
-      creds[cleanEmail] = passwordAttempt;
-      localStorage.setItem(USER_CREDENTIALS_KEY, JSON.stringify(creds));
-    }
-
-    // Enforce non-admin role for all other emails
-    const safeRole = existingUser.role === 'marketer' ? 'marketer' : 'normal';
-    const updatedUser: UserAuthProfile = {
-      ...existingUser,
-      role: safeRole,
-      isLoggedIn: true,
-    };
-    getOrCreateUserProfile(updatedUser);
-
-    return { success: true, user: updatedUser };
-  } catch (e) {
-    return { success: false, error: 'Authentication service error. Please try again.' };
-  }
-}
-
-/**
- * Assign a new role to a user (Strictly 'normal' or 'marketer' for non-admin users).
- * No other email can ever be assigned 'admin'.
- * Persists locally and updates Supabase immediately.
+ * Assign a new role to a user and sync via the authenticated server proxy.
  */
 export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | 'admin'): boolean {
   if (!email) return false;
   const cleanEmail = email.trim().toLowerCase();
 
-  // Strictly forbid assigning 'admin' to any email other than Master Admin
-  const effectiveRole: 'normal' | 'marketer' | 'admin' = isMasterAdminEmail(cleanEmail)
-    ? 'admin'
-    : newRole === 'marketer'
-    ? 'marketer'
-    : 'normal';
+  const effectiveRole: 'normal' | 'marketer' | 'admin' =
+    newRole === 'admin' ? 'admin' : newRole === 'marketer' ? 'marketer' : 'normal';
 
   try {
     const registry = ensureDefaultPlatformRegistry();
@@ -1219,7 +911,7 @@ export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | '
       };
     } else {
       registry[cleanEmail] = {
-        id: isMasterAdminEmail(cleanEmail) ? MASTER_ADMIN_UID : generateSupabaseUuid(),
+        id: generateSupabaseUuid(),
         email: cleanEmail,
         name: cleanEmail.split('@')[0],
         role: effectiveRole,
@@ -1278,36 +970,37 @@ export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | '
 }
 
 /**
- * Register or update a user profile with password in credentials storage.
- * Enforces that every user has a valid UID and only Master Admin has 'admin' role.
+ * Save or update a user profile in local session registry (passwords are never stored in localStorage).
  */
 export function registerNewUser(
   profile: UserAuthProfile,
-  password: string
+  _password?: string
 ): { success: boolean; user?: UserAuthProfile; error?: string } {
   if (!profile.email) {
     return { success: false, error: 'Valid email is required.' };
   }
   const cleanEmail = profile.email.trim().toLowerCase();
-  const isMaster = isMasterAdminEmail(cleanEmail);
 
   try {
     const registry = ensureDefaultPlatformRegistry();
     const existing = registry[cleanEmail];
 
-    const finalId = isMaster
-      ? MASTER_ADMIN_UID
-      : isValidUserUid(profile.id)
+    const finalId = isValidUserUid(profile.id)
       ? profile.id
       : existing && isValidUserUid(existing.id)
       ? existing.id
       : generateSupabaseUuid();
 
-    const finalRole = isMaster
-      ? 'admin'
-      : profile.role === 'marketer'
-      ? 'marketer'
-      : 'normal';
+    const finalRole: 'normal' | 'marketer' | 'admin' =
+      profile.role === 'admin'
+        ? 'admin'
+        : profile.role === 'marketer'
+        ? 'marketer'
+        : existing?.role === 'admin'
+        ? 'admin'
+        : existing?.role === 'marketer'
+        ? 'marketer'
+        : 'normal';
 
     const existingPhoneRaw = String(existing?.phoneNumber || existing?.phone || '').trim();
     const existingPhoneDigits = existingPhoneRaw.replace(/\D/g, '');
@@ -1331,14 +1024,6 @@ export function registerNewUser(
     };
     registry[cleanEmail] = completeProfile;
     localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(registry));
-
-    // Save credentials
-    if (password) {
-      const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
-      const creds: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
-      creds[cleanEmail] = password;
-      localStorage.setItem(USER_CREDENTIALS_KEY, JSON.stringify(creds));
-    }
 
     return { success: true, user: completeProfile };
   } catch (e) {
@@ -1442,9 +1127,7 @@ export function saveAdminOpenTradesMap(
 
 export function getAdminOpenTradesForUser(email?: string | null): AdminUserOpenTradeCounts {
   if (!email) return { manual: 0, bot: 0, total: 0 };
-  const cleanEmail = isMasterAdminEmail(email)
-    ? MASTER_ADMIN_EMAIL
-    : email.trim().toLowerCase();
+  const cleanEmail = email.trim().toLowerCase();
 
   try {
     const rawCache = localStorage.getItem(ADMIN_OPEN_TRADES_CACHE_KEY);
@@ -1496,9 +1179,8 @@ export function replaceLocalRegistryWithSupabase(
 
     cloudUsers.forEach((u) => {
       if (!u || !u.email) return;
-      const isMaster = isMasterAdminEmail(u.email);
-      const cleanEmail = isMaster ? MASTER_ADMIN_EMAIL : u.email.trim().toLowerCase();
-      if (!isMaster && !isValidUserUid(u.id)) return;
+      const cleanEmail = u.email.trim().toLowerCase();
+      if (!isValidUserUid(u.id)) return;
 
       const prev = existingRegistry[cleanEmail];
       const verifiedLocalRefCode = localStorage.getItem(`vtm_user_referred_by_${cleanEmail}`) || undefined;
@@ -1510,14 +1192,15 @@ export function replaceLocalRegistryWithSupabase(
       const profile: UserAuthProfile = {
         ...(prev || {}),
         ...u,
-        id: isMaster ? MASTER_ADMIN_UID : u.id,
+        id: u.id,
         email: cleanEmail,
-        name: isMaster ? MASTER_ADMIN_NAME : u.name || prev?.name || cleanEmail.split('@')[0],
-        role: isMaster
-          ? 'admin'
-          : u.role === 'marketer' || prev?.role === 'marketer'
-          ? 'marketer'
-          : 'normal',
+        name: u.name || prev?.name || cleanEmail.split('@')[0],
+        role:
+          u.role === 'admin' || prev?.role === 'admin'
+            ? 'admin'
+            : u.role === 'marketer' || prev?.role === 'marketer'
+            ? 'marketer'
+            : 'normal',
         createdAt: resolvedCreatedAt,
         referredByCode: u.referredByCode || verifiedLocalRefCode || undefined,
         isLoggedIn: true,
@@ -1555,16 +1238,11 @@ export function replaceLocalRegistryWithSupabase(
               };
           localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(mergedState));
         }
-      } else if (isAuthoritativeCloudSync && !SEEDED_PLATFORM_FINANCES[cleanEmail]) {
+      } else if (isAuthoritativeCloudSync) {
         // User has no financial record in Supabase — clear any stale local test finances on this device
         localStorage.removeItem(STORAGE_PREFIX + cleanEmail);
       }
     });
-
-    // Guarantee Master Admin (mutwirib964@gmail.com) is always present
-    if (!newRegistry[MASTER_ADMIN_EMAIL]) {
-      newRegistry[MASTER_ADMIN_EMAIL] = SEEDED_PLATFORM_USERS[MASTER_ADMIN_EMAIL];
-    }
 
     localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(newRegistry));
 
@@ -1577,33 +1255,27 @@ export function replaceLocalRegistryWithSupabase(
 }
 
 /**
- * Bulk import Supabase users directly into local storage and credentials registry.
- * Ensures valid UIDs, non-overwriting master admin role, and initializes user financials if not present.
+ * Bulk import Supabase users directly into local storage registry (without storing passwords locally).
  */
 export function bulkImportUsersLocally(rawUsersList: any[]): number {
   if (!Array.isArray(rawUsersList)) return 0;
   try {
     const registry = ensureDefaultPlatformRegistry();
-    const rawCreds = localStorage.getItem(USER_CREDENTIALS_KEY);
-    const creds: Record<string, string> = rawCreds ? JSON.parse(rawCreds) : {};
     let importedCount = 0;
 
     rawUsersList.forEach((raw) => {
       if (!raw) return;
-      const email = String(raw.email || '').trim().toLowerCase();
-      if (!email || !email.includes('@')) return;
+      const cleanEmail = String(raw.email || '').trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@')) return;
 
-      const isMaster = isMasterAdminEmail(email);
-      const cleanEmail = isMaster ? MASTER_ADMIN_EMAIL : email;
       const existing: Partial<UserAuthProfile> = registry[cleanEmail] || {};
-      const resolvedUid = isMaster
-        ? MASTER_ADMIN_UID
-        : raw.uid || raw.id || existing.id || generateSupabaseUuid();
-      const safeRole: 'admin' | 'marketer' | 'normal' = isMaster
-        ? 'admin'
-        : raw.role === 'marketer' || existing.role === 'marketer'
-        ? 'marketer'
-        : 'normal';
+      const resolvedUid = raw.uid || raw.id || existing.id || generateSupabaseUuid();
+      const safeRole: 'admin' | 'marketer' | 'normal' =
+        raw.role === 'admin' || existing.role === 'admin'
+          ? 'admin'
+          : raw.role === 'marketer' || existing.role === 'marketer'
+          ? 'marketer'
+          : 'normal';
 
       const accNum =
         raw.account_number ||
@@ -1628,7 +1300,7 @@ export function bulkImportUsersLocally(rawUsersList: any[]): number {
         ...existing,
         id: resolvedUid,
         email: cleanEmail,
-        name: isMaster ? MASTER_ADMIN_NAME : raw.name || existing.name || cleanEmail.split('@')[0],
+        name: raw.name || existing.name || cleanEmail.split('@')[0],
         phoneNumber: safePhone,
         phone: safePhone,
         countryCode: raw.country_code || raw.countryCode || existing.countryCode || '+254',
@@ -1645,15 +1317,6 @@ export function bulkImportUsersLocally(rawUsersList: any[]): number {
       };
 
       registry[cleanEmail] = profile;
-
-      if (raw.password_hash) {
-        const match = String(raw.password_hash).match(/^uid:[^|]+\|(.*)$/);
-        if (match && match[1]) {
-          creds[cleanEmail] = match[1];
-        }
-      } else if (raw.password) {
-        creds[cleanEmail] = String(raw.password).trim();
-      }
 
       const finKey = STORAGE_PREFIX + cleanEmail;
       if (!localStorage.getItem(finKey)) {
@@ -1687,16 +1350,7 @@ export function bulkImportUsersLocally(rawUsersList: any[]): number {
       importedCount++;
     });
 
-    registry[MASTER_ADMIN_EMAIL] = {
-      ...registry[MASTER_ADMIN_EMAIL],
-      id: MASTER_ADMIN_UID,
-      email: MASTER_ADMIN_EMAIL,
-      name: MASTER_ADMIN_NAME,
-      role: 'admin',
-    };
-
     localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(registry));
-    localStorage.setItem(USER_CREDENTIALS_KEY, JSON.stringify(creds));
     return importedCount;
   } catch (e) {
     console.error('Failed to bulk import users locally:', e);
@@ -1706,34 +1360,21 @@ export function bulkImportUsersLocally(rawUsersList: any[]): number {
 
 /**
  * Get all registered user profiles (for Admin / Account Management)
- * Always guarantees Master Admin (mutwirib964@gmail.com) is present with confirmed UID 84a1e1db-f302-4dac-a077-291128ae0cea,
- * and ensures no other user ever has role 'admin'.
  */
 export function getAllRegisteredUsers(): UserAuthProfile[] {
   const registry = ensureDefaultPlatformRegistry();
 
   try {
     const usersList: UserAuthProfile[] = [];
-    let masterAdded = false;
 
     Object.entries(registry).forEach(([, u]) => {
       if (!u || !u.email) return;
-      if (isMasterAdminEmail(u.email)) {
-        if (!masterAdded) {
-          masterAdded = true;
-          usersList.push({
-            ...u,
-            id: MASTER_ADMIN_UID,
-            email: MASTER_ADMIN_EMAIL,
-            name: MASTER_ADMIN_NAME,
-            role: 'admin',
-          });
-        }
-      } else if (isValidUserUid(u.id)) {
+      if (isValidUserUid(u.id)) {
         usersList.push({
           ...u,
           id: u.id,
-          role: u.role === 'marketer' ? 'marketer' : 'normal',
+          role:
+            u.role === 'admin' ? 'admin' : u.role === 'marketer' ? 'marketer' : 'normal',
         });
       }
     });
@@ -1749,17 +1390,7 @@ export function getAllRegisteredUsers(): UserAuthProfile[] {
   } catch (e) {
     console.error('Failed to get users registry', e);
   }
-  return [
-    {
-      id: MASTER_ADMIN_UID,
-      email: MASTER_ADMIN_EMAIL,
-      name: MASTER_ADMIN_NAME,
-      role: 'admin',
-      accountNumber: '27330648',
-      isLoggedIn: true,
-      createdAt: 1790257470000,
-    },
-  ];
+  return [];
 }
 
 export interface PlatformUserMetric {
@@ -2067,7 +1698,7 @@ export function getAllPlatformDeposits(): {
   totalDepositedKes: number;
   deposits: PlatformDepositTransaction[];
 } {
-  const users = getAllRegisteredUsers().filter((u) => !isMasterAdminEmail(u.email));
+  const users = getAllRegisteredUsers().filter((u) => u.role !== 'admin');
   const deposits: PlatformDepositTransaction[] = [];
   const seenIds = new Set<string>();
   const USD_KES = getUsdKesRate();
@@ -2156,7 +1787,7 @@ export function getAllPlatformTransactions(): {
   successRate: number;
   transactions: PlatformTransactionRecord[];
 } {
-  const users = getAllRegisteredUsers().filter((u) => !isMasterAdminEmail(u.email));
+  const users = getAllRegisteredUsers().filter((u) => u.role !== 'admin');
   const transactions: PlatformTransactionRecord[] = [];
   const seenTxKeys = new Set<string>();
   const USD_KES = getUsdKesRate();
@@ -2341,20 +1972,19 @@ export function resolveSearchedUserMetric(rawQuery: string): PlatformUserMetric 
     resolvedName = formatDisplayNameFromEmailOrQuery(trimmed);
   }
 
-  const isMaster = isMasterAdminEmail(resolvedEmail);
-  const canonicalEmail = isMaster ? MASTER_ADMIN_EMAIL : resolvedEmail;
+  const canonicalEmail = resolvedEmail;
   const existingUser = findRegisteredUser(canonicalEmail);
 
   const profile: UserAuthProfile = existingUser || {
-    id: isMaster ? MASTER_ADMIN_UID : deterministicUuidFromEmail(canonicalEmail),
+    id: deterministicUuidFromEmail(canonicalEmail),
     email: canonicalEmail,
-    name: isMaster ? MASTER_ADMIN_NAME : resolvedName,
+    name: resolvedName,
     phoneNumber: '',
     phone: '',
     countryCode: '+254',
     countryName: 'Kenya',
     accountNumber: deterministicAccountNumberFromEmail(canonicalEmail),
-    role: isMaster ? 'admin' : 'normal',
+    role: 'normal',
     isLoggedIn: true,
     createdAt: 1790400000000,
   };

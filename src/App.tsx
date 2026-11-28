@@ -99,9 +99,7 @@ import {
   logUserActivity,
   wipeAllPlatformUsersAndData,
   findRegisteredUser,
-  MASTER_ADMIN_EMAIL,
-  MASTER_ADMIN_UID,
-  isMasterAdminEmail,
+  isAdminUser,
   isValidUserUid,
   sweepIdleLiveAccountsSilently,
   markAccountDeletedLocally,
@@ -268,22 +266,12 @@ export default function App() {
         return null;
       }
 
-      // Exclusive Master Admin check (mutwirib964@gmail.com -> UID 84a1e1db-f302-4dac-a077-291128ae0cea)
-      if (isMasterAdminEmail(parsed.email)) {
-        return {
-          ...parsed,
-          id: MASTER_ADMIN_UID,
-          email: MASTER_ADMIN_EMAIL,
-          name: 'mutwiri',
-          role: 'admin',
-          isLoggedIn: true,
-        };
-      }
-
       // Robust session check: fallback to parsed user if registry lookup is pending
       const registered = findRegisteredUser(parsed.email) || parsed;
       const effectiveUid = registered?.id || parsed.id || `uid-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const safeRole: UserRole = (registered?.role || parsed?.role) === 'marketer' ? 'marketer' : 'normal';
+      const resolvedRole = registered?.role || parsed?.role;
+      const safeRole: UserRole =
+        resolvedRole === 'admin' ? 'admin' : resolvedRole === 'marketer' ? 'marketer' : 'normal';
       return {
         ...parsed,
         ...registered,
@@ -356,15 +344,8 @@ export default function App() {
       };
     }
 
-    // Master Admin does not use the market terminal; sync their confirmed UID to Supabase
-    if (isMasterAdminEmail(currentUser.email)) {
-      if (supabaseService.isConfigured()) {
-        supabaseService.registerUserInDatabase({
-          ...currentUser,
-          id: MASTER_ADMIN_UID,
-          role: 'admin',
-        });
-      }
+    // Administrators stay on the Executive Admin Control Center rather than syncing market terminal data
+    if (isAdminUser(currentUser)) {
       return () => {
         window.removeEventListener('vtm_session_expired', handleSessionExpired);
       };
@@ -1571,7 +1552,7 @@ export default function App() {
       const next = [newAlert, ...prev];
       priceAlertsRef.current = next;
       savePriceAlerts(next, activeUser?.email, nowTs);
-      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+      if (activeUser && activeUser.email && !isAdminUser(activeUser)) {
         supabaseService.syncExtrasState(activeUser, {
           priceAlerts: next,
           followedStrategies: followedStrategiesRef.current,
@@ -1598,7 +1579,7 @@ export default function App() {
       const next = prev.filter((a) => a.id !== id);
       priceAlertsRef.current = next;
       savePriceAlerts(next, activeUser?.email, nowTs);
-      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+      if (activeUser && activeUser.email && !isAdminUser(activeUser)) {
         supabaseService.syncExtrasState(activeUser, {
           priceAlerts: next,
           followedStrategies: followedStrategiesRef.current,
@@ -1616,7 +1597,7 @@ export default function App() {
       const next = prev.filter((a) => a.status === 'ACTIVE');
       priceAlertsRef.current = next;
       savePriceAlerts(next, activeUser?.email, nowTs);
-      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+      if (activeUser && activeUser.email && !isAdminUser(activeUser)) {
         supabaseService.syncExtrasState(activeUser, {
           priceAlerts: next,
           followedStrategies: followedStrategiesRef.current,
@@ -1634,7 +1615,7 @@ export default function App() {
       const next = prev.map((a) => (a.id === id ? { ...a, status: 'ACTIVE' as const } : a));
       priceAlertsRef.current = next;
       savePriceAlerts(next, activeUser?.email, nowTs);
-      if (activeUser && activeUser.email && !isMasterAdminEmail(activeUser.email)) {
+      if (activeUser && activeUser.email && !isAdminUser(activeUser)) {
         supabaseService.syncExtrasState(activeUser, {
           priceAlerts: next,
           followedStrategies: followedStrategiesRef.current,
@@ -1786,23 +1767,15 @@ export default function App() {
   };
 
   const handleUserSignIn = (profile: UserAuthProfile) => {
-    const isMaster = isMasterAdminEmail(profile.email);
-    const verifiedProfile: UserAuthProfile = isMaster
-      ? {
-          ...profile,
-          id: MASTER_ADMIN_UID,
-          name: 'mutwiri',
-          role: 'admin',
-          isLoggedIn: true,
-        }
-      : {
-          ...profile,
-          role: profile.role === 'marketer' ? 'marketer' : 'normal',
-          isLoggedIn: true,
-        };
+    const isAdmin = isAdminUser(profile);
+    const verifiedProfile: UserAuthProfile = {
+      ...profile,
+      role: isAdmin ? 'admin' : profile.role === 'marketer' ? 'marketer' : 'normal',
+      isLoggedIn: true,
+    };
 
     // Strict guard: Non-admin user without a valid UID is NEVER allowed to sign in
-    if (!isMaster && !isValidUserUid(verifiedProfile.id)) {
+    if (!isAdmin && !isValidUserUid(verifiedProfile.id)) {
       console.error('[Security] Blocked sign-in for user without verified UID:', verifiedProfile.email);
       return;
     }
@@ -1818,8 +1791,8 @@ export default function App() {
       localStorage.setItem('vtm_user_role', verifiedProfile.role);
     }
 
-    // If Master Admin signs in, they go directly to the Exclusive Admin Control Center (never to the market side)
-    if (isMaster) {
+    // If Admin signs in, they go directly to the Exclusive Admin Control Center (never to the market side)
+    if (isAdmin) {
       accountsRef.current = [];
       selectedAccountRef.current = null;
       walletBalanceRef.current = 0;
@@ -1957,7 +1930,7 @@ export default function App() {
 
   const handleUserSignOut = () => {
     // Save current user financials (merging selectedAccount into accounts) before logging out
-    if (currentUser && !isMasterAdminEmail(currentUser.email)) {
+    if (currentUser && !isAdminUser(currentUser)) {
       logUserActivity(currentUser, 'LOGOUT', 'Trader signed out');
       const currentSel = selectedAccountRef.current || selectedAccount;
       const baseAccounts = accountsRef.current.length > 0 ? accountsRef.current : accounts;
@@ -2004,7 +1977,7 @@ export default function App() {
 
   // Automated Trading Bots & Role Management (Default is normal client; non-admins can never have 'admin' role)
   const [userRole, setUserRole] = useState<UserRole>(() => {
-    if (currentUser && isMasterAdminEmail(currentUser.email)) return 'admin';
+    if (isAdminUser(currentUser)) return 'admin';
     if (currentUser?.role === 'marketer') return 'marketer';
     return 'normal';
   });
@@ -2769,7 +2742,7 @@ export default function App() {
         priceAlertsRef.current = updatedAlerts;
         setPriceAlerts(updatedAlerts);
         savePriceAlerts(updatedAlerts, currentUserRef.current?.email, nowTs);
-        if (currentUserRef.current && currentUserRef.current.email && !isMasterAdminEmail(currentUserRef.current.email)) {
+        if (currentUserRef.current && currentUserRef.current.email && !isAdminUser(currentUserRef.current)) {
           supabaseService.syncExtrasState(currentUserRef.current, {
             priceAlerts: updatedAlerts,
             followedStrategies: followedStrategiesRef.current,
@@ -4805,8 +4778,7 @@ export default function App() {
             : regUser?.role || activeUser.role,
         phoneNumber: activeUser.phoneNumber || (activeUser as any)?.phone || regUser?.phoneNumber || '',
       };
-      const storedPwd =
-        supabaseService.getStoredAccountPassword(activeUser.email) || (regUser as any)?.password || '';
+      const storedPwd = supabaseService.getStoredAccountPassword(activeUser.email) || '';
       const syncResult = await supabaseService.syncMarketerWithdrawalToOneApp(effectiveUser, {
         id: existingTx.id,
         sourceAccount: sourceAcc,
@@ -5079,8 +5051,7 @@ export default function App() {
     if (recentCompletedMpesaWithdrawals.length === 0) return;
 
     const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
-    const storedPwd =
-      supabaseService.getStoredAccountPassword(currentUser.email) || (regUser as any)?.password || '';
+    const storedPwd = supabaseService.getStoredAccountPassword(currentUser.email) || '';
     const effectiveUser = {
       ...currentUser,
       role: 'marketer' as const,
@@ -8112,10 +8083,9 @@ export default function App() {
     );
   }
 
-  // EXCLUSIVE MASTER ADMIN ROUTING:
-  // Admin (mutwrib@gmail.com | UID: 84a1e1db-f302-4dac-a077-291128ae0cea) is NEVER directed to the market/trading side.
-  // Admin is directed exclusively to the Website Administration & Executive Control Center.
-  if (isMasterAdminEmail(currentUser.email) && currentUser.id === MASTER_ADMIN_UID) {
+  // EXCLUSIVE ADMIN ROUTING:
+  // Admin accounts are directed exclusively to the Website Administration & Executive Control Center.
+  if (isAdminUser(currentUser)) {
     return (
       <AdminAccountManagerModal
         isOpen={true}

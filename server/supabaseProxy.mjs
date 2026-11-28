@@ -1,11 +1,23 @@
 import crypto from 'crypto';
 
-export const DEFAULT_SUPABASE_URL = 'https://seycwqpozegjwpxuewbf.supabase.co';
-const DEFAULT_SUPABASE_ANON_KEY =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNleWN3cXBvemVnandweHVld2JmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk4MTM5NDMsImV4cCI6MjEwNTM4OTk0M30.biGNnOKU0pRdGzzluJkBL4gZT2iR_eMZWviRuMnC5Ew';
+export function getAdminEnvConfig() {
+  const email = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+  const uid = (process.env.ADMIN_UID || '').trim();
+  const rawAliases = (process.env.ADMIN_EMAIL_ALIASES || '').trim();
+  const aliases = new Set(
+    [
+      email,
+      ...rawAliases
+        .split(',')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean),
+    ].filter(Boolean)
+  );
+  return { email, uid, aliases };
+}
 
-export const MASTER_ADMIN_EMAIL = 'mutwirib964@gmail.com';
-export const MASTER_ADMIN_UID = '84a1e1db-f302-4dac-a077-291128ae0cea';
+export const MASTER_ADMIN_EMAIL = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+export const MASTER_ADMIN_UID = (process.env.ADMIN_UID || '').trim();
 
 const ALLOWED_TABLES = new Set([
   'vtm_registered_users',
@@ -57,16 +69,14 @@ function getSigningKey() {
 export function isMasterAdminEmail(email) {
   if (!email) return false;
   const clean = String(email).trim().toLowerCase();
-  return (
-    clean === 'mutwirib964@gmail.com' ||
-    clean === 'mutwrib@gmail.com' ||
-    clean === 'mutwirib@gmail.com'
-  );
+  const { aliases } = getAdminEnvConfig();
+  return aliases.size > 0 && aliases.has(clean);
 }
 
 export function normalizePlatformEmail(email) {
   const clean = String(email || '').trim().toLowerCase();
-  return isMasterAdminEmail(clean) ? MASTER_ADMIN_EMAIL : clean;
+  const { email: adminEmail } = getAdminEnvConfig();
+  return adminEmail && isMasterAdminEmail(clean) ? adminEmail : clean;
 }
 
 export function isPlaceholderPhoneDigits(digits) {
@@ -107,15 +117,23 @@ export function deterministicUuidFromEmail(email) {
 }
 
 export function getSupabaseServerConfig() {
-  const url = (process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL).trim().replace(/\/+$/, '');
+  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '')
+    .trim()
+    .replace(/\/+$/, '');
   const serviceKey = (
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SECRET_KEY ||
     ''
   ).trim();
-  const anonKey = (process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY).trim();
+  const anonKey = (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim();
   const key = serviceKey || anonKey;
-  return { url, key, anonKey, isServiceRole: Boolean(serviceKey) };
+  return {
+    url,
+    key,
+    anonKey,
+    isServiceRole: Boolean(serviceKey),
+    isConfigured: Boolean(url && key && !url.includes('your-project.supabase.co')),
+  };
 }
 
 /**
@@ -133,15 +151,61 @@ export function buildSupabaseHeaders(key, extra = {}) {
   return headers;
 }
 
+export function hashPasswordScrypt(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `scrypt:${salt}:${derived}`;
+}
+
+export function verifyPasswordAgainstStored(candidate, storedHash) {
+  const pwd = String(candidate || '');
+  const raw = String(storedHash || '');
+  if (!pwd || !raw) return { valid: false, needsUpgrade: false };
+
+  if (raw.startsWith('scrypt:')) {
+    const parts = raw.split(':');
+    if (parts.length !== 3 || !parts[1] || !parts[2]) {
+      return { valid: false, needsUpgrade: false };
+    }
+    try {
+      const derived = crypto.scryptSync(pwd, parts[1], 64);
+      const expected = Buffer.from(parts[2], 'hex');
+      if (derived.length === expected.length && crypto.timingSafeEqual(derived, expected)) {
+        return { valid: true, needsUpgrade: false };
+      }
+      const trimmedDerived = crypto.scryptSync(pwd.trim(), parts[1], 64);
+      if (
+        pwd.trim() !== pwd &&
+        trimmedDerived.length === expected.length &&
+        crypto.timingSafeEqual(trimmedDerived, expected)
+      ) {
+        return { valid: true, needsUpgrade: false };
+      }
+      return { valid: false, needsUpgrade: false };
+    } catch {
+      return { valid: false, needsUpgrade: false };
+    }
+  }
+
+  const parsedLegacy = parseStoredPasswordAndUid(raw).password || '';
+  if (!parsedLegacy) {
+    return { valid: false, needsUpgrade: false };
+  }
+  const match = parsedLegacy === pwd || parsedLegacy.trim() === pwd.trim();
+  return { valid: match, needsUpgrade: match };
+}
+
 export function signSessionToken(user) {
   const email = normalizePlatformEmail(user.email);
-  const role = isMasterAdminEmail(email)
+  const { uid: adminUid } = getAdminEnvConfig();
+  const isAdmin = isMasterAdminEmail(email) || user.role === 'admin';
+  const role = isAdmin
     ? 'admin'
     : user.role === 'marketer'
     ? 'marketer'
     : 'normal';
-  const uid = isMasterAdminEmail(email)
-    ? MASTER_ADMIN_UID
+  const uid = isAdmin && isValidUuid(adminUid)
+    ? adminUid
     : isValidUuid(user.uid || user.id)
     ? String(user.uid || user.id).trim()
     : deterministicUuidFromEmail(email);
@@ -194,13 +258,15 @@ export function verifySessionToken(authHeaderOrToken) {
       return null;
     }
     const email = normalizePlatformEmail(payload.email);
-    const role = isMasterAdminEmail(email)
+    const { uid: adminUid } = getAdminEnvConfig();
+    const isAdmin = isMasterAdminEmail(email) || payload.role === 'admin';
+    const role = isAdmin
       ? 'admin'
       : payload.role === 'marketer'
       ? 'marketer'
       : 'normal';
-    const uid = isMasterAdminEmail(email)
-      ? MASTER_ADMIN_UID
+    const uid = isAdmin && isValidUuid(adminUid)
+      ? adminUid
       : isValidUuid(payload.uid)
       ? payload.uid
       : deterministicUuidFromEmail(email);
@@ -240,10 +306,11 @@ export function sanitizePublicPayload(value) {
 
 function rowToUserProfile(row, fallbackEmail = '') {
   const email = normalizePlatformEmail(row?.email || fallbackEmail);
-  const isAdmin = isMasterAdminEmail(email);
+  const { uid: adminUid } = getAdminEnvConfig();
+  const isAdmin = isMasterAdminEmail(email) || row?.role === 'admin';
   const parsedHash = parseStoredPasswordAndUid(row?.password_hash);
-  let resolvedUid = isAdmin
-    ? MASTER_ADMIN_UID
+  let resolvedUid = isAdmin && isValidUuid(adminUid)
+    ? adminUid
     : row?.uid || parsedHash.uid || '';
   if (!isValidUuid(resolvedUid)) {
     resolvedUid = deterministicUuidFromEmail(email);
@@ -255,13 +322,13 @@ function rowToUserProfile(row, fallbackEmail = '') {
     : 'normal';
   return {
     id: resolvedUid,
-    name: isAdmin ? 'mutwiri' : row?.name || 'Trader',
+    name: row?.name || (isAdmin ? 'Admin' : 'Trader'),
     email,
     phoneNumber: row?.phone_number || '',
     phone: row?.phone_number || '',
-    countryCode: row?.country_code || (isAdmin ? '+254' : '+1'),
-    countryName: row?.country_name || (isAdmin ? 'Kenya' : 'United States'),
-    accountNumber: row?.account_number || '27330648',
+    countryCode: row?.country_code || '+1',
+    countryName: row?.country_name || 'United States',
+    accountNumber: row?.account_number || '',
     role: safeRole,
     isLoggedIn: true,
     createdAt: row?.created_at ? new Date(row.created_at).getTime() : Date.now(),
@@ -271,6 +338,12 @@ function rowToUserProfile(row, fallbackEmail = '') {
 
 async function sbFetch(pathAndQuery, init = {}) {
   const cfg = getSupabaseServerConfig();
+  if (!cfg.isConfigured) {
+    return new Response(JSON.stringify({ error: 'Database is not configured on the server.' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const extraHeaders = init.headers || {};
   return fetch(`${cfg.url}/rest/v1/${pathAndQuery.replace(/^\/+/, '')}`, {
     ...init,
@@ -280,10 +353,12 @@ async function sbFetch(pathAndQuery, init = {}) {
 
 async function lookupSupabaseUserRow(cleanEmail) {
   const email = normalizePlatformEmail(cleanEmail);
+  const { aliases } = getAdminEnvConfig();
   const isAdmin = isMasterAdminEmail(email);
-  const queryFilter = isAdmin
-    ? 'or=(email.ilike.mutwrib@gmail.com,email.ilike.mutwirib964@gmail.com,email.ilike.mutwirib@gmail.com)'
-    : `email=ilike.${encodeURIComponent(email)}`;
+  const queryFilter =
+    isAdmin && aliases.size > 1
+      ? `or=(${Array.from(aliases).map((e) => `email.ilike.${encodeURIComponent(e)}`).join(',')})`
+      : `email=ilike.${encodeURIComponent(email)}`;
   const res = await sbFetch(`vtm_registered_users?${queryFilter}&select=*&limit=1`, {
     method: 'GET',
     signal: AbortSignal.timeout(6000),
@@ -347,6 +422,9 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
 
   // 1. Test Connection (health check only)
   if (action === 'test_connection') {
+    if (!cfg.isConfigured) {
+      return { statusCode: 200, payload: { success: false, message: 'Database is not configured on the server.' } };
+    }
     try {
       const res = await fetch(`${cfg.url}/rest/v1/`, {
         method: 'GET',
@@ -388,12 +466,6 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     const cleanCode = String(body?.code || '').trim().toUpperCase();
     if (!cleanCode) {
       return { statusCode: 200, payload: { ok: true, referrer: null } };
-    }
-    if (cleanCode === 'VTM-674343' || cleanCode === 'VTM-635667') {
-      return { statusCode: 200, payload: { ok: true, referrer: { email: 'joelndungu1022@gmail.com', accountNumber: '36674343' } } };
-    }
-    if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
-      return { statusCode: 200, payload: { ok: true, referrer: { email: MASTER_ADMIN_EMAIL, accountNumber: '27330648' } } };
     }
     const suffix = cleanCode.replace(/^VTM-/i, '').trim();
     try {
@@ -468,7 +540,7 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     if (!cleanEmail || !password) {
       return { statusCode: 400, payload: { ok: false, error: 'Email and password are required.' } };
     }
-    const isAdmin = isMasterAdminEmail(cleanEmail);
+    const { uid: adminUid } = getAdminEnvConfig();
 
     let sbRow = null;
     let sbErrorStatus = 0;
@@ -490,19 +562,12 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
       };
     }
 
-    let storedPassword = '';
-    if (sbRow) {
-      storedPassword = parseStoredPasswordAndUid(sbRow.password_hash).password || '';
-    } else if (fallbackPassword) {
-      storedPassword = fallbackPassword;
-    }
+    const rawStoredHash = sbRow ? String(sbRow.password_hash || '') : String(fallbackPassword || '');
+    const verification = verifyPasswordAgainstStored(password, rawStoredHash);
+    let passwordValid = verification.valid;
+    const needsHashUpgrade = Boolean(sbRow && verification.needsUpgrade);
 
-    let passwordValid =
-      storedPassword.length === 0 ||
-      storedPassword === password ||
-      storedPassword.trim() === password.trim();
-
-    if (!passwordValid && cfg.anonKey) {
+    if (!passwordValid && cfg.isConfigured && cfg.anonKey) {
       // Verify against Supabase Auth password grant if password_hash differs
       try {
         const authRes = await fetch(`${cfg.url}/auth/v1/token?grant_type=password`, {
@@ -529,19 +594,33 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
       };
     }
 
+    const isAdmin = isMasterAdminEmail(cleanEmail) || sbRow?.role === 'admin' || fallbackUser?.role === 'admin';
     const profile = sbRow
       ? rowToUserProfile(sbRow, cleanEmail)
       : {
           ...fallbackUser,
           email: cleanEmail,
-          id: isAdmin ? MASTER_ADMIN_UID : fallbackUser?.id || deterministicUuidFromEmail(cleanEmail),
+          id: isAdmin && isValidUuid(adminUid) ? adminUid : fallbackUser?.id || deterministicUuidFromEmail(cleanEmail),
           role: isAdmin ? 'admin' : fallbackUser?.role === 'marketer' ? 'marketer' : 'normal',
           isLoggedIn: true,
         };
 
-    // Keep fallback DB synchronized if needed
+    // Transparently upgrade legacy plaintext/uid-prefixed password_hash to scrypt on successful login
+    if (needsHashUpgrade && cfg.isConfigured) {
+      sbFetch(`vtm_registered_users?email=ilike.${encodeURIComponent(sbRow.email || cleanEmail)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          password_hash: hashPasswordScrypt(password),
+          last_login_at: new Date().toISOString(),
+        }),
+        signal: AbortSignal.timeout(4000),
+      }).catch(() => {});
+    }
+
+    // Keep fallback DB synchronized if needed (stored hashed)
     if (fallbackDbHelpers?.upsertUser && profile) {
-      fallbackDbHelpers.upsertUser(profile, password);
+      fallbackDbHelpers.upsertUser(profile, hashPasswordScrypt(password));
     }
 
     const sessionToken = signSessionToken(profile);
@@ -564,6 +643,7 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     if (!cleanEmail || !password || password.length < 6) {
       return { statusCode: 400, payload: { ok: false, error: 'Valid email and password (min 6 characters) are required.' } };
     }
+    const { uid: adminUid } = getAdminEnvConfig();
     const isAdmin = isMasterAdminEmail(cleanEmail);
 
     let existingRow = null;
@@ -575,8 +655,8 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     }
 
     if (existingRow) {
-      const existingPwd = parseStoredPasswordAndUid(existingRow.password_hash).password || '';
-      if (existingPwd && existingPwd !== password && existingPwd.trim() !== password.trim()) {
+      const regPwdCheck = verifyPasswordAgainstStored(password, existingRow.password_hash);
+      if (!regPwdCheck.valid) {
         return {
           statusCode: 409,
           payload: { ok: false, code: 'ACCOUNT_EXISTS', error: 'An account with this email already exists. Please sign in instead.' },
@@ -584,15 +664,15 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
       }
     }
 
-    let authUid = isAdmin
-      ? MASTER_ADMIN_UID
+    let authUid = isAdmin && isValidUuid(adminUid)
+      ? adminUid
       : existingRow?.uid && isValidUuid(existingRow.uid)
       ? existingRow.uid
       : isValidUuid(incomingProfile.id)
       ? incomingProfile.id
       : deterministicUuidFromEmail(cleanEmail);
 
-    if (!isAdmin && cfg.anonKey && !existingRow) {
+    if (!isAdmin && cfg.isConfigured && cfg.anonKey && !existingRow) {
       try {
         const signUpRes = await fetch(`${cfg.url}/auth/v1/signup`, {
           method: 'POST',
@@ -636,19 +716,19 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
       existingPhone || (isValidRealPhone(incomingPhone) ? incomingPhone : '');
 
     // Prevent arbitrary privilege escalation on registration
-    const authoritativeRole = isAdmin
+    const authoritativeRole = isAdmin || existingRow?.role === 'admin'
       ? 'admin'
       : existingRow?.role === 'marketer'
       ? 'marketer'
       : 'normal';
 
     const nowIso = new Date().toISOString();
-    const encodedPasswordHash = `uid:${authUid}|${password}`;
+    const hashedPassword = hashPasswordScrypt(password);
     const upsertRow = {
       email: cleanEmail,
       uid: authUid,
-      password_hash: encodedPasswordHash,
-      name: isAdmin ? 'mutwiri' : String(incomingProfile.name || existingRow?.name || 'Trader').trim(),
+      password_hash: hashedPassword,
+      name: String(incomingProfile.name || existingRow?.name || (isAdmin ? 'Admin' : 'Trader')).trim(),
       phone_number: authoritativePhone,
       country_code: String(incomingProfile.countryCode || existingRow?.country_code || '+1'),
       country_name: String(incomingProfile.countryName || existingRow?.country_name || 'United States'),
@@ -695,7 +775,7 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     };
 
     if (fallbackDbHelpers?.upsertUser) {
-      fallbackDbHelpers.upsertUser(finalProfile, password);
+      fallbackDbHelpers.upsertUser(finalProfile, hashedPassword);
     }
 
     const sessionToken = signSessionToken(finalProfile);
@@ -720,7 +800,7 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     };
   }
 
-  const isSessionAdmin = session.role === 'admin' && isMasterAdminEmail(session.email);
+  const isSessionAdmin = session.role === 'admin' || isMasterAdminEmail(session.email);
 
   // 6. Server-side password verification for withdrawals (no password_hash sent to client)
   if (action === 'auth_verify_password') {
@@ -730,11 +810,30 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     }
     try {
       const lookup = await lookupSupabaseUserRow(session.email);
-      const dbPwd = lookup.row ? parseStoredPasswordAndUid(lookup.row.password_hash).password || '' : '';
+      const dbHash = lookup.row ? String(lookup.row.password_hash || '') : '';
       const fallbackPwd = fallbackDbHelpers?.getPassword?.(session.email) || '';
-      const storedPwd = dbPwd || fallbackPwd;
-      if (!storedPwd || storedPwd === candidatePwd || storedPwd.trim() === candidatePwd) {
+      const storedHash = dbHash || fallbackPwd;
+      const check = verifyPasswordAgainstStored(candidatePwd, storedHash);
+      if (check.valid) {
         return { statusCode: 200, payload: { valid: true } };
+      }
+      if (cfg.isConfigured && cfg.anonKey) {
+        try {
+          const authRes = await fetch(`${cfg.url}/auth/v1/token?grant_type=password`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: cfg.anonKey,
+            },
+            body: JSON.stringify({ email: session.email, password: candidatePwd }),
+            signal: AbortSignal.timeout(4000),
+          });
+          if (authRes.ok) {
+            return { statusCode: 200, payload: { valid: true } };
+          }
+        } catch {
+          // ignore
+        }
       }
       return {
         statusCode: 200,
@@ -744,7 +843,13 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
         },
       };
     } catch {
-      return { statusCode: 200, payload: { valid: true } };
+      return {
+        statusCode: 503,
+        payload: {
+          valid: false,
+          error: 'Unable to verify account credentials right now. Please try again.',
+        },
+      };
     }
   }
 

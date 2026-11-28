@@ -67,15 +67,6 @@ export const COMMISSION_RATE = 0.05; // 5%
 export const MIN_CLAIM_AMOUNT_USD = 20.0; // Minimum $20.00 to claim
 export const MIN_DEPOSITS_REQUIRED_USD = 400.0; // 5% of $400 = $20.00
 
-// Canonical primary referral codes pinned to original registration accounts so Live account creation never drifts codes
-const KNOWN_PRIMARY_CODES: Record<string, string> = {
-  'joelndungu1022@gmail.com': 'VTM-674343',
-};
-
-const KNOWN_CODE_ALIASES: Record<string, string[]> = {
-  'joelndungu1022@gmail.com': ['VTM-674343', 'VTM-635667'],
-};
-
 const claimingEmailsLock = new Set<string>();
 const inflightCloudRefresh = new Map<string, Promise<ReferralState>>();
 
@@ -85,9 +76,6 @@ class ReferralService {
    */
   getReferralCode(userEmail?: string, userAccountNumber?: string): string {
     const cleanEmail = (userEmail || '').trim().toLowerCase();
-    if (cleanEmail && KNOWN_PRIMARY_CODES[cleanEmail]) {
-      return KNOWN_PRIMARY_CODES[cleanEmail];
-    }
     if (userAccountNumber && userAccountNumber.trim()) {
       const cleanNum = userAccountNumber.replace(/\D/g, '');
       if (cleanNum.length >= 4) {
@@ -125,13 +113,6 @@ class ReferralService {
         codes.add(`VTM-${digits.slice(-6)}`);
       }
     };
-
-    if (cleanEmail && KNOWN_PRIMARY_CODES[cleanEmail]) {
-      codes.add(KNOWN_PRIMARY_CODES[cleanEmail]);
-    }
-    if (cleanEmail && KNOWN_CODE_ALIASES[cleanEmail]) {
-      KNOWN_CODE_ALIASES[cleanEmail].forEach((c) => codes.add(c));
-    }
 
     addFromAccountOrCode(this.getReferralCode(userEmail, userAccountNumber));
     addFromAccountOrCode(userAccountNumber);
@@ -585,11 +566,9 @@ class ReferralService {
           ...(extraCodesOrAccountNumbers || []),
           ...(cloud.referrerAccountNumber ? [cloud.referrerAccountNumber] : []),
         ]);
-        const primaryCode =
-          KNOWN_PRIMARY_CODES[cleanEmail] ||
-          (cloud.referrerAccountNumber
-            ? this.getReferralCode(cleanEmail, cloud.referrerAccountNumber)
-            : localState.referralCode);
+        const primaryCode = cloud.referrerAccountNumber
+          ? this.getReferralCode(cleanEmail, cloud.referrerAccountNumber)
+          : localState.referralCode;
         const primaryLink = this.getReferralLink(primaryCode);
 
         // Merge cloud referrals + any local referrals (never drop valid referrals)
@@ -872,12 +851,6 @@ class ReferralService {
     if (!referrerCode) return null;
     const cleanCode = referrerCode.trim().toUpperCase();
 
-    for (const [knownEmail, aliases] of Object.entries(KNOWN_CODE_ALIASES)) {
-      if (aliases.includes(cleanCode)) {
-        return { email: knownEmail, state: this.getReferralState(knownEmail) };
-      }
-    }
-
     if (typeof window === 'undefined') return null;
 
     // 1. Direct scan of referral states in localStorage
@@ -917,11 +890,6 @@ class ReferralService {
         }
       }
     } catch {}
-
-    // 3. Fallback for master admin
-    if (cleanCode === 'VTM-MUTWIR' || cleanCode === 'VTM-84A1E1' || cleanCode.startsWith('VTM-MUTW')) {
-      return { email: 'mutwirib964@gmail.com', state: this.getReferralState('mutwirib964@gmail.com') };
-    }
 
     return null;
   }
