@@ -116,16 +116,22 @@ export function deterministicUuidFromEmail(email) {
   return `${full.slice(0, 8)}-${full.slice(8, 12)}-4${full.slice(13, 16)}-a${full.slice(17, 20)}-${full.slice(20, 32)}`;
 }
 
-export function getSupabaseServerConfig() {
-  const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '')
+function cleanEnvSecret(val) {
+  return String(val || '')
     .trim()
-    .replace(/\/+$/, '');
-  const serviceKey = (
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim();
+}
+
+export function getSupabaseServerConfig() {
+  const url = cleanEnvSecret(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/+$/, '');
+  const serviceKey = cleanEnvSecret(
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    ''
-  ).trim();
-  const anonKey = (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '').trim();
+      process.env.SUPABASE_SECRET_KEY ||
+      ''
+  );
+  const anonKey = cleanEnvSecret(process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '');
   const key = serviceKey || anonKey;
   return {
     url,
@@ -543,19 +549,61 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     const { uid: adminUid } = getAdminEnvConfig();
 
     let sbRow = null;
+    let sbLookupOk = false;
     let sbErrorStatus = 0;
     try {
       const lookup = await lookupSupabaseUserRow(cleanEmail);
+      sbLookupOk = Boolean(lookup.ok);
       sbErrorStatus = lookup.status;
       sbRow = lookup.row;
     } catch {
-      // fallback below
+      sbLookupOk = false;
     }
 
     const fallbackUser = fallbackDbHelpers?.getUser?.(cleanEmail) || null;
     const fallbackPassword = fallbackDbHelpers?.getPassword?.(cleanEmail) || '';
 
     if (!sbRow && !fallbackUser) {
+      if (!cfg.isConfigured) {
+        return {
+          statusCode: 503,
+          payload: {
+            ok: false,
+            code: 'DATABASE_NOT_CONFIGURED',
+            error: 'Server database connection is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY and redeploy.',
+          },
+        };
+      }
+      if (!sbLookupOk) {
+        if (sbErrorStatus === 401 || sbErrorStatus === 403) {
+          return {
+            statusCode: 503,
+            payload: {
+              ok: false,
+              code: 'DATABASE_AUTH_ERROR',
+              error: `Database authentication failed (HTTP ${sbErrorStatus}). Verify SUPABASE_SERVICE_ROLE_KEY in your Production environment variables and trigger a fresh deploy.`,
+            },
+          };
+        }
+        return {
+          statusCode: 503,
+          payload: {
+            ok: false,
+            code: 'DATABASE_UNAVAILABLE',
+            error: 'Unable to reach the account database right now. Please try again shortly.',
+          },
+        };
+      }
+      if (!cfg.isServiceRole) {
+        return {
+          statusCode: 503,
+          payload: {
+            ok: false,
+            code: 'SERVICE_KEY_REQUIRED',
+            error: 'Server is missing SUPABASE_SERVICE_ROLE_KEY. Add it to your Production environment variables and redeploy.',
+          },
+        };
+      }
       return {
         statusCode: 404,
         payload: { ok: false, code: 'ACCOUNT_NOT_FOUND', error: 'No registered account found for this email. Please create an account first.' },
