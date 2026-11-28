@@ -3938,7 +3938,11 @@ export default defineConfig(() => {
                       : deterministicUuidFromEmail(cleanEmail);
                   const safeRole = isAdmin
                     ? 'admin'
-                    : rawUser.role === 'marketer' || existing.role === 'marketer'
+                    : rawUser.role === 'marketer'
+                    ? 'marketer'
+                    : rawUser.role === 'normal'
+                    ? 'normal'
+                    : existing.role === 'marketer'
                     ? 'marketer'
                     : 'normal';
 

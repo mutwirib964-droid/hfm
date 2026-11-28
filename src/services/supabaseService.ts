@@ -869,13 +869,47 @@ class SupabaseService {
     }
   }
 
-  public async updateUserRoleInDatabase(email: string, role: string): Promise<boolean> {
-    if (!this.config || !email) return false;
+  public async updateUserRoleInDatabase(
+    email: string,
+    role: string,
+    profileHint?: Partial<UserAuthProfile>
+  ): Promise<boolean> {
+    if (!this.config || !email || !this.getSessionToken()) return false;
 
     try {
       const cleanEmail = email.trim().toLowerCase();
       const safeRole =
         role === 'admin' ? 'admin' : role === 'marketer' ? 'marketer' : 'normal';
+
+      const res = await this.proxyPost(
+        {
+          action: 'admin_update_user_role',
+          email: cleanEmail,
+          role: safeRole,
+          name: profileHint?.name,
+          accountNumber: profileHint?.accountNumber,
+        },
+        8500,
+        true
+      );
+
+      if (this.checkResponseQuota(res)) return false;
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        console.warn('Failed to persist role change to database:', data?.error || res.status);
+        return false;
+      }
+
+      fetch('/api/platform-db', {
+        method: 'POST',
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          action: 'update_role',
+          email: cleanEmail,
+          role: safeRole,
+        }),
+      }).catch(() => {});
 
       try {
         const channel = new BroadcastChannel('vtm_global_sync');
@@ -903,67 +937,57 @@ class SupabaseService {
         }
       }
 
-      fetch('/api/platform-db', {
-        method: 'POST',
-        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          action: 'update_role',
-          email: cleanEmail,
-          role: safeRole,
-        }),
-      }).catch(() => {});
+      return true;
+    } catch (err) {
+      console.warn('Failed to update user role in database:', err);
+      return false;
+    }
+  }
 
-      if (this.isQuotaRestricted()) {
-        return true;
-      }
+  private async fetchAllSupabaseRows(
+    basePath: string,
+    timeoutMs = 12000,
+    pageSize = 1000,
+    maxPages = 10
+  ): Promise<{ ok: boolean; rows: any[]; status: number }> {
+    const allRows: any[] = [];
+    const sep = basePath.includes('?') ? '&' : '?';
 
-      const res = await this.proxyRest(
-        `vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}`,
-        {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            Prefer: 'return=representation',
-          },
-          body: JSON.stringify({
-            role: safeRole,
-            updated_at: new Date().toISOString(),
-          }),
-        },
-        4500
-      );
+    for (let page = 0; page < maxPages; page++) {
+      const offset = page * pageSize;
+      const pagedPath = `${basePath}${sep}limit=${pageSize}&offset=${offset}`;
+      let res: Response | null = null;
 
-      if (this.checkResponseQuota(res)) return true;
-
-      if (res.ok) {
-        const updatedRows = await res.json().catch(() => []);
-        if (Array.isArray(updatedRows) && updatedRows.length > 0) {
-          return true;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          res = await this.proxyRest(pagedPath, { method: 'GET' }, timeoutMs);
+          if (this.checkResponseQuota(res)) {
+            return { ok: false, rows: [], status: res.status };
+          }
+          if (res.ok || res.status === 401 || res.status === 403) {
+            break;
+          }
+        } catch {
+          res = null;
         }
       }
 
-      const upsertRes = await this.proxyRest(
-        `vtm_registered_users?on_conflict=email`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates,return=representation',
-          },
-          body: JSON.stringify({
-            email: cleanEmail,
-            role: safeRole,
-            updated_at: new Date().toISOString(),
-          }),
-        },
-        4500
-      );
+      if (!res || !res.ok) {
+        return { ok: false, rows: [], status: res?.status || 0 };
+      }
 
-      this.checkResponseQuota(upsertRes);
-      return true;
-    } catch {
-      return true;
+      const chunk = await res.json().catch(() => null);
+      if (!Array.isArray(chunk)) {
+        return { ok: false, rows: [], status: res.status };
+      }
+
+      allRows.push(...chunk);
+      if (chunk.length < pageSize) {
+        break;
+      }
     }
+
+    return { ok: true, rows: allRows, status: 200 };
   }
 
   public async fetchAllPlatformUsersAndFinances(): Promise<{
@@ -971,62 +995,52 @@ class SupabaseService {
     financesByEmail: Record<string, UserFinancialState>;
     openTradesByEmail?: Record<string, AdminUserOpenTradeCounts>;
   } | null> {
-    if (!this.config || !this.getSessionToken()) return null;
+    if (!this.config || !this.getSessionToken() || this.isQuotaRestricted()) return null;
 
     try {
-      let usersRows: any[] = [];
-      let finRows: any[] = [];
-      let actRows: any[] = [];
-      let cloudStateRows: any[] = [];
-      let cloudStatesFetchedOk = false;
+      const [usersFetch, finFetch, actRes, cloudStatesFetch] = await Promise.all([
+        this.fetchAllSupabaseRows(
+          `vtm_registered_users?select=uid,email,name,phone_number,country_code,country_name,account_number,role,referred_by_code,created_at&order=created_at.desc`,
+          12000
+        ),
+        this.fetchAllSupabaseRows(
+          `vtm_user_finances?select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&order=last_updated.desc`,
+          12000
+        ),
+        this.proxyRest(
+          `user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,DEPOSIT_CRYPTO_PENDING,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
+          { method: 'GET' },
+          10000
+        ).catch(() => null),
+        this.fetchAllSupabaseRows(
+          `vtm_cloud_states?state_key=in.(STATE_TRADES,STATE_BOTS)&select=user_email,state_key,data`,
+          12000
+        ),
+      ]);
 
-      if (!this.isQuotaRestricted()) {
-        const [usersRes, finRes, actRes, cloudStatesRes] = await Promise.all([
-          this.proxyRest(
-            `vtm_registered_users?select=*&order=created_at.desc&limit=5000`,
-            { method: 'GET' },
-            6500
-          ).catch(() => null),
-          this.proxyRest(
-            `vtm_user_finances?select=user_email,user_key,user_name,wallet_balance,accounts,transactions,selected_account_id,last_updated&order=last_updated.desc&limit=5000`,
-            { method: 'GET' },
-            6500
-          ).catch(() => null),
-          this.proxyRest(
-            `user_activities?select=id,user_email,activity_type,description,metadata,created_at&activity_type=in.(SIGNUP,REGISTRATION,DEPOSIT,DEPOSIT_CRYPTO_PENDING,ACCOUNT_CREATED,OPEN_ACCOUNT,ACCOUNT_DELETED)&order=created_at.desc&limit=1000`,
-            { method: 'GET' },
-            6500
-          ).catch(() => null),
-          this.proxyRest(
-            `vtm_cloud_states?state_key=in.(STATE_TRADES,STATE_BOTS)&select=user_email,state_key,data&limit=5000`,
-            { method: 'GET' },
-            6500
-          ).catch(() => null),
-        ]);
+      this.checkResponseQuota(actRes);
 
-        this.checkResponseQuota(usersRes);
-        this.checkResponseQuota(finRes);
-        this.checkResponseQuota(actRes);
-        this.checkResponseQuota(cloudStatesRes);
-
-        usersRows = usersRes && usersRes.ok ? await usersRes.json() : [];
-        finRows = finRes && finRes.ok ? await finRes.json() : [];
-        actRows = actRes && actRes.ok ? await actRes.json() : [];
-        cloudStatesFetchedOk = Boolean(cloudStatesRes && cloudStatesRes.ok);
-        cloudStateRows = cloudStatesFetchedOk ? await cloudStatesRes!.json() : [];
-
-        if (Array.isArray(usersRows) && usersRows.length > 0) {
-          fetch('/api/platform-db', {
-            method: 'POST',
-            headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ action: 'bulk_upsert_users', users: usersRows }),
-          }).catch(() => {});
-        }
+      // Require BOTH authoritative user directory and financial tables to succeed so partial/timed-out
+      // responses never produce mismatched user counts or missing marketer roles across devices.
+      if (!usersFetch.ok || !finFetch.ok) {
+        console.warn(
+          `[AdminSync] Incomplete Supabase snapshot (usersStatus=${usersFetch.status}, finStatus=${finFetch.status}). Keeping previous view.`
+        );
+        return null;
       }
 
-      const hasCloudData =
-        (Array.isArray(usersRows) && usersRows.length > 0) ||
-        (Array.isArray(finRows) && finRows.length > 0);
+      const usersRows = usersFetch.rows;
+      const finRows = finFetch.rows;
+      const actRows: any[] = actRes && actRes.ok ? await actRes.json().catch(() => []) : [];
+      const cloudStatesFetchedOk = cloudStatesFetch.ok;
+      const cloudStateRows = cloudStatesFetch.rows;
+
+      const registeredEmailsSet = new Set<string>();
+      usersRows.forEach((row: any) => {
+        if (row?.email) {
+          registeredEmailsSet.add(String(row.email).trim().toLowerCase());
+        }
+      });
 
       const financesByEmail: Record<string, UserFinancialState> = {};
       const deletedByEmail: Record<string, Set<string>> = {};
@@ -1165,6 +1179,10 @@ class SupabaseService {
           const rawEmail = String(act.user_email).trim().toLowerCase();
           if (!rawEmail.includes('@')) return;
           const canonicalEmail = rawEmail;
+
+          if (!registeredEmailsSet.has(canonicalEmail) && !financesByEmail[canonicalEmail]) {
+            return;
+          }
 
           if (!financesByEmail[canonicalEmail]) {
             financesByEmail[canonicalEmail] = {
@@ -1438,87 +1456,6 @@ class SupabaseService {
           });
         }
       });
-
-      // Only fall back to Server Platform DB or Local Registry if Supabase returned no rows (e.g. offline/quota)
-      if (!hasCloudData) {
-        try {
-          const srvRes = await fetch('/api/platform-db', {
-            method: 'GET',
-            headers: this.getAuthHeaders(),
-            signal: AbortSignal.timeout(4000),
-          });
-          if (srvRes.ok) {
-            const srvData = await srvRes.json();
-            if (srvData?.ok) {
-              if (Array.isArray(srvData.users)) {
-                srvData.users.forEach((u: any) => {
-                  if (!u || !u.email) return;
-                  const canonicalEmail = String(u.email).trim().toLowerCase();
-                  const existing = usersMap.get(canonicalEmail);
-                  const resolvedUid = this.isValidUuid(existing?.id)
-                    ? existing!.id
-                    : this.isValidUuid(u.id)
-                    ? u.id
-                    : this.deterministicUuidFromEmail(canonicalEmail);
-                  usersMap.set(canonicalEmail, {
-                    ...(existing || {}),
-                    ...u,
-                    id: resolvedUid,
-                    email: canonicalEmail,
-                    name: existing?.name || u.name || canonicalEmail.split('@')[0],
-                    role:
-                      existing?.role === 'admin' || u.role === 'admin'
-                        ? 'admin'
-                        : existing?.role === 'marketer' || u.role === 'marketer'
-                        ? 'marketer'
-                        : 'normal',
-                    referredByCode: existing?.referredByCode || u.referredByCode,
-                  });
-                });
-              }
-              if (srvData.financesByEmail && typeof srvData.financesByEmail === 'object') {
-                Object.entries(srvData.financesByEmail).forEach(([em, srvFin]: [string, any]) => {
-                  const canonicalEmail = em.trim().toLowerCase();
-                  if (!financesByEmail[canonicalEmail]) {
-                    financesByEmail[canonicalEmail] = srvFin;
-                  }
-                });
-              }
-            }
-          }
-        } catch {
-          // ignore
-        }
-
-        try {
-          const localUsers = getAllRegisteredUsers();
-          localUsers.forEach((lu) => {
-            if (!lu || !lu.email) return;
-            const canonicalEmail = lu.email.trim().toLowerCase();
-            if (!usersMap.has(canonicalEmail)) {
-              usersMap.set(canonicalEmail, {
-                ...lu,
-                id: this.isValidUuid(lu.id)
-                  ? lu.id
-                  : this.deterministicUuidFromEmail(canonicalEmail),
-                email: canonicalEmail,
-                role:
-                  lu.role === 'admin'
-                    ? 'admin'
-                    : lu.role === 'marketer'
-                    ? 'marketer'
-                    : 'normal',
-              });
-            }
-            const localFin = loadUserFinancials(lu);
-            if (localFin && !financesByEmail[canonicalEmail]) {
-              financesByEmail[canonicalEmail] = localFin;
-            }
-          });
-        } catch {
-          // ignore
-        }
-      }
 
       const sortedUsers = Array.from(usersMap.values()).sort((a, b) => {
         const tsA = typeof a.createdAt === 'number' ? a.createdAt : a.createdAt ? new Date(a.createdAt).getTime() : 0;
@@ -4025,7 +3962,8 @@ class SupabaseService {
 
   public async syncUserFinancials(
     user: UserAuthProfile | null | undefined,
-    state: UserFinancialState
+    state: UserFinancialState,
+    options?: { authoritativeOverride?: boolean }
   ): Promise<boolean> {
     if (!this.config || !user || !this.getSessionToken()) return false;
     const cleanEmail = (user.email || getUserStorageKey(user)).trim().toLowerCase();
@@ -4102,10 +4040,23 @@ class SupabaseService {
       }
 
       // Check if cloud state is strictly newer than incoming client update snapshot
-      const isCloudNewer = cloudLastUpdatedMs > incomingClientMs + 1000; // 1 second tolerance
+      const isOverride = Boolean(options?.authoritativeOverride);
+      const isCloudNewer = !isOverride && cloudLastUpdatedMs > incomingClientMs + 1000; // 1 second tolerance
 
       // Apply incoming accounts
-      if (Array.isArray(state.accounts)) {
+      if (isOverride) {
+        accountMap.clear();
+        if (Array.isArray(state.accounts)) {
+          for (const acc of state.accounts) {
+            if (!acc) continue;
+            const accNum = String(acc.accountNumber || '');
+            const k = accNum || acc.id;
+            if (k) {
+              accountMap.set(k, acc);
+            }
+          }
+        }
+      } else if (Array.isArray(state.accounts)) {
         for (const acc of state.accounts) {
           if (!acc) continue;
           const accNum = String(acc.accountNumber || '');
@@ -4129,23 +4080,29 @@ class SupabaseService {
       }
 
       const mergedAccounts = Array.from(accountMap.values());
-      const mergedTransactions = mergeTransactionLists(
-        isCloudNewer ? cloudTransactions : state.transactions,
-        isCloudNewer ? state.transactions : cloudTransactions
-      );
+      const mergedTransactions = isOverride
+        ? Array.isArray(state.transactions)
+          ? state.transactions
+          : cloudTransactions
+        : mergeTransactionLists(
+            isCloudNewer ? cloudTransactions : state.transactions,
+            isCloudNewer ? state.transactions : cloudTransactions
+          );
       const incomingWallet = Number((state.walletBalance || 0).toFixed(2));
       const baseWallet =
         isCloudNewer && typeof cloudWalletBalance === 'number' && !isNaN(cloudWalletBalance)
           ? Number(cloudWalletBalance.toFixed(2))
           : incomingWallet;
-      const finalWalletBalance = reconcileWalletBalanceWithTransactions(
-        baseWallet,
-        mergedTransactions,
-        mergedAccounts
-      );
+      const finalWalletBalance = isOverride
+        ? incomingWallet
+        : reconcileWalletBalanceWithTransactions(
+            baseWallet,
+            mergedTransactions,
+            mergedAccounts
+          );
 
       // Winning high-resolution ISO timestamp
-      const winningMs = Math.max(nowMs, cloudLastUpdatedMs);
+      const winningMs = Math.max(nowMs, cloudLastUpdatedMs + 1);
       const winningIso = new Date(winningMs).toISOString();
       const cappedMergedTxs = mergedTransactions.slice(0, 100);
 

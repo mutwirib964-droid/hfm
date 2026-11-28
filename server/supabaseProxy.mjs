@@ -1194,5 +1194,156 @@ export async function handleSupabaseProxyRequest({ method, headers, body, fallba
     }
   }
 
+  // 9. Authoritative Admin Role Update (persists directly to vtm_registered_users & verifies result)
+  if (action === 'admin_update_user_role') {
+    if (!isSessionAdmin) {
+      return {
+        statusCode: 403,
+        payload: { ok: false, error: 'Administrator privileges required to update user roles.' },
+      };
+    }
+
+    const cleanEmail = normalizePlatformEmail(body?.email);
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { statusCode: 400, payload: { ok: false, error: 'Valid user email is required.' } };
+    }
+
+    const requestedRole = String(body?.role || '').trim().toLowerCase();
+    const safeRole = isMasterAdminEmail(cleanEmail)
+      ? 'admin'
+      : requestedRole === 'admin'
+      ? 'admin'
+      : requestedRole === 'marketer'
+      ? 'marketer'
+      : 'normal';
+
+    if (!cfg.isConfigured || !cfg.isServiceRole) {
+      return {
+        statusCode: 503,
+        payload: {
+          ok: false,
+          error: 'Server database connection or service role key is not configured.',
+        },
+      };
+    }
+
+    const nowIso = new Date().toISOString();
+    try {
+      const patchRes = await sbFetch(
+        `vtm_registered_users?email=ilike.${encodeURIComponent(cleanEmail)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Prefer: 'return=representation',
+          },
+          body: JSON.stringify({
+            role: safeRole,
+            updated_at: nowIso,
+          }),
+          signal: AbortSignal.timeout(7000),
+        }
+      );
+
+      if (!patchRes.ok) {
+        const errText = await patchRes.text().catch(() => '');
+        return {
+          statusCode: patchRes.status || 502,
+          payload: {
+            ok: false,
+            error: `Database role update failed (HTTP ${patchRes.status})${errText ? `: ${errText.slice(0, 160)}` : ''}`,
+          },
+        };
+      }
+
+      const patchedRows = await patchRes.json().catch(() => []);
+      if (Array.isArray(patchedRows) && patchedRows.length > 0) {
+        const syncedProfile = rowToUserProfile(patchedRows[0], cleanEmail);
+        if (fallbackDbHelpers?.upsertUser) {
+          fallbackDbHelpers.upsertUser(syncedProfile);
+        }
+        return {
+          statusCode: 200,
+          payload: {
+            ok: true,
+            email: cleanEmail,
+            role: syncedProfile.role,
+            user: syncedProfile,
+          },
+        };
+      }
+
+      // Row didn't exist yet in vtm_registered_users (e.g. migrated from vtm_user_finances) — insert full row
+      const fallbackName = String(body?.name || cleanEmail.split('@')[0]).trim() || 'Trader';
+      const fallbackAccountNum =
+        String(body?.accountNumber || '').trim() ||
+        String(Math.floor(10000000 + Math.random() * 90000000));
+      const insertRes = await sbFetch('vtm_registered_users?on_conflict=email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates,return=representation',
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          uid: deterministicUuidFromEmail(cleanEmail),
+          name: fallbackName,
+          phone_number: '',
+          country_code: '+254',
+          country_name: 'Kenya',
+          account_number: fallbackAccountNum,
+          role: safeRole,
+          created_at: nowIso,
+          updated_at: nowIso,
+        }),
+        signal: AbortSignal.timeout(7000),
+      });
+
+      if (!insertRes.ok) {
+        const insErr = await insertRes.text().catch(() => '');
+        return {
+          statusCode: insertRes.status || 502,
+          payload: {
+            ok: false,
+            error: `Database role upsert failed (HTTP ${insertRes.status})${insErr ? `: ${insErr.slice(0, 160)}` : ''}`,
+          },
+        };
+      }
+
+      const insertedRows = await insertRes.json().catch(() => []);
+      const syncedProfile =
+        Array.isArray(insertedRows) && insertedRows[0]
+          ? rowToUserProfile(insertedRows[0], cleanEmail)
+          : {
+              id: deterministicUuidFromEmail(cleanEmail),
+              email: cleanEmail,
+              name: fallbackName,
+              accountNumber: fallbackAccountNum,
+              role: safeRole,
+              isLoggedIn: false,
+              createdAt: Date.now(),
+            };
+
+      if (fallbackDbHelpers?.upsertUser) {
+        fallbackDbHelpers.upsertUser(syncedProfile);
+      }
+
+      return {
+        statusCode: 200,
+        payload: {
+          ok: true,
+          email: cleanEmail,
+          role: syncedProfile.role,
+          user: syncedProfile,
+        },
+      };
+    } catch (err) {
+      return {
+        statusCode: 502,
+        payload: { ok: false, error: err?.message || 'Unable to update user role in database.' },
+      };
+    }
+  }
+
   return { statusCode: 400, payload: { ok: false, error: `Unknown action '${action}'` } };
 }

@@ -28,6 +28,7 @@ import {
   XCircle,
   Activity,
   Layers,
+  AlertTriangle,
 } from 'lucide-react';
 import { TradingAccount } from '../types';
 import { UserAuthProfile } from '../types/botTypes';
@@ -46,7 +47,6 @@ import {
   PlatformUserMetric,
   isAdminUser,
   replaceLocalRegistryWithSupabase,
-  getOrCreateUserProfile,
   adminResolveCryptoDeposit,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
@@ -125,7 +125,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
   const [resolvingCryptoTxKey, setResolvingCryptoTxKey] = useState<string | null>(null);
   const [copiedCryptoTxKey, setCopiedCryptoTxKey] = useState<string | null>(null);
 
-  const hasSyncedRecoveredUsersRef = useRef(false);
+  const [cloudSyncWarning, setCloudSyncWarning] = useState<string | null>(null);
 
   const loadLocalAdminMetrics = useCallback(() => {
     const metrics = getAllPlatformUsersWithMetrics();
@@ -134,12 +134,6 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     setDepositsData(deposits);
     const txObj = getAllPlatformTransactions();
     setAllTransactions(txObj.transactions);
-
-    // If localStorage recovered additional users (e.g. from midnight cache), back them up to server DB automatically
-    if (!hasSyncedRecoveredUsersRef.current && metrics.length > 3) {
-      hasSyncedRecoveredUsersRef.current = true;
-      supabaseService.bulkImportUsers(metrics.map((m) => m.user)).catch(() => {});
-    }
     return metrics;
   }, []);
 
@@ -190,9 +184,17 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           cloudData.financesByEmail,
           cloudData.openTradesByEmail
         );
+        setCloudSyncWarning(null);
+      } else {
+        setCloudSyncWarning(
+          'Unable to sync latest users from the cloud database. Displayed counts may be cached on this device — tap Refresh Data.'
+        );
       }
     } catch (e) {
       console.warn('Admin cloud sync notice:', e);
+      setCloudSyncWarning(
+        'Cloud database sync interrupted. Displayed counts may differ from live totals — tap Refresh Data.'
+      );
     } finally {
       const updatedMetrics = loadLocalAdminMetrics();
       setIsSyncingCloud(false);
@@ -215,13 +217,20 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     if (!isOpen) return;
     loadLocalAdminMetrics();
     syncFromSupabaseCloud();
+    const handleFocus = () => {
+      syncFromSupabaseCloud();
+    };
+    window.addEventListener('focus', handleFocus);
     const interval = setInterval(() => {
       if (typeof document === 'undefined' || !document.hidden) {
         syncFromSupabaseCloud();
       }
-    }, 60000);
-    return () => clearInterval(interval);
-  }, [isOpen]);
+    }, 30000);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [isOpen, loadLocalAdminMetrics, syncFromSupabaseCloud]);
 
   // Create a new Live Trading Account for the selected user immediately
   const handleAddLiveAccountForUser = () => {
@@ -272,6 +281,7 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
       } else {
         (current as any)[field] = val;
       }
+      current.lastActivityAt = Date.now();
 
       copy[index] = current;
       return copy;
@@ -301,9 +311,28 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
         ? 'marketer'
         : 'normal';
 
-      // 1. Update role locally & in database
+      const prevRole: 'normal' | 'marketer' | 'admin' = isAdminUser(existingProfile)
+        ? 'admin'
+        : existingProfile.role === 'marketer'
+        ? 'marketer'
+        : 'normal';
+
+      // 1. Update role in database first and confirm persistence
+      const roleSaved = await supabaseService.updateUserRoleInDatabase(
+        cleanEmail,
+        effectiveRole,
+        existingProfile
+      );
+      if (!roleSaved) {
+        setSelectedUserRole(prevRole);
+        setStatusMessage({
+          text: `Failed to save role change for ${cleanEmail} to database. Please check connection and try again.`,
+          type: 'error',
+        });
+        setIsSavingChanges(false);
+        return;
+      }
       assignUserRole(cleanEmail, effectiveRole);
-      await supabaseService.updateUserRoleInDatabase(cleanEmail, effectiveRole);
 
       // 2. Preserve user's existing transactions and record any newly credited deposit to database
       const existingFin = loadUserFinancials(existingProfile);
@@ -318,21 +347,37 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
       const nextTransactions = [...(existingFin?.transactions || [])];
       const netCreditedUsd = Number((newWallet + newLiveTotal - (prevWallet + prevLiveTotal)).toFixed(2));
+      const nowEditTs = Date.now();
 
-      if (netCreditedUsd > 0) {
-        const targetAcc =
-          newLiveTotal > prevLiveTotal
-            ? `Account #${editableAccounts.find((a) => a.type === 'Live')?.accountNumber || 'Live'}`
-            : 'VTM Wallet';
-        const depRef = `DB-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
-        const depTx = {
-          id: `tx-${Date.now()}`,
-          type: 'DEPOSIT' as const,
-          method: 'Direct Account Deposit',
-          amount: netCreditedUsd,
+      if (newWallet !== prevWallet) {
+        const walletDelta = Number((newWallet - prevWallet).toFixed(2));
+        const adjRef = `DB-ADJ-${Math.floor(10000000 + Math.random() * 90000000)}`;
+        const adjTx = {
+          id: `tx-${nowEditTs}-wal`,
+          type: (walletDelta >= 0 ? 'DEPOSIT' : 'WITHDRAWAL') as 'DEPOSIT' | 'WITHDRAWAL',
+          method: 'Direct Account Adjustment',
+          amount: Math.abs(walletDelta),
           currency: 'USD',
           status: 'COMPLETED' as const,
-          timestamp: Date.now(),
+          timestamp: nowEditTs,
+          reference: adjRef,
+          accountNumber: 'VTM Wallet',
+          details: `Admin adjustment to VTM Wallet (New Bal: $${newWallet.toFixed(2)})`,
+        };
+        nextTransactions.unshift(adjTx);
+      }
+
+      if (netCreditedUsd > 0 && newLiveTotal > prevLiveTotal) {
+        const targetAcc = `Account #${editableAccounts.find((a) => a.type === 'Live')?.accountNumber || 'Live'}`;
+        const depRef = `DB-DEP-${Math.floor(10000000 + Math.random() * 90000000)}`;
+        const depTx = {
+          id: `tx-${nowEditTs}-acc`,
+          type: 'DEPOSIT' as const,
+          method: 'Direct Account Deposit',
+          amount: Number((newLiveTotal - prevLiveTotal).toFixed(2)),
+          currency: 'USD',
+          status: 'COMPLETED' as const,
+          timestamp: nowEditTs,
           reference: depRef,
           accountNumber: targetAcc,
           details: `Deposited to ${targetAcc}`,
@@ -342,8 +387,8 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           .saveDeposit(existingProfile, {
             id: depTx.id,
             targetAccount: targetAcc,
-            amountUsd: netCreditedUsd,
-            amountKes: Number((netCreditedUsd * getUsdKesRate()).toFixed(2)),
+            amountUsd: depTx.amount,
+            amountKes: Number((depTx.amount * getUsdKesRate()).toFixed(2)),
             method: 'Direct Account Deposit',
             reference: depRef,
             status: 'COMPLETED',
@@ -351,21 +396,28 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
           .catch(() => {});
       }
 
+      const stampedAccounts = editableAccounts.map((a) => ({
+        ...a,
+        lastActivityAt: Math.max(Number(a.lastActivityAt || 0), nowEditTs),
+      }));
+
       const updatedFinState = {
         walletBalance: newWallet,
-        accounts: editableAccounts,
+        accounts: stampedAccounts,
         selectedAccountId:
-          editableAccounts[selectedAccIndex]?.id ||
-          editableAccounts[0]?.id ||
+          stampedAccounts[selectedAccIndex]?.id ||
+          stampedAccounts[0]?.id ||
           existingFin?.selectedAccountId ||
           null,
         transactions: nextTransactions,
-        lastUpdated: Date.now(),
+        lastUpdated: nowEditTs,
       };
 
-      // 3. Save locally and push immediately to cloud database
+      // 3. Save locally and push authoritatively to cloud database
       saveUserFinancials(existingProfile, updatedFinState);
-      await supabaseService.syncUserFinancials(existingProfile, updatedFinState);
+      await supabaseService.syncUserFinancials(existingProfile, updatedFinState, {
+        authoritativeOverride: true,
+      });
 
       // 4. If editing current active user session, apply immediately
       if (currentUser && currentUser.email.toLowerCase() === cleanEmail) {
@@ -398,37 +450,50 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
     const targetRow = getAllRegisteredUsers().find((u) => u.email.toLowerCase() === clean);
     if (isAdminUser(targetRow)) return;
 
-    const ok = assignUserRole(clean, newRole);
-    await supabaseService.updateUserRoleInDatabase(clean, newRole);
+    const prevRole: 'normal' | 'marketer' = targetRow?.role === 'marketer' ? 'marketer' : 'normal';
+    assignUserRole(clean, newRole);
+    if (selectedUserEmail.toLowerCase() === clean) {
+      setSelectedUserRole(newRole);
+    }
+    loadLocalAdminMetrics();
 
-    if (ok) {
-      if (selectedUserEmail.toLowerCase() === clean) {
-        setSelectedUserRole(newRole);
-      }
-      loadLocalAdminMetrics();
+    const dbOk = await supabaseService.updateUserRoleInDatabase(clean, newRole, targetRow);
+    if (dbOk) {
       setStatusMessage({
         text: `Role for ${clean} updated to ${
           newRole === 'marketer' ? 'Marketer' : 'Retail Trader'
-        } with immediate effect.`,
+        } across all devices.`,
         type: 'success',
       });
       setTimeout(() => setStatusMessage(null), 3500);
+    } else {
+      assignUserRole(clean, prevRole);
+      if (selectedUserEmail.toLowerCase() === clean) {
+        setSelectedUserRole(prevRole);
+      }
+      loadLocalAdminMetrics();
+      setStatusMessage({
+        text: `Failed to save role for ${clean} to cloud database. Reverted to previous role.`,
+        type: 'error',
+      });
     }
   };
 
-  // On-demand targeted Supabase search when Admin types a username or email
+  // Trigger cloud sync when searching if user isn't in loaded metrics yet
   useEffect(() => {
-    const q = searchQuery.trim();
-    if (q.length < 2) return;
-    const timer = setTimeout(async () => {
-      const found = await supabaseService.searchUserByQuery(q);
-      if (found && found.email) {
-        getOrCreateUserProfile(found);
-        loadLocalAdminMetrics();
-      }
-    }, 300);
+    const q = searchQuery.trim().toLowerCase();
+    if (q.length < 3) return;
+    const alreadyPresent = userMetrics.some(
+      (m) =>
+        (m.user.name && m.user.name.toLowerCase().includes(q)) ||
+        (m.user.email && m.user.email.toLowerCase().includes(q))
+    );
+    if (alreadyPresent) return;
+    const timer = setTimeout(() => {
+      syncFromSupabaseCloud();
+    }, 450);
     return () => clearTimeout(timer);
-  }, [searchQuery, loadLocalAdminMetrics]);
+  }, [searchQuery, userMetrics, syncFromSupabaseCloud]);
 
   // Filtered users — strictly from database records, sorted newest at top and oldest at bottom
   const filteredUsers = useMemo(() => {
@@ -991,6 +1056,29 @@ export const AdminAccountManagerModal: React.FC<AdminAccountManagerModalProps> =
 
       {/* MAIN CONTAINER */}
       <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {cloudSyncWarning && (
+          <div
+            className={`p-3.5 rounded-xl border text-xs font-medium flex items-center justify-between gap-3 ${
+              isDarkMode
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                : 'bg-amber-50 border-amber-300 text-amber-900'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+              <span>{cloudSyncWarning}</span>
+            </div>
+            <button
+              type="button"
+              onClick={syncFromSupabaseCloud}
+              disabled={isSyncingCloud}
+              className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 font-semibold whitespace-nowrap cursor-pointer"
+            >
+              {isSyncingCloud ? 'Syncing...' : 'Retry Sync'}
+            </button>
+          </div>
+        )}
+
         {/* EXECUTIVE KPI SUMMARY ROW (6 CARDS: USERS, MONEY DEPOSITED, MARKETER REFERRALS, LIVE ACCOUNTS, ACTIVE DEMO ACCOUNTS, OPEN TRADES) */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
           {/* KPI 1: Number of Users in the Website */}

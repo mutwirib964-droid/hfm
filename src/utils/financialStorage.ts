@@ -720,6 +720,12 @@ export function ensureDefaultPlatformRegistry(): Record<string, UserAuthProfile>
     const registry: Record<string, UserAuthProfile> = raw ? JSON.parse(raw) : {};
     let changed = false;
 
+    // Once authoritative cloud sync has populated the registry on this device,
+    // never re-scan device-local caches or legacy keys to invent/re-add extra users.
+    if (localStorage.getItem('vtm_cloud_registry_synced') === '1') {
+      return registry;
+    }
+
     // 1. Merge any users stored in legacy vtm_registered_users_registry
     try {
       const legacyRaw = localStorage.getItem('vtm_registered_users_registry');
@@ -960,8 +966,6 @@ export function assignUserRole(email: string, newRole: 'normal' | 'marketer' | '
       }
     }
 
-    // Sync to Supabase immediately
-    supabaseService.updateUserRoleInDatabase(cleanEmail, effectiveRole).catch(() => {});
     return true;
   } catch (e) {
     console.error('Failed to assign user role', e);
@@ -996,6 +1000,8 @@ export function registerNewUser(
         ? 'admin'
         : profile.role === 'marketer'
         ? 'marketer'
+        : profile.role === 'normal'
+        ? 'normal'
         : existing?.role === 'admin'
         ? 'admin'
         : existing?.role === 'marketer'
@@ -1172,10 +1178,7 @@ export function replaceLocalRegistryWithSupabase(
 ): void {
   try {
     const existingRegistry = ensureDefaultPlatformRegistry();
-    const isAuthoritativeCloudSync = cloudUsers.length > 3 || Object.keys(financesByEmail).length > 3;
-    const newRegistry: Record<string, UserAuthProfile> = isAuthoritativeCloudSync
-      ? {}
-      : { ...existingRegistry };
+    const newRegistry: Record<string, UserAuthProfile> = {};
 
     cloudUsers.forEach((u) => {
       if (!u || !u.email) return;
@@ -1189,18 +1192,17 @@ export function replaceLocalRegistryWithSupabase(
           ? u.createdAt
           : prev?.createdAt || u.createdAt || Date.now();
 
+      // Strictly mirror Supabase's authoritative role so promotions/demotions sync 1:1 across all devices
+      const authoritativeRole: 'admin' | 'marketer' | 'normal' =
+        u.role === 'admin' ? 'admin' : u.role === 'marketer' ? 'marketer' : 'normal';
+
       const profile: UserAuthProfile = {
         ...(prev || {}),
         ...u,
         id: u.id,
         email: cleanEmail,
         name: u.name || prev?.name || cleanEmail.split('@')[0],
-        role:
-          u.role === 'admin' || prev?.role === 'admin'
-            ? 'admin'
-            : u.role === 'marketer' || prev?.role === 'marketer'
-            ? 'marketer'
-            : 'normal',
+        role: authoritativeRole,
         createdAt: resolvedCreatedAt,
         referredByCode: u.referredByCode || verifiedLocalRefCode || undefined,
         isLoggedIn: true,
@@ -1209,42 +1211,36 @@ export function replaceLocalRegistryWithSupabase(
 
       const fin = financesByEmail[cleanEmail] || financesByEmail[u.email.toLowerCase()];
       if (fin) {
-        if (isAuthoritativeCloudSync) {
-          // Use authoritative Supabase financial state so Android & Desktop match 100% without stale local test deposits
-          const cleanTxs = sanitizeRealTransactions(fin.transactions);
-          const authoritativeState: UserFinancialState = {
-            ...fin,
-            walletBalance: reconcileWalletBalanceWithTransactions(
-              Number(fin.walletBalance || 0),
-              cleanTxs,
-              fin.accounts
-            ),
-            accounts: Array.isArray(fin.accounts) ? fin.accounts : [],
-            transactions: cleanTxs,
-            lastUpdated: fin.lastUpdated || Date.now(),
-          };
-          localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(authoritativeState));
-        } else {
-          const existingLocal = loadUserFinancials(profile);
-          const mergedState = existingLocal
-            ? mergeUserFinancialStates(fin, existingLocal, cleanEmail)
-            : {
-                ...fin,
-                walletBalance: reconcileWalletBalanceWithTransactions(
-                  Number(fin.walletBalance || 0),
-                  fin.transactions,
-                  fin.accounts
-                ),
-              };
-          localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(mergedState));
-        }
-      } else if (isAuthoritativeCloudSync) {
+        const cleanTxs = sanitizeRealTransactions(fin.transactions);
+        const authoritativeState: UserFinancialState = {
+          ...fin,
+          walletBalance: reconcileWalletBalanceWithTransactions(
+            Number(fin.walletBalance || 0),
+            cleanTxs,
+            fin.accounts
+          ),
+          accounts: Array.isArray(fin.accounts) ? fin.accounts : [],
+          transactions: cleanTxs,
+          lastUpdated: fin.lastUpdated || Date.now(),
+        };
+        localStorage.setItem(STORAGE_PREFIX + cleanEmail, JSON.stringify(authoritativeState));
+      } else {
         // User has no financial record in Supabase — clear any stale local test finances on this device
         localStorage.removeItem(STORAGE_PREFIX + cleanEmail);
       }
     });
 
+    // Clear stale local-only user financial records that don't exist in Supabase
+    Object.keys(existingRegistry).forEach((oldEmail) => {
+      const cleanOld = oldEmail.trim().toLowerCase();
+      if (!newRegistry[cleanOld]) {
+        localStorage.removeItem(STORAGE_PREFIX + cleanOld);
+      }
+    });
+
     localStorage.setItem(USER_REGISTRY_KEY, JSON.stringify(newRegistry));
+    localStorage.setItem('vtm_cloud_registry_synced', '1');
+    localStorage.removeItem('vtm_registered_users_registry');
 
     if (openTradesByEmail && typeof openTradesByEmail === 'object') {
       saveAdminOpenTradesMap(openTradesByEmail);

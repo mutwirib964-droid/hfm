@@ -45,10 +45,9 @@ import {
   initializeUserFinancials,
   loadUserFinancials,
   saveUserFinancials,
-  mergeUserFinancialStates,
+  reconcileWalletBalanceWithTransactions,
   isValidUserUid,
   generateSupabaseUuid,
-  calculateNetWalletFromLedger,
 } from '../utils/financialStorage';
 import { supabaseService } from '../services/supabaseService';
 import { referralService } from '../services/referralService';
@@ -384,17 +383,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           const localFinances = loadUserFinancials(verifiedProfile);
           const remoteFinances = await supabaseService.fetchUserFinancials(verifiedProfile);
           if (remoteFinances) {
-            const merged = localFinances
-              ? mergeUserFinancialStates(remoteFinances, localFinances, verifiedProfile.email)
-              : remoteFinances;
-            const ledgerWallet = calculateNetWalletFromLedger(merged.transactions);
-            const safeWallet = Math.max(
-              merged.walletBalance || 0,
-              localFinances?.walletBalance || 0,
-              remoteFinances.walletBalance || 0,
-              ledgerWallet
+            const safeWallet = reconcileWalletBalanceWithTransactions(
+              Number((remoteFinances.walletBalance || 0).toFixed(2)),
+              remoteFinances.transactions,
+              remoteFinances.accounts
             );
-            saveUserFinancials(verifiedProfile, { ...merged, walletBalance: safeWallet }, false);
+            saveUserFinancials(
+              verifiedProfile,
+              {
+                ...remoteFinances,
+                walletBalance: safeWallet,
+              },
+              false
+            );
           } else if (localFinances) {
             saveUserFinancials(verifiedProfile, localFinances, false);
           } else {
