@@ -167,6 +167,17 @@ export function kesToUsd(kesAmount: number): number {
 
 export const convertKesToUsd = kesToUsd;
 
+function getClientSessionAuthHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  let token = '';
+  try {
+    token = localStorage.getItem('vtm_session_token') || '';
+  } catch {}
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  };
+}
+
 export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaymentResponse> {
   const msisdn = formatSafaricomPhone(req.phone);
   const externalReference = req.accountReference || req.reference || `VTM-${Date.now()}`;
@@ -179,7 +190,7 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
   }
 
   const payload = {
-    action: 'payhero-stk',
+    action: 'mpesa-stk',
     amount: Math.max(1, Math.round(req.amountKes)),
     phone_number: msisdn,
     phone: msisdn,
@@ -195,12 +206,12 @@ export async function initiateStkPush(req: PayHeroStkRequest): Promise<MpesaPaym
   let httpOk = false;
 
   try {
-    const res = await fetch('/api/payhero-stk', {
+    const res = await fetch('/api/mpesa-stk', {
       method: 'POST',
-      headers: {
+      headers: getClientSessionAuthHeaders({
         'Content-Type': 'application/json',
         Accept: 'application/json',
-      },
+      }),
       body: JSON.stringify(payload),
     });
     const text = await res.text();
@@ -376,9 +387,9 @@ export function saveLocalPayHeroAuditLog(log: PayHeroTransactionAuditLog): void 
 
 export async function fetchPayHeroAuditLogs(): Promise<PayHeroTransactionAuditLog[]> {
   try {
-    const res = await fetch('/api/payhero-callback-logs', {
+    const res = await fetch('/api/mpesa-audit-logs', {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: getClientSessionAuthHeaders({ Accept: 'application/json' }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -406,9 +417,9 @@ export async function fetchPayHeroAuditLogs(): Promise<PayHeroTransactionAuditLo
 export async function postAuditLogToBackend(log: PayHeroTransactionAuditLog): Promise<void> {
   saveLocalPayHeroAuditLog(log);
   try {
-    await fetch('/api/payhero-callback-logs', {
+    await fetch('/api/mpesa-audit-logs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getClientSessionAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ log }),
     });
   } catch {}
@@ -429,7 +440,7 @@ export async function checkStkPaymentStatus(
   const extRef = extra?.externalReference || extra?.reference;
 
   const payload = {
-    action: 'payhero-status',
+    action: 'mpesa-status',
     reference: payheroRef,
     payhero_reference: payheroRef,
     checkout_request_id: checkoutReqId,
@@ -441,9 +452,9 @@ export async function checkStkPaymentStatus(
   };
 
   try {
-    const res = await fetch('/api/payhero-status', {
+    const res = await fetch('/api/mpesa-status', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getClientSessionAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     if (res.ok) {
@@ -558,9 +569,9 @@ export async function cancelStkPaymentStatus(
   };
 
   try {
-    const res = await fetch('/api/payhero-status', {
+    const res = await fetch('/api/mpesa-status', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getClientSessionAuthHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
     if (res.ok) {

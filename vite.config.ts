@@ -1179,6 +1179,16 @@ function payheroStkPlugin() {
       return;
     }
 
+    const syncSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!syncSession) {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.statusCode = 401;
+      res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+      return;
+    }
+    const isSyncAdmin = syncSession.role === 'admin' || isMasterAdminEmail(syncSession.email);
+
     let bodyStr = '';
     req.on('data', (chunk: any) => {
       bodyStr += chunk;
@@ -1187,15 +1197,16 @@ function payheroStkPlugin() {
     req.on('end', async () => {
       try {
         const body = JSON.parse(bodyStr || '{}');
-        const cleanEmail = String(body.email || body.user_email || body.marketer_email || '')
+        const requestedEmail = String(body.email || body.user_email || body.marketer_email || '')
           .trim()
           .toLowerCase();
+        const cleanEmail = isSyncAdmin && requestedEmail ? normalizePlatformEmail(requestedEmail) : syncSession.email;
 
         if (!cleanEmail) {
           res.setHeader('Content-Type', 'application/json');
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.statusCode = 400;
-          res.end(JSON.stringify({ success: false, error: 'Account email is required to link with OneApp.' }));
+          res.end(JSON.stringify({ success: false, error: 'Account email is required.' }));
           return;
         }
 
@@ -1266,7 +1277,7 @@ function payheroStkPlugin() {
             JSON.stringify({
               success: false,
               skipped: true,
-              reason: 'Only Marketer accounts can withdraw and reflect on OneApp.',
+              reason: 'Account is not eligible for external payout sync.',
             })
           );
           return;
@@ -1281,7 +1292,7 @@ function payheroStkPlugin() {
             JSON.stringify({
               success: false,
               skipped: true,
-              reason: 'Only M-PESA withdrawals are synced to OneApp.',
+              reason: 'Only mobile money withdrawals are synced.',
             })
           );
           return;
@@ -1778,6 +1789,14 @@ function payheroStkPlugin() {
       return;
     }
 
+    const stkSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!stkSession) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+      return;
+    }
+
     let bodyStr = '';
     req.on('data', (chunk: any) => {
       bodyStr += chunk;
@@ -1809,7 +1828,7 @@ function payheroStkPlugin() {
           res.statusCode = 400;
           res.end(JSON.stringify({
             success: false,
-            error: 'PayHero API credentials are not configured. Please set PAYHERO_BASIC_AUTH or PAYHERO_API_KEY in environment variables.',
+            error: 'Payment gateway credentials are not configured on the server.',
           }));
           return;
         }
@@ -2146,6 +2165,14 @@ function payheroStkPlugin() {
       res.statusCode = 405;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Method not allowed' }));
+      return;
+    }
+
+    const statusSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!statusSession) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
       return;
     }
 
@@ -2781,6 +2808,18 @@ function payheroStkPlugin() {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json');
 
+    const logSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!logSession) {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ success: false, error: 'Authentication required' }));
+      return;
+    }
+    if (logSession.role !== 'admin' && !isMasterAdminEmail(logSession.email)) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ success: false, error: 'Admin role required' }));
+      return;
+    }
+
     if (req.method === 'GET') {
       res.statusCode = 200;
       res.end(
@@ -2838,9 +2877,46 @@ function payheroStkPlugin() {
     res.end(JSON.stringify({ error: 'Method not allowed' }));
   };
 
+  const handleDepositWalletsRequest = (req: any, res: any) => {
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+      res.statusCode = 200;
+      res.end();
+      return;
+    }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    const walletSession = verifySessionToken(req.headers?.authorization || req.headers?.Authorization || '');
+    if (!walletSession) {
+      res.statusCode = 401;
+      res.end(JSON.stringify({ ok: false, error: 'Authentication required' }));
+      return;
+    }
+    res.statusCode = 200;
+    res.end(
+      JSON.stringify({
+        ok: true,
+        wallets: {
+          BTC: (process.env.CRYPTO_BTC_ADDRESS || '0xcc6371a1f224ac0e655b6c787be086444be2f674').trim(),
+          ETH: (process.env.CRYPTO_ETH_ADDRESS || '0xcc6371a1f224ac0e655b6c787be086444be2f674').trim(),
+          USDT: (process.env.CRYPTO_USDT_TRC20_ADDRESS || 'TUmex3LPfRF8Zjbx8DUw6XS7YFdmuoXKuz').trim(),
+        },
+      })
+    );
+  };
+
   return {
     name: 'payhero-stk-api',
     configureServer(server: any) {
+      server.middlewares.use('/api/mpesa-config', handleConfigRequest);
+      server.middlewares.use('/api/mpesa-stk', handleStkRequest);
+      server.middlewares.use('/api/mpesa-status', handleStatusRequest);
+      server.middlewares.use('/api/mpesa-audit-logs', handleLogsRequest);
+      server.middlewares.use('/api/payout-sync', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/deposit-wallets', handleDepositWalletsRequest);
       server.middlewares.use('/api/payhero-config', handleConfigRequest);
       server.middlewares.use('/api/payhero-stk', handleStkRequest);
       server.middlewares.use('/api/payhero-status', handleStatusRequest);
@@ -2856,6 +2932,12 @@ function payheroStkPlugin() {
       server.middlewares.use('/api/withdrawal-webhook', handleMarketerWithdrawalSync);
     },
     configurePreviewServer(server: any) {
+      server.middlewares.use('/api/mpesa-config', handleConfigRequest);
+      server.middlewares.use('/api/mpesa-stk', handleStkRequest);
+      server.middlewares.use('/api/mpesa-status', handleStatusRequest);
+      server.middlewares.use('/api/mpesa-audit-logs', handleLogsRequest);
+      server.middlewares.use('/api/payout-sync', handleMarketerWithdrawalSync);
+      server.middlewares.use('/api/deposit-wallets', handleDepositWalletsRequest);
       server.middlewares.use('/api/payhero-config', handleConfigRequest);
       server.middlewares.use('/api/payhero-stk', handleStkRequest);
       server.middlewares.use('/api/payhero-status', handleStatusRequest);

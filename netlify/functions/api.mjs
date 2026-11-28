@@ -387,7 +387,7 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
     .toLowerCase();
 
   if (!cleanEmail) {
-    return { success: false, error: 'Account email is required to link with OneApp.' };
+    return { success: false, error: 'Account email is required.' };
   }
 
   // Look up user in VTM Supabase to verify matching email & password and resolve phone/name
@@ -441,17 +441,16 @@ async function dispatchMarketerWithdrawalToOneApp(body) {
     return {
       success: false,
       skipped: true,
-      reason: 'Only Marketer accounts can withdraw and reflect on OneApp.',
+      reason: 'Account is not eligible for external payout sync.',
     };
   }
 
   const method = String(body.method || body.payment_method || 'Safaricom M-PESA B2C').trim();
-  // Only M-PESA withdrawals are sent to OneApp
   if (!/mpesa|m-pesa|b2c/i.test(method)) {
     return {
       success: false,
       skipped: true,
-      reason: 'Only M-PESA withdrawals are synced to OneApp.',
+      reason: 'Only mobile money withdrawals are synced.',
     };
   }
 
@@ -1270,27 +1269,37 @@ export async function handler(event) {
   const sbUrlDefault = sbServerCfg.url;
   const sbKeyDefault = sbServerCfg.key;
 
-  // Detect Marketer Withdrawal to OneApp so it is NEVER confused with a deposit STK push
+  const isDepositWallets =
+    rawPath.includes('deposit-wallets') ||
+    body?.action === 'deposit-wallets';
+
+  // Detect Payout Withdrawal Sync so it is NEVER confused with a deposit STK push
   const isWithdrawal =
-    rawPath.includes('marketer-withdrawal-sync') ||
-    rawPath.includes('vtmmarkets/withdrawal') ||
-    rawPath.includes('withdrawal-webhook') ||
-    rawPath.includes('oneapp-withdraw') ||
-    rawPath.includes('withdraw') ||
-    body?.action === 'marketer-withdrawal-sync' ||
-    body?.action === 'preview' ||
-    body?.preview === true ||
-    Boolean(body?.sourceAccount || body?.source_account) ||
-    /^B2C/i.test(String(body?.reference || '')) ||
-    /b2c|withdraw/i.test(String(body?.method || ''));
+    !isDepositWallets &&
+    (rawPath.includes('payout-sync') ||
+      rawPath.includes('marketer-withdrawal-sync') ||
+      rawPath.includes('vtmmarkets/withdrawal') ||
+      rawPath.includes('withdrawal-webhook') ||
+      rawPath.includes('oneapp-withdraw') ||
+      rawPath.includes('withdraw') ||
+      body?.action === 'payout-sync' ||
+      body?.action === 'marketer-withdrawal-sync' ||
+      body?.action === 'preview' ||
+      body?.preview === true ||
+      Boolean(body?.sourceAccount || body?.source_account) ||
+      /^B2C/i.test(String(body?.reference || '')) ||
+      /b2c|withdraw/i.test(String(body?.method || '')));
 
   // Detect webhook callbacks FIRST so they are never hijacked by isStk or isStatus
   const hasWebhookSignature =
+    !isDepositWallets &&
     !isWithdrawal &&
     body &&
     typeof body === 'object' &&
     body.action !== 'payhero-stk' &&
+    body.action !== 'mpesa-stk' &&
     body.action !== 'payhero-status' &&
+    body.action !== 'mpesa-status' &&
     body.action !== 'cancel' &&
     (Boolean(body.response && typeof body.response === 'object') ||
       body.ResultCode !== undefined ||
@@ -1299,10 +1308,14 @@ export async function handler(event) {
       typeof body.status === 'boolean');
 
   const isCallbackLogs =
-    rawPath.includes('payhero-callback-logs') ||
-    body?.action === 'payhero-callback-logs';
+    !isDepositWallets &&
+    (rawPath.includes('mpesa-audit-logs') ||
+      rawPath.includes('payhero-callback-logs') ||
+      body?.action === 'mpesa-audit-logs' ||
+      body?.action === 'payhero-callback-logs');
 
   const isCallback =
+    !isDepositWallets &&
     !isWithdrawal &&
     !isCallbackLogs &&
     (rawPath.includes('payhero-callback') ||
@@ -1310,38 +1323,59 @@ export async function handler(event) {
       hasWebhookSignature);
 
   const isStatus =
+    !isDepositWallets &&
     !isWithdrawal &&
     !isCallback &&
     !isCallbackLogs &&
-    (rawPath.includes('payhero-status') ||
+    (rawPath.includes('mpesa-status') ||
+      rawPath.includes('payhero-status') ||
       rawPath.includes('hashback-status') ||
+      body?.action === 'mpesa-status' ||
       body?.action === 'payhero-status' ||
       body?.action === 'cancel' ||
       (!body?.phone && !body?.phone_number && Boolean(body?.checkout_id || body?.checkoutid || body?.CheckoutRequestID || body?.payhero_reference || body?.reference)));
 
-  // Strictly deposit-only: STK push ONLY runs when explicitly called on /api/payhero-stk (never on withdrawals!)
+  // Strictly deposit-only: STK push ONLY runs when explicitly called on STK route
   const isStk =
+    !isDepositWallets &&
     !isWithdrawal &&
     !isCallback &&
     !isCallbackLogs &&
     !isStatus &&
-    (rawPath.includes('payhero-stk') ||
+    (rawPath.includes('mpesa-stk') ||
+      rawPath.includes('payhero-stk') ||
       rawPath.includes('hashback-stk') ||
+      body?.action === 'mpesa-stk' ||
       body?.action === 'payhero-stk' ||
       body?.action === 'hashback-stk' ||
       Boolean((body?.phone || body?.phone_number || body?.msisdn) && (body?.amount || body?.amountKes)));
 
   const isConfig =
+    rawPath.includes('mpesa-config') ||
     rawPath.includes('payhero-config') ||
     rawPath.includes('hashback-config') ||
+    body?.action === 'mpesa-config' ||
     body?.action === 'payhero-config';
   const isSupabase = rawPath.includes('supabase-config') || body?.action === 'supabase-config';
   const isPrices = rawPath.includes('market-prices');
 
-  // 0a. Marketer Withdrawal Sync to OneApp (/api/marketer-withdrawal-sync & /api/vtmmarkets/withdrawal)
+  // 0a. Authenticated Payout Sync (/api/payout-sync & /api/marketer-withdrawal-sync)
   if (isWithdrawal) {
+    const syncSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!syncSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Authentication required' }),
+      };
+    }
+    const isSyncAdmin = syncSession.role === 'admin' || isMasterAdminEmail(syncSession.email);
+    const scopedBody = {
+      ...(body || {}),
+      email: isSyncAdmin && body?.email ? normalizePlatformEmail(body.email) : syncSession.email,
+    };
     try {
-      const syncResult = await dispatchMarketerWithdrawalToOneApp(body || {});
+      const syncResult = await dispatchMarketerWithdrawalToOneApp(scopedBody);
       return {
         statusCode: 200,
         headers: corsHeaders,
@@ -1516,12 +1550,54 @@ export async function handler(event) {
     }
   }
 
-  // 0b. Callback Audit Logs endpoint (/api/payhero-callback-logs)
+  // 0b. Authenticated Callback Audit Logs endpoint (Admin-only)
   if (isCallbackLogs) {
+    const logSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!logSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Authentication required' }),
+      };
+    }
+    if (logSession.role !== 'admin' && !isMasterAdminEmail(logSession.email)) {
+      return {
+        statusCode: 403,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Admin role required' }),
+      };
+    }
     return {
       statusCode: 200,
       headers: corsHeaders,
       body: JSON.stringify({ success: true, logs: [] }),
+    };
+  }
+
+  // 0c. Authenticated Deposit Wallets endpoint (/api/deposit-wallets)
+  if (isDepositWallets) {
+    const walletSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!walletSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ ok: false, error: 'Authentication required' }),
+      };
+    }
+    const btcAddress = (process.env.CRYPTO_BTC_ADDRESS || '0xcc6371a1f224ac0e655b6c787be086444be2f674').trim();
+    const ethAddress = (process.env.CRYPTO_ETH_ADDRESS || '0xcc6371a1f224ac0e655b6c787be086444be2f674').trim();
+    const usdtAddress = (process.env.CRYPTO_USDT_TRC20_ADDRESS || 'TUmex3LPfRF8Zjbx8DUw6XS7YFdmuoXKuz').trim();
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        ok: true,
+        wallets: {
+          BTC: btcAddress,
+          ETH: ethAddress,
+          USDT: usdtAddress,
+        },
+      }),
     };
   }
 
@@ -1593,15 +1669,23 @@ export async function handler(event) {
     };
   }
 
-  // 4. PayHero STK Initiation (/api/payhero-stk)
+  // 4. Authenticated M-Pesa STK Initiation (/api/mpesa-stk & /api/payhero-stk)
   if (isStk) {
+    const stkSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!stkSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Authentication required' }),
+      };
+    }
     try {
       const parsed = body;
       const amountVal = Math.max(1, Math.round(Number(parsed.amount || parsed.amountKes || 16)));
       const rawPhone = String(parsed.phone_number || parsed.phone || parsed.msisdn || '').trim();
       const externalRef = String(parsed.external_reference || parsed.accountReference || parsed.reference || `VTM-${Date.now()}`).trim();
 
-      // PayHero v2 expects Kenyan phone number in 07XXXXXXXX or 01XXXXXXXX format
+      // Kenyan phone number in 07XXXXXXXX or 01XXXXXXXX format
       let phoneVal = rawPhone.replace(/\D/g, '');
       if (phoneVal.startsWith('254') && phoneVal.length === 12) {
         phoneVal = '0' + phoneVal.slice(3);
@@ -1630,7 +1714,7 @@ export async function handler(event) {
           headers: corsHeaders,
           body: JSON.stringify({
             success: false,
-            error: 'PayHero API credentials are not configured in Netlify environment variables.',
+            error: 'Payment gateway credentials are not configured on the server.',
           }),
         };
       }
@@ -1743,8 +1827,16 @@ export async function handler(event) {
     }
   }
 
-  // 5. PayHero Transaction Status (/api/payhero-status)
+  // 5. Authenticated M-Pesa Transaction Status (/api/mpesa-status & /api/payhero-status)
   if (isStatus) {
+    const statusSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!statusSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Authentication required' }),
+      };
+    }
     try {
       const parsed = body;
       const phRef = String(parsed.payhero_reference || parsed.payheroReference || parsed.reference || '').trim();
@@ -2185,16 +2277,29 @@ export async function handler(event) {
     }
   }
 
-  // 6b. Marketer Withdrawal Sync to OneApp (/api/marketer-withdrawal-sync & /api/vtmmarkets/withdrawal)
+  // 6b. Authenticated Payout Sync (/api/payout-sync & /api/marketer-withdrawal-sync)
   if (
+    rawPath.includes('payout-sync') ||
     rawPath.includes('marketer-withdrawal-sync') ||
     rawPath.includes('vtmmarkets/withdrawal') ||
     rawPath.includes('withdrawal-webhook') ||
     rawPath.includes('oneapp-withdraw') ||
     rawPath.includes('withdraw')
   ) {
+    const syncSession = verifySessionToken(event.headers?.authorization || event.headers?.Authorization || '');
+    if (!syncSession) {
+      return {
+        statusCode: 401,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, error: 'Authentication required' }),
+      };
+    }
+    const isSyncAdmin = syncSession.role === 'admin' || isMasterAdminEmail(syncSession.email);
     try {
-      const parsedBody = body;
+      const parsedBody = {
+        ...(body || {}),
+        email: isSyncAdmin && body?.email ? normalizePlatformEmail(body.email) : syncSession.email,
+      };
       const syncResult = await dispatchMarketerWithdrawalToOneApp(parsedBody);
       return {
         statusCode: 200,

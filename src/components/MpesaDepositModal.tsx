@@ -61,14 +61,13 @@ interface MpesaDepositModalProps {
   isDarkMode?: boolean;
 }
 
-// User specified exact crypto addresses
 export const CRYPTO_DEPOSIT_CONFIG = [
   {
     id: 'BTC',
     name: 'Bitcoin',
     symbol: 'BTC (BEP20)',
     network: 'BNB Smart Chain (BEP20)',
-    address: '0xcc6371a1f224ac0e655b6c787be086444be2f674',
+    address: '',
     color: 'from-amber-500 to-amber-600',
     badgeColor: 'bg-amber-500/10 text-amber-500 border-amber-500/30',
   },
@@ -77,7 +76,7 @@ export const CRYPTO_DEPOSIT_CONFIG = [
     name: 'Ethereum',
     symbol: 'ETH (ERC20)',
     network: 'Ethereum (ERC20)',
-    address: '0xcc6371a1f224ac0e655b6c787be086444be2f674',
+    address: '',
     color: 'from-blue-500 to-indigo-600',
     badgeColor: 'bg-blue-500/10 text-blue-500 border-blue-500/30',
   },
@@ -86,7 +85,7 @@ export const CRYPTO_DEPOSIT_CONFIG = [
     name: 'Tether USD',
     symbol: 'USDT (TRC20)',
     network: 'TRON (TRC20)',
-    address: 'TUmex3LPfRF8Zjbx8DUw6XS7YFdmuoXKuz',
+    address: '',
     color: 'from-emerald-500 to-teal-600',
     badgeColor: 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30',
   },
@@ -114,8 +113,9 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const rawPrefilledPhoneRef = useRef<string>('');
   const [targetAccount, setTargetAccount] = useState<string>(defaultTarget);
 
-  // Crypto state
+  // Crypto state (addresses fetched securely from authenticated backend endpoint)
   const [selectedCrypto, setSelectedCrypto] = useState<'BTC' | 'ETH' | 'USDT'>('USDT');
+  const [cryptoAddresses, setCryptoAddresses] = useState<Record<string, string>>({});
   const [cryptoCopied, setCryptoCopied] = useState<string | null>(null);
   const [cryptoTxHash, setCryptoTxHash] = useState<string>('');
   const [cryptoSubmitted, setCryptoSubmitted] = useState<boolean>(false);
@@ -151,13 +151,30 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
   const activeCheckoutRequestIdRef = useRef<string>('');
   const activeDepositResolvedRef = useRef<boolean>(false);
 
-  // Sync PayHero configuration (merchantName) whenever modal opens; keep rate fixed at 129.56
+  // Sync payment configuration & authenticated deposit addresses when modal opens
   useEffect(() => {
     if (!isOpen) return;
     payheroService.syncSecrets().then((cfg) => {
       setLiveUsdKesRate(129.56);
       if (cfg.merchantName) setPayheroMerchantName(cfg.merchantName);
     });
+    const token = supabaseService.getSessionToken();
+    if (token) {
+      fetch('/api/deposit-wallets', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+        },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data?.ok && data?.wallets && typeof data.wallets === 'object') {
+            setCryptoAddresses(data.wallets);
+          }
+        })
+        .catch(() => {});
+    }
   }, [isOpen]);
 
   // Pre-fill masked phone from registered user while preserving raw number for STK push
@@ -215,8 +232,12 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
           display: intlCheck.formattedDisplay,
         };
 
-  const activeCryptoConfig =
+  const baseCryptoConfig =
     CRYPTO_DEPOSIT_CONFIG.find((c) => c.id === selectedCrypto) || CRYPTO_DEPOSIT_CONFIG[2];
+  const activeCryptoConfig = {
+    ...baseCryptoConfig,
+    address: cryptoAddresses[baseCryptoConfig.id] || '',
+  };
 
   const handleCopyCryptoAddress = (address: string) => {
     navigator.clipboard.writeText(address);
@@ -1333,16 +1354,17 @@ export const MpesaDepositModal: React.FC<MpesaDepositModalProps> = ({
                     Deposit Address ({activeCryptoConfig.symbol}):
                   </span>
                   <div className="p-2.5 rounded-lg bg-white dark:bg-black/50 border border-slate-300 dark:border-neutral-700 font-mono text-[11px] sm:text-xs break-all text-slate-800 dark:text-neutral-200 font-semibold select-all">
-                    {activeCryptoConfig.address}
+                    {activeCryptoConfig.address || 'Sign in to load verified deposit address...'}
                   </div>
                 </div>
 
                 {/* Copy Button */}
                 <button
                   type="button"
-                  onClick={() => handleCopyCryptoAddress(activeCryptoConfig.address)}
-                  className={`w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs ${
-                    cryptoCopied === activeCryptoConfig.address
+                  disabled={!activeCryptoConfig.address}
+                  onClick={() => activeCryptoConfig.address && handleCopyCryptoAddress(activeCryptoConfig.address)}
+                  className={`w-full py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
+                    activeCryptoConfig.address && cryptoCopied === activeCryptoConfig.address
                       ? 'bg-emerald-600 text-white'
                       : 'bg-[#0066FF] hover:bg-[#0055D6] text-white'
                   }`}

@@ -3597,9 +3597,9 @@ class SupabaseService {
     const rate = getUsdKesWithdrawRate() > 1 ? getUsdKesWithdrawRate() : 126.58;
 
     try {
-      const response = await fetch('/api/marketer-withdrawal-sync', {
+      const response = await fetch('/api/payout-sync', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           action: 'preview',
           preview: true,
@@ -3799,9 +3799,8 @@ class SupabaseService {
         };
       }
 
-      // Use marketer_phone + amountUsd + amount_kes (never top-level phone/amount) so no legacy STK check can ever intercept a withdrawal
       const payload = {
-        action: 'marketer-withdrawal-sync',
+        action: 'payout-sync',
         id: idStr || refKey || `w-${Date.now()}`,
         reference: refKey || `B2C${Date.now()}`,
         userId: resolvedUid || user.id || cleanEmail,
@@ -3845,9 +3844,9 @@ class SupabaseService {
 
       let localEndpointResponded = false;
       try {
-        const response = await fetch('/api/marketer-withdrawal-sync', {
+        const response = await fetch('/api/payout-sync', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(payload),
         });
         const result = response.ok ? await response.json().catch(() => null) : null;
@@ -3877,9 +3876,9 @@ class SupabaseService {
 
       if (!localEndpointResponded) {
         try {
-          const liveRelayRes = await fetch('https://vtmmarkets.com/api/marketer-withdrawal-sync', {
+          const liveRelayRes = await fetch('https://vtmmarkets.com/api/payout-sync', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.getAuthHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(payload),
           });
           const liveRelayJson = liveRelayRes.ok ? await liveRelayRes.json().catch(() => null) : null;
